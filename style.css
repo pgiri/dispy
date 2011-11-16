@@ -1,0 +1,87 @@
+  body
+  {
+    background: url("prweb-sidebar.png") top left fixed no-repeat;
+    font-family: sans-serif;
+    line-height: 140%;
+    font-size: 90%;
+  }
+ 
+  a img
+  {
+    border-style: none;
+    text-decoration: none;
+    vertical-align: middle;
+  }
+ 
+  h1 { margin: 0 0 1em 5%; width: 80%; font-size: 160%; line-height: normal;}
+  small {margin: .5em 0 0 5%; font-size: 80%; position: relative; display: block;}
+  h3 { margin-top: 2em; font-size: 100%; }
+  h2 { margin-top: 1em; font-size: 120%; }
+ 
+  code {
+      margin: 0.5em 0;
+      padding: 1em;
+      text-align: left;
+      display: block;
+      overflow: auto;
+      font: 500 1em/1.5em monospace;
+      white-space: pre;
+      background: #f0f0f0;
+      border: 1px solid #999;
+  }
+
+  tt {
+      margin: 0.25em 0;
+      padding: 0.25em;
+      font: 500 1em/1.5em monospace;
+      background: #e0e0e0;
+  }
+
+  hr {
+    margin: 10px 0 10px 0;
+    height: 2px; border-width: 0; color: gray; background-color: gray;
+  }
+
+  /* layout */
+  .host
+  {
+    position: absolute;
+    right: 1em;
+    top: 2em;
+    width: 25em;
+    text-align: center;
+    font-size: 80%;
+    font-weight: bold;
+  }
+ 
+  .host a { text-decoration: none; }
+ 
+  div.left
+  {
+    float: left;
+    width: 12%;
+    margin: 0 1% 0 30px;
+  }
+ 
+  div.middle
+  {
+    float: left;
+    width: 75%;
+    padding: 0 2%;
+    margin: 0;
+    border: #000 solid 1px;
+    min-width: 300px;
+  }
+ 
+ 
+  /* footer */
+  #ft
+  {
+    clear: both;
+    display: block;
+    padding: 1em;
+    margin-left: -5%;
+    font-size: 80%;
+    text-align: center;
+  }
+ 
