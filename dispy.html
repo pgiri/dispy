@@ -1,0 +1,270 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"> 
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en"> 
+  <head> 
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" /> 
+    <meta name="description" content="Python module for distributing computations across multiple processors on a single machine, among many machines in a cluster, grid or cloud. The computations can be standalone programs or python functions." /> 
+    <meta name="keywords" content="dispy, python, parallel processing, distributed computing, cluster computing" /> 
+    <title> 
+      SourceForge.net: dispy - Project Web Hosting - Open Source Software
+    </title> 
+
+<link rel="stylesheet" type="text/css" href="style.css" />
+ 
+  </head> 
+  <body> 
+    <small><a href="http://sourceforge.net/projects/dispy/">dispy</a>:  Project Web Hosting - Open Source Software</small> 
+    <h1>dispy</h1> 
+    <div id="projectinfo"> 
+      <div class="left"> 
+        <p><strong> 
+          <a href="http://dispy.sourceforge.net/index.html"> 
+            Project Page</a> 
+        </strong></p> 
+        <p><strong> 
+          <a href="http://sourceforge.net/projects/dispy/files"> 
+            Download dispy</a> 
+        </strong></p> 
+        <p><strong> 
+          <a href="http://sourceforge.net/projects/dispy/"> 
+            Project detail</a> 
+        </strong></p> 
+        <p><strong> 
+          <a href="http://sourceforge.net/projects/dispy/support"> 
+            Get support</a> 
+	      </strong></p> 
+      </div> 
+      <div class="middle"> 
+        <h2>
+          dispy Usage
+        </h2>
+<p>
+  There are two ways to create clusters with
+  dispy: <tt>JobCluster</tt> and <tt>SharedJobCluster</tt>. If only
+  one instance of dispy may be running at anytime,
+  <tt>JobCluster</tt> is simple to use; it already contains a
+  scheduler that will schedule jobs to nodes running 'dispynode'. If,
+  however, multiple programs using dispy may be running at anytime,
+  <tt>JobCluster</tt> cannot be used - each of the schedulers in each
+  instance of dispy will assume the nodes are controlled exclusively
+  by each, causing conflicts. Instead, <tt>SharedJobCluster</tt> must
+  be used. In this
+  case, <a href="dispyscheduler.html">dispyscheduler</a> must also be
+  running on some computer and <tt>SharedJobCluster</tt> must be
+  initialized with the node running dispyscheduler (default is the
+  host that calls <tt>SharedJobCluster</tt>).
+  </p>
+
+<p>Once an instance of JobCluster/SharedJobCluster is created, it can
+be used to schedule jobs by specifying arguments to invoke the
+computations.
+</p>
+
+<ul>
+  <li>
+
+<tt>JobCluster(computation, nodes=['*'], depends=[], ip_addr=None, port=51347, node_port=51348,
+           dest_path='/tmp', loglevel=logging.WARNING, cleanup=True,
+           pulse_interval=None, resubmit=False,
+           secret='', keyfile=None, certfile=None)</tt><br/>
+where
+<ul>
+<li><tt>computation</tt> is either name of Python function or a
+string. If it is a string, it must be path to executable program. This
+computation is sent to nodes in the given cluster.</li>
+<li><tt>nodes</tt> is list of nodes, where each node is either IP
+address or host name. This list serves two purposes: dispy initially
+sends a request to all the nodes listed to find out information about
+them (e.g., number of processing units available for dispy), then
+sends given computation to only those nodes that match the listed
+nodes (dispy may know about nodes not listed in this computation, as
+it also broadcasts identification request).  Wildcard '*' can be used
+to match (part of) any IP address; e.g., '192.168.3.*' matches any
+node whose IP address starts with '192.168.3'.  If there are any nodes
+beyond local network, then all such nodes should be listed. If there
+are many such nodes (on outside local network), it may be cumbersome
+to list them all (it is not possible to send identification request to
+outside networks with wildcard in them); in that
+case, <a href="dispynetrelay.html">dispynetrelay</a> may be started on
+one of the nodes on that network and the node running dispynetrelay
+should be added to nodes list (and a wildcard for that network, so
+that other nodes on that network match that wildcard); see below for examples.</li>
+<li><tt>depends</tt> is list of dependencies needed
+for <tt>computation</tt>. Each element of this list can be either
+Python function or Python class or a Python module or path to
+file. Only Python modules that are not present on nodes already need
+be listed; standard modules that are present on all nodes do not
+need to be listed here.</li>
+<li><tt>ip_addr</tt> is IP address to use for (client)
+communication. This may be needed in case the client has multiple
+interfaces and default interface is not the right choice.</li>
+<li><tt>port</tt> is port to use for (client) communication.</li>
+<li><tt>node_port</tt> is port to use for communicating with nodes
+(servers). If this should be different, 'dispynode' programs must be
+run with the same port.</li>
+<li><tt>dest_path</tt> is directory on the nodes where files are
+transferred to. If multiple instances/users use 'dispy', each
+instance/user may use different path to avoid conflicts.</li>
+<li><tt>loglevel</tt> is message priority for logging module.</li>
+<li><tt>cleanup</tt>: Whether any files transferred should be deleted
+after the computation is done. If it is False, the files are left on
+the nodes; this may speedup if same files are needed later; however,
+this can be security risk and/or require manual cleanup.</li>
+<li><tt>pulse_interval</tt> is number of seconds between 'pulse'
+messages that nodes send to indicate they are computing submitted
+jobs. If this value is given as an integer or floating number between
+1 and 600, then a node is presumed dead if 5*pulse_interval seconds
+elapse without a pulse message. See 'resubmit' below.</li>
+<li><tt>resubmit</tt> must be either True or False. This value is used
+only if 'pulse_interval' is set for any of the clusters. If
+pulse_interval is given and resubmit is False (default), jobs
+scheduled for a dead node are automatically cancelled (for such jobs,
+execution result, output and error fields are set to None, exception
+field is set to 'Cancelled' and state is set to Cancelled); if
+resubmit is True, then jobs scheduled for a dead node are resubmitted
+to other eligible nodes.</li>
+<li><tt>secret</tt> is a string that is (hashed and) used for
+handshaking of communication with nodes. This prevents unauthorized
+use of nodes. However, the hashed string (not the secret itself) is
+passed in clear text, so an unauthorized, determined person may be
+able to figure out how to circumvent.</li>
+<li><tt>keyfile</tt> is file containing private key for SSL
+communication (see Python 'ssl' module). This key may be stored in
+'certfile' itself, in which case this should be None.</li>
+<li><tt>certfile</tt> is file containing SSL certificate (see Python
+'ssl' module).</li>
+</ul>
+</li>
+
+<li>
+  SharedJobCluster has almost the same syntax, except as noted below:
+<tt>SharedJobCluster(computation, nodes=['*'], depends=[], ip_addr=None, port=51347,
+                 scheduler_node=None, scheduler_port=51349,
+                 dest_path='/tmp', loglevel=logging.WARNING, cleanup=True,
+                 pulse_interval=None, resubmit=False,
+                 secret='', keyfile=None, certfile=None)</tt><br/>
+where all arguments common to <tt>JobCluster</tt> are same, and
+<ul>
+<li><tt>scheduler_node</tt> is either IP address or host name
+where <a href="dispyscheduler.html">dispyscheduler</a> is running; if
+it is not given, the node where SharedJobCluster is invoked is
+used</li>
+<li><tt>scheduler_port</tt> is port
+where <a href="dispyscheduler.html">dispyscheduler</a> is listening
+for connections</li>
+
+<li><tt>pulse_interval</tt> is not used in case of SharedJobCluster;
+instead, 'dispyscheduler' must be called with '--pulse_interval'
+option</li>
+</ul>
+</li>
+
+<li>
+<tt>cluster.submit</tt> method is available for the cluster returned
+from JobCluster. This method should be called with the arguments
+exactly as expected by the 'computation' given to JobCluster. If
+'computation' is a Python function, the arguments may also contain
+keyword arguments. However, all arguments must be serializable
+(picklable). If an argument is a class object that contains
+non-serializable members, then the classes may
+provide <tt>__getstate__</tt> method for this purpose (see '_Job'
+class in dispy.py for an example). If 'computation' is a program, then
+all arguments must be strings.
+
+<tt>submit</tt> returns a 'job' object. Results from execution of
+computation with given arguments will be available in the 'job' object
+after execution finishes.
+</li>
+
+<li>
+<tt>cluster()</tt> will wait for all submitted jobs to complete.
+</li>
+
+<li>
+<tt>cluster.wait()</tt> will wait for all submitted jobs to complete.
+</li>
+
+<li>
+<tt>cluster.close()</tt> will wait for all submitted jobs to complete
+and then cleanup (such as removing any transferred files, deleting
+'computation' from the nodes etc.).
+</li>
+
+<li>
+<tt>cluster.cancel(job)</tt> will remove the job submitted, by
+terminating it if it already started execution. Note that if the job
+execution has any side effects (such as updating database, files
+etc.), cancelling a job may leave unpredictable side effects,
+depending on at what point job is cancelled.
+</li>
+
+<li>
+  <tt>cluster.stats()</tt> will print statistics about nodes, time
+  each node spent executing jobs etc.
+</li>
+</ul>
+
+<p>
+Note that dispy sends only the given computation and its dependencies
+to the nodes; the program itself is not transferred. So if computation
+is a python function, it must import all the modules used by it, even
+if the program imported those modules before cluster is created.
+</p>
+
+<p>
+  Below are some examples on various use cases of creating clusters:
+</p>
+  <ol>
+    <li>
+      <tt>cluster = dispy.JobCluster(compute, nodes=['node20', '192.168.2.21', 'node24'])</tt>
+      sends computation to nodes 'node20', 'node24' and node with IP address '192.168.2.21'; in this case, these nodes could be in different networks, as explicit names / IP addresses are listed.
+    </li>
+    <li>
+      <tt>cluster = dispy.JobCluster(compute, nodes=['192.168.2.*'])</tt>
+      sends computation to all nodes whose IP address starts with '192.168.2'.
+      In this case, it is assumed that '192.168.2' is local network (since
+      dispy can't send identification request to outside networks with wildcard)
+    </li>
+    <li>
+      <tt>cluster = dispy.JobCluster(compute, nodes=['192.168.3.5', '192.168.3.22', '172.16.11.22', 'node39', '192.168.2.*'])</tt>
+      sends computation to nodes with IP addresses '192.168.3.5', '192.168.3.22', '172.16.11.22' and node 'node39' (since explicit names / IP addresses are listed, they could be on different networks), all nodes whose IP address starts with '192.168.2' (local network).
+    </li>
+    <li>
+      <tt>cluster = dispy.JobCluster(compute, nodes=['192.168.3.5', '192.168.3.*', '192.168.2.*'])</tt>
+      In this case, dispy will send identification request to node with IP address '192.168.3.5'. If this node is running 'dispynetrelay', then all the nodes on that network are eligible for executing this computation, as wildcard '192.168.3.*' matches IP addresses of those nodes. In addition, computation is also sent to all nodes whose IP address starts with '192.168.2' (local network).
+    </li>
+    <li>
+      <tt>cluster = dispy.JobCluster(compute, nodes=['192.168.3.5', '192.168.8.20', '172.16.2.99', '*'])</tt>
+      In this case, dispy will send identification request to nodes with IP address '192.168.3.5', '192.168.8.20' and '172.16.2.99'. If these nodes all are running dispynetrelay, then all the nodes on those networks are eligible for executing this computation, as wildcard '*' matches IP addresses of those nodes. In addition, computation is also sent to all nodes on local network (since they also match wildcard '*' and identification request is broadcast on local network).
+    </li>
+  </ol>
+
+      </div> 
+    </div> 
+    <div id="ft"> 
+      <p> 
+        <a href="http://sourceforge.net/"> 
+          Project Web Hosted by <img src="http://sflogo.sourceforge.net/sflogo.php?group_id=539226&amp;type=3" alt="SourceForge.net" /> 
+        </a> 
+      </p> 
+      <p> 
+        &copy;Copyright 1999-2009 -
+        <a href="http://geek.net" title="Network which provides and promotes Open Source software downloads, development, discussion and news."> 
+          Geeknet</a>, Inc., All Rights Reserved
+      </p> 
+      <p> 
+        <a href="http://sourceforge.net/about"> 
+          About
+        </a> 
+        -
+        <a href="http://sourceforge.net/tos/tos.php"> 
+          Legal
+        </a> 
+        -
+        <a href="http://p.sf.net/sourceforge/getsupport"> 
+          Help
+        </a> 
+      </p> 
+    </div> 
+  </body> 
+</html> 

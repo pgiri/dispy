@@ -1,0 +1,126 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"> 
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en"> 
+  <head> 
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" /> 
+    <meta name="description" content="Python module for distributing computations across multiple processors on a single machine, among many machines in a cluster, grid or cloud. The computations can be standalone programs or python functions." /> 
+    <meta name="keywords" content="dispy, python, parallel processing, distributed computing, cluster computing" /> 
+    <title> 
+      SourceForge.net: dispy - Project Web Hosting - Open Source Software
+    </title> 
+
+<link rel="stylesheet" type="text/css" href="style.css" />
+
+  </head> 
+  <body> 
+    <small><a href="http://sourceforge.net/projects/dispy/">dispy</a>:  Project Web Hosting - Open Source Software</small> 
+    <h1>dispy</h1> 
+    <div id="projectinfo"> 
+      <div class="left"> 
+        <p><strong> 
+          <a href="http://dispy.sourceforge.net/index.html"> 
+            Project Page</a> 
+        </strong></p> 
+        <p><strong> 
+          <a href="http://sourceforge.net/projects/dispy/files"> 
+            Download dispy</a> 
+        </strong></p> 
+        <p><strong> 
+          <a href="http://sourceforge.net/projects/dispy/"> 
+            Project detail</a> 
+        </strong></p> 
+        <p><strong> 
+          <a href="http://sourceforge.net/projects/dispy/support"> 
+            Get support</a> 
+	      </strong></p> 
+      </div> 
+      <div class="middle"> 
+        <h2> 
+          dispynode
+        </h2> 
+<p>
+  dispynode runs on each of the nodes in a cluster and executes jobs
+  for dispy. Normally, it is expected that the nodes run this program
+  always. However, if dispynode is started on a node and jobs are
+  already submitted to a cluster to which this node belongs, then
+  dispy will find out the node and will submit jobs to it as
+  appropriate. However, dispy is not yet fault tolerant and the node
+  is expected to keep running dispynode until all the clusters that
+  use the node have terminated.
+</p>
+
+<p>Below are various options to invoking dispynode:
+  <ul>
+    <li><tt>-c n</tt> or <tt>--cpus n</tt> sets the number of
+    processing units to <tt>n</tt>. Without this option, dispynode
+    will use all the processing units available on that
+    node. <tt>n</tt> must be at least 1 and at most number of
+    processing units on that node.</li>
+    <li><tt>-i addr</tt> or <tt>--ip_addr addr</tt> directs dispynode
+    to use given <tt>addr</tt> for communication, instead of the IP
+    address associated with the host name.</li>
+    <li><tt>-p n</tt> or <tt>--node_port n</tt> directs dispynode to
+    use given port <tt>n</tt> instead of default port 51348.</li>
+    <li><tt>-s secret</tt> or <tt>--secret secret</tt> directs
+    dispynode to use 'secret' for hashing handshake communication with
+    dispy scheduler.</li>
+    <li><tt>--dest_path_prefix path</tt> directs dispynode to use
+    'path' as prefix for storing files sent by dispy scheduler. If a
+    cluster uses <tt>dest_path</tt> option (when creating cluster with
+    JobCluster or SharedJobCluster), then <tt>dest_path</tt> is
+    appened to 'path' prefix. With this, files from different clusters
+    can be automatically stored in different directories, to avoid
+    conflicts. Unless <tt>cleanup=False</tt> option is used when
+    creating a cluster, dispynode will remove all files and
+    directories created after the cluster is terminated.</li>
+    <li><tt>--scheduler_node addr</tt>: If the node is in the same
+    network as the dispy scheduler or when no jobs are scheduled at
+    the time dispynode is started, this option is not
+    necessary. However, if jobs are already scheduled and scheduler
+    and node are on different networks, the given <tt>addr</tt> is
+    used for handshake with the scheduler.</li>
+    <li><tt>--scheduler_port n</tt> directs dispynode to use
+    port <tt>n</tt> to communicate with scheduler. Default value is
+    51347. When using this option, make sure dispy scheduler is also
+    directed to use same port.</li>
+    <li><tt>--keyfile</tt> is file containing private key for SSL
+    communication (see Python 'ssl' module). This key may be stored in
+    'certfile' itself, in which case this can be None.</li>
+    <li><tt>--certfile</tt> is file containing SSL certificate (see
+    Python 'ssl' module).</li>
+    <li><tt>--max_file_size n</tt> specifies maximum size of any file
+    transferred by clusters. If size of a file transferred by cluster
+    exceeds <tt>n</tt>, dispynode will silently truncate it.</li>
+    <li><tt>-d</tt> enables debug messages that show trace of
+    execution. This may not be very useful to end users.</li>
+</ul>
+
+      </div> 
+    </div> 
+    <div id="ft"> 
+      <p> 
+        <a href="http://sourceforge.net/"> 
+          Project Web Hosted by <img src="http://sflogo.sourceforge.net/sflogo.php?group_id=539226&amp;type=3" alt="SourceForge.net" /> 
+        </a> 
+      </p> 
+      <p> 
+        &copy;Copyright 1999-2009 -
+        <a href="http://geek.net" title="Network which provides and promotes Open Source software downloads, development, discussion and news."> 
+          Geeknet</a>, Inc., All Rights Reserved
+      </p> 
+      <p> 
+        <a href="http://sourceforge.net/about"> 
+          About
+        </a> 
+        -
+        <a href="http://sourceforge.net/tos/tos.php"> 
+          Legal
+        </a> 
+        -
+        <a href="http://p.sf.net/sourceforge/getsupport"> 
+          Help
+        </a> 
+      </p> 
+    </div> 
+  </body> 
+</html> 
