@@ -664,7 +664,7 @@ if __name__ == '__main__':
                         help='port number used by scheduler')
     parser.add_argument('--max_file_size', dest='max_file_size', default=None,
                         help='maximum file size of any file transferred')
-    parser.add_argument('--secret', dest='secret', default='',
+    parser.add_argument('-s', '--secret', dest='secret', default='',
                         help='authentication secret for handshake with dispy clients')
     parser.add_argument('--certfile', dest='certfile', default=None,
                         help='file containing SSL certificate')
