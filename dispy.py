@@ -401,7 +401,8 @@ class _Job():
     def __getstate__(self):
         state = {'_args':self._args, '_kwargs':self._kwargs, '_files':self._files,
                  '_code':self._code, '_compute_id':self._compute_id, '_uid':self._uid,
-                 'state':self.state, '_hash':self._hash}
+                 'state':self.state, '_hash':self._hash,
+                 'reply_addr':getattr(self, 'reply_addr', None)}
         return state
 
     def _run(self):

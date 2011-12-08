@@ -40,6 +40,7 @@ import atexit
 import logging
 import shutil
 import getopt
+import marshal
 
 from dispy import _Compute, _XferFile, _xor_string, _DispySocket, _Job, _node_name_ipaddr
 
@@ -57,7 +58,7 @@ def _same_file(tgt, xf):
         return False
 
 def _job_func(__job, __proc_Q, __compute_env, __compute_name, __compute_code):
-    import cStringIO, sys, traceback, os, cPickle
+    import cStringIO, sys, traceback, os, cPickle, marshal
 
     sys.stdout = cStringIO.StringIO()
     sys.stderr = cStringIO.StringIO()
@@ -66,7 +67,7 @@ def _job_func(__job, __proc_Q, __compute_env, __compute_name, __compute_code):
     if __compute_env and isinstance(__compute_env, list):
         sys.path = __compute_env + sys.path
     try:
-        exec __compute_code
+        exec marshal.loads(__compute_code)
         if __job._code:
             exec __job._code
         globals().update(locals())
@@ -374,7 +375,7 @@ class _DispyNode():
                     if compute.dest_path:
                         self.computations[compute.id].env.append(compute.dest_path)
                     code = base64.b64decode(compute.code)
-                    self.computations[compute.id].code = compile(code, '<string>', 'exec')
+                    self.computations[compute.id].code = marshal.dumps(compile(code, '<string>', 'exec'))
                 elif compute.type == _Compute.prog_type:
                     assert not compute.code
                     if compute.xfer_files:
