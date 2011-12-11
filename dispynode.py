@@ -5,18 +5,20 @@
 
 # Copyright (C) 2011 Giridhar Pemmasani (pgiri@yahoo.com)
 
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
+# This file is part of dispy.
+
+# dispy is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
 
-# This program is distributed in the hope that it will be useful,
+# dispy is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
+# GNU Lesser General Public License for more details.
 
-# You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# You should have received a copy of the GNU Lesser General Public License
+# along with dispy.  If not, see <http://www.gnu.org/licenses/>.
 
 import os
 import sys
@@ -68,8 +70,6 @@ def _job_func(__job, __proc_Q, __compute_env, __compute_name, __compute_code):
         sys.path = __compute_env + sys.path
     try:
         exec marshal.loads(__compute_code)
-        if __job._code:
-            exec __job._code
         globals().update(locals())
         __args = cPickle.loads(__job._args)
         __kwargs = cPickle.loads(__job._kwargs)
@@ -374,8 +374,15 @@ class _DispyNode():
                         self.computations[compute.id].env = compute.env['PYTHONPATH']
                     if compute.dest_path:
                         self.computations[compute.id].env.append(compute.dest_path)
-                    code = base64.b64decode(compute.code)
-                    self.computations[compute.id].code = marshal.dumps(compile(code, '<string>', 'exec'))
+                    try:
+                        code = compile(base64.b64decode(compute.code), '<string>', 'exec')
+                    except:
+                        logging.warning('Computation "%s" could not be compiled', compute.name)
+                        resp = 'NACK (Compilation failed)'
+                        conn.write_msg(uid, resp)
+                        conn.close()
+                        continue
+                    self.computations[compute.id].code = marshal.dumps(code)
                 elif compute.type == _Compute.prog_type:
                     assert not compute.code
                     if compute.xfer_files:

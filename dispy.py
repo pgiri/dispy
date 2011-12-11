@@ -5,19 +5,21 @@
 
 # Copyright (C) 2011 Giridhar Pemmasani (pgiri@yahoo.com)
 
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
+# This file is part of dispy.
+
+# dispy is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
 
-# This program is distributed in the hope that it will be useful,
+# dispy is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
+# GNU Lesser General Public License for more details.
 
-# You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
+# You should have received a copy of the GNU Lesser General Public License
+# along with dispy.  If not, see <http://www.gnu.org/licenses/>.
+                                
 import os
 import sys
 import time
@@ -351,7 +353,6 @@ class _Job():
         self._node = None
         self._compute_id = compute_id
         self._files = []
-        self._code = ''
         self._finish = threading.Event()
         self._hash = os.urandom(20).encode('hex')
         job_deps = kwargs.pop('dispy_job_depends', [])
@@ -400,9 +401,8 @@ class _Job():
 
     def __getstate__(self):
         state = {'_args':self._args, '_kwargs':self._kwargs, '_files':self._files,
-                 '_code':self._code, '_compute_id':self._compute_id, '_uid':self._uid,
-                 'state':self.state, '_hash':self._hash,
-                 'reply_addr':getattr(self, 'reply_addr', None)}
+                 '_compute_id':self._compute_id, '_uid':self._uid, 'state':self.state,
+                 '_hash':self._hash, 'reply_addr':getattr(self, 'reply_addr', None)}
         return state
 
     def _run(self):
@@ -828,7 +828,6 @@ class _Cluster(object):
                                       msg[:min(5, len(msg))], addr[0])
                         continue
                 elif sock == self.cmd_sock.sock:
-                    logging.debug('Listener terminating ...')
                     conn, addr = self.cmd_sock.accept()
                     conn = _DispySocket(conn)
                     req = conn.read(len(self.auth_code))
@@ -864,7 +863,7 @@ class _Cluster(object):
                 now = time.time()
                 dead_nodes = {}
                 for node in self._nodes.itervalues():
-                    if node.busy and node.last_pulse + self.pulse_timeout < now:
+                    if node.busy and (node.last_pulse + self.pulse_timeout) < now:
                         logging.warning('Node %s is not responding; removing it (%s, %s, %s)',
                                         node.ip_addr, node.busy, node.last_pulse, now)
                         dead_nodes[node.ip_addr] = node
@@ -988,7 +987,7 @@ class _Cluster(object):
                 job.exception = 'terminated'
                 job._finish.set()
             cluster._jobs = []
-        #os.write(self.cmd_write_pipe, 'quit')
+
         self._nodes = {}
         logging.debug('Scheduler quit')
         self._sched_cv.release()
@@ -1110,13 +1109,14 @@ class JobCluster():
 
         @computation is either a string (which is name of program, possibly
         with full path) or a python object.
-        @nodes is list. Each element of @nodes is either a string (which must be
-          IP address of server node), or a tuple with up to 3 elements.
-          The tuple's first element must be IP address of server node,
-            second element, if present, must be port number where that node is
-              listening for ping from clients,
-            the third element, if present, must be number of CPUs to use
-              on that node.
+
+        @nodes is list. Each element of @nodes is either a string
+          (which must be either IP address or name of server node), or
+          a tuple with up to 3 elements.  The tuple's first element
+          must be IP address or name of server node, second element,
+          if present, must be port number where that node is listening
+          for ping from clients, the third element, if present, must
+          be number of CPUs to use on that node.
 
         @depends is a list. Each element of @depends is either
           a string or a python object. If the element is a string,
@@ -1249,6 +1249,9 @@ class JobCluster():
             else:
                 raise Exception('Invalid function/method: %s' % dep)
         if compute.code:
+            # make sure code can be compiled
+            code = compile(compute.code, '<string>', 'exec')
+            del code
             compute.code = base64.b64encode(compute.code)
         compute.job_result_port = self._cluster.job_result_port
         compute.cleanup = cleanup
