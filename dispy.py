@@ -335,6 +335,7 @@ class _Job():
     Running = 3
     Finished = 4
     Cancelled = 5
+    ProvisionalResult = 6
     def __init__(self, compute_id, args, kwargs):
         # these fields are available to user
         # id can be assigned by user as appropriate (e.g., to distinguish jobs)
@@ -402,7 +403,7 @@ class _Job():
     def __getstate__(self):
         state = {'_args':self._args, '_kwargs':self._kwargs, '_files':self._files,
                  '_compute_id':self._compute_id, '_uid':self._uid, 'state':self.state,
-                 '_hash':self._hash, 'reply_addr':getattr(self, 'reply_addr', None)}
+                 '_hash':self._hash}
         return state
 
     def _run(self):
@@ -657,6 +658,12 @@ class _Cluster(object):
                         result = cPickle.loads(msg)
                         assert result['hash'] == job._hash
                         job.result = result['result']
+                        if 'provisional' in result:
+                            logging.debug('Receveid provisional result for %s', job.id)
+                            job.state = _Job.ProvisionalResult
+                            self._sched_cv.notify()
+                            self._sched_cv.release()
+                            continue
                         job.stdout = result['stdout']
                         job.stderr = result['stderr']
                         job.exception = result['exception']
@@ -1023,7 +1030,7 @@ class _Cluster(object):
             if not self.shared:
                 cluster._jobs.remove(job)
             cancel = False
-        elif not (job.state == _Job.Running):
+        elif not (job.state == _Job.Running or job.state == _Job.ProvisionalResult):
             logging.warning('Job %s is not valid for cancel (%s)', job._uid, job.state)
             self._sched_cv.release()
             return
@@ -1110,7 +1117,7 @@ class JobCluster():
         @computation is either a string (which is name of program, possibly
         with full path) or a python object.
 
-        @nodes is list. Each element of @nodes is either a string
+        @nodes is a list. Each element of @nodes is either a string
           (which must be either IP address or name of server node), or
           a tuple with up to 3 elements.  The tuple's first element
           must be IP address or name of server node, second element,
@@ -1158,7 +1165,7 @@ class JobCluster():
         pulse_interval is given and resubmit is False (default), jobs
         scheduled for a dead node are automatically cancelled; if
         resubmit is True, then jobs scheduled for a dead node are
-        resubmitted to other nodes, if available.
+        resubmitted to other eligible nodes.
         """
 
         if not isinstance(nodes, list):
@@ -1199,7 +1206,7 @@ class JobCluster():
         elif isinstance(computation, str):
             compute = _Compute(_Compute.prog_type, computation)
             compute.env = {'PATH':os.getenv('PATH')}
-            depends += [computation]
+            depends.append(computation)
         else:
             raise Exception('Invalid computation type: %s' % type(compute))
         if dest_path:

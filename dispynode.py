@@ -48,7 +48,22 @@ from dispy import _Compute, _XferFile, _xor_string, _DispySocket, _Job, _node_na
 
 MaxFileSize = 10240000
 
+class _JobReply():
+    """Internal use only.
+    """
+    def __init__(self, job, reply_addr, certfile=None, keyfile=None):
+        self.job = job
+        self.reply_addr = reply_addr
+        self.certfile = certfile
+        self.keyfile = keyfile
+        self.result = None
+        self.stdout = None
+        self.stderr = None
+        self.exception = None
+
 def _same_file(tgt, xf):
+    """Internal use only.
+    """
     # TODO: compare checksum?
     try:
         stat_buf = os.stat(tgt)
@@ -59,45 +74,75 @@ def _same_file(tgt, xf):
     except:
         return False
 
-def _job_func(__job, __proc_Q, __compute_env, __compute_name, __compute_code):
-    import cStringIO, sys, traceback, os, cPickle, marshal
-
+def _job_func(__dispy_job_reply, __proc_Q, __compute_env, __compute_name, __compute_code):
+    """Internal use only.
+    """
     sys.stdout = cStringIO.StringIO()
     sys.stderr = cStringIO.StringIO()
     __exception = None
-    __ret_val = None
+    __result = None
     if __compute_env and isinstance(__compute_env, list):
         sys.path = __compute_env + sys.path
     try:
         exec marshal.loads(__compute_code)
         globals().update(locals())
-        __args = cPickle.loads(__job._args)
-        __kwargs = cPickle.loads(__job._kwargs)
+        __args = cPickle.loads(__dispy_job_reply.job._args)
+        __kwargs = cPickle.loads(__dispy_job_reply.job._kwargs)
         __func = globals()[__compute_name]
-        __ret_val = __func(*__args, **__kwargs)
+        __result = __func(*__args, **__kwargs)
     except:
         __exception = traceback.format_exc()
-    for f in __job._files:
+    for f in __dispy_job_reply.job._files:
         if os.path.isfile(f):
             os.remove(f)
-    reply = {'uid':__job._uid, 'reply_addr':__job.reply_addr,
-             'result':__ret_val, 'stdout':sys.stdout.getvalue(),
-             'stderr':sys.stderr.getvalue(), 'exception':__exception, 'hash':__job._hash}
-    __proc_Q.put(reply)
+    __dispy_job_reply.result = __result
+    __dispy_job_reply.stdout = sys.stdout.getvalue()
+    __dispy_job_reply.stderr = sys.stderr.getvalue()
+    __dispy_job_reply.exception = __exception
+    __proc_Q.put(__dispy_job_reply)
 
-def _send_job_result(uid, result, addr, certfile, keyfile):
+def dispy_provisional_result(result):
+    """Sends provisional result of computation back to the client.
+
+    In some cases, such as optimizations, computations may send best
+    answer so far back to the client so that the client may decide to
+    terminate computations based on the results or alter computations
+    if necessary. The computations can use this function in such cases
+    with the current result of computation as argument.
+    """
+    sock = None
+    try:
+        logging.debug('Sending provisional result for job %s to %s',
+                      __dispy_job_reply.job._uid, __dispy_job_reply.job.reply_addr[0])
+        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                            certfile=__dispy_job_reply.certfile, keyfile=__dispy_job_reply.keyfile)
+        sock.settimeout(10)
+        reply = {'result':result, 'stdout':None, 'stderr':None,
+                 'exception':None, 'hash':__dispy_job_reply.job._hash, 'provisional':True}
+        sock.connect(__dispy_job_reply.job.reply_addr)
+        sock.write_msg(__dispy_job_reply.job._uid, cPickle.dumps(reply))
+    except:
+        logging.error("Couldn't send provisional results %s (%s)",
+                      str(result), str(sys.exc_info()))
+    if sock is not None:
+        sock.close()
+
+def _send_job_reply(job_reply):
     """Internal use only.
     """
-    logging.debug('Sending result for job %s to %s, %s', uid, addr[0], certfile)
+    logging.debug('Sending result for job %s to %s',
+                  job_reply.job._uid, job_reply.reply_addr[0])
     sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
-                        certfile=certfile, keyfile=keyfile)
+                        certfile=job_reply.certfile, keyfile=job_reply.keyfile)
+    reply = {'result':job_reply.result, 'stdout':job_reply.stdout, 'stderr':job_reply.stderr,
+             'exception':job_reply.exception, 'hash':job_reply.job._hash}
     sock.settimeout(10)
     try:
-        sock.connect(addr)
-        sock.write_msg(uid, result)
+        sock.connect(job_reply.reply_addr)
+        sock.write_msg(job_reply.job._uid, cPickle.dumps(reply))
     except Exception:
         logging.error("Couldn't send results for %s to %s (%s)",
-                      uid, str(addr), str(sys.exc_info()))
+                      job_reply.job._uid, str(job_reply.reply_addr), str(sys.exc_info()))
     sock.close()
 
 class _DispyNode():
@@ -305,7 +350,9 @@ class _DispyNode():
                     job._files = files
 
                     if compute.type == _Compute.func_type:
-                        args = (job, self.proc_Q, compute.env, compute.name, compute.code)
+                        dispy_job_reply = _JobReply(job, reply_addr,
+                                                    certfile=self.certfile, keyfile=self.keyfile)
+                        args = (dispy_job_reply, self.proc_Q, compute.env, compute.name, compute.code)
                         self.lock.acquire()
                         func_proc = multiprocessing.Process(target=_job_func, args=args)
                         self.avail_cpus -= 1
@@ -316,7 +363,8 @@ class _DispyNode():
                         func_proc.start()
                         continue
                     elif compute.type == _Compute.prog_type:
-                        prog_thread = threading.Thread(target=self.__job_program, args=(job,))
+                        prog_thread = threading.Thread(target=self.__job_program,
+                                                       args=(job, reply_addr))
                         self.lock.acquire()
                         self.avail_cpus -= 1
                         self.lock.release()
@@ -552,10 +600,10 @@ class _DispyNode():
                 except:
                     print traceback.format_exc()
                 logging.debug('Killed process for job %s', uid)
-                reply = {'result':None, 'stdout':None, 'stderr':None, 'exception':'Cancelled',
-                         'hash':job._hash}
                 reply_addr = (addr[0], compute.job_result_port)
-                _send_job_result(uid, cPickle.dumps(reply), reply_addr, self.certfile, self.keyfile)
+                job_reply = _JobReply(job, reply_addr, certfile=self.certfile, keyfile=self.keyfile)
+                job_reply.exception = 'Cancelled'
+                _send_job_reply(job_reply)
                 if self.avail_cpus == self.cpus:
                     self.send_pong_msg()
             else:
@@ -568,31 +616,27 @@ class _DispyNode():
 
     def __proc_Q_process(self):
         while True:
-            info = self.proc_Q.get()
-            if info is None:
+            reply = self.proc_Q.get()
+            if reply is None:
                 break
             self.lock.acquire()
-            proc = self.procs.pop(info['uid'], None)
+            proc = self.procs.pop(reply.job._uid, None)
             if proc is not None:
                 self.avail_cpus += 1
             self.lock.release()
             if proc is not None:
                 proc.join()
-                reply = {'result':info['result'], 'stdout':info['stdout'],
-                         'stderr':info['stderr'], 'exception':info['exception'],
-                         'hash':info['hash']}
-                _send_job_result(info['uid'], cPickle.dumps(reply), info['reply_addr'],
-                                 self.certfile, self.keyfile)
+                _send_job_reply(reply)
             if self.avail_cpus == self.cpus:
                 self.send_pong_msg()
         self.proc_Q = None
 
-    def __job_program(self, job):
+    def __job_program(self, job, reply_addr):
         program = [self.computations[job._compute_id].name]
         args = cPickle.loads(job._args)
         program.extend(args)
         logging.debug('Executing "%s"', str(program))
-        stdout = stderr = ret_val = exception = None
+        stdout = stderr = result = exception = None
         proc = None
         try:
             proc = subprocess.Popen(program, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -602,7 +646,7 @@ class _DispyNode():
             self.procs[job._uid] = proc
             self.lock.release()
             stdout, stderr = proc.communicate()
-            ret_val = proc.returncode
+            result = proc.returncode
         except Exception:
             logging.debug('Executing %s failed with %s', str(program), str(sys.exc_info()))
             exception = traceback.format_exc()
@@ -612,13 +656,16 @@ class _DispyNode():
             return
         self.avail_cpus += 1
         self.lock.release()
-        result = cPickle.dumps({'result':ret_val, 'stdout':stdout, 'stderr':stderr,
-                                'exception':exception, 'hash':job._hash})
         for f in job._files:
             # logging.debug('Removing job file "%s"', f)
             if os.path.isfile(f):
                 os.remove(f)
-        _send_job_result(job._uid, result, job.reply_addr, self.certfile, self.keyfile)
+        job_reply = _JobReply(job, reply_addr, certfile=self.certfile, keyfile=self.keyfile)
+        job_reply.result = result
+        job_reply.stdout = stdout
+        job_reply.stderr = stderr
+        job_reply.exception = exception
+        _send_job_reply(job_reply)
         if self.avail_cpus == self.cpus:
             self.send_pong_msg()
 
