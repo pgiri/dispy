@@ -41,6 +41,7 @@ import traceback
 import functools
 import types
 import itertools
+import Queue
 
 class _DispySocket():
     """Internal use only.
@@ -420,8 +421,10 @@ class _Job():
         self.state = _Job.Running
         return resp
 
-    def __call__(self):
+    def __call__(self, clear=True):
         self._finish.wait()
+        if clear:
+            self._finish.clear()
         return self.result
 
 class MetaSingleton(type):
@@ -479,6 +482,11 @@ class _Cluster(object):
             self._listener = threading.Thread(target=self.__listen)
             self._listener.daemon = True
             self._listener.start()
+
+            self._callbacks_Q = Queue.Queue()
+            self._callback_thread = threading.Thread(target=self._call_callbacks)
+            self._callback_thread.daemon = True
+            self._callback_thread.start()
 
             # self.select_job_node = self.fast_node_schedule
             self.select_job_node = self.load_balance_schedule
@@ -586,6 +594,12 @@ class _Cluster(object):
                     self._sched_cv.notify()
                 self._sched_cv.release()
 
+    def _call_callbacks(self):
+        while True:
+            item = self._callbacks_Q.get(block=True)
+            cb, job = item
+            cb(job)
+
     def __listen(self):
         def cancel_jobs(dead_jobs):
             # called with _sced_cv locked
@@ -658,15 +672,18 @@ class _Cluster(object):
                         result = cPickle.loads(msg)
                         assert result['hash'] == job._hash
                         job.result = result['result']
-                        if 'provisional' in result:
-                            logging.debug('Receveid provisional result for %s', job.id)
-                            job.state = _Job.ProvisionalResult
-                            self._sched_cv.notify()
-                            self._sched_cv.release()
-                            continue
                         job.stdout = result['stdout']
                         job.stderr = result['stderr']
                         job.exception = result['exception']
+                        if 'provisional' in result:
+                            logging.debug('Receveid provisional result for %s', job.id)
+                            job.state = _Job.ProvisionalResult
+                            job._finish.set()
+                            cluster = self._clusters[job._compute_id]
+                            self._sched_cv.release()
+                            if cluster.callback:
+                                self._callbacks_Q.put((cluster.callback, job))
+                            continue
                         if 'start_time' in result:
                             # this came from shared scheduler
                             job.start_time = result['start_time']
@@ -676,7 +693,7 @@ class _Cluster(object):
                         self._sched_cv.release()
                         logging.warning('Invalid job result for %s from %s',
                                         uid, addr[0])
-                        logging.deubg(traceback.format_exc())
+                        logging.debug(traceback.format_exc())
                         continue
 
                     if job_ip is None:
@@ -732,6 +749,8 @@ class _Cluster(object):
                             node.busy -= 1
                     self._sched_cv.notify()
                     self._sched_cv.release()
+                    if cluster.callback:
+                        self._callbacks_Q.put((cluster.callback, job))
                 elif sock == ping_sock:
                     msg, addr = ping_sock.recvfrom(1024)
                     if msg.startswith('PULSE:'):
@@ -1109,9 +1128,10 @@ class JobCluster():
     """Create an instance of cluster for a specific job.
     """
 
-    def __init__(self, computation, nodes=['*'], depends=[], ip_addr=None, port=None,
-                 node_port=None, dest_path='', loglevel=None, cleanup=True,
-                 pulse_interval=None, resubmit=False, secret='', keyfile=None, certfile=None):
+    def __init__(self, computation, nodes=['*'], depends=[], callback=None,
+                 ip_addr=None, port=None, node_port=None, dest_path='',
+                 loglevel=None, cleanup=True, pulse_interval=None, resubmit=False,
+                 secret='', keyfile=None, certfile=None):
         """Create an instance of cluster for a specific computation.
 
         @computation is either a string (which is name of program, possibly
@@ -1132,6 +1152,13 @@ class JobCluster():
           If the element is a python object (a function name, class name etc.),
           then the code for that object is transferred to the node executing
           a job for this cluster.
+
+       @callback is a function. When a job's results become available,
+          dispy will call provided callback function with that job as the
+          argument. If a job sends provisional results with
+          'dispy_provisional_result' multiple times, then dispy will call
+          provided callback each such time. The (provisional) results of
+          computation can be retrieved with 'result' field of job, etc.
 
         @ip_addr and @port indicate the address where the cluster will bind to.
           If multiple instances of JobCluster are used, these arguments are used
@@ -1185,6 +1212,9 @@ class JobCluster():
                 raise Exception('Invalid pulse_interval; must be between 1 and 600')
         self.pulse_interval = pulse_interval
         atexit.register(self.close)
+        if callback:
+            assert inspect.isfunction(callback) or inspect.ismethod(callback)
+        self.callback = callback
         if hasattr(self, 'scheduler_port'):
             shared = True
         else:
@@ -1357,8 +1387,8 @@ class SharedJobCluster(JobCluster):
     dispyscheduler must be called with appropriate pulse_interval.
     The behaviour is same as for JobCluster.
     """
-    def __init__(self, computation, nodes=['*'], depends=[], ip_addr=None, port=None,
-                 scheduler_node=None, scheduler_port=None,
+    def __init__(self, computation, nodes=['*'], depends=[], callback=None,
+                 ip_addr=None, port=None, scheduler_node=None, scheduler_port=None,
                  dest_path='', loglevel=logging.WARNING, cleanup=True,
                  pulse_interval=None, resubmit=False, secret='', keyfile=None, certfile=None):
         if not isinstance(nodes, list):
@@ -1370,8 +1400,8 @@ class SharedJobCluster(JobCluster):
             scheduler_port = 51349
         self.scheduler_port = scheduler_port
         JobCluster.__init__(self, computation, nodes='dummy', depends=depends,
-                            ip_addr=ip_addr, port=port, dest_path=dest_path,
-                            cleanup=cleanup, pulse_interval=None,
+                            callback=callback, ip_addr=ip_addr, port=port,
+                            dest_path=dest_path, cleanup=cleanup, pulse_interval=None,
                             resubmit=resubmit, loglevel=loglevel)
         if pulse_interval is not None:
             logging.warning('pulse_interval is not used in SharedJobCluster; ' \
@@ -1477,7 +1507,7 @@ class SharedJobCluster(JobCluster):
             return
 
         job.state = _Job.Cancelled
-        assert self._pending_jobs > 1
+        assert self._pending_jobs >= 1
         self._pending_jobs -= 1
         if self._pending_jobs == 0:
             self._complete.set()

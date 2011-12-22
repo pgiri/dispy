@@ -113,7 +113,7 @@ def dispy_provisional_result(result):
     sock = None
     try:
         logging.debug('Sending provisional result for job %s to %s',
-                      __dispy_job_reply.job._uid, __dispy_job_reply.job.reply_addr[0])
+                      __dispy_job_reply.job._uid, __dispy_job_reply.job.reply_addr)
         sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                             certfile=__dispy_job_reply.certfile, keyfile=__dispy_job_reply.keyfile)
         sock.settimeout(10)
@@ -123,7 +123,7 @@ def dispy_provisional_result(result):
         sock.write_msg(__dispy_job_reply.job._uid, cPickle.dumps(reply))
     except:
         logging.error("Couldn't send provisional results %s (%s)",
-                      str(result), str(sys.exc_info()))
+                      str(result), str(traceback.format_exc()))
     if sock is not None:
         sock.close()
 
