@@ -41,6 +41,7 @@ import hashlib
 import atexit
 import traceback
 import itertools
+import Queue
 
 from dispy import _DispySocket, _Compute, _Job, _Node, MetaSingleton, \
      _xor_string, _parse_nodes, _node_name_ipaddr
@@ -116,6 +117,10 @@ class _Scheduler(object):
             self._scheduler.daemon = True
             self._scheduler.start()
             self.start_time = time.time()
+            self._job_results_Q = Queue.Queue()
+            self._job_results_reaper = threading.Thread(target=self.reap_job_results)
+            self._job_results_reaper.daemon = True
+            self._job_results_reaper.start()
 
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             bc_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -219,6 +224,21 @@ class _Scheduler(object):
                     self._sched_cv.notify()
                 self._sched_cv.release()
 
+    def reap_job_results(self):
+        while True:
+            item = self._job_results_Q.get(block=True)
+            uid, ip, port, result = item
+            logging.debug('Sending results for %s to %s, %s', uid, ip, port)
+            sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
+            sock.settimeout(2)
+            try:
+                sock.connect((ip, port))
+                sock.write_msg(uid, cPickle.dumps(result))
+            except Exception:
+                logging.warning("Couldn't send results for job %s to %s (%s)",
+                                uid, ip, str(sys.exc_info()))
+            sock.close()
+
     def run(self):
         def cancel_jobs(dead_jobs):
             for job in dead_jobs:
@@ -243,16 +263,8 @@ class _Scheduler(object):
                     if cluster._pending_jobs == 0:
                         cluster._complete.set()
                         cluster.end_time = time.time()
-                    result = cPickle.dumps(result)
-                    sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
-                    sock.settimeout(2)
-                    try:
-                        sock.connect((compute.node_ip, compute.node_job_result_port))
-                        sock.write_msg(job._uid, result)
-                    except Exception:
-                        logging.warning("Couldn't send results for job %s to %s (%s)",
-                                        uid, compute.node_ip, str(sys.exc_info()))
-                    sock.close()
+                    self._job_results_Q.put((job._uid, compute.node_ip,
+                                             compute.node_job_result_port, result))
 
         ping_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         ping_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -267,15 +279,16 @@ class _Scheduler(object):
         sched_sock.bind((self.ip_addr, self.scheduler_port))
         sched_sock.listen(2)
 
-        logging.info('Listening at %s, %s, %s',
-                     self.ip_addr, self.port, self.scheduler_port)
+        logging.info('Ping port is %s', self.port)
+        logging.info('Scheduler port is %s:%s', self.ip_addr, self.scheduler_port)
+        logging.info('Job results port is %s:%s', self.ip_addr, job_sock.getsockname()[1])
         if self.pulse_interval:
             pulse_timeout = 5.0 * self.pulse_interval
         else:
             pulse_timeout = None
         while True:
-            ready = select.select([sched_sock, self.cmd_sock.sock, ping_sock,
-                                   job_sock], [], [], pulse_timeout)[0]
+            ready = select.select([sched_sock, self.cmd_sock.sock, ping_sock, job_sock],
+                                  [], [], pulse_timeout)[0]
             for sock in ready:
                 if sock == job_sock:
                     conn, addr = job_sock.accept()
@@ -302,12 +315,19 @@ class _Scheduler(object):
                     try:
                         result = cPickle.loads(msg)
                         assert result['hash'] == job._hash
+                        if 'provisional' in result:
+                            logging.debug('Receveid provisional result for %s', uid)
+                            self._job_results_Q.put((job._uid, compute.node_ip,
+                                                     compute.node_job_result_port, result))
+                            self._sched_cv.release()
+                            continue
                         result['ip_addr'] = node.ip_addr
                         result['cpus'] = node.cpus
                         result['start_time'] = job.start_time
                         result['end_time'] = time.time()
                     except:
                         self._sched_cv.release()
+                        logging.debug(traceback.format_exc())
                         logging.warning('Invalid job result for %s from %s', uid, addr[0])
                         # raise
                         continue
@@ -329,18 +349,8 @@ class _Scheduler(object):
                         del self._sched_jobs[uid]
                     self._sched_cv.notify()
                     self._sched_cv.release()
-                    # TODO: setup separate thread to send completed
-                    # jobs back to client(s)
-                    result = cPickle.dumps(result)
-                    sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
-                    sock.settimeout(2)
-                    try:
-                        sock.connect((compute.node_ip, compute.node_job_result_port))
-                        sock.write_msg(job._uid, result)
-                    except Exception:
-                        logging.warning("Couldn't send results for job %s to %s (%s)",
-                                        uid, compute.node_ip, str(sys.exc_info()))
-                    sock.close()
+                    self._job_results_Q.put((job._uid, compute.node_ip,
+                                             compute.node_job_result_port, result))
                 elif sock == sched_sock:
                     conn, addr = sched_sock.accept()
                     conn = _DispySocket(conn, certfile=self.cluster_certfile,
@@ -578,11 +588,9 @@ class _Scheduler(object):
                                       'start_time':None, 'end_time':None}
                             cluster = self._clusters[job._compute_id]
                             compute = cluster._compute
-                            sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
-                            sock.connect((compute.node_ip, compute.node_job_result_port))
-                            result = cPickle.dumps(result)
-                            sock.write_msg(job._uid, result)
-                            sock.close()
+                            self._job_results_Q.put((job._uid, compute.node_ip,
+                                                     compute.node_job_result_port, result))
+
                         self._sched_jobs = {}
                         self._sched_cv.notify()
                         self._sched_cv.release()
@@ -692,6 +700,7 @@ class _Scheduler(object):
                     node.clusters.remove(compute.id)
                     continue
                 except Exception:
+                    logging.debug(traceback.format_exc())
                     logging.warning('Failed to run job %s on %s for computation %s; ' \
                                     'rescheduling it', job._uid, node.ip_addr, compute.name)
                     cluster._jobs.append(job)
@@ -712,10 +721,8 @@ class _Scheduler(object):
                 result = {'node':None, 'cpus':'', 'result':None, 'stdout':None,
                           'stderr':None, 'exception':'terminated',
                           'start_time':None, 'end_time':None}
-                sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
-                sock.connect((compute.node_ip, compute.node_job_result_port))
-                sock.write_msg(job._uid, cPickle.dumps(result))
-                sock.close()
+                self._job_results_Q.put((job._uid, compute.node_ip,
+                                         compute.node_job_result_port, result))
             cluster._jobs = []
         logging.debug('Scheduler quit')
         self._sched_cv.release()
