@@ -44,15 +44,15 @@ import shutil
 import getopt
 import marshal
 
-from dispy import _Compute, _XferFile, _xor_string, _DispySocket, _Job, _node_name_ipaddr
+from dispy import _Compute, _XferFile, _xor_string, _DispySocket, _DispyJob_, _node_name_ipaddr
 
 MaxFileSize = 10240000
 
-class _JobReply():
+class _JobReply_():
     """Internal use only.
     """
-    def __init__(self, job, reply_addr, certfile=None, keyfile=None):
-        self.job = job
+    def __init__(self, _job, reply_addr, certfile=None, keyfile=None):
+        self.job = _job
         self.reply_addr = reply_addr
         self.certfile = certfile
         self.keyfile = keyfile
@@ -149,7 +149,7 @@ class _DispyNode():
     """Internal use only.
     """
     def __init__(self, cpus, ip_addr='', node_port=51348, dest_path_prefix='',
-                 scheduler_node=None, scheduler_port=51347,
+                 scheduler_node=None, scheduler_port=51347, ping_interval=None,
                  secret='', keyfile=None, certfile=None, max_file_size=None):
         self.cpus = cpus
         self.srv_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -160,6 +160,8 @@ class _DispyNode():
             ip_addr = socket.gethostbyname(socket.gethostname())
         self.ip_addr = ip_addr
         self.scheduler_port = scheduler_port
+        self.ping_interval = ping_interval
+        self.pulse_interval = None
 
         self.srv_sock.bind((ip_addr, 0))
         self.address = self.srv_sock.getsockname()
@@ -186,7 +188,6 @@ class _DispyNode():
         self.auth_code = hashlib.sha1(_xor_string(self.signature, secret)).hexdigest()
         self.keyfile = keyfile
         self.certfile = certfile
-        self.pulse_interval = None
         logging.debug('auth_code for %s: %s', ip_addr, self.auth_code)
         self.server_started = threading.Event()
         self.cmd_sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
@@ -209,7 +210,7 @@ class _DispyNode():
 
         atexit.register(self.shutdown)
 
-    def send_pong_msg(self):
+    def send_pong_msg(self, reset_interval=True):
         ping_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         ping_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         pong_msg = {'ip_addr':self.ip_addr, 'fqdn':self.fqdn, 'port':self.address[1],
@@ -217,21 +218,28 @@ class _DispyNode():
         pong_msg = 'PONG:' + cPickle.dumps(pong_msg)
         ping_sock.sendto(pong_msg, ('<broadcast>', self.scheduler_port))
         ping_sock.close()
+        self.pulse_interval = None
+        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                            auth_code=self.auth_code)
+        sock.settimeout(5)
+        sock.connect((self.ip_addr, self.cmd_sock.sock.getsockname()[1]))
+        sock.write_msg(0, 'reset_interval')
+        sock.close()
 
     def __ping_pong(self, node_port, scheduler_ip_addr):
         self.server_started.wait()
 
         if self.avail_cpus == self.cpus:
-            self.send_pong_msg()
+            self.send_pong_msg(reset_interval=False)
         pong_msg = {'ip_addr':self.ip_addr, 'fqdn':self.fqdn, 'port':self.address[1],
                     'cpus':self.cpus, 'sign':self.signature}
         pong_msg = 'PONG:' + cPickle.dumps(pong_msg)
 
         if scheduler_ip_addr:
             try:
-                ping_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                ping_sock.sendto(pong_msg, (scheduler_ip_addr, self.scheduler_port))
-                ping_sock.close()
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                sock.sendto(pong_msg, (scheduler_ip_addr, self.scheduler_port))
+                sock.close()
             except:
                 logging.warning("Couldn't send ping message to %s:%s",
                                 scheduler_ip_addr, self.scheduler_port)
@@ -240,9 +248,15 @@ class _DispyNode():
         ping_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         ping_sock.bind(('', node_port))
         logging.info('Listening at %s:%s', self.address[0], node_port)
+        if self.pulse_interval is None:
+            interval = self.ping_interval
+        elif self.ping_interval is None:
+            interval = self.pulse_interval
+        else:
+            interval = min(self.pulse_interval, self.ping_interval)
+        elapsed = 0
         while True:
-            ready = select.select([ping_sock, self.cmd_sock.sock], [], [],
-                                  self.pulse_interval)[0]
+            ready = select.select([ping_sock, self.cmd_sock.sock], [], [], interval)[0]
             for sock in ready:
                 if sock == ping_sock:
                     msg, addr = ping_sock.recvfrom(1024)
@@ -282,20 +296,50 @@ class _DispyNode():
                         self.cmd_sock.close()
                         self.cmd_sock = None
                         return
-                    elif msg == 'restart':
-                        pass
+                    elif msg == 'reset_interval':
+                        if self.pulse_interval is None:
+                            interval = self.ping_interval
+                        elif self.ping_interval is None:
+                            interval = self.pulse_interval
+                        else:
+                            interval = min(self.pulse_interval, self.ping_interval)
                     else:
                         logging.debug('Ignoring terminate message: %s', msg)
-            if self.pulse_interval:
+            if interval:
+                elapsed += interval
                 n = self.cpus - self.avail_cpus
+                assert n >= 0
                 if n > 0:
-                    clients = dict(self.clients)
-                    msg = 'PULSE:' + cPickle.dumps({'ip_addr':self.ip_addr, 'cpus':n})
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                    for ip_addr, port in clients.iteritems():
-                        logging.debug('Sending pulse to %s (%s)', self.ip_addr, n)
-                        sock.sendto(msg, (ip_addr, port))
-                    sock.close()
+                    if self.pulse_interval and \
+                           ((elapsed % self.pulse_interval == 0) or \
+                            (((elapsed - interval) % self.pulse_interval) >= \
+                             (elapsed % self.pulse_interval))):
+                        logging.debug('Sending PULSE at %s', time.asctime())
+                        clients = dict(self.clients)
+                        msg = 'PULSE:' + cPickle.dumps({'ip_addr':self.ip_addr, 'cpus':n})
+                        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                        for ip_addr, port in clients.iteritems():
+                            logging.debug('Sending pulse to %s (%s)', self.ip_addr, n)
+                            sock.sendto(msg, (ip_addr, port))
+                        sock.close()
+                elif self.ping_interval and \
+                         ((elapsed % self.ping_interval == 0) or \
+                          (((elapsed - interval) % self.ping_interval) >= \
+                           (elapsed % self.ping_interval))):
+                    logging.debug('Sending PING at %s', time.asctime())
+                    if scheduler_ip_addr:
+                        try:
+                            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                            sock.sendto(pong_msg, (scheduler_ip_addr, self.scheduler_port))
+                            sock.close()
+                        except:
+                            logging.warning("Couldn't send ping message to %s:%s",
+                                                scheduler_ip_addr, self.scheduler_port)
+                    else:
+                        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                        sock.sendto(pong_msg, ('<broadcast>', self.scheduler_port))
+                        sock.close()
 
     def _serve(self):
         self.server_started.set()
@@ -320,25 +364,25 @@ class _DispyNode():
             if msg.startswith('JOB:'):
                 msg = msg[len('JOB:'):]
                 try:
-                    job = cPickle.loads(msg)
+                    _job = cPickle.loads(msg)
                 except:
                     logging.debug('Ignoring job request from %s', addr[0])
                     logging.debug(traceback.format_exc())
                     continue
-                job._uid = uid
-                compute = self.computations.get(job._compute_id, None)
+                _job._uid = uid
+                compute = self.computations.get(_job._compute_id, None)
                 if self.avail_cpus == 0:
                     logging.warning('All cpus busy')
                     resp = 'NAK (all cpus busy)'
                 elif compute is None:
-                    logging.warning('Invalid computation %s', job._compute_id)
-                    resp = 'NAK (invalid computation %s)' % job._compute_id
+                    logging.warning('Invalid computation %s', _job._compute_id)
+                    resp = 'NAK (invalid computation %s)' % _job._compute_id
                 else:
-                    reply_addr = (addr[0], self.computations[job._compute_id].job_result_port)
-                    setattr(job, 'reply_addr', reply_addr)
-                    logging.debug('New job id %s from %s', job._uid, addr[0])
+                    reply_addr = (addr[0], self.computations[_job._compute_id].job_result_port)
+                    setattr(_job, 'reply_addr', reply_addr)
+                    logging.debug('New job id %s from %s', _job._uid, addr[0])
                     files = []
-                    for f in job._files:
+                    for f in _job._files:
                         tgt = os.path.join(self.computations[compute.id].dest_path,
                                            os.path.basename(f['name']))
                         fd = open(tgt, 'wb')
@@ -347,34 +391,34 @@ class _DispyNode():
                         os.utime(tgt, (f['stat'].st_atime, f['stat'].st_mtime))
                         os.chmod(tgt, stat.S_IMODE(f['stat'].st_mode))
                         files.append(tgt)
-                    job._files = files
+                    _job._files = files
 
                     if compute.type == _Compute.func_type:
-                        dispy_job_reply = _JobReply(job, reply_addr,
-                                                    certfile=self.certfile, keyfile=self.keyfile)
+                        dispy_job_reply = _JobReply_(_job, reply_addr,
+                                                     certfile=self.certfile, keyfile=self.keyfile)
                         args = (dispy_job_reply, self.proc_Q, compute.env, compute.name, compute.code)
                         self.lock.acquire()
                         func_proc = multiprocessing.Process(target=_job_func, args=args)
                         self.avail_cpus -= 1
-                        self.procs[job._uid] = func_proc
+                        self.procs[_job._uid] = func_proc
                         self.lock.release()
-                        conn.write_msg(job._uid, cPickle.dumps(job._uid))
+                        conn.write_msg(_job._uid, cPickle.dumps(_job._uid))
                         conn.close()
                         func_proc.start()
                         continue
                     elif compute.type == _Compute.prog_type:
                         prog_thread = threading.Thread(target=self.__job_program,
-                                                       args=(job, reply_addr))
+                                                       args=(_job, reply_addr))
                         self.lock.acquire()
                         self.avail_cpus -= 1
                         self.lock.release()
-                        conn.write_msg(job._uid, cPickle.dumps(job._uid))
+                        conn.write_msg(_job._uid, cPickle.dumps(_job._uid))
                         conn.close()
                         prog_thread.start()
                         continue
                     else:
                         resp = 'NAK (invalid computation type "%s")' % compute.type
-                conn.write_msg(job._uid, cPickle.dumps(resp))
+                conn.write_msg(_job._uid, cPickle.dumps(resp))
                 conn.close()
                 continue
             elif msg.startswith('COMPUTE:'):
@@ -524,7 +568,7 @@ class _DispyNode():
                                             auth_code=self.auth_code)
                         sock.settimeout(5)
                         sock.connect((self.ip_addr, self.cmd_sock.sock.getsockname()[1]))
-                        sock.write_msg(0, 'restart')
+                        sock.write_msg(0, 'reset_interval')
                         sock.close()
                     else:
                         logging.warning('Rejecting RESERVE from %s', str(addr))
@@ -575,8 +619,8 @@ class _DispyNode():
             elif msg.startswith('CANCEL_JOB:'):
                 msg = msg[len('CANCEL_JOB:'):]
                 try:
-                    job = cPickle.loads(msg)
-                    compute = self.computations[job._compute_id]
+                    _job = cPickle.loads(msg)
+                    compute = self.computations[_job._compute_id]
                 except:
                     logging.debug('Ignoring job request from %s', addr[0])
                     continue
@@ -601,7 +645,7 @@ class _DispyNode():
                     print traceback.format_exc()
                 logging.debug('Killed process for job %s', uid)
                 reply_addr = (addr[0], compute.job_result_port)
-                job_reply = _JobReply(job, reply_addr, certfile=self.certfile, keyfile=self.keyfile)
+                job_reply = _JobReply_(_job, reply_addr, certfile=self.certfile, keyfile=self.keyfile)
                 job_reply.exception = 'Cancelled'
                 _send_job_reply(job_reply)
                 if self.avail_cpus == self.cpus:
@@ -631,19 +675,19 @@ class _DispyNode():
                 self.send_pong_msg()
         self.proc_Q = None
 
-    def __job_program(self, job, reply_addr):
-        program = [self.computations[job._compute_id].name]
-        args = cPickle.loads(job._args)
+    def __job_program(self, _job, reply_addr):
+        program = [self.computations[_job._compute_id].name]
+        args = cPickle.loads(_job._args)
         program.extend(args)
         logging.debug('Executing "%s"', str(program))
         stdout = stderr = result = exception = None
         proc = None
         try:
             proc = subprocess.Popen(program, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                    env={'PATH':self.computations[job._compute_id].env.get('PATH')})
+                                    env={'PATH':self.computations[_job._compute_id].env.get('PATH')})
             assert isinstance(proc, subprocess.Popen)
             self.lock.acquire()
-            self.procs[job._uid] = proc
+            self.procs[_job._uid] = proc
             self.lock.release()
             stdout, stderr = proc.communicate()
             result = proc.returncode
@@ -651,16 +695,16 @@ class _DispyNode():
             logging.debug('Executing %s failed with %s', str(program), str(sys.exc_info()))
             exception = traceback.format_exc()
         self.lock.acquire()
-        if self.procs.pop(job._uid, None) != proc:
+        if self.procs.pop(_job._uid, None) != proc:
             self.lock.release()
             return
         self.avail_cpus += 1
         self.lock.release()
-        for f in job._files:
+        for f in _job._files:
             # logging.debug('Removing job file "%s"', f)
             if os.path.isfile(f):
                 os.remove(f)
-        job_reply = _JobReply(job, reply_addr, certfile=self.certfile, keyfile=self.keyfile)
+        job_reply = _JobReply_(_job, reply_addr, certfile=self.certfile, keyfile=self.keyfile)
         job_reply.result = result
         job_reply.stdout = stdout
         job_reply.stderr = stderr
@@ -717,6 +761,8 @@ if __name__ == '__main__':
                         help='name or IP address of scheduler to announce when starting')
     parser.add_argument('--scheduler_port', dest='scheduler_port', type=int, default=51347,
                         help='port number used by scheduler')
+    parser.add_argument('--ping_interval', dest='ping_interval', type=float, default=None,
+                        help='number of seconds between ping messages broadcast when idle')
     parser.add_argument('--max_file_size', dest='max_file_size', default=None,
                         help='maximum file size of any file transferred')
     parser.add_argument('-s', '--secret', dest='secret', default='',
@@ -744,6 +790,9 @@ if __name__ == '__main__':
             config['cpus'] = cpus
     else:
         config['cpus'] = cpus
+
+    if config['ping_interval'] is not None:
+        assert config['ping_interval'] >= 5, 'ping_interval must be at least 5 seconds'
 
     logging.basicConfig(format='%(asctime)s %(message)s', level=config['loglevel'])
     del config['loglevel']
