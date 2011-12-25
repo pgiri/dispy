@@ -149,7 +149,7 @@ class _DispyNode():
     """Internal use only.
     """
     def __init__(self, cpus, ip_addr='', node_port=51348, dest_path_prefix='',
-                 scheduler_node=None, scheduler_port=51347, ping_interval=None,
+                 scheduler_node=None, scheduler_port=51347,
                  secret='', keyfile=None, certfile=None, max_file_size=None):
         self.cpus = cpus
         self.srv_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -160,7 +160,6 @@ class _DispyNode():
             ip_addr = socket.gethostbyname(socket.gethostname())
         self.ip_addr = ip_addr
         self.scheduler_port = scheduler_port
-        self.ping_interval = ping_interval
         self.pulse_interval = None
 
         self.srv_sock.bind((ip_addr, 0))
@@ -179,7 +178,7 @@ class _DispyNode():
 
         self.avail_cpus = self.cpus
         self.computations = {}
-        self.clients = {}
+        self.scheduler_ip_addr = None
         self.file_uses = {}
         self.procs = {}
         self.lock = threading.Lock()
@@ -218,13 +217,14 @@ class _DispyNode():
         pong_msg = 'PONG:' + cPickle.dumps(pong_msg)
         ping_sock.sendto(pong_msg, ('<broadcast>', self.scheduler_port))
         ping_sock.close()
-        self.pulse_interval = None
-        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
-                            auth_code=self.auth_code)
-        sock.settimeout(5)
-        sock.connect((self.ip_addr, self.cmd_sock.sock.getsockname()[1]))
-        sock.write_msg(0, 'reset_interval')
-        sock.close()
+        if reset_interval:
+            self.pulse_interval = None
+            sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                                auth_code=self.auth_code)
+            sock.settimeout(5)
+            sock.connect((self.ip_addr, self.cmd_sock.sock.getsockname()[1]))
+            sock.write_msg(0, 'reset_interval')
+            sock.close()
 
     def __ping_pong(self, node_port, scheduler_ip_addr):
         self.server_started.wait()
@@ -248,15 +248,8 @@ class _DispyNode():
         ping_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         ping_sock.bind(('', node_port))
         logging.info('Listening at %s:%s', self.address[0], node_port)
-        if self.pulse_interval is None:
-            interval = self.ping_interval
-        elif self.ping_interval is None:
-            interval = self.pulse_interval
-        else:
-            interval = min(self.pulse_interval, self.ping_interval)
-        elapsed = 0
         while True:
-            ready = select.select([ping_sock, self.cmd_sock.sock], [], [], interval)[0]
+            ready = select.select([ping_sock, self.cmd_sock.sock], [], [], self.pulse_interval)[0]
             for sock in ready:
                 if sock == ping_sock:
                     msg, addr = ping_sock.recvfrom(1024)
@@ -276,8 +269,6 @@ class _DispyNode():
                             continue
                         logging.debug('Sending pong to %s:%s', addr[0], addr[1])
                         ping_sock.sendto(pong_msg, addr)
-
-                        self.clients[addr[0]] = addr[1]
                     else:
                         logging.warning('Ignoring ping message from %s', addr[0])
                 elif sock == self.cmd_sock.sock:
@@ -297,49 +288,18 @@ class _DispyNode():
                         self.cmd_sock = None
                         return
                     elif msg == 'reset_interval':
-                        if self.pulse_interval is None:
-                            interval = self.ping_interval
-                        elif self.ping_interval is None:
-                            interval = self.pulse_interval
-                        else:
-                            interval = min(self.pulse_interval, self.ping_interval)
+                        pass
                     else:
                         logging.debug('Ignoring terminate message: %s', msg)
-            if interval:
-                elapsed += interval
+            if not ready and self.pulse_interval:
                 n = self.cpus - self.avail_cpus
                 assert n >= 0
-                if n > 0:
-                    if self.pulse_interval and \
-                           ((elapsed % self.pulse_interval == 0) or \
-                            (((elapsed - interval) % self.pulse_interval) >= \
-                             (elapsed % self.pulse_interval))):
-                        logging.debug('Sending PULSE at %s', time.asctime())
-                        clients = dict(self.clients)
-                        msg = 'PULSE:' + cPickle.dumps({'ip_addr':self.ip_addr, 'cpus':n})
-                        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                        for ip_addr, port in clients.iteritems():
-                            logging.debug('Sending pulse to %s (%s)', self.ip_addr, n)
-                            sock.sendto(msg, (ip_addr, port))
-                        sock.close()
-                elif self.ping_interval and \
-                         ((elapsed % self.ping_interval == 0) or \
-                          (((elapsed - interval) % self.ping_interval) >= \
-                           (elapsed % self.ping_interval))):
-                    logging.debug('Sending PING at %s', time.asctime())
-                    if scheduler_ip_addr:
-                        try:
-                            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                            sock.sendto(pong_msg, (scheduler_ip_addr, self.scheduler_port))
-                            sock.close()
-                        except:
-                            logging.warning("Couldn't send ping message to %s:%s",
-                                                scheduler_ip_addr, self.scheduler_port)
-                    else:
-                        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                        sock.sendto(pong_msg, ('<broadcast>', self.scheduler_port))
-                        sock.close()
+                if n > 0 and self.scheduler_ip_addr:
+                    logging.debug('Sending PULSE to %s', self.scheduler_ip_addr)
+                    msg = 'PULSE:' + cPickle.dumps({'ip_addr':self.ip_addr, 'cpus':n})
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    sock.sendto(msg, (self.scheduler_ip_addr, self.scheduler_port))
+                    sock.close()
 
     def _serve(self):
         self.server_started.set()
@@ -555,7 +515,8 @@ class _DispyNode():
                     data = cPickle.loads(msg)
                     self.lock.acquire()
                     if (self.avail_cpus == self.cpus) and (self.cpus >= data['cpus']):
-                        self.clients[data['ip_addr']] = data['port']
+                        self.scheduler_ip_addr = data['ip_addr']
+                        self.scheduler_port = data['port']
                         # self.cpus -= data['cpus']
                         resp = 'ACK'
                         logging.debug('Reserved %s cpus for %s', data['cpus'], data['ip_addr'])
@@ -721,26 +682,25 @@ class _DispyNode():
                 proc.terminate()
                 proc.join()
         self.procs = {}
-        clients = dict(self.clients)
-        self.clients = {}
+        ip_addr = self.scheduler_ip_addr
+        self.scheduler_ip_addr = None
         self.lock.release()
         if self.proc_Q:
             self.proc_Q.put(None)
-        if clients:
+        if ip_addr:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            for ip_addr, port in clients.iteritems():
-                logging.debug('Sending TERMINATE to %s:%s', ip_addr, port)
-                data = cPickle.dumps({'ip_addr':self.address[0], 'port':self.address[1],
-                                      'sign':self.signature})
-                sock.sendto('TERMINATED:%s' % data, (ip_addr, port))
+            logging.debug('Sending TERMINATE to %s', ip_addr)
+            data = cPickle.dumps({'ip_addr':self.address[0], 'port':self.address[1],
+                                  'sign':self.signature})
+            sock.sendto('TERMINATED:%s' % data, (ip_addr, self.scheduler_port))
             sock.close()
-        if self.cmd_sock:
-            sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
-                                auth_code=self.auth_code)
-            sock.settimeout(5)
-            sock.connect((self.ip_addr, self.cmd_sock.sock.getsockname()[1]))
-            sock.write_msg(0, 'terminate')
-            sock.close()
+            if self.cmd_sock:
+                sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                                    auth_code=self.auth_code)
+                sock.settimeout(5)
+                sock.connect((self.ip_addr, self.cmd_sock.sock.getsockname()[1]))
+                sock.write_msg(0, 'terminate')
+                sock.close()
 
 if __name__ == '__main__':
     import argparse
@@ -761,8 +721,6 @@ if __name__ == '__main__':
                         help='name or IP address of scheduler to announce when starting')
     parser.add_argument('--scheduler_port', dest='scheduler_port', type=int, default=51347,
                         help='port number used by scheduler')
-    parser.add_argument('--ping_interval', dest='ping_interval', type=float, default=None,
-                        help='number of seconds between ping messages broadcast when idle')
     parser.add_argument('--max_file_size', dest='max_file_size', default=None,
                         help='maximum file size of any file transferred')
     parser.add_argument('-s', '--secret', dest='secret', default='',
@@ -790,9 +748,6 @@ if __name__ == '__main__':
             config['cpus'] = cpus
     else:
         config['cpus'] = cpus
-
-    if config['ping_interval'] is not None:
-        assert config['ping_interval'] >= 5, 'ping_interval must be at least 5 seconds'
 
     logging.basicConfig(format='%(asctime)s %(message)s', level=config['loglevel'])
     del config['loglevel']

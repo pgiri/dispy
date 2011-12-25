@@ -642,7 +642,6 @@ class _Cluster(object):
                         cluster._complete.set()
                         cluster.end_time = time.time()
                     _job.finish(DispyJob.Cancelled)
-                del self._sched_jobs[_job._uid]
 
         job_result_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         job_result_sock.bind((self.ip_addr, 0))
