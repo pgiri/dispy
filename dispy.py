@@ -92,6 +92,9 @@ class DispyJob():
         self.ip_addr = None
         self.finish = threading.Event()
 
+        # _dispy_job_ is opaque to users
+        self._dispy_job_ = None
+
     def __call__(self, clear=True):
         self.finish.wait()
         if clear:
@@ -362,13 +365,9 @@ class _Node():
 class _DispyJob_():
     """Internal use only.
     """
-    lock = threading.Lock()
-    jobs = {}
     def __init__(self, compute_id, args, kwargs):
         self.job = DispyJob()
-        _DispyJob_.lock.acquire()
-        _DispyJob_.jobs[self.job] = self
-        _DispyJob_.lock.release()
+        self.job._dispy_job_ = self
         # fields below are for internal use only
         self._uid = None
         self._node = None
@@ -446,9 +445,8 @@ class _DispyJob_():
         self.job.state = state
         self.job.finish.set()
         if state != DispyJob.ProvisionalResult:
-            _DispyJob_.lock.acquire()
-            del _DispyJob_.jobs[self.job]
-            _DispyJob_.lock.release()
+            self.job._dispy_job_ = None
+            self.job = None
 
 class MetaSingleton(type):
     __instance = None
@@ -1056,6 +1054,7 @@ class _Cluster(object):
 
     def submit_job(self, _job):
         self._sched_cv.acquire()
+        #_job._uid = id(_job)
         _job._uid = self.job_uid
         logging.debug('Created job %s', _job._uid)
         self.job_uid += 1
@@ -1384,7 +1383,7 @@ class JobCluster():
             return None
 
     def cancel(self, job):
-        _job = _DispyJob_.jobs[job]
+        _job = job._dispy_job_
         self._cluster.cancel_job(_job)
 
     def __enter__(self):
@@ -1536,7 +1535,8 @@ class SharedJobCluster(JobCluster):
             logging.warning('Creating job for "%s", "%s" failed with "%s"',
                             str(args), str(kwargs), str(sys.exc_info()))
             scheduler_sock.close()
-            del _DispyJob_.jobs[_job.job]
+            _job.job._dispy_job_ = None
+            del _job.job
             return None
         scheduler_sock.close()
         self._cluster._sched_cv.acquire()
@@ -1549,7 +1549,7 @@ class SharedJobCluster(JobCluster):
         return _job.job
 
     def cancel(self, job):
-        _job = _DispyJob_.jobs[job]
+        _job = job._dispy_job_
         self._cluster._sched_cv.acquire()
         if self._cluster._clusters.get(_job._compute_id, None) != self:
             logging.debug('Invalid job %s!', _job._uid)
