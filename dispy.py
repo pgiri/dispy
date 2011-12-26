@@ -368,17 +368,16 @@ class _DispyJob_():
     def __init__(self, compute_id, args, kwargs):
         self.job = DispyJob()
         self.job._dispy_job_ = self
-        # fields below are for internal use only
-        self._uid = None
-        self._node = None
-        self._compute_id = compute_id
-        self._files = []
-        self._hash = os.urandom(20).encode('hex')
+        self.uid = None
+        self.node = None
+        self.compute_id = compute_id
+        self.files = []
+        self.hash = os.urandom(20).encode('hex')
         job_deps = kwargs.pop('dispy_job_depends', [])
         if not isinstance(job_deps, list):
             job_deps = list(job_deps)
-        self._args = cPickle.dumps(args)
-        self._kwargs = cPickle.dumps(kwargs)
+        self.args = cPickle.dumps(args)
+        self.kwargs = cPickle.dumps(kwargs)
         depend_ids = {}
         for dep in job_deps:
             if isinstance(dep, str) or inspect.ismodule(dep):
@@ -387,19 +386,23 @@ class _DispyJob_():
                     if dep.endswith('.pyc'):
                         dep = dep[:-1]
                     if not dep.endswith('.py'):
-                        raise Exception('Invalid module "%s" - must be python source.' % dep)
+                        logging.warning('Invalid module "%s" - must be python source.' % dep)
+                        continue
+                        #raise Exception('Invalid module "%s" - must be python source.' % dep)
                 if dep in depend_ids:
                     continue
                 try:
                     fd = open(dep, 'r')
                     fd.close()
                 except:
-                    raise Exception('File "%s" is not valid' % dep)
+                    logging.warning('File "%s" is not valid' % dep)
+                    continue
+                    #raise Exception('File "%s" is not valid' % dep)
                 sbuf = os.stat(dep)
                 fd = open(dep, 'rb')
                 data = fd.read()
                 fd.close()
-                self._files.append({'name':dep, 'stat':sbuf, 'data':data})
+                self.files.append({'name':dep, 'stat':sbuf, 'data':data})
                 depend_ids[dep] = dep
             elif inspect.isfunction(dep) or inspect.ismethod(dep) or \
                      inspect.isclass(dep) or hasattr(dep, '__class__'):
@@ -413,40 +416,42 @@ class _DispyJob_():
                     continue
                 lines = inspect.getsourcelines(dep)[0]
                 lines[0] = lines[0].lstrip()
-                self._code += '\n' + ''.join(lines)
+                self.code += '\n' + ''.join(lines)
                 depend_ids[id(dep)] = id(dep)
             else:
                 logging.warning('Invalid job depends element "%s"; ignoring it.', dep)
 
     def __getstate__(self):
-        state = {'_args':self._args, '_kwargs':self._kwargs, '_files':self._files,
-                 '_compute_id':self._compute_id, '_uid':self._uid,
-                 '_hash':self._hash}
+        state = {'args':self.args, 'kwargs':self.kwargs, 'files':self.files,
+                 'compute_id':self.compute_id, 'uid':self.uid,
+                 'hash':self.hash}
         return state
 
-    def _run(self):
+    def run(self):
         if hasattr(self, 'job') and not self.job.state == DispyJob.Created:
-            logging.warning('invalid job state %s for %s', self.job.state, self._uid)
-        logging.debug('running job %s on %s', self._uid, self._node.ip_addr)
-        resp = self._node.send(self._uid, 'JOB:' + cPickle.dumps(self))
+            logging.warning('invalid job state %s for %s', self.job.state, self.uid)
+        logging.debug('running job %s on %s', self.uid, self.node.ip_addr)
+        resp = self.node.send(self.uid, 'JOB:' + cPickle.dumps(self))
         resp = cPickle.loads(resp)
         # TODO: deal with NAKs (reschedule?)
         if not isinstance(resp, int):
-            logging.warning('Failed to run %s on %s', self._uid, self._node.ip_addr)
+            logging.warning('Failed to run %s on %s', self.uid, self.node.ip_addr)
             raise Exception(str(resp))
-        assert resp == self._uid
+        assert resp == self.uid
         if hasattr(self, 'job'):
             self.job.state = DispyJob.Running
         else:
+            # SharedJobCluster's job
             self.state = DispyJob.Running
         return resp
 
     def finish(self, state):
-        self.job.state = state
-        self.job.finish.set()
+        job = self.job
         if state != DispyJob.ProvisionalResult:
             self.job._dispy_job_ = None
             self.job = None
+        job.state = state
+        job.finish.set()
 
 class MetaSingleton(type):
     __instance = None
@@ -621,17 +626,17 @@ class _Cluster(object):
         def cancel_jobs(dead_jobs):
             # called with _sched_cv locked
             for _job in dead_jobs:
-                cluster = self._clusters[_job._compute_id]
-                del self._sched_jobs[_job._uid]
+                cluster = self._clusters[_job.compute_id]
+                del self._sched_jobs[_job.uid]
                 if cluster._compute.resubmit:
                     logging.debug('Rescheduling job %s from %s',
-                                  _job._uid, _job._node.ip_addr)
+                                  _job.uid, _job.node.ip_addr)
                     _job.job.state = DispyJob.Created
                     cluster._jobs.append(_job)
                     self.num_jobs += 1
                 else:
                     logging.debug('Cancelling job %s scheduled on %s',
-                                  _job._uid, _job._node.ip_addr)
+                                  _job.uid, _job.node.ip_addr)
                     _job.job.result = _job.job.stdout = _job.job.stderr = None
                     _job.exception = 'Cancelled'
                     cluster._pending_jobs -= 1
@@ -698,7 +703,7 @@ class _Cluster(object):
                     job.end_time = time.time()
                     try:
                         result = cPickle.loads(msg)
-                        assert result['hash'] == _job._hash
+                        assert result['hash'] == _job.hash
                         job.result = result['result']
                         job.stdout = result['stdout']
                         job.stderr = result['stderr']
@@ -706,7 +711,7 @@ class _Cluster(object):
                         if 'provisional' in result:
                             logging.debug('Receveid provisional result for %s', job.id)
                             _job.finish(DispyJob.ProvisionalResult)
-                            cluster = self._clusters[_job._compute_id]
+                            cluster = self._clusters[_job.compute_id]
                             self._sched_cv.release()
                             if cluster.callback:
                                 self._callbacks_Q.put((cluster.callback, job))
@@ -730,7 +735,7 @@ class _Cluster(object):
                         continue
 
                     del self._sched_jobs[uid]
-                    cluster = self._clusters[_job._compute_id]
+                    cluster = self._clusters[_job.compute_id]
                     compute = cluster._compute
                     node = compute.nodes.get(job_ip, None)
                     if node is None:
@@ -745,13 +750,13 @@ class _Cluster(object):
                         if not node.cpus and 'cpus' in result:
                             node.cpus = result['cpus']
                     if job.state == DispyJob.Cancelled:
-                        logging.debug('Cancelled job: %s, %s', _job._uid, job.exception)
-                        if _job._node is not None:
+                        logging.debug('Cancelled job: %s, %s', _job.uid, job.exception)
+                        if _job.node is not None:
                             node.busy -= 1
                     elif job.exception == 'Cancelled':
                         # shared scheduler cancelled this job (e.g.,
                         # due to a node not responding)
-                        assert _job._node is None
+                        assert _job.node is None
                         if job.state != DispyJob.Cancelled:
                             _job.finish(DispyJob.Cancelled)
                             cluster._pending_jobs -= 1
@@ -760,7 +765,7 @@ class _Cluster(object):
                                 cluster.end_time = time.time()
                     elif job.state == DispyJob.Finished:
                         logging.debug('Ignoring job %s - it is already done by %s',
-                                      _job._uid, job.ip_addr)
+                                      _job.uid, job.ip_addr)
                     else:
                         job.ip_addr = job_ip
                         node.jobs += 1
@@ -770,7 +775,7 @@ class _Cluster(object):
                             cluster._complete.set()
                             cluster.end_time = time.time()
                         _job.finish(DispyJob.Finished)
-                        if _job._node is not None:
+                        if _job.node is not None:
                             node.busy -= 1
                     self._sched_cv.notify()
                     self._sched_cv.release()
@@ -864,7 +869,7 @@ class _Cluster(object):
                             if auth_code != node.auth_code:
                                 logging.warning('Invalid signature from %s', node.ip_addr)
                             dead_jobs = [_job for _job in self._sched_jobs.itervalues() \
-                                         if _job._node is not None and _job._node.ip_addr == node.ip_addr]
+                                         if _job.node is not None and _job.node.ip_addr == node.ip_addr]
                             cancel_jobs(dead_jobs)
                             for cid, cluster in self._clusters.iteritems():
                                 cluster._compute.nodes.pop(node.ip_addr, None)
@@ -932,7 +937,7 @@ class _Cluster(object):
                         for cluster in self._clusters.itervalues():
                             cluster._compute.nodes.pop(ip_addr, None)
                     dead_jobs = [_job for _job in self._sched_jobs.itervalues() \
-                                 if _job._node is not None and _job._node.ip_addr in dead_nodes]
+                                 if _job.node is not None and _job.node.ip_addr in dead_nodes]
                     cancel_jobs(dead_jobs)
                     if dead_nodes or dead_jobs:
                         self._sched_cv.notify()
@@ -999,23 +1004,23 @@ class _Cluster(object):
                         break
                 else:
                     break
-                cluster = self._clusters[_job._compute_id]
+                cluster = self._clusters[_job.compute_id]
                 compute = cluster._compute
                 if _job.job.start_time == start_time:
                     logging.warning('Job %s is rescheduled too quickly; ' \
-                                    'scheduler is sleeping', _job._uid)
+                                    'scheduler is sleeping', _job.uid)
                     cluster._jobs.append(_job)
                     break
                 _job.job.start_time = start_time
-                _job._node = node
+                _job.node = node
                 logging.debug('Scheduling job %s on %s (load: %.3f, %s)',
-                              _job._uid, node.ip_addr, float(node.busy) / node.cpus, node.busy)
+                              _job.uid, node.ip_addr, float(node.busy) / node.cpus, node.busy)
                 assert node.busy < node.cpus
                 try:
-                    _job._run()
+                    _job.run()
                 except EnvironmentError:
                     logging.warning('Failed to run job %s on %s for computation %s; ' \
-                                    'removing this node', _job._uid, node.ip_addr, compute.name)
+                                    'removing this node', _job.uid, node.ip_addr, compute.name)
                     cluster._jobs.insert(0, _job)
                     # TODO: close the node properly?
                     del compute.nodes[node.ip_addr]
@@ -1023,13 +1028,13 @@ class _Cluster(object):
                     continue
                 except Exception:
                     logging.warning('Failed to run job %s on %s for computation %s; ' \
-                                    'rescheduling it', _job._uid, node.ip_addr, compute.name)
+                                    'rescheduling it', _job.uid, node.ip_addr, compute.name)
                     logging.debug(traceback.format_exc())
                     # raise
                     # TODO: delay executing again for some time?
                     cluster._jobs.append(_job)
                     continue
-                self._sched_jobs[_job._uid] = _job
+                self._sched_jobs[_job.uid] = _job
                 self.num_jobs -= 1
                 node.busy += 1
             self._sched_cv.wait()
@@ -1042,7 +1047,7 @@ class _Cluster(object):
             for node in compute.nodes.itervalues():
                 node.close(compute)
             for _job in cluster._jobs:
-                logging.debug('Finishing job %s', _job._uid)
+                logging.debug('Finishing job %s', _job.uid)
                 _job.job.result = _job.job.stdout = _job.job.stderr = None
                 _job.job.exception = 'terminated'
                 _job.finish(DispyJob.Terminated)
@@ -1054,15 +1059,15 @@ class _Cluster(object):
 
     def submit_job(self, _job):
         self._sched_cv.acquire()
-        #_job._uid = id(_job)
-        _job._uid = self.job_uid
-        logging.debug('Created job %s', _job._uid)
+        #_job.uid = id(_job)
+        _job.uid = self.job_uid
+        logging.debug('Created job %s', _job.uid)
         self.job_uid += 1
         if self.job_uid == sys.maxint:
             # TODO: check if it is okay to reset
             self.job_uid = 1
         self.num_jobs += 1
-        cluster = self._clusters[_job._compute_id]
+        cluster = self._clusters[_job.compute_id]
         cluster._jobs.append(_job)
         cluster._pending_jobs += 1
         cluster._complete.clear()
@@ -1072,20 +1077,20 @@ class _Cluster(object):
 
     def cancel_job(self, _job):
         self._sched_cv.acquire()
-        logging.debug('Job %s state: %s', _job._uid, _job.job.state)
-        cluster = self._clusters.get(_job._compute_id, None)
+        logging.debug('Job %s state: %s', _job.uid, _job.job.state)
+        cluster = self._clusters.get(_job.compute_id, None)
         if not cluster:
-            logging.debug('Invalid job %s!', _job._uid)
+            logging.debug('Invalid job %s!', _job.uid)
             self._sched_cv.release()
             return
         cancel = True
         if _job.job.state == DispyJob.Created:
-            logging.debug('Cancelled (removed) job %s', _job._uid)
+            logging.debug('Cancelled (removed) job %s', _job.uid)
             if not self.shared:
                 cluster._jobs.remove(_job)
             cancel = False
         elif not (_job.job.state == DispyJob.Running or _job.job.state == DispyJob.ProvisionalResult):
-            logging.warning('Job %s is not valid for cancel (%s)', _job._uid, _job.job.state)
+            logging.warning('Job %s is not valid for cancel (%s)', _job.uid, _job.job.state)
             self._sched_cv.release()
             return
         assert cluster._pending_jobs > 0
@@ -1095,9 +1100,9 @@ class _Cluster(object):
             cluster.end_time = time.time()
         _job.finish(DispyJob.Cancelled)
         self._sched_cv.release()
-        if cancel and _job._node is not None:
-            _job._node.send(_job._uid, 'CANCEL_JOB:' + cPickle.dumps(_job), reply=False)
-            logging.debug('Job %s is cancelled', _job._uid)
+        if cancel and _job.node is not None:
+            _job.node.send(_job.uid, 'CANCEL_JOB:' + cPickle.dumps(_job), reply=False)
+            logging.debug('Job %s is cancelled', _job.uid)
 
     def close(self, cluster):
         self._sched_cv.acquire()
@@ -1530,7 +1535,7 @@ class SharedJobCluster(JobCluster):
         scheduler_sock.write_msg(self._compute.id, req)
         uid, msg = scheduler_sock.read_msg()
         try:
-            _job._uid = cPickle.loads(msg)
+            _job.uid = cPickle.loads(msg)
         except Exception:
             logging.warning('Creating job for "%s", "%s" failed with "%s"',
                             str(args), str(kwargs), str(sys.exc_info()))
@@ -1540,23 +1545,23 @@ class SharedJobCluster(JobCluster):
             return None
         scheduler_sock.close()
         self._cluster._sched_cv.acquire()
-        self._cluster._sched_jobs[_job._uid] = _job
+        self._cluster._sched_jobs[_job.uid] = _job
         self._pending_jobs += 1
         self._complete.clear()
         self._cluster._sched_cv.release()
-        assert isinstance(_job._uid, int), type(_job._uid)
-        logging.debug('Job %s created for %s', _job._uid, _job._compute_id)
+        assert isinstance(_job.uid, int), type(_job.uid)
+        logging.debug('Job %s created for %s', _job.uid, _job.compute_id)
         return _job.job
 
     def cancel(self, job):
         _job = job._dispy_job_
         self._cluster._sched_cv.acquire()
-        if self._cluster._clusters.get(_job._compute_id, None) != self:
-            logging.debug('Invalid job %s!', _job._uid)
+        if self._cluster._clusters.get(_job.compute_id, None) != self:
+            logging.debug('Invalid job %s!', _job.uid)
             self._sched_cv.release()
             return
         if job.state != DispyJob.Created:
-            logging.warning('Job %s is not valid for cancel (%s)', job._uid, job.state)
+            logging.warning('Job %s is not valid for cancel (%s)', job.uid, job.state)
             self._cluster._sched_cv.release()
             return
 
@@ -1574,7 +1579,7 @@ class SharedJobCluster(JobCluster):
         req = 'CANCEL_JOB:' + cPickle.dumps(_job)
         scheduler_sock.write_msg(self._compute.id, req)
         scheduler_sock.close()
-        logging.debug('Job %s is cancelled', _job._uid)
+        logging.debug('Job %s is cancelled', _job.uid)
 
     def close(self):
         if hasattr(self, '_compute'):
