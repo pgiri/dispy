@@ -119,7 +119,7 @@ class _Scheduler(object):
             self.cmd_sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                          auth_code=self.auth_code)
             self.cmd_sock.bind((self.ip_addr, 0))
-            self.cmd_sock.listen(1)
+            self.cmd_sock.listen(2)
 
             #self.select_job_node = self.fast_node_schedule
             self.select_job_node = self.load_balance_schedule
@@ -410,7 +410,7 @@ class _Scheduler(object):
                                 # TODO: check if it is okay to reset
                                 self.job_uid = 1
                             self.num_jobs += 1
-                            setattr(_job, '_node', None)
+                            setattr(_job, 'node', None)
                             setattr(_job, 'start_time', None)
                             setattr(_job, 'state', DispyJob.Created)
                             cluster._jobs.append(_job)

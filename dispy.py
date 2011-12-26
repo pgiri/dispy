@@ -369,10 +369,10 @@ class _DispyJob_():
         self.job = DispyJob()
         self.job._dispy_job_ = self
         self.uid = None
-        self.node = None
         self.compute_id = compute_id
-        self.files = []
         self.hash = os.urandom(20).encode('hex')
+        self.node = None
+        self.files = []
         job_deps = kwargs.pop('dispy_job_depends', [])
         if not isinstance(job_deps, list):
             job_deps = list(job_deps)
@@ -422,9 +422,8 @@ class _DispyJob_():
                 logging.warning('Invalid job depends element "%s"; ignoring it.', dep)
 
     def __getstate__(self):
-        state = {'args':self.args, 'kwargs':self.kwargs, 'files':self.files,
-                 'compute_id':self.compute_id, 'uid':self.uid,
-                 'hash':self.hash}
+        state = {'uid':self.uid, 'hash':self.hash, 'compute_id':self.compute_id,
+                 'args':self.args, 'kwargs':self.kwargs, 'files':self.files}
         return state
 
     def run(self):
