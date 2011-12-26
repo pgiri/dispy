@@ -53,7 +53,7 @@ class _Scheduler(object):
     __metaclass__ = MetaSingleton
 
     def __init__(self, loglevel, nodes=[], ip_addr=None, port=None, node_port=None,
-                 scheduler_port=None, pulse_interval=None,
+                 scheduler_port=None, pulse_interval=None, ping_interval=None,
                  node_secret='', node_keyfile=None, node_certfile=None,
                  cluster_secret='', cluster_keyfile=None, cluster_certfile=None):
         if not hasattr(self, 'ip_addr'):
@@ -90,11 +90,20 @@ class _Scheduler(object):
             if pulse_interval:
                 try:
                     self.pulse_interval = float(pulse_interval)
-                    assert 1.0 <= self.pulse_interval <= 600
+                    assert 1.0 <= self.pulse_interval <= 1000
                 except:
-                    raise Exception('Invalid pulse_interval; must be between 1 and 600')
+                    raise Exception('Invalid pulse_interval; must be between 1 and 1000')
             else:
                 self.pulse_interval = None
+
+            if ping_interval:
+                try:
+                    self.ping_interval = float(ping_interval)
+                    assert 1.0 <= self.ping_interval <= 1000
+                except:
+                    raise Exception('Invalid ping_interval; must be between 1 and 1000')
+            else:
+                self.ping_interval = None
 
             self._clusters = {}
             self.cluster_id = 1
@@ -150,6 +159,29 @@ class _Scheduler(object):
             bc_sock.close()
             sock.close()
 
+    def send_ping_cluster(self, cluster):
+        ping_request = cPickle.dumps({'scheduler_ip_addr':self.ip_addr,
+                                      'scheduler_port':self.port})
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        for node_spec, node_info in cluster._compute.node_spec.iteritems():
+            if node_spec.find('*') >= 0:
+                port = node_info['port']
+                if not port:
+                    port = self.node_port
+                bc_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                bc_sock.sendto('PING:%s' % ping_request, ('<broadcast>', port))
+                bc_sock.close()
+            else:
+                ip_addr = node_info['ip_addr']
+                if ip_addr in cluster._compute.nodes:
+                    continue
+                port = node_info['port']
+                if not port:
+                    port = self.node_port
+                sock.sendto('PING:%s' % ping_request, (ip_addr, port))
+        sock.close()
+
     def add_cluster(self, cluster):
         compute = cluster._compute
         self._sched_cv.acquire()
@@ -163,31 +195,8 @@ class _Scheduler(object):
 
         # TODO: should we allow clients to add new nodes, or use only
         # the nodes initially created with command-line?
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        bc_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        bc_sock.bind(('', 0))
-        bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        ping_request = cPickle.dumps({'scheduler_ip_addr':self.ip_addr, 'scheduler_port':self.port})
+        self.send_ping_cluster(cluster)
 
-        for node_spec, node_info in compute.node_spec.iteritems():
-            logging.debug('Node: %s, %s', node_spec, str(node_info))
-            # TODO: broadcast only if node_spec is wildcard that
-            # matches local network and only in that case, or if
-            # node_spec is '.*'
-            if node_spec.find('*') >= 0:
-                port = node_info['port']
-                if not port:
-                    port = self.node_port
-                logging.debug('Broadcasting to %s', port)
-                bc_sock.sendto('PING:%s' % ping_request, ('<broadcast>', port))
-                continue
-            ip_addr = node_info['ip_addr']
-            port = node_info['port']
-            if not port:
-                port = self.node_port
-            sock.sendto('PING:%s' % ping_request, (ip_addr, port))
-        sock.close()
-        bc_sock.close()
         self._sched_cv.acquire()
         compute_nodes = []
         for node_spec, host in compute.node_spec.iteritems():
@@ -285,13 +294,22 @@ class _Scheduler(object):
         logging.info('Ping port is %s', self.port)
         logging.info('Scheduler port is %s:%s', self.ip_addr, self.scheduler_port)
         logging.info('Job results port is %s:%s', self.ip_addr, job_sock.getsockname()[1])
+
         if self.pulse_interval:
             pulse_timeout = 5.0 * self.pulse_interval
         else:
             pulse_timeout = None
+
+        if pulse_timeout and self.ping_interval:
+            timeout = min(pulse_timeout, self.ping_interval)
+        else:
+            timeout = max(pulse_timeout, self.ping_interval)
+
+        last_pulse_time = time.time()
+        last_ping_time = last_pulse_time
         while True:
             ready = select.select([sched_sock, self.cmd_sock.sock, ping_sock, job_sock],
-                                  [], [], pulse_timeout)[0]
+                                  [], [], timeout)[0]
             for sock in ready:
                 if sock == job_sock:
                     conn, addr = job_sock.accept()
@@ -608,30 +626,33 @@ class _Scheduler(object):
                         self.cmd_sock = None
                         return
 
-            if not ready and pulse_timeout:
-                self._sched_cv.acquire()
+            if timeout:
                 now = time.time()
-                dead_nodes = {}
-                for node in self._nodes.itervalues():
-                    if node.busy and node.last_pulse + pulse_timeout < now:
-                        logging.warning('Node %s is not responding; removing it (%s, %s, %s)',
-                                        node.ip_addr, node.busy, node.last_pulse, now)
-                        dead_nodes[node.ip_addr] = node
-                if not dead_nodes:
+                if pulse_timeout and (now - last_pulse_time) >= pulse_timeout:
+                    last_pulse_time = now
+                    self._sched_cv.acquire()
+                    dead_nodes = {}
+                    for node in self._nodes.itervalues():
+                        if node.busy and node.last_pulse + pulse_timeout < now:
+                            logging.warning('Node %s is not responding; removing it (%s, %s, %s)',
+                                            node.ip_addr, node.busy, node.last_pulse, now)
+                            dead_nodes[node.ip_addr] = node
+                    for ip_addr in dead_nodes:
+                        del self._nodes[ip_addr]
+                        for cluster in self._clusters.itervalues():
+                            cluster._compute.nodes.pop(ip_addr, None)
+                    dead_jobs = [_job for _job in self._sched_jobs.itervalues() \
+                                 if _job._node is not None and _job._node.ip_addr in dead_nodes]
+                    cancel_jobs(dead_jobs)
+                    if dead_nodes or dead_jobs:
+                        self._sched_cv.notify()
                     self._sched_cv.release()
-                    continue
-                for ip_addr in dead_nodes:
-                    del self._nodes[ip_addr]
+                if self.ping_interval and (now - last_ping_time) >= self.ping_interval:
+                    last_ping_time = now
+                    self._sched_cv.acquire()
                     for cluster in self._clusters.itervalues():
-                        cluster._compute.nodes.pop(ip_addr, None)
-                dead_jobs = [_job for _job in self._sched_jobs.itervalues() \
-                             if _job._node is not None and _job._node.ip_addr in dead_nodes]
-                if not dead_jobs:
+                        self.send_ping_cluster(cluster)
                     self._sched_cv.release()
-                    continue
-                cancel_jobs(dead_jobs)
-                self._sched_cv.notify()
-                self._sched_cv.release()
 
     def load_balance_schedule(self):
         node = None
@@ -833,8 +854,10 @@ if __name__ == '__main__':
                         help='file containing SSL certificate to be used with dispy clients')
     parser.add_argument('--cluster_keyfile', dest='cluster_keyfile', default=None,
                         help='file containing SSL key to be used with dispy clients')
-    parser.add_argument('--pulse_interval', dest='pulse_interval', type=int, default=None,
+    parser.add_argument('--pulse_interval', dest='pulse_interval', type=float, default=None,
                         help='number of seconds between pulse messages to indicate whether node is alive')
+    parser.add_argument('--ping_interval', dest='ping_interval', type=float, default=None,
+                        help='number of seconds between ping messages to discover nodes')
 
     config = vars(parser.parse_args(sys.argv[1:]))
     if config['loglevel']:

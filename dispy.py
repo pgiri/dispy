@@ -487,7 +487,7 @@ class _Cluster(object):
             self.certfile = certfile
             self.shared = shared
             self.pulse_interval = None
-            self.pulse_timeout = None
+            self.ping_interval = None
 
             self._clusters = {}
             self.num_jobs = 0
@@ -520,6 +520,29 @@ class _Cluster(object):
             self.cluster_id = 1
         self._ready.wait()
 
+    def send_ping_cluster(self, cluster):
+        ping_request = cPickle.dumps({'scheduler_ip_addr':self.ip_addr,
+                                      'scheduler_port':self.port})
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        for node_spec, node_info in cluster._compute.node_spec.iteritems():
+            if node_spec.find('*') >= 0:
+                port = node_info['port']
+                if not port:
+                    port = self.node_port
+                bc_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                bc_sock.sendto('PING:%s' % ping_request, ('<broadcast>', port))
+                bc_sock.close()
+            else:
+                ip_addr = node_info['ip_addr']
+                if ip_addr in cluster._compute.nodes:
+                    continue
+                port = node_info['port']
+                if not port:
+                    port = self.node_port
+                sock.sendto('PING:%s' % ping_request, (ip_addr, port))
+        sock.close()
+
     def add_cluster(self, cluster):
         compute = cluster._compute
         self._sched_cv.acquire()
@@ -541,42 +564,17 @@ class _Cluster(object):
 
         if cluster.pulse_interval:
             self.pulse_interval = max(self.pulse_interval, cluster.pulse_interval)
-            if self.pulse_interval:
-                self.pulse_timeout = 5.0 * self.pulse_interval
-            else:
-                self.pulse_timeout = None
+        if cluster.ping_interval:
+            self.ping_interval = max(self.ping_interval, cluster.ping_interval)
+        if cluster.pulse_interval or cluster.ping_interval:
             sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                 auth_code=self.auth_code)
             sock.settimeout(5)
             sock.connect((self.ip_addr, self.cmd_sock.sock.getsockname()[1]))
             sock.write_msg(0, 'reset_interval')
             sock.close()
-            logging.debug('Pulse interval set to: %s, %s',
-                          self.pulse_interval, self.pulse_timeout)
 
-        bc_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        ping_request = cPickle.dumps({'scheduler_ip_addr':self.ip_addr,
-                                      'scheduler_port':self.port})
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        for node_spec, node_info in compute.node_spec.iteritems():
-            logging.debug('Node: %s, %s', node_spec, str(node_info))
-            # TODO: broadcast only if node_spec is wildcard that
-            # matches local network only
-            if node_spec.find('*') >= 0:
-                port = node_info['port']
-                if not port:
-                    port = self.node_port
-                logging.debug('Broadcasting to %s', port)
-                bc_sock.sendto('PING:%s' % ping_request, ('<broadcast>', port))
-            else:
-                ip_addr = node_info['ip_addr']
-                port = node_info['port']
-                if not port:
-                    port = self.node_port
-                sock.sendto('PING:%s' % ping_request, (ip_addr, port))
-        sock.close()
-        bc_sock.close()
+        self.send_ping_cluster(cluster)
         self._sched_cv.acquire()
         compute_nodes = []
         for node_spec, host in compute.node_spec.iteritems():
@@ -620,6 +618,7 @@ class _Cluster(object):
             cb, job = item
             cb(job)
 
+
     def __listen(self):
         def cancel_jobs(dead_jobs):
             # called with _sched_cv locked
@@ -660,8 +659,19 @@ class _Cluster(object):
             ping_sock = None
         self._ready.set()
 
+        if self.pulse_interval:
+            pulse_timeout = 5.0 * self.pulse_interval
+        else:
+            pulse_timeout = None
+        if pulse_timeout and self.ping_interval:
+            timeout = min(pulse_timeout, self.ping_interval)
+        else:
+            timeout = max(pulse_timeout, self.ping_interval)
+
+        last_pulse_time = time.time()
+        last_ping_time = last_pulse_time
         while True:
-            ready = select.select(socks, [], [], self.pulse_timeout)[0]
+            ready = select.select(socks, [], [], timeout)[0]
             for sock in ready:
                 if sock == job_result_sock:
                     conn, addr = job_result_sock.accept()
@@ -880,7 +890,16 @@ class _Cluster(object):
                         continue
                     uid, msg = conn.read_msg()
                     conn.close()
-                    if msg == 'terminate':
+                    if msg == 'reset_interval':
+                        if self.pulse_interval:
+                            pulse_timeout = 5.0 * self.pulse_interval
+                        else:
+                            pulse_timeout = None
+                        if pulse_timeout and self.ping_interval:
+                            timeout = min(pulse_timeout, self.ping_interval)
+                        else:
+                            timeout = max(pulse_timeout, self.ping_interval)
+                    elif msg == 'terminate':
                         logging.debug('Terminating all running jobs')
                         self._sched_cv.acquire()
                         self.terminate_scheduler = True
@@ -896,38 +915,36 @@ class _Cluster(object):
                         self.cmd_sock.close()
                         self.cmd_sock = None
                         return
-                    elif msg.startswith('reset_interval'):
-                        pass
                     else:
                         logging.warning('Invalid command: %s', msg)
 
-            if not ready and self.pulse_timeout:
-                self._sched_cv.acquire()
+            if timeout:
                 now = time.time()
-                dead_nodes = {}
-                for node in self._nodes.itervalues():
-                    if node.busy and (node.last_pulse + self.pulse_timeout) < now:
-                        logging.warning('Node %s is not responding; removing it (%s, %s, %s)',
-                                        node.ip_addr, node.busy, node.last_pulse, now)
-                        dead_nodes[node.ip_addr] = node
-                if not dead_nodes:
+                if pulse_timeout and (now - last_pulse_time) >= pulse_timeout:
+                    last_pulse_time = now
+                    self._sched_cv.acquire()
+                    dead_nodes = {}
+                    for node in self._nodes.itervalues():
+                        if node.busy and (node.last_pulse + pulse_timeout) <= now:
+                            logging.warning('Node %s is not responding; removing it (%s, %s, %s)',
+                                            node.ip_addr, node.busy, node.last_pulse, now)
+                            dead_nodes[node.ip_addr] = node
+                    for ip_addr in dead_nodes:
+                        del self._nodes[ip_addr]
+                        for cluster in self._clusters.itervalues():
+                            cluster._compute.nodes.pop(ip_addr, None)
+                    dead_jobs = [_job for _job in self._sched_jobs.itervalues() \
+                                 if _job._node is not None and _job._node.ip_addr in dead_nodes]
+                    cancel_jobs(dead_jobs)
+                    if dead_nodes or dead_jobs:
+                        self._sched_cv.notify()
                     self._sched_cv.release()
-                    continue
-                for ip_addr in dead_nodes:
-                    del self._nodes[ip_addr]
+                if self.ping_interval and (now - last_ping_time) >= self.ping_interval:
+                    last_ping_time = now
+                    self._sched_cv.acquire()
                     for cluster in self._clusters.itervalues():
-                        cluster._compute.nodes.pop(ip_addr, None)
-                dead_jobs = [_job for _job in self._sched_jobs.itervalues() \
-                             if _job._node is not None and _job._node.ip_addr in dead_nodes]
-                if not dead_jobs:
+                        self.send_ping_cluster(cluster)
                     self._sched_cv.release()
-                    continue
-                cancel_jobs(dead_jobs)
-                self._sched_cv.notify()
-                self._sched_cv.release()
-                # for node, computations in dead.iteritems():
-                #     for compute in computations:
-                #         node.close(compute)
 
     def load_balance_schedule(self):
         node = None
@@ -1148,8 +1165,8 @@ class JobCluster():
 
     def __init__(self, computation, nodes=['*'], depends=[], callback=None,
                  ip_addr=None, port=None, node_port=None, dest_path='',
-                 loglevel=None, cleanup=True, pulse_interval=None, resubmit=False,
-                 secret='', keyfile=None, certfile=None):
+                 loglevel=None, cleanup=True, ping_interval=None, pulse_interval=None,
+                 resubmit=False, secret='', keyfile=None, certfile=None):
         """Create an instance of cluster for a specific computation.
 
         @computation is either a string (which is name of program, possibly
@@ -1200,10 +1217,18 @@ class JobCluster():
         @cleanup indicates if the files transferred should be removed when
           shutting down.
 
-        @pulse_interval is number of seconds between 'pulse' messages
-        that nodes send to indicate they are computing submitted
-        jobs. If this value is given, then a node is presumed dead if
-        5*pulse_interval elapses without a pulse message. See 'resubmit' below.
+        @ping_interval is number of seconds between 1 and
+        1000. Normally dispy can find nodes running 'dispynode' by
+        broadcasting 'ping' messages that nodes respond to. However,
+        these packets may get lost. If ping_interval is set, then
+        every ping_interval seconds, dispy sends ping messages to find
+        nodes that may have missed earlier ping messages.
+
+        @pulse_interval is number of seconds between 1 and 1000. If
+        pulse_interval is set, dispy directs nodes to send 'pulse'
+        messages to indicate they are computing submitted jobs. A node
+        is presumed dead if 5*pulse_interval elapses without a pulse
+        message. See 'resubmit' below.
 
         @resubmit must be either True or False. This value is used
         only if 'pulse_interval' is set for any of the clusters. If
@@ -1222,12 +1247,19 @@ class JobCluster():
             logging.warning('Invalid value for resubmit (%s) is ignored; ' \
                             'it must be either True or False' % resubmit)
             resubmit = False
+        if ping_interval is not None:
+            try:
+                ping_interval = float(ping_interval)
+                assert 1.0 <= ping_interval <= 1000
+            except:
+                raise Exception('Invalid ping_interval; must be between 1 and 1000')
+        self.ping_interval = ping_interval
         if pulse_interval is not None:
             try:
                 pulse_interval = float(pulse_interval)
-                assert 1.0 <= pulse_interval <= 600
+                assert 1.0 <= pulse_interval <= 1000
             except:
-                raise Exception('Invalid pulse_interval; must be between 1 and 600')
+                raise Exception('Invalid pulse_interval; must be between 1 and 1000')
         self.pulse_interval = pulse_interval
         atexit.register(self.close)
         if callback:
@@ -1409,7 +1441,8 @@ class SharedJobCluster(JobCluster):
     def __init__(self, computation, nodes=['*'], depends=[], callback=None,
                  ip_addr=None, port=None, scheduler_node=None, scheduler_port=None,
                  dest_path='', loglevel=logging.WARNING, cleanup=True,
-                 pulse_interval=None, resubmit=False, secret='', keyfile=None, certfile=None):
+                 pulse_interval=None, ping_interval=None, resubmit=False,
+                 secret='', keyfile=None, certfile=None):
         if not isinstance(nodes, list):
             if isinstance(nodes, str):
                 nodes = [nodes]
