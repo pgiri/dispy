@@ -116,6 +116,11 @@ class _Scheduler(object):
             self.auth_code = hashlib.sha1(_xor_string(self.sign, self.cluster_secret)).hexdigest()
             logging.debug('auth_code: %s', self.auth_code)
 
+            self.worker_Q = Queue.PriorityQueue()
+            self.worker_thread = threading.Thread(target=self.worker)
+            self.worker_thread.daemon = True
+            self.worker_thread.start()
+
             self.cmd_sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                          auth_code=self.auth_code)
             self.cmd_sock.bind((self.ip_addr, 0))
@@ -127,10 +132,6 @@ class _Scheduler(object):
             self._scheduler.daemon = True
             self._scheduler.start()
             self.start_time = time.time()
-            self._job_results_Q = Queue.Queue()
-            self._job_results_reaper = threading.Thread(target=self.reap_job_results)
-            self._job_results_reaper.daemon = True
-            self._job_results_reaper.start()
 
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             bc_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -221,7 +222,20 @@ class _Scheduler(object):
                     self._sched_cv.notify()
                 self._sched_cv.release()
 
-    def _setup_node(self, node, computes):
+    def worker(self):
+        while True:
+            item = self.worker_Q.get(block=True)
+            if item is None:
+                break
+            priority, func, args = item
+            logging.debug('Calling %s: %s', func.__name__, priority)
+            try:
+                func(*args)
+            except:
+                logging.debug('Running %s failed', func.__name__)
+
+    def setup_node(self, node, computes):
+        # called via worker
         for compute in computes:
             if node.setup(compute):
                 logging.warning('Failed to setup %s for computation "%s"',
@@ -234,20 +248,46 @@ class _Scheduler(object):
                     self._sched_cv.notify()
                 self._sched_cv.release()
 
-    def reap_job_results(self):
-        while True:
-            item = self._job_results_Q.get(block=True)
-            uid, ip, port, result = item
-            logging.debug('Sending results for %s to %s, %s', uid, ip, port)
-            sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
-            sock.settimeout(2)
-            try:
-                sock.connect((ip, port))
-                sock.write_msg(uid, cPickle.dumps(result))
-            except Exception:
-                logging.warning("Couldn't send results for job %s to %s (%s)",
-                                uid, ip, str(sys.exc_info()))
-            sock.close()
+    def run_job(self, _job, cluster):
+        # called via worker
+        try:
+            _job.run()
+        except EnvironmentError:
+            logging.warning('Failed to run job %s on %s for computation %s; removing this node',
+                            _job.uid, _job.node.ip_addr, cluster.compute.name)
+            self._sched_cv.acquire()
+            cluster._jobs.append(_job)
+            # TODO: close the node properly?
+            del cluster.compute.nodes[_job.node.ip_addr]
+            _job.node.clusters.remove(cluster.compute.id)
+            del self._sched_jobs[_job.uid]
+            self.num_jobs += 1
+            _job.node.busy -= 1
+            self._sched_cv.notify()
+            self._sched_cv.release()
+        except Exception:
+            logging.debug(traceback.format_exc())
+            logging.warning('Failed to run job %s on %s for computation %s; rescheduling it',
+                            _job.uid, _job.node.ip_addr, cluster.compute.name)
+            self._sched_cv.acquire()
+            cluster._jobs.append(_job)
+            del self._sched_jobs[_job.uid]
+            self.num_jobs += 1
+            _job.node.busy -= 1
+            self._sched_cv.notify()
+            self._sched_cv.release()
+
+    def send_job_result(self, uid, ip, port, result):
+        logging.debug('Sending results for %s to %s, %s', uid, ip, port)
+        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
+        sock.settimeout(2)
+        try:
+            sock.connect((ip, port))
+            sock.write_msg(uid, cPickle.dumps(result))
+        except Exception:
+            logging.warning("Couldn't send results for job %s to %s (%s)",
+                            uid, ip, str(sys.exc_info()))
+        sock.close()
 
     def run(self):
         def cancel_jobs(dead_jobs):
@@ -275,8 +315,9 @@ class _Scheduler(object):
                     if cluster._pending_jobs == 0:
                         cluster._complete.set()
                         cluster.end_time = time.time()
-                    self._job_results_Q.put((_job.uid, compute.node_ip,
-                                             compute.node_job_result_port, result))
+                    self.worker_Q.put((5, self.send_job_result,
+                                       (_job.uid, compute.node_ip,
+                                        compute.node_job_result_port, result)))
 
         ping_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         ping_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -342,8 +383,9 @@ class _Scheduler(object):
                         assert result['hash'] == _job.hash
                         if 'provisional' in result:
                             logging.debug('Receveid provisional result for %s', uid)
-                            self._job_results_Q.put((_job.uid, compute.node_ip,
-                                                     compute.node_job_result_port, result))
+                            self.worker_Q.put((5, self.send_job_result,
+                                               (_job.uid, compute.node_ip,
+                                                compute.node_job_result_port, result)))
                             self._sched_cv.release()
                             continue
                         result['ip_addr'] = node.ip_addr
@@ -375,8 +417,9 @@ class _Scheduler(object):
                         if cluster._pending_jobs == 0:
                             cluster._complete.set()
                             cluster.end_time = time.time()
-                        self._job_results_Q.put((_job.uid, compute.node_ip,
-                                                 compute.node_job_result_port, result))
+                        self.worker_Q.put((5, self.send_job_result,
+                                           (_job.uid, compute.node_ip,
+                                            compute.node_job_result_port, result)))
                     self._sched_cv.notify()
                     self._sched_cv.release()
                 elif sock == sched_sock:
@@ -479,8 +522,11 @@ class _Scheduler(object):
                                 cluster._complete.set()
                                 cluster.end_time = time.time()
                             self._sched_cv.release()
-                            node.send(_job.uid, 'CANCEL_JOB:' + cPickle.dumps(_job), reply=False)
-                            logging.debug('Job %s is cancelled', _job.uid)
+                            try:
+                                node.send(_job.uid, 'CANCEL_JOB:' + cPickle.dumps(_job), reply=False)
+                                logging.debug('Job %s is cancelled', _job.uid)
+                            except:
+                                logging.warning('Canceling job %s failed: %s', _job.uid, traceback.format_exc())
                         else:
                             for i, _job in enumerate(cluster._jobs):
                                 if _job.uid == job.uid:
@@ -564,10 +610,7 @@ class _Scheduler(object):
                                     break
                         self._sched_cv.release()
                         if node_computes:
-                            setup_thread = threading.Thread(target=self._setup_node,
-                                                            args=(node, node_computes))
-                            setup_thread.start()
-
+                            self.worker_Q.put((10, self.setup_node, (node, node_computations)))
                     elif msg.startswith('TERMINATED:'):
                         try:
                             data = cPickle.loads(msg[len('TERMINATED:'):])
@@ -615,9 +658,9 @@ class _Scheduler(object):
                                       'exception':'terminated', 'start_time':None, 'end_time':None}
                             cluster = self._clusters[_job.compute_id]
                             compute = cluster._compute
-                            self._job_results_Q.put((_job.uid, compute.node_ip,
-                                                     compute.node_job_result_port, result))
-
+                            self.worker_Q.put((5, self.send_job_result,
+                                               (_job.uid, compute.node_ip,
+                                                compute.node_job_result_port, result)))
                         self._sched_jobs = {}
                         self._sched_cv.notify()
                         self._sched_cv.release()
@@ -721,22 +764,7 @@ class _Scheduler(object):
                               _job.uid, node.ip_addr, float(node.busy) / node.cpus)
                 assert node.busy < node.cpus
                 # _job.ip_addr = node.ip_addr
-                try:
-                    _job.run()
-                except EnvironmentError:
-                    logging.warning('Failed to run job %s on %s for computation %s; ' \
-                                    'removing this node', _job.uid, node.ip_addr, compute.name)
-                    cluster._jobs.append(_job)
-                    # TODO: close the node properly?
-                    del compute.nodes[node.ip_addr]
-                    node.clusters.remove(compute.id)
-                    continue
-                except Exception:
-                    logging.debug(traceback.format_exc())
-                    logging.warning('Failed to run job %s on %s for computation %s; ' \
-                                    'rescheduling it', _job.uid, node.ip_addr, compute.name)
-                    cluster._jobs.append(_job)
-                    continue
+                self.worker_Q.put((1, self.run_job, (_job, cluster)))
                 self._sched_jobs[_job.uid] = _job
                 self.num_jobs -= 1
                 node.busy += 1
@@ -753,8 +781,9 @@ class _Scheduler(object):
                 result = {'hash':_job.hash, 'node':None, 'ip_addr':None, 'cpus':'', 'result':None,
                           'stdout':None, 'stderr':None, 'exception':'terminated',
                           'start_time':None, 'end_time':None}
-                self._job_results_Q.put((_job.uid, compute.node_ip,
-                                         compute.node_job_result_port, result))
+                self.worker_Q.put((5, send_job_result,
+                                   (_job.uid, compute.node_ip,
+                                    compute.node_job_result_port, result)))
             cluster._jobs = []
         logging.debug('Scheduler quit')
         self._sched_cv.release()

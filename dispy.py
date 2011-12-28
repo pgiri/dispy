@@ -508,10 +508,10 @@ class _Cluster(object):
             self._listener.daemon = True
             self._listener.start()
 
-            self._callbacks_Q = Queue.Queue()
-            self._callback_thread = threading.Thread(target=self._call_callbacks)
-            self._callback_thread.daemon = True
-            self._callback_thread.start()
+            self.worker_Q = Queue.PriorityQueue()
+            self.worker_thread = threading.Thread(target=self.worker)
+            self.worker_thread.daemon = True
+            self.worker_thread.start()
 
             # self.select_job_node = self.fast_node_schedule
             self.select_job_node = self.load_balance_schedule
@@ -601,7 +601,20 @@ class _Cluster(object):
                     self._sched_cv.notify()
                 self._sched_cv.release()
 
-    def _setup_node(self, node, computations):
+    def worker(self):
+        while True:
+            item = self.worker_Q.get(block=True)
+            if item is None:
+                break
+            priority, func, args = item
+            logging.debug('Calling %s: %s', func.__name__, priority)
+            try:
+                func(*args)
+            except:
+                logging.debug('Running %s failed', func.__name__)
+
+    def setup_node(self, node, computations):
+        # called via worker
         for compute in computations:
             if node.setup(compute):
                 logging.warning('Failed to setup %s for compute "%s"',
@@ -614,12 +627,36 @@ class _Cluster(object):
                     self._sched_cv.notify()
                 self._sched_cv.release()
 
-    def _call_callbacks(self):
-        while True:
-            item = self._callbacks_Q.get(block=True)
-            cb, job = item
-            cb(job)
-
+    def run_job(self, _job, cluster):
+        # called via worker
+        try:
+            _job.run()
+        except EnvironmentError:
+            logging.warning('Failed to run job %s on %s for computation %s; removing this node',
+                            _job.uid, _job.node.ip_addr, cluster.compute.name)
+            self._sched_cv.acquire()
+            cluster._jobs.insert(0, _job)
+            # TODO: close the node properly?
+            del cluster.compute.nodes[node.ip_addr]
+            _job.node.clusters.remove(cluster.compute.id)
+            del self._sched_jobs[_job.uid]
+            self.num_jobs += 1
+            _job.node.busy -= 1
+            self._sched_cv.notify()
+            self._sched_cv.release()
+        except Exception:
+            logging.warning('Failed to run job %s on %s for computation %s; rescheduling it',
+                            _job.uid, _job.node.ip_addr, cluster.compute.name)
+            logging.debug(traceback.format_exc())
+            # raise
+            # TODO: delay executing again for some time?
+            self._sched_cv.acquire()
+            cluster._jobs.append(_job)
+            del self._sched_jobs[_job.uid]
+            self.num_jobs += 1
+            _job.node.busy -= 1
+            self._sched_cv.notify()
+            self._sched_cv.release()
 
     def __listen(self):
         def cancel_jobs(dead_jobs):
@@ -713,7 +750,7 @@ class _Cluster(object):
                             cluster = self._clusters[_job.compute_id]
                             self._sched_cv.release()
                             if cluster.callback:
-                                self._callbacks_Q.put((cluster.callback, job))
+                                self.worker_Q.put((20, cluster.callback, job))
                             continue
                         if 'start_time' in result:
                             # this came from shared scheduler
@@ -779,7 +816,7 @@ class _Cluster(object):
                     self._sched_cv.notify()
                     self._sched_cv.release()
                     if cluster.callback:
-                        self._callbacks_Q.put((cluster.callback, job))
+                        self.worker_Q.put((20, cluster.callback, job))
                 elif sock == ping_sock:
                     msg, addr = ping_sock.recvfrom(1024)
                     if msg.startswith('PULSE:'):
@@ -851,9 +888,7 @@ class _Cluster(object):
                                     break
                         self._sched_cv.release()
                         if node_computations:
-                            setup_thread = threading.Thread(target=self._setup_node,
-                                                            args=(node, node_computations))
-                            setup_thread.start()
+                            self.worker_Q.put((10, self.setup_node, (node, node_computations)))
                     elif msg.startswith('TERMINATED:'):
                         try:
                             data = cPickle.loads(msg[len('TERMINATED:'):])
@@ -1015,24 +1050,7 @@ class _Cluster(object):
                 logging.debug('Scheduling job %s on %s (load: %.3f, %s)',
                               _job.uid, node.ip_addr, float(node.busy) / node.cpus, node.busy)
                 assert node.busy < node.cpus
-                try:
-                    _job.run()
-                except EnvironmentError:
-                    logging.warning('Failed to run job %s on %s for computation %s; ' \
-                                    'removing this node', _job.uid, node.ip_addr, compute.name)
-                    cluster._jobs.insert(0, _job)
-                    # TODO: close the node properly?
-                    del compute.nodes[node.ip_addr]
-                    node.clusters.remove(compute.id)
-                    continue
-                except Exception:
-                    logging.warning('Failed to run job %s on %s for computation %s; ' \
-                                    'rescheduling it', _job.uid, node.ip_addr, compute.name)
-                    logging.debug(traceback.format_exc())
-                    # raise
-                    # TODO: delay executing again for some time?
-                    cluster._jobs.append(_job)
-                    continue
+                self.worker_Q.put((1, self.run_job, (_job, cluster)))
                 self._sched_jobs[_job.uid] = _job
                 self.num_jobs -= 1
                 node.busy += 1
@@ -1100,8 +1118,11 @@ class _Cluster(object):
         _job.finish(DispyJob.Cancelled)
         self._sched_cv.release()
         if cancel and _job.node is not None:
-            _job.node.send(_job.uid, 'CANCEL_JOB:' + cPickle.dumps(_job), reply=False)
-            logging.debug('Job %s is cancelled', _job.uid)
+            try:
+                _job.node.send(_job.uid, 'CANCEL_JOB:' + cPickle.dumps(_job), reply=False)
+                logging.debug('Job %s is cancelled', _job.uid)
+            except:
+                logging.warning('Canceling job %s failed: %s', _job.uid, traceback.format_exc())
 
     def close(self, cluster):
         self._sched_cv.acquire()
