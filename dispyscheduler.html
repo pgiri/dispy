@@ -73,6 +73,15 @@
     will be migrated to other node(s) if possible; if
     'resubmit=False', then jobs are automatically
     cancelled. <tt>n</tt> must be between 1 and 600.
+      <li>
+	<tt>ping_interval</tt> is number of seconds.  Normally
+	dispyscheduler can locate nodes running dispynode by
+	broadcasting UDP ping messages on local network and
+	point-to-point UDP messages to nodes on remote
+	networks. However, UDP messages may get lost.  Ping interval
+	is number of seconds between repeated ping messages to find
+	any nodes that have missed previous ping messages.
+	</li>
     <li><tt>-d</tt> enables debug messages that show trace of
     execution. This may not be very useful to end users.</li>
 </ul>

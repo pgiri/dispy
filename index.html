@@ -139,6 +139,8 @@ if __name__ == '__main__':
     for job in jobs:
         host, n, when = job()
         print '%s executed job %s at %s with %s' % (host, job.id, when, n)
+        # other fields of 'job' that may be useful:
+        # print job.stdout, job.stderr, job.exception, job.ip_addr, job.start_time, job.end_time
     cluster.stats()
 </code>
 

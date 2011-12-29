@@ -65,7 +65,7 @@ computations.
 <tt>JobCluster(computation, nodes=['*'], depends=[], callback=None,
            ip_addr=None, port=51347, node_port=51348,
            dest_path='/tmp', loglevel=logging.WARNING, cleanup=True,
-           pulse_interval=None, resubmit=False,
+           pulse_interval=None, ping_interval=None, resubmit=False,
            secret='', keyfile=None, certfile=None)</tt><br/>
 where
 <ul>
@@ -154,6 +154,14 @@ where
   to other eligible nodes.
 </li>
 <li>
+  <tt>ping_interval</tt> is number of seconds.  Normally dispy can
+  locate nodes running dispynode by broadcasting UDP ping messages on
+  local network and point-to-point UDP messages to nodes on remote
+  networks. However, UDP messages may get lost.  Ping interval is
+  number of seconds between repeated ping messages to find any nodes
+  that have missed previous ping messages.
+  </li>
+<li>
   <tt>secret</tt> is a string that is (hashed and) used for
   handshaking of communication with nodes. This prevents unauthorized
   use of nodes. However, the hashed string (not the secret itself) is
@@ -177,7 +185,7 @@ where
 <tt>SharedJobCluster(computation, nodes=['*'], depends=[], ip_addr=None, port=51347,
                  scheduler_node=None, scheduler_port=51349,
                  dest_path='/tmp', loglevel=logging.WARNING, cleanup=True,
-                 pulse_interval=None, resubmit=False,
+                 resubmit=False,
                  secret='', keyfile=None, certfile=None)</tt><br/>
 where all arguments common to <tt>JobCluster</tt> are same, and
 <ul>
@@ -195,7 +203,7 @@ where all arguments common to <tt>JobCluster</tt> are same, and
 <li>
   <tt>pulse_interval</tt> is not used in case of SharedJobCluster;
   instead, 'dispyscheduler' must be called with '--pulse_interval'
-  option
+  option appropriately.
 </li>
 </ul>
 </li>
