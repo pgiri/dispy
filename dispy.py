@@ -618,10 +618,10 @@ class _Cluster(object):
         try:
             cluster.callback(_job.job)
         except:
-            if job.exception:
-                job.exception += traceback.format_exc()
+            if _job.job.exception:
+                _job.job.exception += traceback.format_exc()
             else:
-                job.exception = traceback.format_exc()
+                _job.job.exception = traceback.format_exc()
         finally:
             _job.finish(state)
             if state != DispyJob.ProvisionalResult:
