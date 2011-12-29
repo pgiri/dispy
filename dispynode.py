@@ -360,29 +360,44 @@ class _DispyNode():
                         dispy_job_reply = _JobReply_(_job, reply_addr,
                                                      certfile=self.certfile, keyfile=self.keyfile)
                         args = (dispy_job_reply, self.proc_Q, compute.env, compute.name, compute.code)
+                        try:
+                            conn.write_msg(_job.uid, cPickle.dumps(_job.uid))
+                            conn.close()
+                        except:
+                            logging.warning('Failed to send response for new job to %s',
+                                            str(addr))
+                            continue
                         self.lock.acquire()
                         func_proc = multiprocessing.Process(target=_job_func, args=args)
                         self.avail_cpus -= 1
                         self.procs[_job.uid] = func_proc
                         self.lock.release()
-                        conn.write_msg(_job.uid, cPickle.dumps(_job.uid))
-                        conn.close()
                         func_proc.start()
                         continue
                     elif compute.type == _Compute.prog_type:
                         prog_thread = threading.Thread(target=self.__job_program,
                                                        args=(_job, reply_addr))
+                        try:
+                            conn.write_msg(_job.uid, cPickle.dumps(_job.uid))
+                            conn.close()
+                        except:
+                            logging.warning('Failed to send response for new job to %s',
+                                            str(addr))
+                            continue
                         self.lock.acquire()
                         self.avail_cpus -= 1
                         self.lock.release()
-                        conn.write_msg(_job.uid, cPickle.dumps(_job.uid))
-                        conn.close()
                         prog_thread.start()
                         continue
                     else:
                         resp = 'NAK (invalid computation type "%s")' % compute.type
-                conn.write_msg(_job.uid, cPickle.dumps(resp))
-                conn.close()
+                try:
+                    conn.write_msg(_job.uid, cPickle.dumps(resp))
+                    conn.close()
+                except:
+                    logging.warning('Failed to send response for new job to %s',
+                                    str(addr))
+                    continue
                 continue
             elif msg.startswith('COMPUTE:'):
                 msg = msg[len('COMPUTE:'):]
@@ -391,16 +406,24 @@ class _DispyNode():
                 except:
                     logging.debug('Ignoring computation request from %s', addr[0])
                     resp = 'Invalid computation request'
-                    conn.write_msg(uid, resp)
-                    conn.close()
+                    try:
+                        conn.write_msg(uid, resp)
+                        conn.close()
+                    except:
+                        logging.warning('Failed to send reply to %s', str(addr))
+                        continue
                     continue
                 resp = 'ACK'
                 compute.dest_path = compute.dest_path.strip().rstrip(os.sep)
                 if compute.dest_path.startswith(os.sep):
                     logging.warning('Invalid destination path: "%s"', compute.dest_path)
                     resp = 'NACK (Invalid dest_path)'
-                    conn.write_msg(uid, resp)
-                    conn.close()
+                    try:
+                        conn.write_msg(uid, resp)
+                        conn.close()
+                    except:
+                        logging.warning('Failed to send reply to %s', str(addr))
+                        continue
                     continue
                 logging.debug('Adding computation %s', compute.name)
                 compute.dest_path = os.path.join(self.dest_path_prefix, compute.dest_path)
@@ -410,8 +433,12 @@ class _DispyNode():
                     except:
                         logging.warning('Invalid destination path: "%s"', compute.dest_path)
                         resp = 'NACK (Invalid dest_path)'
-                        conn.write_msg(uid, resp)
-                        conn.close()
+                        try:
+                            conn.write_msg(uid, resp)
+                            conn.close()
+                        except:
+                            logging.warning('Failed to send reply to %s', str(addr))
+                            continue
                         continue
                 if compute.id in self.computations:
                     logging.warning('Computation "%s" (%s) is being replaced',
@@ -434,8 +461,12 @@ class _DispyNode():
                     except:
                         logging.warning('Computation "%s" could not be compiled', compute.name)
                         resp = 'NACK (Compilation failed)'
-                        conn.write_msg(uid, resp)
-                        conn.close()
+                        try:
+                            conn.write_msg(uid, resp)
+                            conn.close()
+                        except:
+                            logging.warning('Failed to send reply to %s', str(addr))
+                            continue
                         continue
                     self.computations[compute.id].code = marshal.dumps(code)
                 elif compute.type == _Compute.prog_type:
@@ -619,8 +650,11 @@ class _DispyNode():
                                 msg[:min(10, len(msg))], addr[0])
                 resp = 'NAK (invalid command: %s)' % (msg[:min(10, len(msg))])
             if resp:
-                conn.write_msg(uid, resp)
-            conn.close()
+                try:
+                    conn.write_msg(uid, resp)
+                    conn.close()
+                except:
+                    logging.warning('Failed to send reply to %s', str(addr))
 
     def __proc_Q_process(self):
         while True:

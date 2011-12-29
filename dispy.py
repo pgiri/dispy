@@ -716,8 +716,13 @@ class _Cluster(object):
                     conn, addr = job_result_sock.accept()
                     conn = _DispySocket(conn, certfile=self.certfile,
                                         keyfile=self.keyfile, server=True)
-                    uid, msg = conn.read_msg()
-                    conn.close()
+                    try:
+                        uid, msg = conn.read_msg()
+                        conn.close()
+                    except:
+                        logging.warning('Failed to read job result from %s: %s',
+                                        str(addr), traceback.format_exc())
+                        continue
                     logging.debug('Received reply for job %s from %s', uid, addr[0])
                     self._sched_cv.acquire()
                     node = self._nodes.get(addr[0], None)
@@ -778,9 +783,8 @@ class _Cluster(object):
                         node = self._nodes.get(job_ip, None)
                         if node is None:
                             # this came from dispyscheduler
-                            node = type('_Node', (),
-                                        {'ip_addr':job_ip, 'cpus':'', 'jobs':0,
-                                         'cpu_time':0, 'busy':0})
+                            node = type('_Node', (), {'ip_addr':job_ip, 'cpus':'', 'jobs':0,
+                                                      'cpu_time':0, 'busy':0})
                             self._nodes[job_ip] = node
                         compute.nodes[job_ip] = node
                         if not node.cpus and 'cpus' in result:
@@ -1032,6 +1036,7 @@ class _Cluster(object):
                 if node is None:
                     logging.debug('No nodes/jobs')
                     break
+                # TODO: strategy to pick a cluster?
                 for cid in node.clusters:
                     if self._clusters[cid]._jobs:
                         _job = self._clusters[cid]._jobs.pop(0)
@@ -1524,9 +1529,8 @@ class SharedJobCluster(JobCluster):
         self._cluster.job_uid = None
         self._cluster.add_cluster(self)
 
-        node = type('_Node', (),
-                    {'ip_addr':self.scheduler_node, 'cpus':'',
-                     'jobs':0, 'cpu_time':0, 'busy':0})
+        node = type('_Node', (), {'ip_addr':self.scheduler_node, 'cpus':'',
+                                  'jobs':0, 'cpu_time':0, 'busy':0})
         self._cluster._nodes[node.ip_addr] = node
 
     def submit(self, *args, **kwargs):
@@ -1550,20 +1554,20 @@ class SharedJobCluster(JobCluster):
         scheduler_sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                       auth_code=self.auth_code,
                                       certfile=self.certfile, keyfile=self.keyfile)
-        scheduler_sock.connect((self.scheduler_node, self.scheduler_port))
-        req = 'JOB:' + cPickle.dumps(_job)
-        scheduler_sock.write_msg(self._compute.id, req)
-        uid, msg = scheduler_sock.read_msg()
         try:
+            scheduler_sock.connect((self.scheduler_node, self.scheduler_port))
+            req = 'JOB:' + cPickle.dumps(_job)
+            scheduler_sock.write_msg(self._compute.id, req)
+            uid, msg = scheduler_sock.read_msg()
+            scheduler_sock.close()
             _job.uid = cPickle.loads(msg)
-        except Exception:
+        except:
             logging.warning('Creating job for "%s", "%s" failed with "%s"',
                             str(args), str(kwargs), str(sys.exc_info()))
-            scheduler_sock.close()
             _job.job._dispy_job_ = None
             del _job.job
             return None
-        scheduler_sock.close()
+
         self._cluster._sched_cv.acquire()
         self._cluster._sched_jobs[_job.uid] = _job
         self._pending_jobs += 1
@@ -1595,11 +1599,14 @@ class SharedJobCluster(JobCluster):
         scheduler_sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                       auth_code=self.auth_code,
                                       certfile=self.certfile, keyfile=self.keyfile)
-        scheduler_sock.connect((self.scheduler_node, self.scheduler_port))
-        req = 'CANCEL_JOB:' + cPickle.dumps(_job)
-        scheduler_sock.write_msg(self._compute.id, req)
-        scheduler_sock.close()
-        logging.debug('Job %s is cancelled', _job.uid)
+        try:
+            scheduler_sock.connect((self.scheduler_node, self.scheduler_port))
+            req = 'CANCEL_JOB:' + cPickle.dumps(_job)
+            scheduler_sock.write_msg(self._compute.id, req)
+            scheduler_sock.close()
+            logging.debug('Job %s is cancelled', _job.uid)
+        except:
+            logging.warning('Connection to scheduler failed: %s', traceback.format_exc())
 
     def close(self):
         if hasattr(self, '_compute'):

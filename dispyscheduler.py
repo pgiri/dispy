@@ -359,8 +359,13 @@ class _Scheduler(object):
                         continue
                     conn = _DispySocket(conn, certfile=self.node_certfile,
                                         keyfile=self.node_keyfile, server=True)
-                    uid, msg = conn.read_msg()
-                    conn.close()
+                    try:
+                        uid, msg = conn.read_msg()
+                        conn.close()
+                    except:
+                        logging.warning('Failed to read job results from %s: %s',
+                                        str(addr), traceback.format_exc())
+                        continue
                     logging.debug('Received reply for job %s from %s' % (uid, addr[0]))
                     self._sched_cv.acquire()
                     node = self._nodes.get(addr[0], None)
@@ -426,20 +431,25 @@ class _Scheduler(object):
                     conn, addr = sched_sock.accept()
                     conn = _DispySocket(conn, certfile=self.cluster_certfile,
                                         keyfile=self.cluster_keyfile, server=True)
-                    req = conn.read(len(self.auth_code))
-                    if req != self.auth_code:
-                        req = conn.read(len('CLUSTER'))
-                        if req == 'CLUSTER':
-                            resp = cPickle.dumps({'sign':self.sign})
-                            conn.write_msg(0, resp)
-                        else:
-                            logging.warning('Invalid/unauthorized request ignored')
-                        conn.close()
-                        continue
-                    uid, msg = conn.read_msg()
-                    if not msg:
-                        logging.info('Closing connection')
-                        conn.close()
+                    try:
+                        req = conn.read(len(self.auth_code))
+                        if req != self.auth_code:
+                            req = conn.read(len('CLUSTER'))
+                            if req == 'CLUSTER':
+                                resp = cPickle.dumps({'sign':self.sign})
+                                conn.write_msg(0, resp)
+                            else:
+                                logging.warning('Invalid/unauthorized request ignored')
+                            conn.close()
+                            continue
+                        uid, msg = conn.read_msg()
+                        if not msg:
+                            logging.info('Closing connection')
+                            conn.close()
+                            continue
+                    except:
+                        logging.warning('Failed to read message from %s: %s',
+                                        str(addr), traceback.format_exc())
                         continue
                     if msg.startswith('JOB:'):
                         msg = msg[len('JOB:'):]
@@ -538,8 +548,13 @@ class _Scheduler(object):
                             conn.close()
                             continue
                     if resp:
-                        conn.write_msg(0, resp)
-                    conn.close()
+                        try:
+                            conn.write_msg(0, resp)
+                            conn.close()
+                        except:
+                            logging.warning('Failed to send response to %s: %s',
+                                            str(addr), traceback.format_exc())
+                            continue
                 elif sock == ping_sock:
                     msg, addr = ping_sock.recvfrom(1024)
                     if msg.startswith('PULSE:'):
@@ -745,6 +760,7 @@ class _Scheduler(object):
                 if node is None:
                     logging.debug('No nodes/jobs')
                     break
+                # TODO: strategy to pick a cluster?
                 for cid in node.clusters:
                     if self._clusters[cid]._jobs:
                         _job = self._clusters[cid]._jobs.pop(0)
