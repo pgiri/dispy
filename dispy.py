@@ -607,11 +607,29 @@ class _Cluster(object):
             if item is None:
                 break
             priority, func, args = item
-            logging.debug('Calling %s: %s', func.__name__, priority)
+            logging.debug('Calling %s', func.__name__)
             try:
                 func(*args)
             except:
-                logging.debug('Running %s failed', func.__name__)
+                logging.debug('Running %s failed: %s', func.__name__, traceback.format_exc())
+
+    def run_job_callback(self, _job, state, cluster):
+        _job.job.state = state
+        try:
+            cluster.callback(_job.job)
+        except:
+            if job.exception:
+                job.exception += traceback.format_exc()
+            else:
+                job.exception = traceback.format_exc()
+        finally:
+            _job.finish(state)
+            if state != DispyJob.ProvisionalResult:
+                self._sched_cv.acquire()
+                if cluster._pending_jobs == 0:
+                    cluster._complete.set()
+                    cluster.end_time = time.time()
+                self._sched_cv.release()
 
     def setup_node(self, node, computations):
         # called via worker
@@ -751,11 +769,13 @@ class _Cluster(object):
                         job.exception = result['exception']
                         if 'provisional' in result:
                             logging.debug('Receveid provisional result for %s', job.id)
-                            _job.finish(DispyJob.ProvisionalResult)
                             cluster = self._clusters[_job.compute_id]
                             self._sched_cv.release()
                             if cluster.callback:
-                                self.worker_Q.put((20, cluster.callback, job))
+                                self.worker_Q.put((20, self.run_job_callback,
+                                                   (_job, DispyJob.ProvisionalResult, cluster)))
+                            else:
+                                _job.finish(DispyJob.ProvisionalResult)
                             continue
                         if 'start_time' in result:
                             # this came from shared scheduler
@@ -806,21 +826,25 @@ class _Cluster(object):
                     elif job.state == DispyJob.Finished:
                         logging.debug('Ignoring job %s - it is already done by %s',
                                       _job.uid, job.ip_addr)
+                        self._sched_cv.release()
+                        continue
                     else:
                         job.ip_addr = job_ip
                         node.jobs += 1
                         node.cpu_time += job.end_time - job.start_time
                         cluster._pending_jobs -= 1
-                        if cluster._pending_jobs == 0:
-                            cluster._complete.set()
-                            cluster.end_time = time.time()
-                        _job.finish(DispyJob.Finished)
                         if _job.node is not None:
                             node.busy -= 1
-                    self._sched_cv.notify()
-                    self._sched_cv.release()
-                    if cluster.callback:
-                        self.worker_Q.put((20, cluster.callback, job))
+                        if cluster.callback:
+                            self.worker_Q.put((20, self.run_job_callback,
+                                               (_job, DispyJob.Finished, cluster)))
+                        else:
+                            _job.finish(DispyJob.Finished)
+                            if cluster._pending_jobs == 0:
+                                cluster._complete.set()
+                                cluster.end_time = time.time()
+                        self._sched_cv.notify()
+                        self._sched_cv.release()
                 elif sock == ping_sock:
                     msg, addr = ping_sock.recvfrom(1024)
                     if msg.startswith('PULSE:'):
