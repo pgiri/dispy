@@ -1185,8 +1185,13 @@ class _Cluster(object):
             sock.close()
             self._listener.join()
             self._listener = None
-        if self.select_job_node:
-            self.select_job_node = None
+        self._sched_cv.acquire()
+        select_job_node = self.select_job_node
+        self.select_job_node = None
+        self._sched_cv.release()
+        if select_job_node:
+            self.worker_Q.put(None)
+            self.worker_thread.join()
 
     def stats(self, compute, wall_time=None):
         print
