@@ -614,6 +614,7 @@ class _Cluster(object):
                 logging.debug('Running %s failed: %s', func.__name__, traceback.format_exc())
 
     def run_job_callback(self, _job, state, cluster):
+        assert state == DispyJob.Finished
         _job.job.state = state
         try:
             cluster.callback(_job.job)
@@ -624,12 +625,12 @@ class _Cluster(object):
                 _job.job.exception = traceback.format_exc()
         finally:
             _job.finish(state)
-            if state != DispyJob.ProvisionalResult:
-                self._sched_cv.acquire()
-                if cluster._pending_jobs == 0:
-                    cluster._complete.set()
-                    cluster.end_time = time.time()
-                self._sched_cv.release()
+            self._sched_cv.acquire()
+            cluster._pending_jobs -= 1
+            if cluster._pending_jobs == 0:
+                cluster._complete.set()
+                cluster.end_time = time.time()
+            self._sched_cv.release()
 
     def setup_node(self, node, computations):
         # called via worker
@@ -832,13 +833,13 @@ class _Cluster(object):
                         job.ip_addr = job_ip
                         node.jobs += 1
                         node.cpu_time += job.end_time - job.start_time
-                        cluster._pending_jobs -= 1
                         if _job.node is not None:
                             node.busy -= 1
                         if cluster.callback:
                             self.worker_Q.put((20, self.run_job_callback,
                                                (_job, DispyJob.Finished, cluster)))
                         else:
+                            cluster._pending_jobs -= 1
                             _job.finish(DispyJob.Finished)
                             if cluster._pending_jobs == 0:
                                 cluster._complete.set()
@@ -1476,9 +1477,7 @@ class JobCluster():
 
     def close(self):
         if hasattr(self, '_compute'):
-            if self._pending_jobs > 0:
-                logging.warning('Waiting for pending jobs to finish...')
-                self._complete.wait()
+            self._complete.wait()
             self._cluster.close(self)
             logging.debug('Cluster "%s" deleted', self._compute.name)
             del self._compute
