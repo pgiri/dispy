@@ -75,10 +75,14 @@ class DispyJob():
     """
     Created = 1
     Running = 2
-    Finished = 3
     Cancelled = 4
     Terminated = 5
     ProvisionalResult = 6
+    # NB: Finished state should have maximum value, as PriorityQueue
+    # sorts data.  This, if a job with provisional result is already
+    # in the queue and a job is finished, finished job is processed
+    # (in callback) last.
+    Finished = 10
     def __init__(self):
         # id can be assigned by user as appropriate (e.g., to distinguish jobs)
         self.id = None
@@ -614,7 +618,7 @@ class _Cluster(object):
                 logging.debug('Running %s failed: %s', func.__name__, traceback.format_exc())
 
     def run_job_callback(self, _job, state, cluster):
-        assert state == DispyJob.Finished
+        assert state == DispyJob.Finished or state == DispyJob.ProvisionalResult
         _job.job.state = state
         try:
             cluster.callback(_job.job)
@@ -625,12 +629,13 @@ class _Cluster(object):
                 _job.job.exception = traceback.format_exc()
         finally:
             _job.finish(state)
-            self._sched_cv.acquire()
-            cluster._pending_jobs -= 1
-            if cluster._pending_jobs == 0:
-                cluster._complete.set()
-                cluster.end_time = time.time()
-            self._sched_cv.release()
+            if state == DispyJob.Finished:
+                self._sched_cv.acquire()
+                cluster._pending_jobs -= 1
+                if cluster._pending_jobs == 0:
+                    cluster._complete.set()
+                    cluster.end_time = time.time()
+                self._sched_cv.release()
 
     def setup_node(self, node, computations):
         # called via worker
@@ -652,10 +657,10 @@ class _Cluster(object):
             _job.run()
         except EnvironmentError:
             logging.warning('Failed to run job %s on %s for computation %s; removing this node',
-                            _job.uid, _job.node.ip_addr, cluster.compute.name)
+                            _job.uid, _job.node.ip_addr, cluster._compute.name)
             self._sched_cv.acquire()
             cluster._jobs.insert(0, _job)
-            # TODO: close the node properly?
+            # TODO: remove the node from all clusters and globally?
             del cluster.compute.nodes[node.ip_addr]
             _job.node.clusters.remove(cluster.compute.id)
             del self._sched_jobs[_job.uid]
@@ -665,7 +670,7 @@ class _Cluster(object):
             self._sched_cv.release()
         except Exception:
             logging.warning('Failed to run job %s on %s for computation %s; rescheduling it',
-                            _job.uid, _job.node.ip_addr, cluster.compute.name)
+                            _job.uid, _job.node.ip_addr, cluster._compute.name)
             logging.debug(traceback.format_exc())
             # raise
             # TODO: delay executing again for some time?
