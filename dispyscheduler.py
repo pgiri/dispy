@@ -228,11 +228,11 @@ class _Scheduler(object):
             if item is None:
                 break
             priority, func, args = item
-            logging.debug('Calling %s: %s', func.__name__, priority)
+            logging.debug('Calling %s', func.__name__)
             try:
                 func(*args)
             except:
-                logging.debug('Running %s failed', func.__name__)
+                logging.debug('Running %s failed: %s', func.__name__, traceback.format_exc())
 
     def setup_node(self, node, computes):
         # called via worker
@@ -254,10 +254,10 @@ class _Scheduler(object):
             _job.run()
         except EnvironmentError:
             logging.warning('Failed to run job %s on %s for computation %s; removing this node',
-                            _job.uid, _job.node.ip_addr, cluster.compute.name)
+                            _job.uid, _job.node.ip_addr, cluster._compute.name)
             self._sched_cv.acquire()
             cluster._jobs.append(_job)
-            # TODO: close the node properly?
+            # TODO: remove the node from all clusters and globally?
             del cluster.compute.nodes[_job.node.ip_addr]
             _job.node.clusters.remove(cluster.compute.id)
             del self._sched_jobs[_job.uid]
@@ -268,7 +268,7 @@ class _Scheduler(object):
         except Exception:
             logging.debug(traceback.format_exc())
             logging.warning('Failed to run job %s on %s for computation %s; rescheduling it',
-                            _job.uid, _job.node.ip_addr, cluster.compute.name)
+                            _job.uid, _job.node.ip_addr, cluster._compute.name)
             self._sched_cv.acquire()
             cluster._jobs.append(_job)
             del self._sched_jobs[_job.uid]
@@ -825,7 +825,13 @@ class _Scheduler(object):
             sock.connect((self.ip_addr, self.cmd_sock.sock.getsockname()[1]))
             sock.write_msg(0, 'terminate')
             sock.close()
+        self._sched_cv.acquire()
+        select_job_node = self.select_job_node
         self.select_job_node = None
+        self._sched_cv.release()
+        if select_job_node:
+            self.worker_Q.put(None)
+            self.worker_thread.join()
 
     def stats(self):
         print
@@ -919,7 +925,7 @@ if __name__ == '__main__':
             scheduler.shutdown()
             break
         except:
-            logging.warning(traceback.print_exc())
+            logging.warning(traceback.format_exc())
             logging.warning('Scheduler terminated (possibly due to an error); restarting')
             time.sleep(2)
     scheduler.stats()
