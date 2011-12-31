@@ -316,7 +316,6 @@ class _Node():
         sock.settimeout(5)
         try:
             sock.connect((self.ip_addr, self.port))
-            # logging.debug('uid: %s, msg len: %s', uid, len(msg))
             sock.write_msg(uid, msg)
             if reply:
                 ruid, resp = sock.read_msg()
@@ -1198,6 +1197,7 @@ class _Cluster(object):
         if select_job_node:
             self.worker_Q.put(None)
             self.worker_thread.join()
+        logging.debug('shutdown complete')
 
     def stats(self, compute, wall_time=None):
         print
@@ -1325,14 +1325,24 @@ class JobCluster():
             except:
                 raise Exception('Invalid pulse_interval; must be between 1 and 1000')
         self.pulse_interval = pulse_interval
-        atexit.register(self.close)
         if callback:
-            assert inspect.isfunction(callback) or inspect.ismethod(callback)
+            assert inspect.isfunction(callback) or inspect.ismethod(callback), \
+                   "callback must be a function or method"
+            try:
+                args = inspect.getargspec(callback)
+                assert len(args.args) == 1
+                assert args.varargs is None
+                assert args.keywords is None
+                assert args.defaults is None
+            except:
+                raise Exception("Invalid callback function; "
+                                "it must take excatly one argument - an instance of DispyJob")
         self.callback = callback
         if hasattr(self, 'scheduler_port'):
             shared = True
         else:
             shared = False
+        atexit.register(self.close)
         self._cluster = _Cluster(loglevel, ip_addr=ip_addr, port=port, node_port=node_port,
                                  secret=secret, keyfile=keyfile, certfile=certfile,
                                  shared=shared)
@@ -1419,6 +1429,7 @@ class JobCluster():
         self._pending_jobs = 0
         self._jobs = []
         self._complete = threading.Event()
+        self._complete.set()
         self.cpu_time = 0
         self.start_time = time.time()
         self.end_time = None
@@ -1549,6 +1560,7 @@ class SharedJobCluster(JobCluster):
         logging.debug('auth_code: %s', self.auth_code)
         scheduler_sock.close()
 
+        atexit.register(self.close)
         scheduler_sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                       auth_code=self.auth_code, certfile=certfile, keyfile=keyfile)
         scheduler_sock.connect((self.scheduler_node, self.scheduler_port))
@@ -1604,7 +1616,6 @@ class SharedJobCluster(JobCluster):
         self._cluster._sched_cv.acquire()
         self._cluster._sched_jobs[_job.uid] = _job
         self._pending_jobs += 1
-        self._complete.clear()
         self._cluster._sched_cv.release()
         assert isinstance(_job.uid, int), type(_job.uid)
         logging.debug('Job %s created for %s', _job.uid, _job.compute_id)
@@ -1646,6 +1657,7 @@ class SharedJobCluster(JobCluster):
             scheduler_sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                           auth_code=self.auth_code,
                                           certfile=self.certfile, keyfile=self.keyfile)
+            scheduler_sock.settimeout(2)
             scheduler_sock.connect((self.scheduler_node, self.scheduler_port))
             req = 'DEL_COMPUTE:' + cPickle.dumps(self._compute.id)
             scheduler_sock.write_msg(self._compute.id, req)
