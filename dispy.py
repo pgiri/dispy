@@ -1342,7 +1342,7 @@ class JobCluster():
             shared = True
         else:
             shared = False
-        atexit.register(self.close)
+            atexit.register(self.close)
         self._cluster = _Cluster(loglevel, ip_addr=ip_addr, port=port, node_port=node_port,
                                  secret=secret, keyfile=keyfile, certfile=certfile,
                                  shared=shared)
@@ -1614,6 +1614,7 @@ class SharedJobCluster(JobCluster):
             return None
 
         self._cluster._sched_cv.acquire()
+        self._complete.clear()
         self._cluster._sched_jobs[_job.uid] = _job
         self._pending_jobs += 1
         self._cluster._sched_cv.release()
