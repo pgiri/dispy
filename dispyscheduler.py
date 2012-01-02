@@ -247,12 +247,12 @@ class _Scheduler(object):
             logging.warning('Failed to run job %s on %s for computation %s; removing this node',
                             _job.uid, _job.node.ip_addr, cluster._compute.name)
             self._sched_cv.acquire()
+            del self._sched_jobs[_job.uid]
             cluster._jobs.append(_job)
+            self.unsched_jobs += 1
             # TODO: remove the node from all clusters and globally?
             del cluster.compute.nodes[_job.node.ip_addr]
             _job.node.clusters.remove(cluster.compute.id)
-            del self._sched_jobs[_job.uid]
-            self.unsched_jobs += 1
             _job.node.busy -= 1
             self._sched_cv.notify()
             self._sched_cv.release()
@@ -261,8 +261,8 @@ class _Scheduler(object):
             logging.warning('Failed to run job %s on %s for computation %s; rescheduling it',
                             _job.uid, _job.node.ip_addr, cluster._compute.name)
             self._sched_cv.acquire()
-            cluster._jobs.append(_job)
             del self._sched_jobs[_job.uid]
+            cluster._jobs.append(_job)
             self.unsched_jobs += 1
             _job.node.busy -= 1
             self._sched_cv.notify()
@@ -473,11 +473,11 @@ class _Scheduler(object):
                             if self.job_uid == sys.maxint:
                                 # TODO: check if it is okay to reset
                                 self.job_uid = 1
-                            self.unsched_jobs += 1
                             setattr(_job, 'node', None)
                             setattr(_job, 'start_time', None)
                             setattr(_job, 'state', DispyJob.Created)
                             cluster._jobs.append(_job)
+                            self.unsched_jobs += 1
                             cluster._pending_jobs += 1
                             self._sched_cv.notify()
                             self._sched_cv.release()
@@ -781,6 +781,8 @@ class _Scheduler(object):
     def __schedule(self):
         while True:
             self._sched_cv.acquire()
+            # n = sum(len(cluster._jobs) for cluster in self._clusters.itervalues())
+            # assert self.unsched_jobs == n, '%s != %s' % (self.unsched_jobs, n)
             if self._terminate_scheduler:
                 self._sched_cv.release()
                 break

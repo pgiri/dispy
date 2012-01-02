@@ -659,12 +659,12 @@ class _Cluster(object):
             logging.warning('Failed to run job %s on %s for computation %s; removing this node',
                             _job.uid, _job.node.ip_addr, cluster._compute.name)
             self._sched_cv.acquire()
-            cluster._jobs.insert(0, _job)
-            # TODO: remove the node from all clusters and globally?
             del cluster.compute.nodes[node.ip_addr]
+            cluster._jobs.insert(0, _job)
+            self.unsched_jobs += 1
+            # TODO: remove the node from all clusters and globally?
             _job.node.clusters.remove(cluster.compute.id)
             del self._sched_jobs[_job.uid]
-            self.unsched_jobs += 1
             _job.node.busy -= 1
             self._sched_cv.notify()
             self._sched_cv.release()
@@ -675,8 +675,8 @@ class _Cluster(object):
             # raise
             # TODO: delay executing again for some time?
             self._sched_cv.acquire()
-            cluster._jobs.append(_job)
             del self._sched_jobs[_job.uid]
+            cluster._jobs.append(_job)
             self.unsched_jobs += 1
             _job.node.busy -= 1
             self._sched_cv.notify()
@@ -1066,6 +1066,8 @@ class _Cluster(object):
     def __schedule(self):
         while True:
             self._sched_cv.acquire()
+            # n = sum(len(cluster._jobs) for cluster in self._clusters.itervalues())
+            # assert self.unsched_jobs == n, '%s != %s' % (self.unsched_jobs, n)
             if self.terminate_scheduler:
                 self._sched_cv.release()
                 break
@@ -1105,6 +1107,9 @@ class _Cluster(object):
         logging.debug('Scheduler quitting (%s / %s)',
                       len(self._sched_jobs), self.unsched_jobs)
         for cid, cluster in self._clusters.iteritems():
+            if not hasattr(cluster, '_compute'):
+                # cluster is closed
+                continue
             compute = cluster._compute
             for node in compute.nodes.itervalues():
                 node.close(compute)
@@ -1128,9 +1133,9 @@ class _Cluster(object):
         if self.job_uid == sys.maxint:
             # TODO: check if it is okay to reset
             self.job_uid = 1
-        self.unsched_jobs += 1
         cluster = self._clusters[_job.compute_id]
         cluster._jobs.append(_job)
+        self.unsched_jobs += 1
         cluster._pending_jobs += 1
         cluster._complete.clear()
         self._sched_cv.notify()
@@ -1175,19 +1180,9 @@ class _Cluster(object):
         # called for JobCluster only
         compute = cluster._compute
         self._sched_cv.acquire()
-        self.unsched_jobs -= len(cluster._jobs)
-        _jobs = [_job for _job in self._sched_jobs.itervalues() \
-                 if _job.compute_id == compute.id]
-        for _job in _jobs:
-            _job.job.state = DispyJob.Cancelled
         nodes = compute.nodes.values()
-        del self._clusters[compute.id]
+        compute.nodes = {}
         self._sched_cv.release()
-        for _job in _jobs:
-            try:
-                _job.node.send(_job.uid, 'CANCEL_JOB:' + cPickle.dumps(_job), reply=False)
-            except:
-                pass
         for node in nodes:
             node.close(compute)
 
@@ -1517,6 +1512,7 @@ class JobCluster():
 
     def close(self):
         if hasattr(self, '_compute'):
+            self._complete.wait()
             self._cluster.close(self)
             logging.debug('Cluster "%s" deleted', self._compute.name)
             del self._compute
@@ -1678,6 +1674,7 @@ class SharedJobCluster(JobCluster):
 
     def close(self):
         if hasattr(self, '_compute'):
+            self._complete.wait()
             scheduler_sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                           auth_code=self.auth_code,
                                           certfile=self.certfile, keyfile=self.keyfile)
