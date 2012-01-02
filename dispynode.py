@@ -578,12 +578,12 @@ class _DispyNode():
                     info = cPickle.loads(msg)
                     compute_id = info['_compute_id']
                     compute = self.computations.pop(compute_id, None)
-                    if compute:
-                        logging.debug('Deleting computation "%s"', compute.name)
-                        assert compute.dest_path.startswith(self.dest_path_prefix)
-                    else:
+                    if compute is None:
                         logging.warning('Computation "%s" is not valid', compute_id)
-                    if compute and info['cleanup']:
+                    else:
+                        logging.debug('Deleting computation "%s"', compute.name)
+                        #assert compute.dest_path.startswith(self.dest_path_prefix)
+                    if compute is not None and info['cleanup']:
                         for xf in compute.xfer_files:
                             tgt = os.path.join(compute.dest_path, os.path.basename(xf.name))
                             self.file_uses[tgt] -= 1
