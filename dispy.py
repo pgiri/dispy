@@ -96,7 +96,7 @@ class DispyJob():
         self.ip_addr = None
         self.finish = threading.Event()
 
-        # _dispy_job_ is internal for dispy implementation only (opaque to users)
+        # _dispy_job_ is for dispy implementation only - it is opaque to users
         self._dispy_job_ = None
 
     def __call__(self, clear=True):
@@ -794,8 +794,8 @@ class _Cluster(object):
                         continue
 
                     if job_ip is None and not self.shared:
-                        # if a job was never scheduled by scheduler,
-                        # job_ip can be None
+                        # if a job was never scheduled by
+                        # dispyscheduler, job_ip can be None
                         self._sched_cv.release()
                         logging.warning('Ignoring invalid reply for job %s from %s',
                                         uid, addr[0])
@@ -1146,9 +1146,10 @@ class _Cluster(object):
         logging.debug('Job %s state: %s', _job.uid, _job.job.state)
         cluster = self._clusters.get(_job.compute_id, None)
         if not cluster:
-            logging.debug('Invalid job %s!', _job.uid)
+            logging.warning('Invalid job %s for cluster "%s"!',
+                            _job.uid, cluster._compute.name)
             self._sched_cv.release()
-            return
+            return -1
         cancel = True
         if _job.job.state == DispyJob.Created:
             assert _job.uid not in self._sched_jobs
@@ -1156,10 +1157,11 @@ class _Cluster(object):
             cluster._jobs.remove(_job)
             self.unsched_jobs -= 1
             cancel = False
-        elif not (_job.job.state == DispyJob.Running or _job.job.state == DispyJob.ProvisionalResult):
+        elif not (_job.job.state == DispyJob.Running or \
+                  _job.job.state == DispyJob.ProvisionalResult):
             logging.warning('Job %s is not valid for cancel (%s)', _job.uid, _job.job.state)
             self._sched_cv.release()
-            return
+            return -1
         assert cluster._pending_jobs > 0
         cluster._pending_jobs -= 1
         if cluster._pending_jobs == 0:
@@ -1173,6 +1175,8 @@ class _Cluster(object):
                 logging.debug('Job %s is cancelled', _job.uid)
             except:
                 logging.warning('Canceling job %s failed: %s', _job.uid, traceback.format_exc())
+                return -1
+        return 0
 
     def close(self, cluster):
         # called for JobCluster only
@@ -1477,7 +1481,7 @@ class JobCluster():
 
     def cancel(self, job):
         _job = job._dispy_job_
-        self._cluster.cancel_job(_job)
+        return self._cluster.cancel_job(_job)
 
     def __enter__(self):
         return self
@@ -1643,13 +1647,13 @@ class SharedJobCluster(JobCluster):
         _job = job._dispy_job_
         self._cluster._sched_cv.acquire()
         if self._cluster._clusters.get(_job.compute_id, None) != self:
-            logging.debug('Invalid job %s!', _job.uid)
+            logging.warning('Invalid job %s for cluster "%s"!', _job.uid, self._compute.name)
             self._sched_cv.release()
-            return
+            return -1
         if job.state != DispyJob.Created:
             logging.warning('Job %s is not valid for cancel (%s)', job.uid, job.state)
             self._cluster._sched_cv.release()
-            return
+            return -1
 
         _job.job.state = DispyJob.Cancelled
         assert self._pending_jobs >= 1
@@ -1669,6 +1673,8 @@ class SharedJobCluster(JobCluster):
             logging.debug('Job %s is cancelled', _job.uid)
         except:
             logging.warning('Connection to scheduler failed: %s', traceback.format_exc())
+            return -1
+        return 0
 
     def close(self):
         if hasattr(self, '_compute'):
