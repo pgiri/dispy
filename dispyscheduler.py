@@ -432,9 +432,9 @@ class _Scheduler(object):
                         if cluster._pending_jobs == 0:
                             cluster._complete.set()
                             cluster.end_time = time.time()
-                        self.worker_Q.put((5, self.send_job_result,
-                                           (_job.uid, compute.node_ip,
-                                            compute.client_job_result_port, result)))
+                    self.worker_Q.put((5, self.send_job_result,
+                                       (_job.uid, compute.node_ip,
+                                        compute.client_job_result_port, result)))
                     self._sched_cv.notify()
                     self._sched_cv.release()
                 elif sock == sched_sock:
@@ -547,7 +547,6 @@ class _Scheduler(object):
                         except:
                             logging.warning('Invalid job cancel message')
                             continue
-                        logging.debug('Cancel job: %s', job.uid)
                         self._sched_cv.acquire()
                         cluster = self._clusters.get(_job.compute_id, None)
                         if not cluster:
@@ -562,13 +561,20 @@ class _Scheduler(object):
                             if cluster._pending_jobs == 0:
                                 cluster._complete.set()
                                 cluster.end_time = time.time()
-                            self.worker_Q.put((30, self.cancel_jobs, ([_jobs],)))
+                            self.worker_Q.put((30, self.cancel_jobs, ([_job],)))
                             self._sched_cv.release()
                         else:
                             for i, _job in enumerate(cluster._jobs):
                                 if _job.uid == job.uid:
                                     del cluster._jobs[i]
                                     self.unsched_jobs -= 1
+                                    result = {'hash':_job.hash, 'node':None, 'ip_addr':None, 'cpus':None,
+                                              'result':None, 'stdout':None, 'stderr':None,
+                                              'exception':'Cancelled', 'start_time':None, 'end_time':None}
+                                    compute = cluster._compute
+                                    self.worker_Q.put((5, self.send_job_result,
+                                                       (_job.uid, compute.node_ip,
+                                                        compute.client_job_result_port, result)))
                                     break
                             else:
                                 logging.debug('Invalid job %s!', job.uid)
@@ -700,7 +706,7 @@ class _Scheduler(object):
                         self._terminate_scheduler = True
                         for uid, _job in self._sched_jobs.iteritems():
                             result = {'hash':_job.hash, 'node':None, 'ip_addr':None, 'cpus':None,
-                                      'result':None, 'stdout':None, 'stderr':'terminated',
+                                      'result':None, 'stdout':None, 'stderr':None,
                                       'exception':'terminated', 'start_time':None, 'end_time':None}
                             cluster = self._clusters[_job.compute_id]
                             compute = cluster._compute

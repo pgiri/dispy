@@ -57,9 +57,9 @@ class DispyJob():
     node will be available as .start_time and when the job results
     became available as .end_time.
 
-    .id field is initially set to None and may be assigned to any
-    value that is appropriate.  This may be useful, for example, to
-    distinguish one job from another.
+    .id field is initially set to None and may be assigned by user to
+    any value that is appropriate.  This may be useful, for example,
+    to distinguish one job from another.
 
     .state is read-only field; it is set to one of Created, Running,
     Finished, Cancelled, Terminated and ProvisionalResult, indicating
@@ -96,7 +96,7 @@ class DispyJob():
         self.ip_addr = None
         self.finish = threading.Event()
 
-        # _dispy_job_ is opaque to users
+        # _dispy_job_ is internal for dispy implementation only (opaque to users)
         self._dispy_job_ = None
 
     def __call__(self, clear=True):
@@ -396,7 +396,7 @@ class _DispyJob_():
                 if dep in depend_ids:
                     continue
                 try:
-                    fd = open(dep, 'r')
+                    fd = open(dep, 'rb')
                     fd.close()
                 except:
                     logging.warning('File "%s" is not valid' % dep)
@@ -672,7 +672,6 @@ class _Cluster(object):
             logging.warning('Failed to run job %s on %s for computation %s; rescheduling it',
                             _job.uid, _job.node.ip_addr, cluster._compute.name)
             logging.debug(traceback.format_exc())
-            # raise
             # TODO: delay executing again for some time?
             self._sched_cv.acquire()
             del self._sched_jobs[_job.uid]
@@ -794,7 +793,9 @@ class _Cluster(object):
                         logging.debug(traceback.format_exc())
                         continue
 
-                    if job_ip is None:
+                    if job_ip is None and not self.shared:
+                        # if a job was never scheduled by scheduler,
+                        # job_ip can be None
                         self._sched_cv.release()
                         logging.warning('Ignoring invalid reply for job %s from %s',
                                         uid, addr[0])
@@ -823,18 +824,15 @@ class _Cluster(object):
                             node.cpus = result['cpus']
                     if job.state == DispyJob.Cancelled:
                         logging.debug('Cancelled job: %s, %s', _job.uid, job.exception)
-                        if _job.node is not None:
+                        _job.finish(DispyJob.Cancelled)
+                        if self.shared is False:
                             node.busy -= 1
                     elif job.exception == 'Cancelled':
-                        # shared scheduler cancelled this job (e.g.,
-                        # due to a node not responding)
+                        # shared scheduler cancelled this job
+                        # requesting, e.g., if a node is not
+                        # responding
                         assert _job.node is None
-                        if job.state != DispyJob.Cancelled:
-                            _job.finish(DispyJob.Cancelled)
-                            cluster._pending_jobs -= 1
-                            if cluster._pending_jobs == 0:
-                                cluster._complete.set()
-                                cluster.end_time = time.time()
+                        _job.finish(DispyJob.Cancelled)
                     elif job.state == DispyJob.Finished:
                         logging.debug('Ignoring job %s - it is already done by %s',
                                       _job.uid, job.ip_addr)
@@ -855,8 +853,8 @@ class _Cluster(object):
                             if cluster._pending_jobs == 0:
                                 cluster._complete.set()
                                 cluster.end_time = time.time()
-                        self._sched_cv.notify()
-                        self._sched_cv.release()
+                    self._sched_cv.notify()
+                    self._sched_cv.release()
                 elif sock == ping_sock:
                     msg, addr = ping_sock.recvfrom(1024)
                     if msg.startswith('PULSE:'):
@@ -1028,40 +1026,40 @@ class _Cluster(object):
                     self._sched_cv.release()
 
     def load_balance_schedule(self):
-        node = None
+        host = None
         load = None
-        for ip_addr, host in self._nodes.iteritems():
-            if host.busy >= host.cpus:
+        for node in self._nodes.itervalues():
+            if node.busy >= node.cpus:
                 continue
-            if all(not self._clusters[cluster_id]._jobs for cluster_id in host.clusters):
+            if all(not self._clusters[cluster_id]._jobs for cluster_id in node.clusters):
                 continue
-            # logging.debug('load: %s, %s, %s' % (host.ip_addr, host.busy, host.cpus))
-            if (load is None) or ((float(host.busy) / host.cpus) < load):
-                node = host
+            # logging.debug('load: %s, %s, %s' % (node.ip_addr, node.busy, node.cpus))
+            if (load is None) or ((float(node.busy) / node.cpus) < load):
                 load = float(node.busy) / node.cpus
-        return node
+                host = node
+        return host
 
     def fast_node_schedule(self):
         # as we eagerly schedule, this has limited advantages
         # (useful only when  we have data about all the nodes and more than one node
         # is currently available)
         # in addition, we assume all jobs take equal time to execute
-        node = None
+        host = None
         secs_per_job = None
-        for ip_addr, host in self._nodes.iteritems():
-            if host.busy >= host.cpus:
+        for node in self._nodes.itervalues():
+            if node.busy >= node.cpus:
                 continue
-            if all(not self._clusters[cluster_id]._jobs for cluster_id in host.clusters):
+            if all(not self._clusters[cluster_id]._jobs for cluster_id in node.clusters):
                 continue
-            # logging.debug('load: %s, %s, %s' % (host.ip_addr, host.jobs, host.cpu_time))
-            if (secs_per_job is None) or (host.jobs == 0) or \
-                   ((host.cpu_time / host.jobs) <= secs_per_job):
-                node = host
-                if host.jobs == 0:
+            # logging.debug('load: %s, %s, %s' % (node.ip_addr, node.jobs, node.cpu_time))
+            if (secs_per_job is None) or (node.jobs == 0) or \
+                   (secs_per_job > (node.cpu_time / node.jobs)):
+                if node.jobs == 0:
                     secs_per_job = 0
                 else:
-                    secs_per_job = host.cpu_time / host.jobs
-        return node
+                    secs_per_job = node.cpu_time / node.jobs
+                host = node
+        return host
 
     def __schedule(self):
         while True:
@@ -1167,7 +1165,7 @@ class _Cluster(object):
         if cluster._pending_jobs == 0:
             cluster._complete.set()
             cluster.end_time = time.time()
-        _job.finish(DispyJob.Cancelled)
+        _job.job.state = DispyJob.Cancelled
         self._sched_cv.release()
         if cancel and _job.node is not None:
             try:
@@ -1405,7 +1403,7 @@ class JobCluster():
                     else:
                         raise Exception('Program "%s" is not valid', dep)
                 try:
-                    fd = open(dep, 'r')
+                    fd = open(dep, 'rb')
                     fd.close()
                     xf = _XferFile(dep, os.stat(dep), compute.id)
                     compute.xfer_files.append(xf)
@@ -1653,12 +1651,12 @@ class SharedJobCluster(JobCluster):
             self._cluster._sched_cv.release()
             return
 
+        _job.job.state = DispyJob.Cancelled
         assert self._pending_jobs >= 1
         self._pending_jobs -= 1
         if self._pending_jobs == 0:
             self._complete.set()
             self.end_time = time.time()
-        _job.finish(DispyJob.Cancelled)
         self._cluster._sched_cv.release()
         scheduler_sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                       auth_code=self.auth_code,
