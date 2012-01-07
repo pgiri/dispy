@@ -382,12 +382,10 @@ class _Scheduler(object):
                                         uid, addr[0])
                         continue
                     node.last_pulse = time.time()
-                    # logging.debug('Node %s busy: %s', node.ip_addr, node.busy)
-                    _job = self._sched_jobs.pop(uid, None)
+                    _job = self._sched_jobs.get(uid, None)
                     if _job is None:
                         self._sched_cv.release()
-                        logging.warning('Ignoring invalid job %s from %s',
-                                        uid, addr[0])
+                        logging.warning('Ignoring invalid job %s from %s', uid, addr[0])
                         continue
                     _job.job.end_time = time.time()
                     try:
@@ -404,11 +402,12 @@ class _Scheduler(object):
                                                 compute.client_job_result_port, reply)))
                             self._sched_cv.release()
                             continue
+                        else:
+                            del self._sched_jobs[uid]
                     except:
                         self._sched_cv.release()
-                        logging.debug(traceback.format_exc())
                         logging.warning('Invalid job result for %s from %s', uid, addr[0])
-                        # raise
+                        logging.debug(traceback.format_exc())
                         continue
 
                     _job.node.busy -= 1

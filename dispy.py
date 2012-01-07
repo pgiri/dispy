@@ -446,10 +446,10 @@ class _DispyJob_():
 
     def finish(self, status):
         job = self.job
+        job.status = status
         if status != DispyJob.ProvisionalResult:
             self.job._dispy_job_ = None
             self.job = None
-        job.status = status
         job.finish.set()
 
 class _JobReply():
@@ -617,22 +617,24 @@ class _Cluster(object):
     def worker(self):
         while True:
             item = self.worker_Q.get(block=True)
-            if item is None:
-                break
             priority, func, args = item
+            if func is None:
+                self.worker_Q.task_done()
+                break
             logging.debug('Calling %s', func.__name__)
             try:
                 func(*args)
             except:
                 logging.debug('Running %s failed: %s', func.__name__, traceback.format_exc())
+            self.worker_Q.task_done()
 
     def finish_job(self, _job, status, cluster):
         # called with _sched_cv locked
         job = _job.job
-        _job.finish(status)
         if cluster.callback:
-            self.worker_Q.put((20, self.run_job_callback, (job, cluster)))
+            self.worker_Q.put((20, self.run_job_callback, (status, _job, cluster)))
         else:
+            _job.finish(status)
             if status != DispyJob.ProvisionalResult:
                 assert cluster._pending_jobs > 0
                 cluster._pending_jobs -= 1
@@ -640,7 +642,9 @@ class _Cluster(object):
                     cluster._complete.set()
                     cluster.end_time = time.time()
 
-    def run_job_callback(self, job, cluster):
+    def run_job_callback(self, status, _job, cluster):
+        job = _job.job
+        _job.finish(status)
         try:
             cluster.callback(job)
         except:
@@ -771,15 +775,25 @@ class _Cluster(object):
                     logging.debug('Received reply for job %s from %s', uid, addr[0])
                     self._sched_cv.acquire()
                     node = self._nodes.get(addr[0], None)
-                    _job = self._sched_jobs.pop(uid, None)
-                    if (node is None and not self.shared) or (_job is None):
+                    _job = self._sched_jobs.get(uid, None)
+                    if (node is None and self.shared is False) or (_job is None):
                         self._sched_cv.release()
                         logging.warning('Ignoring invalid reply for job %s from %s',
                                         uid, addr[0])
                         continue
+                    cluster = self._clusters.get(_job.compute_id, None)
+                    if cluster is None:
+                        # job cancelled while closing computation?
+                        if self.shared is False:
+                            node.busy -= 1
+                            assert node.busy >= 0
+                        self._sched_cv.release()
+                        continue
+                    compute = cluster._compute
                     job = _job.job
                     try:
                         reply = cPickle.loads(msg)
+                        logging.debug('Job %s status: %s', job.id, reply.status)
                         assert reply.hash == _job.hash
                         job.result = reply.result
                         job.stdout = reply.stdout
@@ -795,10 +809,11 @@ class _Cluster(object):
                             node.last_pulse = time.time()
                         if reply.status == DispyJob.ProvisionalResult:
                             logging.debug('Receveid provisional result for %s', job.id)
-                            cluster = self._clusters[_job.compute_id]
                             self.finish_job(_job, DispyJob.ProvisionalResult, cluster)
                             self._sched_cv.release()
                             continue
+                        else:
+                            del self._sched_jobs[uid]
                     except:
                         self._sched_cv.release()
                         logging.warning('Invalid job result for %s from %s',
@@ -806,15 +821,6 @@ class _Cluster(object):
                         logging.debug(traceback.format_exc())
                         continue
 
-                    cluster = self._clusters.get(_job.compute_id, None)
-                    if cluster is None:
-                        # job cancelled after closing computation
-                        if _job.node is not None:
-                            _job.node.busy -= 1
-                            assert _job.node.busy >= 0
-                        self._sched_cv.release()
-                        continue
-                    compute = cluster._compute
                     if self.shared is False:
                         assert reply.status in [DispyJob.Finished, DispyJob.Terminated], \
                                    'invalid reply status for %s: %s' % (_job.uid, reply.status)
@@ -823,7 +829,8 @@ class _Cluster(object):
                                    'invalid job status for %s: %s' % (_job.uid, job.status)
                             logging.debug('Terminated job: %s, %s', _job.uid, job.status)
                         else:
-                            assert job.status == DispyJob.Running
+                            assert job.status in [DispyJob.Running, DispyJob.ProvisionalResult], \
+                                   'status of %s: %s, %s' % (uid, job.status, reply.status)
                             node.jobs += 1
                         node.busy -= 1
                     else:
@@ -1222,8 +1229,8 @@ class _Cluster(object):
         self.select_job_node = None
         self._sched_cv.release()
         if select_job_node:
-            self.worker_Q.put(None)
-            self.worker_thread.join()
+            self.worker_Q.put((99, None, None))
+            self.worker_Q.join()
         logging.debug('shutdown complete')
 
     def stats(self, compute, wall_time=None):

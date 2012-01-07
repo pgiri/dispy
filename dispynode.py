@@ -50,12 +50,10 @@ from dispy import _DispySocket, _DispyJob_, _JobReply, DispyJob, \
 MaxFileSize = 10240000
 
 class _DispyJobInfo():
-    def __init__(self, job_reply, reply_addr, certfile=None, keyfile=None):
+    def __init__(self, job_reply, reply_addr):
         self.job_reply = job_reply
         self.reply_addr = reply_addr
         self.proc = None
-        self.certfile = None
-        self.keyfile = None
 
 def _same_file(tgt, xf):
     """Internal use only.
@@ -70,7 +68,8 @@ def _same_file(tgt, xf):
     except:
         return False
 
-def _dispy_job_func(__dispy_job_info, __dispy_job_args, __dispy_job_kwargs,
+def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
+                    __dispy_job_args, __dispy_job_kwargs,
                     __dispy_reply_Q, __dispy_job_env, __dispy_job_name, __dispy_job_code,
                     __dispy_job_files=[]):
     """Internal use only.
@@ -112,11 +111,11 @@ def dispy_provisional_result(result):
     try:
         __dispy_job_reply = __dispy_job_info.job_reply
         logging.debug('Sending provisional result for job %s to %s',
-                      __dispy_job_reply.job.uid, __dispy_job_reply.job.reply_addr)
+                      __dispy_job_reply.uid, __dispy_job_info.reply_addr)
         __dispy_job_reply.status = DispyJob.ProvisionalResult
+        __dispy_job_reply.result = result
         sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
-                            certfile=__dispy_job_info.certfile,
-                            keyfile=__dispy_job_info.keyfile)
+                            certfile=__dispy_job_certfile, keyfile=__dispy_job_keyfile)
         sock.settimeout(5)
         sock.connect(__dispy_job_info.reply_addr)
         sock.write_msg(__dispy_job_reply.uid, cPickle.dumps(__dispy_job_reply))
@@ -125,23 +124,6 @@ def dispy_provisional_result(result):
                       str(result), str(traceback.format_exc()))
     if sock is not None:
         sock.close()
-
-def _send_job_reply(job_info):
-    """Internal use only.
-    """
-    job_reply = job_info.job_reply
-    logging.debug('Sending result for job %s (%s) to %s',
-                  job_reply.uid, job_reply.status, job_info.reply_addr[0])
-    sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
-                        certfile=job_info.certfile, keyfile=job_info.keyfile)
-    sock.settimeout(5)
-    try:
-        sock.connect(job_info.reply_addr)
-        sock.write_msg(job_reply.uid, cPickle.dumps(job_reply))
-    except:
-        logging.error("Couldn't send results for %s to %s (%s)",
-                      job_reply.uid, str(job_info.reply_addr), str(traceback.format_exc()))
-    sock.close()
 
 class _DispyNode():
     """Internal use only.
@@ -356,9 +338,9 @@ class _DispyNode():
 
                     if compute.type == _Compute.func_type:
                         reply = _JobReply(_job, self.ip_addr)
-                        job_info = _DispyJobInfo(reply, reply_addr, certfile=self.certfile,
-                                                 keyfile=self.keyfile)
-                        args = (job_info, _job.args, _job.kwargs, self.reply_Q,
+                        job_info = _DispyJobInfo(reply, reply_addr)
+                        args = (job_info, self.certfile, self.keyfile,
+                                _job.args, _job.kwargs, self.reply_Q,
                                 compute.env, compute.name, compute.code, _job.files)
                         try:
                             conn.write_msg(_job.uid, cPickle.dumps(_job.uid))
@@ -622,7 +604,7 @@ class _DispyNode():
                 self.lock.acquire()
                 job_info = self.job_infos.pop(uid, None)
                 self.lock.release()
-                if job_info.proc is None:
+                if job_info is None:
                     logging.debug('Job %s completed; ignoring cancel request from %s',
                                   uid, addr[0])
                     continue
@@ -641,10 +623,9 @@ class _DispyNode():
                 logging.debug('Killed process for job %s', uid)
                 reply_addr = (addr[0], compute.job_result_port)
                 reply = _JobReply(_job, self.ip_addr)
-                job_info = _DispyJobInfo(reply, reply_addr, certfile=self.certfile,
-                                         keyfile=self.keyfile)
+                job_info = _DispyJobInfo(reply, reply_addr)
                 reply.status = DispyJob.Terminated
-                _send_job_reply(job_info)
+                self._send_job_reply(job_info)
                 if self.avail_cpus == self.cpus:
                     self.send_pong_msg()
             else:
@@ -671,7 +652,7 @@ class _DispyNode():
             if job_info is not None:
                 job_info.proc.join()
                 job_info.job_reply = job_reply
-                _send_job_reply(job_info)
+                self._send_job_reply(job_info)
             if self.avail_cpus == self.cpus:
                 self.send_pong_msg()
         self.reply_Q = None
@@ -682,8 +663,7 @@ class _DispyNode():
         program.extend(args)
         logging.debug('Executing "%s"', str(program))
         reply = _JobReply(_job, self.ip_addr)
-        job_info = _DispyJobInfo(reply, reply_addr,
-                                 certfile=self.certfile, keyfile=self.keyfile)
+        job_info = _DispyJobInfo(reply, reply_addr)
         try:
             self.lock.acquire()
             job_info.proc = subprocess.Popen(program, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -708,9 +688,26 @@ class _DispyNode():
             # logging.debug('Removing job file "%s"', f)
             if os.path.isfile(f):
                 os.remove(f)
-        _send_job_reply(job_info)
+        self._send_job_reply(job_info)
         if self.avail_cpus == self.cpus:
             self.send_pong_msg()
+
+    def _send_job_reply(self, job_info):
+        """Internal use only.
+        """
+        job_reply = job_info.job_reply
+        logging.debug('Sending result for job %s (%s) to %s',
+                      job_reply.uid, job_reply.status, job_info.reply_addr[0])
+        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                            certfile=self.certfile, keyfile=self.keyfile)
+        sock.settimeout(5)
+        try:
+            sock.connect(job_info.reply_addr)
+            sock.write_msg(job_reply.uid, cPickle.dumps(job_reply))
+        except:
+            logging.error("Couldn't send results for %s to %s (%s)",
+                          job_reply.uid, str(job_info.reply_addr), str(traceback.format_exc()))
+        sock.close()
 
     def shutdown(self):
         self.lock.acquire()
