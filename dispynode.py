@@ -44,22 +44,18 @@ import shutil
 import getopt
 import marshal
 
-from dispy import _Compute, _XferFile, _xor_string, _DispySocket, _DispyJob_, _node_name_ipaddr
+from dispy import _DispySocket, _DispyJob_, _JobReply, DispyJob, \
+     _Compute, _XferFile, _xor_string, _node_name_ipaddr
 
 MaxFileSize = 10240000
 
-class _JobReply_():
-    """Internal use only.
-    """
-    def __init__(self, _job, reply_addr, certfile=None, keyfile=None):
-        self.job = _job
+class _DispyJobInfo():
+    def __init__(self, job_reply, reply_addr, certfile=None, keyfile=None):
+        self.job_reply = job_reply
         self.reply_addr = reply_addr
-        self.certfile = certfile
-        self.keyfile = keyfile
-        self.result = None
-        self.stdout = None
-        self.stderr = None
-        self.exception = None
+        self.proc = None
+        self.certfile = None
+        self.keyfile = None
 
 def _same_file(tgt, xf):
     """Internal use only.
@@ -74,32 +70,34 @@ def _same_file(tgt, xf):
     except:
         return False
 
-def _job_func(__dispy_job_reply, __proc_Q, __compute_env, __compute_name, __compute_code):
+def _dispy_job_func(__dispy_job_info, __dispy_job_args, __dispy_job_kwargs,
+                    __dispy_reply_Q, __dispy_job_env, __dispy_job_name, __dispy_job_code,
+                    __dispy_job_files=[]):
     """Internal use only.
     """
     sys.stdout = cStringIO.StringIO()
     sys.stderr = cStringIO.StringIO()
-    __exception = None
-    __result = None
-    if __compute_env and isinstance(__compute_env, list):
-        sys.path = __compute_env + sys.path
+    __dispy_job_reply = __dispy_job_info.job_reply
+    if __dispy_job_env and isinstance(__dispy_job_env, list):
+        sys.path = __dispy_job_env + sys.path
     try:
-        exec marshal.loads(__compute_code)
+        exec marshal.loads(__dispy_job_code)
         globals().update(locals())
-        __args = cPickle.loads(__dispy_job_reply.job.args)
-        __kwargs = cPickle.loads(__dispy_job_reply.job.kwargs)
-        __func = globals()[__compute_name]
-        __result = __func(*__args, **__kwargs)
+        __dispy_job_args = cPickle.loads(__dispy_job_args)
+        __dispy_job_kwargs = cPickle.loads(__dispy_job_kwargs)
+        __func = globals()[__dispy_job_name]
+        __dispy_job_reply.result = __func(*__dispy_job_args, **__dispy_job_kwargs)
+        __dispy_job_reply.status = DispyJob.Finished
     except:
-        __exception = traceback.format_exc()
-    for f in __dispy_job_reply.job.files:
+        raise
+        __dispy_job_reply.exception = traceback.format_exc()
+        __dispy_job_reply.status = DispyJob.Terminated
+    for f in __dispy_job_files:
         if os.path.isfile(f):
             os.remove(f)
-    __dispy_job_reply.result = __result
     __dispy_job_reply.stdout = sys.stdout.getvalue()
     __dispy_job_reply.stderr = sys.stderr.getvalue()
-    __dispy_job_reply.exception = __exception
-    __proc_Q.put(__dispy_job_reply)
+    __dispy_reply_Q.put(__dispy_job_reply)
 
 def dispy_provisional_result(result):
     """Sends provisional result of computation back to the client.
@@ -112,37 +110,37 @@ def dispy_provisional_result(result):
     """
     sock = None
     try:
+        __dispy_job_reply = __dispy_job_info.job_reply
         logging.debug('Sending provisional result for job %s to %s',
                       __dispy_job_reply.job.uid, __dispy_job_reply.job.reply_addr)
+        __dispy_job_reply.status = DispyJob.ProvisionalResult
         sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
-                            certfile=__dispy_job_reply.certfile, keyfile=__dispy_job_reply.keyfile)
-        sock.settimeout(10)
-        reply = {'result':result, 'stdout':None, 'stderr':None,
-                 'exception':None, 'hash':__dispy_job_reply.job.hash, 'provisional':True}
-        sock.connect(__dispy_job_reply.job.reply_addr)
-        sock.write_msg(__dispy_job_reply.job.uid, cPickle.dumps(reply))
+                            certfile=__dispy_job_info.certfile,
+                            keyfile=__dispy_job_info.keyfile)
+        sock.settimeout(5)
+        sock.connect(__dispy_job_info.reply_addr)
+        sock.write_msg(__dispy_job_reply.uid, cPickle.dumps(__dispy_job_reply))
     except:
         logging.error("Couldn't send provisional results %s (%s)",
                       str(result), str(traceback.format_exc()))
     if sock is not None:
         sock.close()
 
-def _send_job_reply(job_reply):
+def _send_job_reply(job_info):
     """Internal use only.
     """
-    logging.debug('Sending result for job %s to %s',
-                  job_reply.job.uid, job_reply.reply_addr[0])
+    job_reply = job_info.job_reply
+    logging.debug('Sending result for job %s (%s) to %s',
+                  job_reply.uid, job_reply.status, job_info.reply_addr[0])
     sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
-                        certfile=job_reply.certfile, keyfile=job_reply.keyfile)
-    reply = {'result':job_reply.result, 'stdout':job_reply.stdout, 'stderr':job_reply.stderr,
-             'exception':job_reply.exception, 'hash':job_reply.job.hash}
-    sock.settimeout(10)
+                        certfile=job_info.certfile, keyfile=job_info.keyfile)
+    sock.settimeout(5)
     try:
-        sock.connect(job_reply.reply_addr)
-        sock.write_msg(job_reply.job.uid, cPickle.dumps(reply))
-    except Exception:
+        sock.connect(job_info.reply_addr)
+        sock.write_msg(job_reply.uid, cPickle.dumps(job_reply))
+    except:
         logging.error("Couldn't send results for %s to %s (%s)",
-                      job_reply.job.uid, str(job_reply.reply_addr), str(sys.exc_info()))
+                      job_reply.uid, str(job_info.reply_addr), str(traceback.format_exc()))
     sock.close()
 
 class _DispyNode():
@@ -180,7 +178,7 @@ class _DispyNode():
         self.computations = {}
         self.scheduler_ip_addr = None
         self.file_uses = {}
-        self.procs = {}
+        self.job_infos = {}
         self.lock = threading.Lock()
         self.terminate = False
         self.signature = os.urandom(20).encode('hex')
@@ -198,9 +196,9 @@ class _DispyNode():
 
         scheduler_ip_addr = _node_name_ipaddr(scheduler_node)[1]
 
-        self.proc_Q = multiprocessing.Queue()
-        self.proc_Q_thread = threading.Thread(target=self.__proc_Q_process)
-        self.proc_Q_thread.start()
+        self.reply_Q = multiprocessing.Queue()
+        self.reply_Q_thread = threading.Thread(target=self.__reply_Q)
+        self.reply_Q_thread.start()
 
         self.ping_thread = threading.Thread(target=self.__ping_pong,
                                             args=(node_port, scheduler_ip_addr))
@@ -256,7 +254,8 @@ class _DispyNode():
                     if msg.startswith('PING:'):
                         logging.debug('Ping message from %s (%s)', addr[0], addr[1])
                         if self.cpus != self.avail_cpus:
-                            logging.debug('Busy; ignoring ping message from %s', addr[0])
+                            logging.debug('Busy (%s/%s); ignoring ping message from %s',
+                                          self.cpus, self.avail_cpus, addr[0])
                             continue
                         try:
                             info = cPickle.loads(msg[len('PING:'):])
@@ -342,7 +341,6 @@ class _DispyNode():
                     resp = 'NAK (invalid computation %s)' % _job.compute_id
                 else:
                     reply_addr = (addr[0], self.computations[_job.compute_id].job_result_port)
-                    setattr(_job, 'reply_addr', reply_addr)
                     logging.debug('New job id %s from %s', _job.uid, addr[0])
                     files = []
                     for f in _job.files:
@@ -357,9 +355,11 @@ class _DispyNode():
                     _job.files = files
 
                     if compute.type == _Compute.func_type:
-                        dispy_job_reply = _JobReply_(_job, reply_addr,
-                                                     certfile=self.certfile, keyfile=self.keyfile)
-                        args = (dispy_job_reply, self.proc_Q, compute.env, compute.name, compute.code)
+                        reply = _JobReply(_job, self.ip_addr)
+                        job_info = _DispyJobInfo(reply, reply_addr, certfile=self.certfile,
+                                                 keyfile=self.keyfile)
+                        args = (job_info, _job.args, _job.kwargs, self.reply_Q,
+                                compute.env, compute.name, compute.code, _job.files)
                         try:
                             conn.write_msg(_job.uid, cPickle.dumps(_job.uid))
                             conn.close()
@@ -368,15 +368,15 @@ class _DispyNode():
                                             str(addr))
                             continue
                         self.lock.acquire()
-                        func_proc = multiprocessing.Process(target=_job_func, args=args)
+                        job_info.proc = multiprocessing.Process(target=_dispy_job_func, args=args)
                         self.avail_cpus -= 1
-                        self.procs[_job.uid] = func_proc
+                        self.job_infos[_job.uid] = job_info
                         self.lock.release()
-                        func_proc.start()
+                        job_info.proc.start()
                         continue
                     elif compute.type == _Compute.prog_type:
                         prog_thread = threading.Thread(target=self.__job_program,
-                                                       args=(_job, reply_addr))
+                                                       args=(_job, reply_addr,))
                         try:
                             conn.write_msg(_job.uid, cPickle.dumps(_job.uid))
                             conn.close()
@@ -611,8 +611,8 @@ class _DispyNode():
                     logging.debug('Deleting computation failed with %s', traceback.format_exc())
                     # raise
                 resp = None
-            elif msg.startswith('CANCEL_JOB:'):
-                msg = msg[len('CANCEL_JOB:'):]
+            elif msg.startswith('TERMINATE_JOB:'):
+                msg = msg[len('TERMINATE_JOB:'):]
                 try:
                     _job = cPickle.loads(msg)
                     compute = self.computations[_job.compute_id]
@@ -620,19 +620,19 @@ class _DispyNode():
                     logging.debug('Ignoring job request from %s', addr[0])
                     continue
                 self.lock.acquire()
-                proc = self.procs.pop(uid, None)
+                job_info = self.job_infos.pop(uid, None)
                 self.lock.release()
-                if proc is None:
+                if job_info.proc is None:
                     logging.debug('Job %s completed; ignoring cancel request from %s',
                                   uid, addr[0])
                     continue
                 try:
                     logging.debug('Killing job %s', uid)
-                    proc.terminate()
-                    if isinstance(proc, multiprocessing.Process):
-                        proc.join(2)
+                    job_info.proc.terminate()
+                    if isinstance(job_info.proc, multiprocessing.Process):
+                        job_info.proc.join(2)
                     else:
-                        proc.wait()
+                        job_info.proc.wait()
                     self.lock.acquire()
                     self.avail_cpus += 1
                     self.lock.release()
@@ -640,9 +640,11 @@ class _DispyNode():
                     print traceback.format_exc()
                 logging.debug('Killed process for job %s', uid)
                 reply_addr = (addr[0], compute.job_result_port)
-                job_reply = _JobReply_(_job, reply_addr, certfile=self.certfile, keyfile=self.keyfile)
-                job_reply.exception = 'Cancelled'
-                _send_job_reply(job_reply)
+                reply = _JobReply(_job, self.ip_addr)
+                job_info = _DispyJobInfo(reply, reply_addr, certfile=self.certfile,
+                                         keyfile=self.keyfile)
+                reply.status = DispyJob.Terminated
+                _send_job_reply(job_info)
                 if self.avail_cpus == self.cpus:
                     self.send_pong_msg()
             else:
@@ -656,44 +658,48 @@ class _DispyNode():
                 except:
                     logging.warning('Failed to send reply to %s', str(addr))
 
-    def __proc_Q_process(self):
+    def __reply_Q(self):
         while True:
-            reply = self.proc_Q.get()
-            if reply is None:
+            job_reply = self.reply_Q.get()
+            if job_reply is None:
                 break
             self.lock.acquire()
-            proc = self.procs.pop(reply.job.uid, None)
-            if proc is not None:
+            job_info = self.job_infos.pop(job_reply.uid, None)
+            if job_info is not None:
                 self.avail_cpus += 1
             self.lock.release()
-            if proc is not None:
-                proc.join()
-                _send_job_reply(reply)
+            if job_info is not None:
+                job_info.proc.join()
+                job_info.job_reply = job_reply
+                _send_job_reply(job_info)
             if self.avail_cpus == self.cpus:
                 self.send_pong_msg()
-        self.proc_Q = None
+        self.reply_Q = None
 
     def __job_program(self, _job, reply_addr):
         program = [self.computations[_job.compute_id].name]
         args = cPickle.loads(_job.args)
         program.extend(args)
         logging.debug('Executing "%s"', str(program))
-        stdout = stderr = result = exception = None
-        proc = None
+        reply = _JobReply(_job, self.ip_addr)
+        job_info = _DispyJobInfo(reply, reply_addr,
+                                 certfile=self.certfile, keyfile=self.keyfile)
         try:
-            proc = subprocess.Popen(program, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                    env={'PATH':self.computations[_job.compute_id].env.get('PATH')})
-            assert isinstance(proc, subprocess.Popen)
             self.lock.acquire()
-            self.procs[_job.uid] = proc
+            job_info.proc = subprocess.Popen(program, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                             env={'PATH':self.computations[_job.compute_id].env.get('PATH')})
+            assert isinstance(job_info.proc, subprocess.Popen)
+            self.job_infos[_job.uid] = job_info
             self.lock.release()
-            stdout, stderr = proc.communicate()
-            result = proc.returncode
+            reply.stdout, reply.stderr = job_info.proc.communicate()
+            reply.result = job_info.proc.returncode
+            reply.status = DispyJob.Finished
         except Exception:
             logging.debug('Executing %s failed with %s', str(program), str(sys.exc_info()))
-            exception = traceback.format_exc()
+            reply.exception = traceback.format_exc()
+            reply.status = DispyJob.Terminated
         self.lock.acquire()
-        if self.procs.pop(_job.uid, None) != proc:
+        if self.job_infos.pop(_job.uid, None) != job_info:
             self.lock.release()
             return
         self.avail_cpus += 1
@@ -702,28 +708,24 @@ class _DispyNode():
             # logging.debug('Removing job file "%s"', f)
             if os.path.isfile(f):
                 os.remove(f)
-        job_reply = _JobReply_(_job, reply_addr, certfile=self.certfile, keyfile=self.keyfile)
-        job_reply.result = result
-        job_reply.stdout = stdout
-        job_reply.stderr = stderr
-        job_reply.exception = exception
-        _send_job_reply(job_reply)
+        _send_job_reply(reply)
         if self.avail_cpus == self.cpus:
             self.send_pong_msg()
 
     def shutdown(self):
         self.lock.acquire()
-        for uid, proc in self.procs.iteritems():
-            if isinstance(proc, multiprocessing.Process):
-                logging.debug('process %s for %s is alive: %s', proc.pid, uid, proc.is_alive())
-                proc.terminate()
-                proc.join()
-        self.procs = {}
+        for uid, job_info in self.job_infos.iteritems():
+            if isinstance(job_info.proc, multiprocessing.Process):
+                logging.debug('process %s for %s is alive: %s',
+                              job_info.proc.pid, uid, job_info.proc.is_alive())
+                job_info.proc.terminate()
+                job_info.proc.join()
+        self.job_infos = {}
         ip_addr = self.scheduler_ip_addr
         self.scheduler_ip_addr = None
         self.lock.release()
-        if self.proc_Q:
-            self.proc_Q.put(None)
+        if self.reply_Q:
+            self.reply_Q.put(None)
         if ip_addr:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             logging.debug('Sending TERMINATE to %s', ip_addr)
