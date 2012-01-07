@@ -708,7 +708,7 @@ class _DispyNode():
             # logging.debug('Removing job file "%s"', f)
             if os.path.isfile(f):
                 os.remove(f)
-        _send_job_reply(reply)
+        _send_job_reply(job_info)
         if self.avail_cpus == self.cpus:
             self.send_pong_msg()
 
