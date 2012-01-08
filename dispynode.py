@@ -98,6 +98,7 @@ def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
             os.remove(f)
     __dispy_job_reply.stdout = sys.stdout.getvalue()
     __dispy_job_reply.stderr = sys.stderr.getvalue()
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
     __dispy_reply_Q.put(__dispy_job_reply)
 
 def dispy_provisional_result(result):
