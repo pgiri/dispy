@@ -555,9 +555,9 @@ class _Scheduler(object):
                             logging.warning('Invalid job cancel message')
                             continue
                         self._sched_cv.acquire()
-                        cluster = self._clusters.get(_job.compute_id, None)
+                        cluster = self._clusters.get(job.compute_id, None)
                         if not cluster:
-                            logging.debug('Invalid job %s!', _job.uid)
+                            logging.debug('Invalid job %s!', job.uid)
                             self._sched_cv.release()
                             continue
                         _job = self._sched_jobs.get(job.uid, None)

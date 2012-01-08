@@ -359,7 +359,6 @@ class _DispyNode():
                         self.job_infos[_job.uid] = job_info
                         self.lock.release()
                         job_info.proc.start()
-                        logging.debug('Process ID for %s is %s', _job.uid, job_info.proc.pid)
                         continue
                     elif compute.type == _Compute.prog_type:
                         prog_thread = threading.Thread(target=self.__job_program,
