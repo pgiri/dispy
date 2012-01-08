@@ -47,9 +47,12 @@ import marshal
 from dispy import _DispySocket, _DispyJob_, _JobReply, DispyJob, \
      _Compute, _XferFile, _xor_string, _node_name_ipaddr
 
+_dispy_version = '1.0'
 MaxFileSize = 10240000
 
 class _DispyJobInfo():
+    """Internal use only.
+    """
     def __init__(self, job_reply, reply_addr):
         self.job_reply = job_reply
         self.reply_addr = reply_addr
@@ -88,7 +91,6 @@ def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
         __dispy_job_reply.result = __func(*__dispy_job_args, **__dispy_job_kwargs)
         __dispy_job_reply.status = DispyJob.Finished
     except:
-        raise
         __dispy_job_reply.exception = traceback.format_exc()
         __dispy_job_reply.status = DispyJob.Terminated
     for f in __dispy_job_files:
@@ -101,10 +103,11 @@ def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
 def dispy_provisional_result(result):
     """Sends provisional result of computation back to the client.
 
-    In some cases, such as optimizations, computations may send best
-    answer so far back to the client so that the client may decide to
-    terminate computations based on the results or alter computations
-    if necessary. The computations can use this function in such cases
+    In some cases, such as optimizations, computations may send
+    current (best) result to the client and continue computation (for
+    next iteration) so that the client may decide to terminate
+    computations based on the results or alter computations if
+    necessary. The computations can use this function in such cases
     with the current result of computation as argument.
     """
     sock = None
@@ -193,7 +196,7 @@ class _DispyNode():
         ping_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         ping_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         pong_msg = {'ip_addr':self.ip_addr, 'fqdn':self.fqdn, 'port':self.address[1],
-                    'cpus':self.cpus, 'sign':self.signature}
+                    'cpus':self.cpus, 'sign':self.signature, 'version':_dispy_version}
         pong_msg = 'PONG:' + cPickle.dumps(pong_msg)
         ping_sock.sendto(pong_msg, ('<broadcast>', self.scheduler_port))
         ping_sock.close()
@@ -212,7 +215,7 @@ class _DispyNode():
         if self.avail_cpus == self.cpus:
             self.send_pong_msg(reset_interval=False)
         pong_msg = {'ip_addr':self.ip_addr, 'fqdn':self.fqdn, 'port':self.address[1],
-                    'cpus':self.cpus, 'sign':self.signature}
+                    'cpus':self.cpus, 'sign':self.signature, 'version':_dispy_version}
         pong_msg = 'PONG:' + cPickle.dumps(pong_msg)
 
         if scheduler_ip_addr:
@@ -245,6 +248,7 @@ class _DispyNode():
                                           info['scheduler_port'])
                             socket.inet_aton(info['scheduler_ip_addr'])
                             assert isinstance(info['scheduler_port'], int)
+                            assert info['version'] == _dispy_version
                             addr = (info['scheduler_ip_addr'], info['scheduler_port'])
                         except:
                             # raise
@@ -323,7 +327,7 @@ class _DispyNode():
                     resp = 'NAK (invalid computation %s)' % _job.compute_id
                 else:
                     reply_addr = (addr[0], self.computations[_job.compute_id].job_result_port)
-                    logging.debug('New job id %s from %s', _job.uid, addr[0])
+                    logging.debug('New job id %s from %s: %s', _job.uid, addr[0], self.avail_cpus)
                     files = []
                     for f in _job.files:
                         tgt = os.path.join(self.computations[compute.id].dest_path,
@@ -349,12 +353,13 @@ class _DispyNode():
                             logging.warning('Failed to send response for new job to %s',
                                             str(addr))
                             continue
-                        self.lock.acquire()
                         job_info.proc = multiprocessing.Process(target=_dispy_job_func, args=args)
+                        self.lock.acquire()
                         self.avail_cpus -= 1
                         self.job_infos[_job.uid] = job_info
                         self.lock.release()
                         job_info.proc.start()
+                        logging.debug('Process ID for %s is %s', _job.uid, job_info.proc.pid)
                         continue
                     elif compute.type == _Compute.prog_type:
                         prog_thread = threading.Thread(target=self.__job_program,
@@ -563,7 +568,7 @@ class _DispyNode():
                     if compute is None:
                         logging.warning('Computation "%s" is not valid', compute_id)
                     else:
-                        logging.debug('Deleting computation "%s"', compute.name)
+                        logging.debug('Deleting computation "%s"/%s', compute.name, compute_id)
                         #assert compute.dest_path.startswith(self.dest_path_prefix)
                     if compute is not None and info['cleanup']:
                         for xf in compute.xfer_files:
@@ -650,12 +655,11 @@ class _DispyNode():
                 self.avail_cpus += 1
             self.lock.release()
             if job_info is not None:
-                job_info.proc.join()
+                job_info.proc.join(2)
                 job_info.job_reply = job_reply
                 self._send_job_reply(job_info)
             if self.avail_cpus == self.cpus:
                 self.send_pong_msg()
-        self.reply_Q = None
 
     def __job_program(self, _job, reply_addr):
         program = [self.computations[_job.compute_id].name]
@@ -665,10 +669,10 @@ class _DispyNode():
         reply = _JobReply(_job, self.ip_addr)
         job_info = _DispyJobInfo(reply, reply_addr)
         try:
-            self.lock.acquire()
             job_info.proc = subprocess.Popen(program, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                              env={'PATH':self.computations[_job.compute_id].env.get('PATH')})
             assert isinstance(job_info.proc, subprocess.Popen)
+            self.lock.acquire()
             self.job_infos[_job.uid] = job_info
             self.lock.release()
             reply.stdout, reply.stderr = job_info.proc.communicate()
@@ -696,8 +700,8 @@ class _DispyNode():
         """Internal use only.
         """
         job_reply = job_info.job_reply
-        logging.debug('Sending result for job %s (%s) to %s',
-                      job_reply.uid, job_reply.status, job_info.reply_addr[0])
+        logging.debug('Sending result for job %s (%s) to %s: %s',
+                      job_reply.uid, job_reply.status, job_info.reply_addr[0], self.avail_cpus)
         sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                             certfile=self.certfile, keyfile=self.keyfile)
         sock.settimeout(5)
@@ -712,9 +716,12 @@ class _DispyNode():
     def shutdown(self):
         self.lock.acquire()
         for uid, job_info in self.job_infos.iteritems():
+            job_info.proc.terminate()
+            logging.debug('process for %s is killed', uid)
             if isinstance(job_info.proc, multiprocessing.Process):
-                logging.debug('process %s for %s is alive: %s',
-                              job_info.proc.pid, uid, job_info.proc.is_alive())
+                job_info.proc.join(2)
+            else:
+                job_info.proc.wait()
                 job_info.proc.terminate()
                 job_info.proc.join()
         self.job_infos = {}

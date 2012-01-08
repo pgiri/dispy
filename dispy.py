@@ -43,6 +43,8 @@ import types
 import itertools
 import Queue
 
+_dispy_version = '1.0'
+
 class DispyJob():
     """Job scheduled for execution with dispy.
 
@@ -362,7 +364,6 @@ class _Node():
         msg = 'DEL_COMPUTE:' + cPickle.dumps({'_compute_id':compute.id, 'cleanup':compute.cleanup})
         try:
             self.send(0, msg, False)
-            self.clusters.remove(compute.id)
         except:
             logging.debug('Deleting computation %s/%s from %s failed',
                           compute.id, compute.name, self.ip_addr)
@@ -537,7 +538,7 @@ class _Cluster(object):
 
     def send_ping_cluster(self, cluster):
         ping_request = cPickle.dumps({'scheduler_ip_addr':self.ip_addr,
-                                      'scheduler_port':self.port})
+                                      'scheduler_port':self.port, 'version':_dispy_version})
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         for node_spec, node_info in cluster._compute.node_spec.iteritems():
             if node_spec.find('*') >= 0:
@@ -599,7 +600,7 @@ class _Cluster(object):
                 if re.match(node_spec, ip_addr):
                     compute_nodes.append(node)
                     break
-        # self._sched_cv.notify()
+        self._sched_cv.notify()
         self._sched_cv.release()
 
         for node in compute_nodes:
@@ -653,7 +654,7 @@ class _Cluster(object):
             else:
                 job.exception = traceback.format_exc()
         finally:
-            if job.status != DispyJob.ProvisionalResult:
+            if status != DispyJob.ProvisionalResult:
                 self._sched_cv.acquire()
                 assert cluster._pending_jobs > 0
                 cluster._pending_jobs -= 1
@@ -801,7 +802,8 @@ class _Cluster(object):
                         job.exception = reply.exception
                         if self.shared:
                             job.ip_addr = reply.ip_addr
-                            job.end_time = reply.end_time
+                            job.start_time = getattr(reply, 'start_time', None)
+                            job.end_time = getattr(reply, 'end_time', None)
                         else:
                             job.end_time = time.time()
                             assert reply.ip_addr == node.ip_addr
@@ -818,14 +820,15 @@ class _Cluster(object):
                         self._sched_cv.release()
                         logging.warning('Invalid job result for %s from %s',
                                         uid, addr[0])
-                        logging.debug(traceback.format_exc())
+                        logging.debug('%s, %s', str(reply), traceback.format_exc())
                         continue
 
                     if self.shared is False:
                         assert reply.status in [DispyJob.Finished, DispyJob.Terminated], \
                                    'invalid reply status for %s: %s' % (_job.uid, reply.status)
                         if reply.status == DispyJob.Terminated:
-                            assert job.status in [DispyJob.Cancelled, DispyJob.Terminated], \
+                            assert job.status in [DispyJob.Running, DispyJob.Cancelled,
+                                                  DispyJob.Terminated], \
                                    'invalid job status for %s: %s' % (_job.uid, job.status)
                             logging.debug('Terminated job: %s, %s', _job.uid, job.status)
                         else:
@@ -833,6 +836,7 @@ class _Cluster(object):
                                    'status of %s: %s, %s' % (uid, job.status, reply.status)
                             node.jobs += 1
                         node.busy -= 1
+                        node.cpu_time += job.end_time - job.start_time
                     else:
                         if addr[0] != cluster.scheduler_node:
                             logging.warning('Ignoring job reply from %s', addr[0])
@@ -841,15 +845,15 @@ class _Cluster(object):
                         node = self._nodes.get(job.ip_addr, None)
                         if node is None:
                             node = type('_Node', (), {'ip_addr':job.ip_addr, 'jobs':0,
-                                                      'cpus':reply.cpus, 'cpu_time':0,
-                                                      'busy':0})
+                                                      'cpus':getattr(reply, 'cpus', 0),
+                                                      'cpu_time':0, 'busy':0})
                             self._nodes[job.ip_addr] = node
                             compute.nodes[job.ip_addr] = node
-                        job.start_time = reply.start_time
                         job.status = reply.status
                         if job.status == DispyJob.Finished:
                             node.jobs += 1
-                    node.cpu_time += job.end_time - job.start_time
+                        if job.end_time is not None:
+                            node.cpu_time += job.end_time - job.start_time
                     self.finish_job(_job, reply.status, cluster)
                     self._sched_cv.notify()
                     self._sched_cv.release()
@@ -873,6 +877,7 @@ class _Cluster(object):
                             status = cPickle.loads(msg[len('PONG:'):])
                             assert status['port'] > 0 and status['cpus'] > 0
                             assert len(status['ip_addr']) > 0
+                            assert status['version'] == _dispy_version
                         except:
                             logging.debug('Ignoring node %s', addr[0])
                             continue
@@ -946,7 +951,8 @@ class _Cluster(object):
                                          if _job.node is not None and _job.node.ip_addr == node.ip_addr]
                             reschedule_jobs(dead_jobs)
                             for cid, cluster in self._clusters.iteritems():
-                                cluster._compute.nodes.pop(node.ip_addr, None)
+                                if cluster._compute.nodes.pop(node.ip_addr, None) is not None:
+                                    node.clusters.remove(cid)
                             self._sched_cv.release()
                             del node
                         except Exception:
@@ -1197,6 +1203,8 @@ class _Cluster(object):
             return
         else:
             nodes = compute.nodes.values()
+            for node in nodes:
+                node.clusters.remove(compute.id)
             compute.nodes = {}
             self._sched_cv.release()
             for node in nodes:
@@ -1570,8 +1578,8 @@ class SharedJobCluster(JobCluster):
 
         self.certfile = certfile
         self.keyfile = keyfile
-        self._cluster.terminate_scheduler = True
         self._cluster._sched_cv.acquire()
+        self._cluster.terminate_scheduler = True
         self._cluster._sched_cv.notify()
         self._cluster._sched_cv.release()
         self._compute.node_spec = nodes
@@ -1590,8 +1598,11 @@ class SharedJobCluster(JobCluster):
         req = ' ' * len(hashlib.sha1('').hexdigest()) + 'CLUSTER'
         scheduler_sock.write(req)
         uid, msg = scheduler_sock.read_msg()
-        signature = cPickle.loads(msg)
-        self.auth_code = hashlib.sha1(_xor_string(signature['sign'], secret)).hexdigest()
+        resp = cPickle.loads(msg)
+        if resp['version'] != _dispy_version:
+            raise Exception('dispyscheduler version "%s" is different from dispy version "%s"' % \
+                            resp['version'], _dispy_version)
+        self.auth_code = hashlib.sha1(_xor_string(resp['sign'], secret)).hexdigest()
         logging.debug('auth_code: %s', self.auth_code)
         scheduler_sock.close()
 

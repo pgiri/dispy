@@ -31,6 +31,8 @@ import logging
 
 from dispy import _node_name_ipaddr
 
+_dispy_version = '1.0'
+
 class DispyNetRelay():
     """Internal use only.
     """
@@ -69,6 +71,8 @@ class DispyNetRelay():
         except:
             netaddr = netmask = None
 
+        scheduler_version = _dispy_version
+
         bc_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         bc_sock.bind(('', 0))
         bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -76,7 +80,8 @@ class DispyNetRelay():
         scheduler_ip_addr = _node_name_ipaddr(scheduler_node)[1]
         if scheduler_ip_addr and scheduler_port:
             relay_request = cPickle.dumps({'scheduler_ip_addr':scheduler_ip_addr,
-                                           'scheduler_port':scheduler_port})
+                                           'scheduler_port':scheduler_port,
+                                           'version':scheduler_version})
             bc_sock.sendto('PING:%s' % relay_request, ('<broadcast>', node_port))
 
         ping_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -108,6 +113,7 @@ class DispyNetRelay():
                         data = cPickle.loads(msg[len('PING:'):])
                         scheduler_ip_addr = data['scheduler_ip_addr']
                         scheduler_port = data['scheduler_port']
+                        scheduler_version = data['version']
                         assert isinstance(scheduler_ip_addr, str)
                         assert isinstance(scheduler_port, int)
                     except:
@@ -115,7 +121,8 @@ class DispyNetRelay():
                                       addr[0], addr[1])
                         continue
                     relay_request = cPickle.dumps({'scheduler_ip_addr':scheduler_ip_addr,
-                                                   'scheduler_port':scheduler_port})
+                                                   'scheduler_port':scheduler_port,
+                                                   'version':scheduler_version})
                     bc_sock.sendto('PING:%s' % relay_request, ('<broadcast>', node_port))
                 else:
                     assert sock == pong_sock
@@ -137,7 +144,8 @@ class DispyNetRelay():
                         assert isinstance(pong['port'], int)
                         assert isinstance(pong['cpus'], int)
                         relay_request = cPickle.dumps({'scheduler_ip_addr':scheduler_ip_addr,
-                                                       'scheduler_port':scheduler_port})
+                                                       'scheduler_port':scheduler_port,
+                                                       'version':scheduler_version})
                         relay_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                         relay_sock.sendto('PING:%s' % relay_request,
                                           (pong['host'], node_port))

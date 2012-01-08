@@ -47,6 +47,8 @@ import collections
 from dispy import _DispySocket, _Compute, DispyJob, _DispyJob_, _Node, _JobReply, \
      MetaSingleton, _xor_string, _parse_nodes, _node_name_ipaddr
 
+_dispy_version = '1.0'
+
 class _Scheduler(object):
     """Internal use only.
     """
@@ -138,7 +140,8 @@ class _Scheduler(object):
             bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
             ping_request = cPickle.dumps({'scheduler_ip_addr':self.ip_addr,
-                                          'scheduler_port':self.port})
+                                          'scheduler_port':self.port,
+                                          'version':_dispy_version})
             node_spec = _parse_nodes(nodes)
             for node_spec, node_info in node_spec.iteritems():
                 logging.debug('Node: %s, %s', node_spec, str(node_info))
@@ -162,7 +165,7 @@ class _Scheduler(object):
 
     def send_ping_cluster(self, cluster):
         ping_request = cPickle.dumps({'scheduler_ip_addr':self.ip_addr,
-                                      'scheduler_port':self.port})
+                                      'scheduler_port':self.port, 'version':_dispy_version})
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         for node_spec, node_info in cluster._compute.node_spec.iteritems():
             if node_spec.find('*') >= 0:
@@ -216,14 +219,16 @@ class _Scheduler(object):
     def worker(self):
         while True:
             item = self.worker_Q.get(block=True)
-            if item is None:
-                break
             priority, func, args = item
+            if func is None:
+                self.worker_Q.task_done()
+                break
             logging.debug('Calling %s', func.__name__)
             try:
                 func(*args)
             except:
                 logging.debug('Running %s failed: %s', func.__name__, traceback.format_exc())
+            self.worker_Q.task_done()
 
     def setup_node(self, node, computes):
         # called via worker
@@ -423,7 +428,8 @@ class _Scheduler(object):
                         logging.debug('Terminated job: %s', _job.uid)
                     else:
                         assert reply.status == DispyJob.Finished
-                        assert _job.job.status == DispyJob.Running
+                        if _job.job.status != DispyJob.Running:
+                            logging.debug('Job %s finished, but status is %s', _job.uid, _job.job.status)
                         _job.node.jobs += 1
                     _job.node.cpu_time += _job.job.end_time - _job.job.start_time
                     cluster._pending_jobs -= 1
@@ -444,7 +450,7 @@ class _Scheduler(object):
                         if req != self.auth_code:
                             req = conn.read(len('CLUSTER'))
                             if req == 'CLUSTER':
-                                resp = cPickle.dumps({'sign':self.sign})
+                                resp = cPickle.dumps({'sign':self.sign,'version':_dispy_version})
                                 conn.write_msg(0, resp)
                             else:
                                 logging.warning('Invalid/unauthorized request ignored')
@@ -527,6 +533,8 @@ class _Scheduler(object):
                                  if _job.compute_id == compute.id]
                         self.unsched_jobs -= len(cluster._jobs)
                         nodes = compute.nodes.values()
+                        for node in nodes:
+                            node.clusters.remove(compute.id)
                         compute.nodes = {}
                         # set client_job_result_port to None so result is not sent to client
                         compute.client_job_result_port = None
@@ -565,7 +573,7 @@ class _Scheduler(object):
                                                         compute.client_job_result_port, reply)))
                                     break
                             else:
-                                logging.debug('Invalid job %s!', _job.uid)
+                                logging.debug('Invalid job %s!', job.uid)
                         else:
                             _job.job.status = DispyJob.Cancelled
                             self.worker_Q.put((30, self.terminate_jobs, ([_job],)))
@@ -596,6 +604,7 @@ class _Scheduler(object):
                         try:
                             status = cPickle.loads(msg[len('PONG:'):])
                             assert status['port'] > 0 and status['cpus'] > 0
+                            assert status['version'] == _dispy_version
                         except:
                             logging.debug('Ignoring node %s', addr[0])
                             continue
@@ -671,7 +680,9 @@ class _Scheduler(object):
                                          if _job.node is not None and _job.node.ip_addr == node.ip_addr]
                             reschedule_jobs(dead_jobs)
                             for cid, cluster in self._clusters.iteritems():
-                                cluster._compute.nodes.pop(node.ip_addr, None)
+                                if cluster._compute.nodes.pop(node.ip_addr, None) is not None:
+                                    node.clusters.remove(cid)
+                            self._sched_cv.notify()
                             self._sched_cv.release()
                             del node
                         except:
@@ -855,8 +866,8 @@ class _Scheduler(object):
         self.select_job_node = None
         self._sched_cv.release()
         if select_job_node:
-            self.worker_Q.put(None)
-            self.worker_thread.join()
+            self.worker_Q.put((99, None, None))
+            self.worker_Q.join()
 
     def stats(self):
         print
