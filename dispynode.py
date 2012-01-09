@@ -328,7 +328,7 @@ class _DispyNode():
                     resp = 'NAK (invalid computation %s)' % _job.compute_id
                 else:
                     reply_addr = (addr[0], self.computations[_job.compute_id].job_result_port)
-                    logging.debug('New job id %s from %s: %s', _job.uid, addr[0], self.avail_cpus)
+                    logging.debug('New job id %s from %s', _job.uid, addr[0])
                     files = []
                     for f in _job.files:
                         tgt = os.path.join(self.computations[compute.id].dest_path,
@@ -678,7 +678,7 @@ class _DispyNode():
             reply.stdout, reply.stderr = job_info.proc.communicate()
             reply.result = job_info.proc.returncode
             reply.status = DispyJob.Finished
-        except Exception:
+        except:
             logging.debug('Executing %s failed with %s', str(program), str(sys.exc_info()))
             reply.exception = traceback.format_exc()
             reply.status = DispyJob.Terminated
@@ -700,8 +700,8 @@ class _DispyNode():
         """Internal use only.
         """
         job_reply = job_info.job_reply
-        logging.debug('Sending result for job %s (%s) to %s: %s',
-                      job_reply.uid, job_reply.status, job_info.reply_addr[0], self.avail_cpus)
+        logging.debug('Sending result for job %s (%s) to %s',
+                      job_reply.uid, job_reply.status, job_info.reply_addr[0])
         sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                             certfile=self.certfile, keyfile=self.keyfile)
         sock.settimeout(5)

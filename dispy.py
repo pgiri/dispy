@@ -1280,12 +1280,13 @@ class JobCluster():
           then the code for that object is transferred to the node executing
           a job for this cluster.
 
-       @callback is a function. When a job's results become available,
-          dispy will call provided callback function with that job as the
-          argument. If a job sends provisional results with
-          'dispy_provisional_result' multiple times, then dispy will call
-          provided callback each such time. The (provisional) results of
-          computation can be retrieved with 'result' field of job, etc.
+       @callback is a function or class method. When a job's results
+          become available, dispy will call provided callback
+          function/method with that job as the argument. If a job
+          sends provisional results with 'dispy_provisional_result'
+          multiple times, then dispy will call provided callback each
+          such time. The (provisional) results of computation can be
+          retrieved with 'result' field of job, etc.
 
         @ip_addr and @port indicate the address where the cluster will bind to.
           If multiple instances of JobCluster are used, these arguments are used
@@ -1358,7 +1359,12 @@ class JobCluster():
                    "callback must be a function or method"
             try:
                 args = inspect.getargspec(callback)
-                assert len(args.args) == 1
+                if inspect.isfunction(callback):
+                    assert len(args.args) == 1
+                else:
+                    assert len(args.args) == 2
+                    if args.args[0] != 'self':
+                        logging.warning('First argument to callback method is not "self"')
                 assert args.varargs is None
                 assert args.keywords is None
                 assert args.defaults is None
@@ -1493,7 +1499,7 @@ class JobCluster():
     def __enter__(self):
         return self
 
-    def __exit__(self, exc_type, exc_value, traceback):
+    def __exit__(self, exc_type, exc_value, trace):
         self.wait()
 
     def stats(self):
