@@ -77,13 +77,14 @@ class DispyJob():
     """
     Created = 1
     Running = 2
-    Cancelled = 4
-    Terminated = 5
-    ProvisionalResult = 6
-    # NB: Finished status should have maximum value, as PriorityQueue
-    # sorts data.  This, if a job with provisional result is already
-    # in the queue and a job is finished, finished job is processed
-    # (in callback) last.
+    ProvisionalResult = 3
+    # NB: Cancelled, Terminated and Finished status should have
+    # maximum values in that order, as PriorityQueue sorts data.
+    # Thus, if a job with provisional result is already in the queue
+    # and a job is finished, finished/terminated job is processed (in
+    # callback) last.
+    Cancelled = 8
+    Terminated = 9
     Finished = 10
     def __init__(self):
         # id can be assigned by user as appropriate (e.g., to distinguish jobs)
@@ -478,13 +479,10 @@ class _Cluster(object):
     """
     __metaclass__ = MetaSingleton
 
-    def __init__(self, loglevel, ip_addr=None, port=None, node_port=None,
+    def __init__(self, ip_addr=None, port=None, node_port=None,
                  secret='', keyfile=None, certfile=None, shared=False):
         if not hasattr(self, 'ip_addr'):
             atexit.register(self.shutdown)
-            if not loglevel:
-                loglevel = logging.WARNING
-            logging.basicConfig(format='%(asctime)s %(message)s', level=loglevel)
             if ip_addr:
                 ip_addr = _node_name_ipaddr(ip_addr)[1]
             else:
@@ -620,9 +618,9 @@ class _Cluster(object):
             item = self.worker_Q.get(block=True)
             priority, func, args = item
             if func is None:
+                assert args is None
                 self.worker_Q.task_done()
                 break
-            logging.debug('Calling %s', func.__name__)
             try:
                 func(*args)
             except:
@@ -733,7 +731,7 @@ class _Cluster(object):
 
         job_result_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         job_result_sock.bind((self.ip_addr, 0))
-        job_result_sock.listen(2)
+        job_result_sock.listen(5)
         self.job_result_port = job_result_sock.getsockname()[1]
         logging.info('Listening at %s, %s, %s',
                      self.ip_addr, self.port, self.job_result_port)
@@ -827,7 +825,7 @@ class _Cluster(object):
                         if reply.status == DispyJob.Terminated:
                             assert job.status in [DispyJob.Running, DispyJob.Cancelled,
                                                   DispyJob.Terminated], \
-                                   'invalid job status for %s: %s' % (_job.uid, job.status)
+                                   'invalid job status for %s: %s' % (uid, job.status)
                         else:
                             assert job.status in [DispyJob.Running, DispyJob.ProvisionalResult], \
                                    'status of %s: %s, %s' % (uid, job.status, reply.status)
@@ -1123,7 +1121,6 @@ class _Cluster(object):
         self._sched_cv.acquire()
         #_job.uid = id(_job)
         _job.uid = self.job_uid
-        logging.debug('Created job %s', _job.uid)
         self.job_uid += 1
         if self.job_uid == sys.maxint:
             # TODO: check if it is okay to reset
@@ -1145,7 +1142,6 @@ class _Cluster(object):
             self._sched_cv.release()
             logging.warning('Job %s is invalid for cancellation!', job.id)
             return -1
-        logging.debug('Job %s status: %s', _job.uid, _job.job.status)
         cluster = self._clusters.get(_job.compute_id, None)
         if not cluster:
             logging.warning('Invalid job %s for cluster "%s"!',
@@ -1181,8 +1177,8 @@ class _Cluster(object):
 
     def close(self, cluster):
         # called for JobCluster only
-        compute = cluster._compute
         self._sched_cv.acquire()
+        compute = cluster._compute
         if self._clusters.pop(compute.id, None) is None:
             logging.warning('Cluster %s is invalid', compute.name)
             self._sched_cv.release()
@@ -1257,12 +1253,12 @@ class JobCluster():
 
     def __init__(self, computation, nodes=['*'], depends=[], callback=None,
                  ip_addr=None, port=None, node_port=None, dest_path='',
-                 loglevel=None, cleanup=True, ping_interval=None, pulse_interval=None,
+                 loglevel=logging.WARNING, cleanup=True, ping_interval=None, pulse_interval=None,
                  resubmit=False, secret='', keyfile=None, certfile=None):
         """Create an instance of cluster for a specific computation.
 
         @computation is either a string (which is name of program, possibly
-        with full path) or a python object.
+        with full path) or a python function or class method.
 
         @nodes is a list. Each element of @nodes is either a string
           (which must be either IP address or name of server node), or
@@ -1331,6 +1327,8 @@ class JobCluster():
         resubmitted to other eligible nodes.
         """
 
+        logging.basicConfig(format='%(asctime)s %(message)s', level=loglevel)
+
         if not isinstance(nodes, list):
             if isinstance(nodes, str):
                 nodes = [nodes]
@@ -1376,7 +1374,7 @@ class JobCluster():
             shared = True
         else:
             shared = False
-        self._cluster = _Cluster(loglevel, ip_addr=ip_addr, port=port, node_port=node_port,
+        self._cluster = _Cluster(ip_addr=ip_addr, port=port, node_port=node_port,
                                  secret=secret, keyfile=keyfile, certfile=certfile,
                                  shared=shared)
         self.ip_addr = self._cluster.ip_addr
@@ -1652,22 +1650,21 @@ class SharedJobCluster(JobCluster):
         self._complete.clear()
         self._cluster._sched_cv.release()
         assert isinstance(_job.uid, int), type(_job.uid)
-        logging.debug('Job %s created for %s', _job.uid, _job.compute_id)
         return _job.job
 
     def cancel(self, job):
-        _job = job._dispy_job_
         self._cluster._sched_cv.acquire()
+        _job = job._dispy_job_
         if _job is None or self._cluster._clusters.get(_job.compute_id, None) != self:
             logging.warning('Invalid job %s for cluster "%s"!', job.id, self._compute.name)
             self._cluster._sched_cv.release()
             return -1
-        if job.status != DispyJob.Created:
-            logging.warning('Job %s is not valid for cancel (%s)', job.uid, job.status)
+        if job.status not in [DispyJob.Created, DispyJob.ProvisionalResult]:
+            logging.warning('Job %s is not valid for cancel (%s)', job.id, job.status)
             self._cluster._sched_cv.release()
             return -1
 
-        _job.job.status = DispyJob.Cancelled
+        job.status = DispyJob.Cancelled
         assert self._pending_jobs >= 1
         self._cluster._sched_cv.release()
         scheduler_sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),

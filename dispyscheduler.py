@@ -337,12 +337,12 @@ class _Scheduler(object):
 
         job_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         job_sock.bind((self.ip_addr, 0))
-        job_sock.listen(2)
+        job_sock.listen(5)
 
         sched_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sched_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sched_sock.bind((self.ip_addr, self.scheduler_port))
-        sched_sock.listen(2)
+        sched_sock.listen(5)
 
         logging.info('Ping port is %s', self.port)
         logging.info('Scheduler port is %s:%s', self.ip_addr, self.scheduler_port)
@@ -424,12 +424,12 @@ class _Scheduler(object):
                     compute = cluster._compute
                     assert compute.nodes[addr[0]] == _job.node
                     if reply.status == DispyJob.Terminated:
-                        assert _job.job.status in [DispyJob.Cancelled, DispyJob.Terminated]
-                        logging.debug('Terminated job: %s', _job.uid)
+                        assert _job.job.status in [DispyJob.Running, DispyJob.Cancelled,
+                                                   DispyJob.Terminated], \
+                               'invalid job status for %s: %s' % (uid, _job.job.status)
                     else:
-                        assert reply.status == DispyJob.Finished
-                        if _job.job.status != DispyJob.Running:
-                            logging.debug('Job %s finished, but status is %s', _job.uid, _job.job.status)
+                        assert _job.job.status in [DispyJob.Running, DispyJob.ProvisionalResult], \
+                               'status of %s: %s, %s' % (uid, _job.job.status, reply.status)
                         _job.node.jobs += 1
                     _job.node.cpu_time += _job.job.end_time - _job.job.start_time
                     cluster._pending_jobs -= 1
