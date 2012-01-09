@@ -685,7 +685,7 @@ class _Cluster(object):
             logging.warning('Failed to run job %s on %s for computation %s; removing this node',
                             _job.uid, _job.node.ip_addr, cluster._compute.name)
             self._sched_cv.acquire()
-            if cluster.compute.nodes.pop(_job.node.ip_addr, None) is not None:
+            if cluster._compute.nodes.pop(_job.node.ip_addr, None) is not None:
                 _job.node.clusters.remove(cluster.compute.id)
                 # TODO: remove the node from all clusters and globally?
             if self._sched_jobs.pop(_job.uid, None) is not None:
@@ -794,7 +794,6 @@ class _Cluster(object):
                     job = _job.job
                     try:
                         reply = cPickle.loads(msg)
-                        logging.debug('Job %s status: %s', job.id, reply.status)
                         assert reply.hash == _job.hash
                         job.result = reply.result
                         job.stdout = reply.stdout
@@ -810,7 +809,6 @@ class _Cluster(object):
                             job.ip_addr = node.ip_addr
                             node.last_pulse = time.time()
                         if reply.status == DispyJob.ProvisionalResult:
-                            logging.debug('Receveid provisional result for %s', job.id)
                             self.finish_job(_job, DispyJob.ProvisionalResult, cluster)
                             self._sched_cv.release()
                             continue
@@ -830,7 +828,6 @@ class _Cluster(object):
                             assert job.status in [DispyJob.Running, DispyJob.Cancelled,
                                                   DispyJob.Terminated], \
                                    'invalid job status for %s: %s' % (_job.uid, job.status)
-                            logging.debug('Terminated job: %s, %s', _job.uid, job.status)
                         else:
                             assert job.status in [DispyJob.Running, DispyJob.ProvisionalResult], \
                                    'status of %s: %s, %s' % (uid, job.status, reply.status)
@@ -866,8 +863,6 @@ class _Cluster(object):
                             node = self._nodes[info['ip_addr']]
                             assert 0 <= info['cpus'] <= node.cpus
                             node.last_pulse = time.time()
-                            logging.debug('pulse from %s at %s',
-                                          info['ip_addr'], node.last_pulse)
                         except:
                             logging.warning('Ignoring pulse message from %s', addr[0])
                             #logging.debug(traceback.format_exc())
@@ -968,7 +963,6 @@ class _Cluster(object):
                     conn = _DispySocket(conn)
                     req = conn.read(len(self.auth_code))
                     if req != self.auth_code:
-                        logging.debug('invalid auth for cmd')
                         conn.close()
                         continue
                     uid, msg = conn.read_msg()
@@ -1076,7 +1070,6 @@ class _Cluster(object):
             if self.terminate_scheduler:
                 self._sched_cv.release()
                 break
-            start_time = time.time()
             while self.unsched_jobs:
                 logging.debug('Pending jobs: %s', self.unsched_jobs)
                 node = self.select_job_node()
@@ -1091,13 +1084,6 @@ class _Cluster(object):
                 else:
                     break
                 cluster = self._clusters[_job.compute_id]
-                compute = cluster._compute
-                if _job.job.start_time == start_time:
-                    logging.warning('Job %s is rescheduled too quickly; ' \
-                                    'scheduler is sleeping', _job.uid)
-                    cluster._jobs.append(_job)
-                    break
-                _job.job.start_time = start_time
                 _job.node = node
                 logging.debug('Scheduling job %s on %s (load: %.3f, %s)',
                               _job.uid, node.ip_addr, float(node.busy) / node.cpus, node.busy)

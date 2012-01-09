@@ -252,7 +252,7 @@ class _Scheduler(object):
             logging.warning('Failed to run job %s on %s for computation %s; removing this node',
                             _job.uid, _job.node.ip_addr, cluster._compute.name)
             self._sched_cv.acquire()
-            if cluster.compute.nodes.pop(_job.node.ip_addr, None) is not None:
+            if cluster._compute.nodes.pop(_job.node.ip_addr, None) is not None:
                 _job.node.clusters.remove(cluster.compute.id)
                 # TODO: remove the node from all clusters and globally?
             if self._sched_jobs.pop(_job.uid, None) is not None:
@@ -792,7 +792,6 @@ class _Scheduler(object):
             if self._terminate_scheduler:
                 self._sched_cv.release()
                 break
-            start_time = time.time()
             while self.unsched_jobs:
                 logging.debug('Pending jobs: %s', self.unsched_jobs)
                 node = self.select_job_node()
@@ -807,12 +806,6 @@ class _Scheduler(object):
                 else:
                     break
                 cluster = self._clusters[_job.compute_id]
-                compute = cluster._compute
-                if _job.job.start_time == start_time:
-                    logging.warning('Job %s is rescheduled too quickly; ' \
-                                    'scheduler is sleeping', _job.uid)
-                    cluster._jobs.append(_job)
-                    break
                 _job.node = node
                 logging.debug('Scheduling job %s on %s (load: %.3f)',
                               _job.uid, node.ip_addr, float(node.busy) / node.cpus)

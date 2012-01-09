@@ -624,7 +624,7 @@ class _DispyNode():
                     self.avail_cpus += 1
                     self.lock.release()
                 except:
-                    print traceback.format_exc()
+                    logging.debug(traceback.format_exc())
                 logging.debug('Killed process for job %s', uid)
                 reply_addr = (addr[0], compute.job_result_port)
                 reply = _JobReply(_job, self.ip_addr)
