@@ -72,9 +72,8 @@ def _same_file(tgt, xf):
         return False
 
 def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
-                    __dispy_job_args, __dispy_job_kwargs,
-                    __dispy_reply_Q, __dispy_job_env, __dispy_job_name, __dispy_job_code,
-                    __dispy_job_files=[]):
+                    __dispy_job_args, __dispy_job_kwargs, __dispy_reply_Q,
+                    __dispy_job_env, __dispy_job_name, __dispy_job_code, __dispy_job_files=[]):
     """Internal use only.
     """
     sys.stdout = cStringIO.StringIO()

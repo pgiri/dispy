@@ -164,6 +164,7 @@ class _Scheduler(object):
             sock.close()
 
     def send_ping_cluster(self, cluster):
+        # called with _sched_cv locked
         ping_request = cPickle.dumps({'scheduler_ip_addr':self.ip_addr,
                                       'scheduler_port':self.port, 'version':_dispy_version})
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -190,9 +191,8 @@ class _Scheduler(object):
         compute = cluster._compute
         # TODO: should we allow clients to add new nodes, or use only
         # the nodes initially created with command-line?
-        self.send_ping_cluster(cluster)
-
         self._sched_cv.acquire()
+        self.send_ping_cluster(cluster)
         compute_nodes = []
         for node_spec, host in compute.node_spec.iteritems():
             for ip_addr, node in self._nodes.iteritems():
@@ -255,21 +255,21 @@ class _Scheduler(object):
             if cluster._compute.nodes.pop(_job.node.ip_addr, None) is not None:
                 _job.node.clusters.remove(cluster.compute.id)
                 # TODO: remove the node from all clusters and globally?
-            if self._sched_jobs.pop(_job.uid, None) is not None:
-                # this job might have been deleted already due to timeout
+            # this job might have been deleted already due to timeout
+            if self._sched_jobs.pop(_job.uid, None) == _job:
                 cluster._jobs.append(_job)
                 self.unsched_jobs += 1
                 _job.node.busy -= 1
             self._sched_cv.notify()
             self._sched_cv.release()
-        except Exception:
+        except:
             logging.debug(traceback.format_exc())
             logging.warning('Failed to run job %s on %s for computation %s; rescheduling it',
                             _job.uid, _job.node.ip_addr, cluster._compute.name)
             # TODO: delay executing again for some time?
             self._sched_cv.acquire()
             # this job might have been deleted already due to timeout
-            if self._sched_jobs.pop(_job.uid, None) is not None:
+            if self._sched_jobs.pop(_job.uid, None) == _job:
                 cluster._jobs.append(_job)
                 self.unsched_jobs += 1
                 _job.node.busy -= 1
@@ -288,7 +288,7 @@ class _Scheduler(object):
         try:
             sock.connect((ip, port))
             sock.write_msg(uid, cPickle.dumps(result))
-        except Exception:
+        except:
             logging.warning("Couldn't send results for job %s to %s (%s)",
                             uid, ip, str(sys.exc_info()))
         sock.close()
@@ -397,6 +397,7 @@ class _Scheduler(object):
                         reply = cPickle.loads(msg)
                         assert reply.uid == _job.uid
                         assert reply.hash == _job.hash
+                        assert _job.job.status not in [DispyJob.Created, DispyJob.Finished]
                         setattr(reply, 'cpus', node.cpus)
                         setattr(reply, 'start_time', _job.job.start_time)
                         setattr(reply, 'end_time', _job.job.end_time)
@@ -423,13 +424,7 @@ class _Scheduler(object):
                         continue
                     compute = cluster._compute
                     assert compute.nodes[addr[0]] == _job.node
-                    if reply.status == DispyJob.Terminated:
-                        assert _job.job.status in [DispyJob.Running, DispyJob.Cancelled,
-                                                   DispyJob.Terminated], \
-                               'invalid job status for %s: %s' % (uid, _job.job.status)
-                    else:
-                        assert _job.job.status in [DispyJob.Running, DispyJob.ProvisionalResult], \
-                               'status of %s: %s, %s' % (uid, _job.job.status, reply.status)
+                    if reply.status != DispyJob.Terminated:
                         _job.node.jobs += 1
                     _job.node.cpu_time += _job.job.end_time - _job.job.start_time
                     cluster._pending_jobs -= 1
@@ -470,49 +465,53 @@ class _Scheduler(object):
                         msg = msg[len('JOB:'):]
                         try:
                             _job = cPickle.loads(msg)
-                            self._sched_cv.acquire()
-                            cluster = self._clusters[_job.compute_id]
-                            _job.uid = self.job_uid
-                            self.job_uid += 1
-                            if self.job_uid == sys.maxint:
-                                # TODO: check if it is okay to reset
-                                self.job_uid = 1
-                            setattr(_job, 'node', None)
-                            job = type('DispyJob', (), {'status':DispyJob.Created,
-                                                        'start_time':None, 'end_time':None})
-                            setattr(_job, 'job', job)
-                            cluster._jobs.append(_job)
-                            self.unsched_jobs += 1
-                            cluster._pending_jobs += 1
-                            self._sched_cv.notify()
-                            self._sched_cv.release()
-                            resp = _job.uid
                         except:
                             logging.debug('Ignoring job request from %s', addr[0])
-                            resp = None
+                            conn.close()
+                            continue
+                        self._sched_cv.acquire()
+                        cluster = self._clusters[_job.compute_id]
+                        _job.uid = self.job_uid
+                        self.job_uid += 1
+                        if self.job_uid == sys.maxint:
+                            # TODO: check if it is okay to reset
+                            self.job_uid = 1
+                        setattr(_job, 'node', None)
+                        job = type('DispyJob', (), {'status':DispyJob.Created,
+                                                    'start_time':None, 'end_time':None})
+                        setattr(_job, 'job', job)
+                        cluster._jobs.append(_job)
+                        self.unsched_jobs += 1
+                        cluster._pending_jobs += 1
+                        self._sched_cv.notify()
+                        self._sched_cv.release()
+                        resp = _job.uid
                         resp = cPickle.dumps(resp)
                     elif msg.startswith('COMPUTE:'):
                         msg = msg[len('COMPUTE:'):]
                         try:
                             compute = cPickle.loads(msg)
-                            compute.job_result_port = job_sock.getsockname()[1]
-                            setattr(compute, 'nodes', {})
-                            cluster = _Cluster(self, compute)
-                            compute = cluster._compute
-                            self._sched_cv.acquire()
-                            compute.id = cluster.id = self.cluster_id
-                            for xf in compute.xfer_files:
-                                xf.compute_id = compute.id
-                            self._clusters[cluster.id] = cluster
-                            self.cluster_id += 1
-                            self.worker_Q.put((50, self.add_cluster, (cluster,)))
-                            self._sched_cv.release()
-                            resp = compute.id
-                            logging.debug('New computation %s: %s', compute.id, compute.name)
                         except:
                             logging.debug('Ignoring compute request from %s', addr[0])
-                            resp = None
-                        resp = cPickle.dumps(resp)
+                            conn.close()
+                            continue
+                        setattr(compute, 'client_job_result_port', compute.job_result_port)
+                        compute.job_result_port = job_sock.getsockname()[1]
+                        setattr(compute, 'nodes', {})
+                        cluster = _Cluster(self, compute)
+                        compute = cluster._compute
+                        self._sched_cv.acquire()
+                        compute.id = cluster.id = self.cluster_id
+                        # TODO: implement transfer files
+                        if compute.xfer_files:
+                            logging.warning('Ignoring transfer of files')
+                            compute.xffer_files = []
+                        self._clusters[cluster.id] = cluster
+                        self.cluster_id += 1
+                        self.worker_Q.put((50, self.add_cluster, (cluster,)))
+                        self._sched_cv.release()
+                        resp = cPickle.dumps(compute.id)
+                        logging.debug('New computation %s: %s', compute.id, compute.name)
                     elif msg.startswith('DEL_COMPUTE:'):
                         conn.close()
                         msg = msg[len('DEL_COMPUTE:'):]
@@ -745,7 +744,7 @@ class _Scheduler(object):
                 if self.ping_interval and (now - last_ping_time) >= self.ping_interval:
                     last_ping_time = now
                     self._sched_cv.acquire()
-                    for cluster in self._clusters.itervalues():
+                    for cluster in clusters.itervalues():
                         self.send_ping_cluster(cluster)
                     self._sched_cv.release()
 
