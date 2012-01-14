@@ -43,11 +43,14 @@ import traceback
 import itertools
 import Queue
 import collections
+import copy
 
 from dispy import _DispySocket, _Compute, DispyJob, _DispyJob_, _Node, _JobReply, \
-     MetaSingleton, _xor_string, _parse_nodes, _node_name_ipaddr
+     MetaSingleton, _xor_string, _parse_nodes, _node_name_ipaddr, _XferFile
+from dispynode import _same_file
 
 _dispy_version = '1.0'
+MaxFileSize = 10240000
 
 class _Scheduler(object):
     """Internal use only.
@@ -57,7 +60,8 @@ class _Scheduler(object):
     def __init__(self, loglevel, nodes=[], ip_addr=None, port=None, node_port=None,
                  scheduler_port=None, pulse_interval=None, ping_interval=None,
                  node_secret='', node_keyfile=None, node_certfile=None,
-                 cluster_secret='', cluster_keyfile=None, cluster_certfile=None):
+                 cluster_secret='', cluster_keyfile=None, cluster_certfile=None,
+                 dest_path_prefix=os.path.join(os.sep, 'tmp'), max_file_size=None):
         if not hasattr(self, 'ip_addr'):
             atexit.register(self.shutdown)
             if not loglevel:
@@ -88,6 +92,12 @@ class _Scheduler(object):
             self.cluster_secret = cluster_secret
             self.cluster_keyfile = cluster_keyfile
             self.cluster_certfile = cluster_certfile
+            self.dest_path_prefix = dest_path_prefix
+            if not os.path.isdir(self.dest_path_prefix):
+                os.makedirs(self.dest_path_prefix)
+            if max_file_size is None:
+                max_file_size = MaxFileSize
+            self.max_file_size = max_file_size
 
             if pulse_interval:
                 try:
@@ -502,16 +512,36 @@ class _Scheduler(object):
                         compute = cluster._compute
                         self._sched_cv.acquire()
                         compute.id = cluster.id = self.cluster_id
-                        # TODO: implement transfer files
-                        if compute.xfer_files:
-                            logging.warning('Ignoring transfer of files')
-                            compute.xffer_files = []
+                        compute.cleanup = True
                         self._clusters[cluster.id] = cluster
                         self.cluster_id += 1
-                        self.worker_Q.put((50, self.add_cluster, (cluster,)))
+                        dest_path = os.path.join(self.dest_path_prefix, str(compute.id))
+                        compute.dest_path = str(compute.id)
+                        for xf in compute.xfer_files:
+                            xf.compute_id = compute.id
+                            tgt = os.path.join(dest_path, os.path.basename(xf.name))
+                            xf.name = tgt
                         self._sched_cv.release()
-                        resp = cPickle.dumps(compute.id)
-                        logging.debug('New computation %s: %s', compute.id, compute.name)
+                        resp = {'ID':compute.id}
+                        resp = cPickle.dumps(resp)
+                        logging.debug('New computation %s: %s, %s', compute.id, compute.name,
+                                      len(compute.xfer_files))
+                    elif msg.startswith('ADD_COMPUTE:'):
+                        msg = msg[len('ADD_COMPUTE:'):]
+                        self._sched_cv.acquire()
+                        try:
+                            compute = cPickle.loads(msg)
+                            cluster = self._clusters[compute.id]
+                            assert len(compute.xfer_files) == len(cluster._compute.xfer_files)
+                            for xf in cluster._compute.xfer_files:
+                                assert os.path.isfile(xf.name)
+                            resp = cPickle.dumps(compute.id)
+                            self.worker_Q.put((50, self.add_cluster, (cluster,)))
+                        except:
+                            logging.debug('Ignoring compute request from %s', addr[0])
+                            resp = None
+                        finally:
+                            self._sched_cv.release()
                     elif msg.startswith('DEL_COMPUTE:'):
                         conn.close()
                         msg = msg[len('DEL_COMPUTE:'):]
@@ -535,6 +565,14 @@ class _Scheduler(object):
                         for node in nodes:
                             node.clusters.remove(compute.id)
                         compute.nodes = {}
+                        for xf in compute.xfer_files:
+                            logging.debug('Removing file "%s"', xf.name)
+                            if os.path.isfile(xf.name):
+                                os.remove(xf.name)
+                        dest_path = os.path.join(self.dest_path_prefix, str(compute.id))
+                        if os.path.isdir(dest_path):
+                            os.rmdir(dest_path)
+
                         # set client_job_result_port to None so result is not sent to client
                         compute.client_job_result_port = None
                         compute.resubmit = False
@@ -545,6 +583,51 @@ class _Scheduler(object):
                         self.worker_Q.put((40, self.close_compute_nodes, (compute, nodes)))
                         self._sched_cv.release()
                         continue
+                    elif msg.startswith('FILEXFER:'):
+                        msg = msg[len('FILEXFER:'):]
+                        try:
+                            xf = cPickle.loads(msg)
+                        except:
+                            logging.debug('Ignoring file trasnfer request from %s', addr[0])
+                            conn.close()
+                            continue
+                        resp = ''
+                        if xf.compute_id not in self._clusters:
+                            logging.error('computation "%s" is invalid' % xf.compute_id)
+                            conn.close()
+                            continue
+                        compute = self._clusters[xf.compute_id]
+                        dest_path = os.path.join(self.dest_path_prefix, str(compute.id))
+                        if not os.path.isdir(dest_path):
+                            os.makedirs(dest_path)
+                        tgt = os.path.join(dest_path, os.path.basename(xf.name))
+                        logging.debug('Copying file %s to %s (%s)', xf.name,
+                                      tgt, xf.stat_buf.st_size)
+                        try:
+                            fd = open(tgt, 'wb')
+                            n = 0
+                            while n < xf.stat_buf.st_size:
+                                data = conn.read(min(xf.stat_buf.st_size-n, 1024000))
+                                if not data:
+                                    break
+                                fd.write(data)
+                                n += len(data)
+                                if n > self.max_file_size:
+                                    logging.warning('File "%s" is too big (%s); it is truncated',
+                                                    tgt, n)
+                                    break
+                            fd.close()
+                            if n < xf.stat_buf.st_size:
+                                resp = 'NAK (read only %s bytes)' % n
+                            else:
+                                resp = 'ACK'
+                                logging.debug('Copied file %s, %s', tgt, resp)
+                                os.utime(tgt, (xf.stat_buf.st_atime, xf.stat_buf.st_mtime))
+                                os.chmod(tgt, stat.S_IMODE(xf.stat_buf.st_mode))
+                        except:
+                            logging.warning('Copying file "%s" failed with "%s"',
+                                            xf.name, traceback.format_exc())
+                            resp = 'NACK'
                     elif msg.startswith('TERMINATE_JOB:'):
                         conn.close()
                         msg = msg[len('TERMINATE_JOB:'):]
@@ -825,7 +908,7 @@ class _Scheduler(object):
                 node.close(compute)
             for _job in cluster._jobs:
                 reply = _JobReply(_job, self.ip_addr, status=DispyJob.Terminated)
-                self.worker_Q.put((5, send_job_result,
+                self.worker_Q.put((5, self.send_job_result,
                                    (_job.uid, compute.node_ip,
                                     compute.client_job_result_port, reply)))
             cluster._jobs = []
@@ -877,7 +960,7 @@ class _Scheduler(object):
                 secs_per_job = 0
             tot_cpu_time += node.cpu_time
             print '%020s  |  %05s  |  %05s  |  %10.3f  |  %13.3f' % \
-                  (node.name, node.cpus, node.jobs, secs_per_job, node.cpu_time)
+                  (ip_addr, node.cpus, node.jobs, secs_per_job, node.cpu_time)
         wall_time = time.time() - self.start_time
         print
         print 'Total job time: %.3f sec, wall time: %.3f sec, speedup: %.3f' % \
@@ -937,6 +1020,9 @@ if __name__ == '__main__':
                         help='number of seconds between pulse messages to indicate whether node is alive')
     parser.add_argument('--ping_interval', dest='ping_interval', type=float, default=None,
                         help='number of seconds between ping messages to discover nodes')
+    parser.add_argument('--dest_path_prefix', dest='dest_path_prefix',
+                        default=os.path.join(os.sep, 'tmp', 'dispy'),
+                        help='path prefix where files sent by dispy are stored')
 
     config = vars(parser.parse_args(sys.argv[1:]))
     if config['loglevel']:

@@ -73,9 +73,11 @@ def _same_file(tgt, xf):
 
 def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
                     __dispy_job_args, __dispy_job_kwargs, __dispy_reply_Q,
-                    __dispy_job_env, __dispy_job_name, __dispy_job_code, __dispy_job_files=[]):
+                    __dispy_job_env, __dispy_job_name, __dispy_job_code,
+                    __dispy_path, __dispy_job_files=[]):
     """Internal use only.
     """
+    os.chdir(__dispy_path)
     sys.stdout = cStringIO.StringIO()
     sys.stderr = cStringIO.StringIO()
     __dispy_job_reply = __dispy_job_info.job_reply
@@ -345,7 +347,8 @@ class _DispyNode():
                         job_info = _DispyJobInfo(reply, reply_addr)
                         args = (job_info, self.certfile, self.keyfile,
                                 _job.args, _job.kwargs, self.reply_Q,
-                                compute.env, compute.name, compute.code, _job.files)
+                                compute.env, compute.name, compute.code, compute.dest_path,
+                                _job.files)
                         try:
                             conn.write_msg(_job.uid, cPickle.dumps(_job.uid))
                             conn.close()
@@ -400,19 +403,23 @@ class _DispyNode():
                         continue
                     continue
                 resp = 'ACK'
-                compute.dest_path = compute.dest_path.strip().rstrip(os.sep)
-                if compute.dest_path.startswith(os.sep):
-                    logging.warning('Invalid destination path: "%s"', compute.dest_path)
-                    resp = 'NACK (Invalid dest_path)'
-                    try:
-                        conn.write_msg(uid, resp)
-                        conn.close()
-                    except:
-                        logging.warning('Failed to send reply to %s', str(addr))
+                if compute.dest_path:
+                    compute.dest_path = compute.dest_path.strip().rstrip(os.sep)
+                    if compute.dest_path.startswith(os.sep):
+                        logging.warning('Invalid destination path: "%s"', compute.dest_path)
+                        resp = 'NACK (Invalid dest_path)'
+                        try:
+                            conn.write_msg(uid, resp)
+                            conn.close()
+                        except:
+                            logging.warning('Failed to send reply to %s', str(addr))
+                            continue
                         continue
-                    continue
                 logging.debug('Adding computation %s', compute.name)
-                compute.dest_path = os.path.join(self.dest_path_prefix, compute.dest_path)
+                if compute.dest_path:
+                    compute.dest_path = os.path.join(self.dest_path_prefix, compute.dest_path)
+                else:
+                    compute.dest_path = self.dest_path_prefix
                 if not os.path.isdir(compute.dest_path):
                     try:
                         os.makedirs(compute.dest_path)
@@ -466,9 +473,12 @@ class _DispyNode():
                     tgt = os.path.join(compute.dest_path, os.path.basename(xf.name))
                     try:
                         if _same_file(tgt, xf):
+                            logging.debug('Ignoring file "%s" / "%s"', xf.name, tgt)
+                            self.lock.acquire()
                             if tgt not in self.file_uses:
                                 self.file_uses[tgt] = 0
                             self.file_uses[tgt] += 1
+                            self.lock.release()
                             continue
                     except:
                         pass
@@ -483,19 +493,23 @@ class _DispyNode():
                     xf = cPickle.loads(msg)
                 except:
                     logging.debug('Ignoring file trasnfer request from %s', addr[0])
+                    conn.close()
                     continue
                 resp = ''
                 if xf.compute_id not in self.computations:
                     logging.error('computation "%s" is invalid' % xf.compute_id)
-                    resp = 'NAK (invalid computation)'
+                    conn.close()
+                    continue
                 tgt = os.path.join(self.computations[xf.compute_id].dest_path,
                                    os.path.basename(xf.name))
                 if os.path.isfile(tgt):
                     if _same_file(tgt, xf):
+                        self.lock.acquire()
                         if tgt in self.file_uses:
                             self.file_uses[tgt] += 1
                         else:
                             self.file_uses[tgt] = 1
+                        self.lock.release()
                         resp = 'ACK'
                     else:
                         logging.warning('File "%s" already exists with different status as "%s"',
@@ -572,6 +586,7 @@ class _DispyNode():
                     if compute is not None and info['cleanup']:
                         for xf in compute.xfer_files:
                             tgt = os.path.join(compute.dest_path, os.path.basename(xf.name))
+                            self.lock.acquire()
                             self.file_uses[tgt] -= 1
                             if self.file_uses[tgt] == 0:
                                 del self.file_uses[tgt]
@@ -583,6 +598,7 @@ class _DispyNode():
                                         os.remove(tgt)
                                     except:
                                         logging.warning('Could not remove file "%s"', tgt)
+                            self.lock.release()
                         if compute.dest_path != self.dest_path_prefix:
                             path = compute.dest_path[len(self.dest_path_prefix):]
                             if path.startswith(os.sep):
@@ -668,6 +684,7 @@ class _DispyNode():
         reply = _JobReply(_job, self.ip_addr)
         job_info = _DispyJobInfo(reply, reply_addr)
         try:
+            os.chdir(self.computations[_job.compute_id].dest_path)
             job_info.proc = subprocess.Popen(program, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                              env={'PATH':self.computations[_job.compute_id].env.get('PATH')})
             assert isinstance(job_info.proc, subprocess.Popen)

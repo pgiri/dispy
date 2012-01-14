@@ -299,6 +299,7 @@ class _Node():
                     logging.error("Couldn't transfer file '%s'", xf.name)
                     return -1
                 for xf in xfer_files:
+                    logging.debug('Sending "%s"', xf.name)
                     resp = self.xfer_file(xf)
                     if resp != 'ACK':
                         logging.error("Couldn't transfer file '%s'", xf.name)
@@ -336,10 +337,10 @@ class _Node():
         return resp
 
     def xfer_file(self, xf):
-        logging.debug('xfer_file: %s to %s', xf.name, self.ip_addr)
+        logging.debug('XferFile: %s to %s', xf.name, self.ip_addr)
         sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                             auth_code=self.auth_code, certfile=self.certfile, keyfile=self.keyfile)
-        sock.settimeout(10)
+        sock.settimeout(5)
         try:
             sock.connect((self.ip_addr, self.port))
             msg = 'FILEXFER:' + cPickle.dumps(xf)
@@ -352,6 +353,7 @@ class _Node():
                 sock.write(data, auth=False)
             fd.close()
             ruid, resp = sock.read_msg()
+            assert resp == 'ACK'
         except:
             logging.error("Couldn't transfer %s to %s", xf.name, self.ip_addr)
             raise
@@ -361,7 +363,8 @@ class _Node():
         return resp
 
     def close(self, compute):
-        logging.debug('Closing node %s for %s / %s', self.ip_addr, compute.name, compute.id)
+        logging.debug('Closing node %s for %s / %s / %s', self.ip_addr, compute.name, compute.id,
+                      compute.cleanup)
         msg = 'DEL_COMPUTE:' + cPickle.dumps({'_compute_id':compute.id, 'cleanup':compute.cleanup})
         try:
             self.send(0, msg, False)
@@ -1556,9 +1559,6 @@ class SharedJobCluster(JobCluster):
                             callback=callback, ip_addr=ip_addr, port=port,
                             dest_path=dest_path, cleanup=cleanup, pulse_interval=None,
                             resubmit=resubmit, loglevel=loglevel)
-        # TODO: implement transfer files
-        if self._compute.xfer_files:
-            raise Exception('SharedJobCluster does not implement transferring files yet')
         if pulse_interval is not None:
             logging.warning('pulse_interval is not used in SharedJobCluster; ' \
                             'dispyscheduler should be started appropriately.')
@@ -1578,35 +1578,74 @@ class SharedJobCluster(JobCluster):
         else:
             self.scheduler_node = self.ip_addr
 
-        scheduler_sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
-                                      certfile=certfile, keyfile=keyfile)
+        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                            certfile=certfile, keyfile=keyfile)
+        sock.settimeout(5)
         try:
-            scheduler_sock.connect((self.scheduler_node, self.scheduler_port))
+            sock.connect((self.scheduler_node, self.scheduler_port))
         except:
             raise Exception("Couldn't connect to scheduler at %s:%s" % \
                             (self.scheduler_node, self.scheduler_port))
         req = ' ' * len(hashlib.sha1('').hexdigest()) + 'CLUSTER'
-        scheduler_sock.write(req)
-        uid, msg = scheduler_sock.read_msg()
+        sock.write(req)
+        uid, msg = sock.read_msg()
         resp = cPickle.loads(msg)
+        sock.close()
         if resp['version'] != _dispy_version:
             raise Exception('dispyscheduler version "%s" is different from dispy version "%s"' % \
                             resp['version'], _dispy_version)
         self.auth_code = hashlib.sha1(_xor_string(resp['sign'], secret)).hexdigest()
         logging.debug('auth_code: %s', self.auth_code)
-        scheduler_sock.close()
 
-        scheduler_sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
-                                      auth_code=self.auth_code, certfile=certfile, keyfile=keyfile)
-        scheduler_sock.connect((self.scheduler_node, self.scheduler_port))
+        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                            auth_code=self.auth_code, certfile=certfile, keyfile=keyfile)
+        sock.settimeout(5)
+        sock.connect((self.scheduler_node, self.scheduler_port))
         req = 'COMPUTE:' + cPickle.dumps(self._compute)
-        scheduler_sock.write_msg(0, req)
-        uid, msg = scheduler_sock.read_msg()
-        self._compute.id = cPickle.loads(msg)
-        logging.debug('Computation %s created with %s', self._compute.name, self._compute.id)
+        sock.write_msg(0, req)
+        uid, msg = sock.read_msg()
+        sock.close()
+        resp = cPickle.loads(msg)
+        self._compute.id = resp['ID']
         assert self._compute.id is not None
-        scheduler_sock.close()
-        self._cluster.add_cluster(self)
+        for xf in self._compute.xfer_files:
+            xf.compute_id = self._compute.id
+            logging.debug('Sending file "%s"', xf.name)
+            sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                                auth_code=self.auth_code, certfile=certfile, keyfile=keyfile)
+            sock.settimeout(5)
+            try:
+                sock.connect((self.scheduler_node, self.scheduler_port))
+                msg = 'FILEXFER:' + cPickle.dumps(xf)
+                sock.write_msg(0, msg)
+                fd = open(xf.name, 'rb')
+                while True:
+                    data = fd.read(10240000)
+                    if not data:
+                        break
+                    sock.write(data, auth=False)
+                fd.close()
+                ruid, resp = sock.read_msg()
+                assert resp == 'ACK'
+            except:
+                logging.error("Couldn't transfer %s to %s", xf.name, self.ip_addr)
+                # TODO: delete computation?
+            sock.close()
+            
+        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                            auth_code=self.auth_code, certfile=certfile, keyfile=keyfile)
+        sock.settimeout(10)
+        sock.connect((self.scheduler_node, self.scheduler_port))
+        req = 'ADD_COMPUTE:' + cPickle.dumps(self._compute)
+        sock.write_msg(self._compute.id, req)
+        uid, msg = sock.read_msg()
+        sock.close()
+        resp = cPickle.loads(msg)
+        if resp == self._compute.id:
+            logging.debug('Computation %s created with %s', self._compute.name, self._compute.id)
+            self._cluster.add_cluster(self)
+        else:
+            raise Exception('Computation "%s" could not be sent to scheduler' % self._compute.name)
 
     def submit(self, *args, **kwargs):
         """Submit a job for execution with the given arguments.
