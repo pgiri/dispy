@@ -147,6 +147,11 @@ class _Scheduler(object):
             self._scheduler.start()
             self.start_time = time.time()
 
+            self.main_worker_Q = Queue.PriorityQueue()
+            worker_thread = threading.Thread(target=self.worker, args=(self.main_worker_Q,))
+            worker_thread.daemon = True
+            worker_thread.start()
+
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             bc_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -241,6 +246,9 @@ class _Scheduler(object):
             except:
                 logging.debug('Running %s failed: %s', func.__name__, traceback.format_exc())
             worker_Q.task_done()
+
+    def close_work_Q(self, worker_Q):
+        worker_Q.join()
 
     def setup_node(self, node, computes):
         # called via worker
@@ -593,6 +601,9 @@ class _Scheduler(object):
                             self.worker_Qs[compute.id].put((30, self.terminate_jobs, (_jobs,)))
                         self.worker_Qs[compute.id].put(
                             (40, self.close_compute_nodes, (compute, nodes)))
+                        worker_Q = self.worker_Qs[compute.id]
+                        del self.worker_Qs[compute.id]
+                        self.main_worker_Q.put((30, self.close_work_Q, (worker_Q,)))
                         self._sched_cv.release()
                         continue
                     elif msg.startswith('FILEXFER:'):
@@ -756,8 +767,7 @@ class _Scheduler(object):
                                     node_computes.append(compute)
                                     break
                         if node_computes:
-                            # we add work to whatever is last compute in above loop
-                            self.worker_Qs[compute.id].put(
+                            self.main_worker_Q.put(
                                 (10, self.setup_node, (node, node_computes)))
                         self._sched_cv.release()
                     elif msg.startswith('TERMINATED:'):
@@ -956,15 +966,18 @@ class _Scheduler(object):
         self._sched_cv.acquire()
         select_job_node = self.select_job_node
         self.select_job_node = None
-        if self.select_job_node:
+        if select_job_node:
             clusters = self._clusters.itervalues()
         else:
             clusters = []
         for cluster in clusters:
             self.worker_Qs[cluster._compute.id].put((99, None, None))
+        self.main_worker_Q.put((99, None, None))
         self._sched_cv.release()
         for cluster in clusters:
             self.worker_Qs[cluster._compute.id].join()
+        if select_job_node:
+            self.main_worker_Q.join()
 
     def stats(self):
         print
