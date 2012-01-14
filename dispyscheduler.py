@@ -61,7 +61,7 @@ class _Scheduler(object):
                  scheduler_port=None, pulse_interval=None, ping_interval=None,
                  node_secret='', node_keyfile=None, node_certfile=None,
                  cluster_secret='', cluster_keyfile=None, cluster_certfile=None,
-                 dest_path_prefix=os.path.join(os.sep, 'tmp'), max_file_size=None):
+                 dest_path_prefix=None, max_file_size=None):
         if not hasattr(self, 'ip_addr'):
             atexit.register(self.shutdown)
             if not loglevel:
@@ -92,9 +92,12 @@ class _Scheduler(object):
             self.cluster_secret = cluster_secret
             self.cluster_keyfile = cluster_keyfile
             self.cluster_certfile = cluster_certfile
+            if not dest_path_prefix:
+                dest_path_prefix = os.path.join(os.sep, 'tmp', 'dispyscheduler')
             self.dest_path_prefix = dest_path_prefix
             if not os.path.isdir(self.dest_path_prefix):
                 os.makedirs(self.dest_path_prefix)
+                os.chmod(self.dest_path_prefix, stat.S_IWUSR | stat.S_IXUSR)
             if max_file_size is None:
                 max_file_size = MaxFileSize
             self.max_file_size = max_file_size
@@ -943,6 +946,8 @@ class _Scheduler(object):
         self._sched_cv.release()
 
     def shutdown(self):
+        # TODO: send shutdown notification to clients? Or wait for all
+        # pending tasks to complete?
         for cid, cluster in self._clusters.iteritems():
             compute = cluster._compute
             for node in compute.nodes.itervalues():
@@ -968,16 +973,19 @@ class _Scheduler(object):
         self.select_job_node = None
         if select_job_node:
             clusters = self._clusters.itervalues()
+            for cluster in clusters:
+                self.worker_Qs[cluster._compute.id].put((99, None, None))
+            self.main_worker_Q.put((99, None, None))
         else:
             clusters = []
-        for cluster in clusters:
-            self.worker_Qs[cluster._compute.id].put((99, None, None))
-        self.main_worker_Q.put((99, None, None))
         self._sched_cv.release()
-        for cluster in clusters:
-            self.worker_Qs[cluster._compute.id].join()
         if select_job_node:
+            for cluster in clusters:
+                self.worker_Qs[cluster._compute.id].join()
             self.main_worker_Q.join()
+            self.worker_Qs = {}
+            self.clusters = {}
+            self.main_worer_Q = None
 
     def stats(self):
         print
@@ -1056,7 +1064,7 @@ if __name__ == '__main__':
     parser.add_argument('--ping_interval', dest='ping_interval', type=float, default=None,
                         help='number of seconds between ping messages to discover nodes')
     parser.add_argument('--dest_path_prefix', dest='dest_path_prefix',
-                        default=os.path.join(os.sep, 'tmp', 'dispy'),
+                        default=os.path.join(os.sep, 'tmp', 'dispyscheduler'),
                         help='path prefix where files sent by dispy are stored')
 
     config = vars(parser.parse_args(sys.argv[1:]))

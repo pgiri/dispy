@@ -235,9 +235,9 @@ class _Compute():
         self.name = name
         self.id = None
         self.code = None
-        self.dest_path = ''
         self.job_result_port = None
         self.env = None
+        self.dest_path = None
         self.xfer_files = []
         self.cleanup = True
         self.auth_code = None
@@ -1022,7 +1022,7 @@ class _Cluster(object):
                 if self.ping_interval and (now - last_ping_time) >= self.ping_interval:
                     last_ping_time = now
                     self._sched_cv.acquire()
-                    for cluster in clusters.itervalues():
+                    for cluster in self._clusters.itervalues():
                         self.send_ping_cluster(cluster)
                     self._sched_cv.release()
 
@@ -1252,7 +1252,7 @@ class JobCluster():
     """
 
     def __init__(self, computation, nodes=['*'], depends=[], callback=None,
-                 ip_addr=None, port=None, node_port=None, dest_path='',
+                 ip_addr=None, port=None, node_port=None,
                  loglevel=logging.WARNING, cleanup=True, ping_interval=None, pulse_interval=None,
                  resubmit=False, secret='', keyfile=None, certfile=None):
         """Create an instance of cluster for a specific computation.
@@ -1295,11 +1295,6 @@ class JobCluster():
           for ping messages. The client (JobCluster instance) broadcasts
           ping requests to this port.
           If no value for @node_port is given (default), number 51348 is used.
-
-        @dest_path indicates path of directory to which files are
-          transferred to a server node when executing a job.
-          If @computation is a string, indicating a program, then that program is
-          also transferred to @dest_path.
 
         @loglevel indicates message priority for logging module.
 
@@ -1395,8 +1390,6 @@ class JobCluster():
             depends.append(computation)
         else:
             raise Exception('Invalid computation type: %s' % type(compute))
-        if dest_path:
-            compute.dest_path = dest_path
         depend_ids = {}
         for dep in depends:
             if isinstance(dep, str) or inspect.ismodule(dep):
@@ -1543,7 +1536,7 @@ class SharedJobCluster(JobCluster):
     """
     def __init__(self, computation, nodes=['*'], depends=[], callback=None,
                  ip_addr=None, port=None, scheduler_node=None, scheduler_port=None,
-                 dest_path='', loglevel=logging.WARNING, cleanup=True,
+                 loglevel=logging.WARNING, cleanup=True,
                  pulse_interval=None, ping_interval=None, resubmit=False,
                  secret='', keyfile=None, certfile=None):
         if not isinstance(nodes, list):
@@ -1556,7 +1549,7 @@ class SharedJobCluster(JobCluster):
         self.scheduler_port = scheduler_port
         JobCluster.__init__(self, computation, nodes='dummy', depends=depends,
                             callback=callback, ip_addr=ip_addr, port=port,
-                            dest_path=dest_path, cleanup=cleanup, pulse_interval=None,
+                            cleanup=cleanup, pulse_interval=None,
                             resubmit=resubmit, loglevel=loglevel)
         if pulse_interval is not None:
             logging.warning('pulse_interval is not used in SharedJobCluster; ' \
@@ -1744,8 +1737,6 @@ if __name__ == '__main__':
                         help='argument(s) to program; repeat for multiple instances')
     parser.add_argument('-f', action='append', dest='depends', default=[],
                         help='dependencies (files) needed by program')
-    parser.add_argument('-t', dest='dest_path', default='',
-                        help='path on remote nodes where files for this computation are stored')
     parser.add_argument('-n', '--nodes', action='append', dest='nodes', default=[],
                         help='list of nodes (names or IP address) acceptable for this computation')
     parser.add_argument('--secret', dest='secret', default='',

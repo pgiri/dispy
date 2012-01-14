@@ -157,6 +157,7 @@ class _DispyNode():
             self.dest_path_prefix = os.path.join(os.sep, 'tmp', 'dispy')
         if not os.path.isdir(self.dest_path_prefix):
             os.makedirs(self.dest_path_prefix)
+            os.chmod(self.dest_path_prefix, stat.S_IWUSR | stat.S_IXUSR)
         if max_file_size is None:
             max_file_size = MaxFileSize
         self.max_file_size = max_file_size
@@ -403,36 +404,25 @@ class _DispyNode():
                         continue
                     continue
                 resp = 'ACK'
-                if compute.dest_path:
-                    compute.dest_path = compute.dest_path.strip().rstrip(os.sep)
-                    if compute.dest_path.startswith(os.sep):
-                        logging.warning('Invalid destination path: "%s"', compute.dest_path)
-                        resp = 'NACK (Invalid dest_path)'
-                        try:
-                            conn.write_msg(uid, resp)
-                            conn.close()
-                        except:
-                            logging.warning('Failed to send reply to %s', str(addr))
-                            continue
-                        continue
-                logging.debug('Adding computation %s', compute.name)
-                if compute.dest_path:
+                for x in xrange(20):
+                    compute.dest_path = os.urandom(8).encode('hex')
                     compute.dest_path = os.path.join(self.dest_path_prefix, compute.dest_path)
-                else:
-                    compute.dest_path = self.dest_path_prefix
-                if not os.path.isdir(compute.dest_path):
+                    if not os.path.isdir(compute.dest_path):
+                        break
+                try:
+                    assert not os.path.isdir(compute.dest_path)
+                    os.makedirs(compute.dest_path)
+                    os.chmod(compute.dest_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+                except:
+                    logging.warning('Invalid destination path: "%s"', compute.dest_path)
+                    resp = 'NACK (Invalid dest_path)'
                     try:
-                        os.makedirs(compute.dest_path)
+                        conn.write_msg(uid, resp)
+                        conn.close()
                     except:
-                        logging.warning('Invalid destination path: "%s"', compute.dest_path)
-                        resp = 'NACK (Invalid dest_path)'
-                        try:
-                            conn.write_msg(uid, resp)
-                            conn.close()
-                        except:
-                            logging.warning('Failed to send reply to %s', str(addr))
-                            continue
+                        logging.warning('Failed to send reply to %s', str(addr))
                         continue
+                    continue
                 if compute.id in self.computations:
                     logging.warning('Computation "%s" (%s) is being replaced',
                                     compute.name, compute.id)
@@ -447,8 +437,6 @@ class _DispyNode():
                 if compute.type == _Compute.func_type:
                     if compute.env and 'PYTHONPATH' in compute.env:
                         self.computations[compute.id].env = compute.env['PYTHONPATH']
-                    if compute.dest_path:
-                        self.computations[compute.id].env.append(compute.dest_path)
                     try:
                         code = compile(base64.b64decode(compute.code), '<string>', 'exec')
                     except:
