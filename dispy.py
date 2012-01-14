@@ -1386,7 +1386,6 @@ class JobCluster():
             func = computation
             compute = _Compute(_Compute.func_type, func.func_name)
             # compute.env = {'PYTHONPATH':[os.getcwd()] + sys.path}
-            compute.env = {'PYTHONPATH':[os.getcwd()]}
             lines = inspect.getsourcelines(func)[0]
             lines[0] = lines[0].lstrip()
             compute.code = ''.join(lines)
