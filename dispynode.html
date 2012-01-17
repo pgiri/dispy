@@ -51,20 +51,20 @@
 
 <p>Below are various options to invoking dispynode:
   <ul>
-    <li><tt>-c n</tt> or <tt>--cpus n</tt> sets the number of
+    <li><tt>-c n</tt> or <tt>--cpus=n</tt> sets the number of
     processing units to <tt>n</tt>. Without this option, dispynode
     will use all the processing units available on that
     node. <tt>n</tt> must be at least 1 and at most number of
     processing units on that node.</li>
-    <li><tt>-i addr</tt> or <tt>--ip_addr addr</tt> directs dispynode
+    <li><tt>-i addr</tt> or <tt>--ip_addr=addr</tt> directs dispynode
     to use given <tt>addr</tt> for communication, instead of the IP
     address associated with the host name.</li>
-    <li><tt>-p n</tt> or <tt>--node_port n</tt> directs dispynode to
+    <li><tt>-p n</tt> or <tt>--node_port=n</tt> directs dispynode to
     use given port <tt>n</tt> instead of default port 51348.</li>
-    <li><tt>-s secret</tt> or <tt>--secret secret</tt> directs
+    <li><tt>-s secret</tt> or <tt>--secret=secret</tt> directs
     dispynode to use 'secret' for hashing handshake communication with
     dispy scheduler.</li>
-    <li><tt>--dest_path_prefix path</tt> directs dispynode to use
+    <li><tt>--dest_path_prefix=path</tt> directs dispynode to use
     'path' as prefix for storing files sent by dispy scheduler. If a
     cluster uses <tt>dest_path</tt> option (when creating cluster with
     JobCluster or SharedJobCluster), then <tt>dest_path</tt> is
@@ -73,24 +73,30 @@
     conflicts. Unless <tt>cleanup=False</tt> option is used when
     creating a cluster, dispynode will remove all files and
     directories created after the cluster is terminated.</li>
-    <li><tt>--scheduler_node addr</tt>: If the node is in the same
+    <li><tt>--scheduler_node=addr</tt>: If the node is in the same
     network as the dispy scheduler or when no jobs are scheduled at
     the time dispynode is started, this option is not
     necessary. However, if jobs are already scheduled and scheduler
     and node are on different networks, the given <tt>addr</tt> is
     used for handshake with the scheduler.</li>
-    <li><tt>--scheduler_port n</tt> directs dispynode to use
+    <li><tt>--scheduler_port=n</tt> directs dispynode to use
     port <tt>n</tt> to communicate with scheduler. Default value is
     51347. When using this option, make sure dispy scheduler is also
     directed to use same port.</li>
-    <li><tt>--keyfile</tt> is file containing private key for SSL
-    communication (see Python 'ssl' module). This key may be stored in
-    'certfile' itself, in which case this can be None.</li>
-    <li><tt>--certfile</tt> is file containing SSL certificate (see
-    Python 'ssl' module).</li>
+    <li><tt>--keyfile=path</tt> is path to file containing private key
+    for SSL communication (see Python 'ssl' module). This key may be
+    stored in 'certfile' itself, in which case this can be None.</li>
+    <li><tt>--certfile=path</tt> is path to file containing SSL
+    certificate (see Python 'ssl' module).</li>
     <li><tt>--max_file_size n</tt> specifies maximum size of any file
     transferred by clusters. If size of a file transferred by cluster
     exceeds <tt>n</tt>, dispynode will silently truncate it.</li>
+    <li><tt>--zombie_interval=n</tt> indicates dispynode to assume a
+    scheduler is a zombie if there is no communication from it for 'n'
+    <strong>minutes</strong>. dispynode doesn't terminate jobs
+    submitted by that scheduler; instead, when all the jobs scheduled
+    are completed, the node frees itself from that scheduler so other
+    schedulers may use the node.</li>
     <li><tt>-d</tt> enables debug messages that show trace of
     execution. This may not be very useful to end users.</li>
 </ul>

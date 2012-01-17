@@ -162,9 +162,8 @@ SharedJobCluster is similar):
 
 <ul>
   <li>
-  <tt>cluster = dispy.JobCluster('/some/program', nodes=['192.168.3.*'], transfer_dest='/tmp')</tt><br />
-    distributes '/some/program' to all nodes whose IP address starts with '192.168.3'.
-    transfer_dest is optional; it refers to path on server nodes where files will be stored.</li>
+  <tt>cluster = dispy.JobCluster('/some/program', nodes=['192.168.3.*'])</tt><br />
+    distributes '/some/program' to all nodes whose IP address starts with '192.168.3'.</li>
 
   <li><tt>cluster = dispy.JobCluster(compute, depends=[ClassA, moduleB, 'file1'])</tt><br />
     distributes 'compute' along with ClassA (python object), moduleB (python object) and

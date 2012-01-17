@@ -112,7 +112,8 @@ class DispyJob():
 class _DispySocket():
     """Internal use only.
     """
-    def __init__(self, sock, auth_code=None, certfile=None, keyfile=None, server=False):
+    def __init__(self, sock, auth_code=None, certfile=None, keyfile=None, server=False,
+                 ip_addr=None, port=None, timeout=None):
         if certfile:
             self.sock = ssl.wrap_socket(sock, server_side=server, keyfile=keyfile,
                                         certfile=certfile, ssl_version=ssl.PROTOCOL_TLSv1)
@@ -121,6 +122,10 @@ class _DispySocket():
         self.auth_code = auth_code
         for method in ['connect', 'settimeout', 'close', 'bind', 'listen', 'accept']:
             setattr(self, method, getattr(self.sock, method))
+        if timeout is not None:
+            sock.settimeout(timeout)
+        if sock.type == socket.SOCK_STREAM and ip_addr is not None and port is not None:
+            sock.connect((ip_addr, port))
 
     def read(self, data_len=4096):
         data = ''
@@ -245,6 +250,9 @@ class _Compute():
         self.nodes = {}
         self.node_spec = None
         self.resubmit = False
+        self.scheduler_ip_addr = None
+        self.scheduler_port = None
+        self.pulse_interval = None
 
     def __getstate__(self):
         state = dict(self.__dict__)
@@ -252,6 +260,8 @@ class _Compute():
             del state['auth_code']
             del state['nodes']
             state.pop('client_job_result_port', None)
+            state.pop('client_scheduler_ip_addr', None)
+            state.pop('client_scheduler_port', None)
         return state
 
 class _XferFile():
@@ -329,7 +339,7 @@ class _Node():
                 resp = None
         except:
             logging.error("Couldn't connect to %s:%s, %s",
-                          self.ip_addr, self.port, str(sys.exc_ifo()))
+                          self.ip_addr, self.port, traceback.format_exc())
             raise
             # TODO: mark this node down, reschedule on different node?
             resp = None
@@ -365,7 +375,7 @@ class _Node():
     def close(self, compute):
         logging.debug('Closing node %s for %s / %s / %s', self.ip_addr, compute.name, compute.id,
                       compute.cleanup)
-        msg = 'DEL_COMPUTE:' + cPickle.dumps({'_compute_id':compute.id, 'cleanup':compute.cleanup})
+        msg = 'DEL_COMPUTE:' + cPickle.dumps({'ID':compute.id})
         try:
             self.send(0, msg, False)
         except:
@@ -580,11 +590,11 @@ class _Cluster(object):
             self.cluster_id += 1
         self._sched_cv.release()
 
-        if cluster.pulse_interval:
-            self.pulse_interval = max(self.pulse_interval, cluster.pulse_interval)
+        if compute.pulse_interval:
+            self.pulse_interval = max(self.pulse_interval, compute.pulse_interval)
         if cluster.ping_interval:
             self.ping_interval = max(self.ping_interval, cluster.ping_interval)
-        if cluster.pulse_interval or cluster.ping_interval:
+        if compute.pulse_interval or cluster.ping_interval:
             sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                 auth_code=self.auth_code)
             sock.settimeout(5)
@@ -863,6 +873,10 @@ class _Cluster(object):
                             node = self._nodes[info['ip_addr']]
                             assert 0 <= info['cpus'] <= node.cpus
                             node.last_pulse = time.time()
+                            msg = 'PULSE:' + cPickle.dumps({'ip_addr':self.ip_addr})
+                            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                            sock.sendto(msg, (info['ip_addr'], info['port']))
+                            sock.close()
                         except:
                             logging.warning('Ignoring pulse message from %s', addr[0])
                             #logging.debug(traceback.format_exc())
@@ -884,24 +898,9 @@ class _Cluster(object):
                         self._sched_cv.acquire()
                         node = self._nodes.get(status['ip_addr'], None)
                         if node is None:
-                            self._sched_cv.release()
-                            try:
-                                node = _Node(status['ip_addr'], status['port'],
-                                             status['cpus'], status['sign'],
-                                             self._secret, self.keyfile, self.certfile)
-                                data = {'ip_addr':self.ip_addr, 'port':self.port,
-                                        'cpus':node.cpus, 'pulse_interval':self.pulse_interval}
-                                resp = node.send(0, 'RESERVE:' + cPickle.dumps(data))
-                            except:
-                                logging.warning("Couldn't setup node %s; ignoring it.",
-                                                status['ip_addr'])
-                                del node
-                                continue
-                            if resp != 'ACK':
-                                logging.warning('Ignoring node %s', status['ip_addr'])
-                                del node
-                                continue
-                            self._sched_cv.acquire()
+                            node = _Node(status['ip_addr'], status['port'],
+                                         status['cpus'], status['sign'],
+                                         self._secret, self.keyfile, self.certfile)
                             self._nodes[node.ip_addr] = node
                         else:
                             node.last_pulse = time.time()
@@ -912,7 +911,6 @@ class _Cluster(object):
                                 continue
                             node.port = status['port']
                             node.auth_code = h
-                        self._nodes[node.ip_addr] = node
                         node_computations = []
                         for cid, cluster in self._clusters.iteritems():
                             compute = cluster._compute
@@ -951,8 +949,7 @@ class _Cluster(object):
                             self._sched_cv.release()
                             del node
                         except:
-                            logging.debug('Removing node failed: %s',
-                                          str(sys.exc_info()))
+                            logging.debug('Removing node failed: %s', traceback.format_exc())
                             pass
                     else:
                         logging.debug('Ignoring PONG message %s from: %s',
@@ -1005,7 +1002,8 @@ class _Cluster(object):
                     self._sched_cv.acquire()
                     dead_nodes = {}
                     for node in self._nodes.itervalues():
-                        if node.busy and (node.last_pulse + pulse_timeout) <= now:
+                        if node.busy and node.last_pulse is not None and \
+                               (node.last_pulse + pulse_timeout) <= now:
                             logging.warning('Node %s is not responding; removing it (%s, %s, %s)',
                                             node.ip_addr, node.busy, node.last_pulse, now)
                             dead_nodes[node.ip_addr] = node
@@ -1251,8 +1249,8 @@ class JobCluster():
     """Create an instance of cluster for a specific job.
     """
 
-    def __init__(self, computation, nodes=['*'], depends=[], callback=None,
-                 ip_addr=None, port=None, node_port=None,
+    def __init__(self, computation, nodes=['*'], depends=[], callback=None, max_cpus=None,
+                 ip_addr=None, port=None, node_port=None, dest_path=None,
                  loglevel=logging.WARNING, cleanup=True, ping_interval=None, pulse_interval=None,
                  resubmit=False, secret='', keyfile=None, certfile=None):
         """Create an instance of cluster for a specific computation.
@@ -1296,6 +1294,11 @@ class JobCluster():
           ping requests to this port.
           If no value for @node_port is given (default), number 51348 is used.
 
+        @dest_path indicates path of directory to which files are
+          transferred to a server node when executing a job.  If
+          @computation is a string, indicating a program, then that
+          program is also transferred to @dest_path.
+        
         @loglevel indicates message priority for logging module.
 
         @cleanup indicates if the files transferred should be removed when
@@ -1346,7 +1349,6 @@ class JobCluster():
                 assert 1.0 <= pulse_interval <= 1000
             except:
                 raise Exception('Invalid pulse_interval; must be between 1 and 1000')
-        self.pulse_interval = pulse_interval
         if callback:
             assert inspect.isfunction(callback) or inspect.ismethod(callback), \
                    "callback must be a function or method"
@@ -1439,10 +1441,26 @@ class JobCluster():
             code = compile(compute.code, '<string>', 'exec')
             del code
             compute.code = base64.b64encode(compute.code)
+        if dest_path:
+            if not isinstance(dest_path, str):
+                raise Exception('Invalid dest_path: it must be a string')
+            dest_path = dest_path.strip()
+            # we should check for absolute path in dispynode.py as well
+            if dest_path.startswith(os.sep):
+                logging.warning('dest_path must not be absolute path')
+            dest_path = dest_path.lstrip(os.sep)
+            compute.dest_path = dest_path
+            compute.cleanup = (cleanup == True)
+        else:
+            if not cleanup:
+                logging.warning('"cleanup" argument is ignored if dest_path is not given')
+            compute.cleanup = True
         compute.job_result_port = self._cluster.job_result_port
+        compute.scheduler_ip_addr = self._cluster.ip_addr
+        compute.scheduler_port = self._cluster.port
         compute.cleanup = cleanup
-        compute.node_ip = self.ip_addr
         compute.resubmit = resubmit
+        compute.pulse_interval = pulse_interval
 
         if not shared:
             compute.node_spec = _parse_nodes(nodes)
@@ -1450,6 +1468,10 @@ class JobCluster():
                 raise Exception('"nodes" argument is invalid')
 
         self._compute = compute
+        if max_cpus is not None:
+            max_cpus = int(max_cpus)
+        self._max_cpus = max_cpus
+        self._cpus = 0
         self._pending_jobs = 0
         self._jobs = []
         self._complete = threading.Event()
@@ -1475,7 +1497,7 @@ class JobCluster():
             _job = _DispyJob_(self._compute.id, args, kwargs)
         except:
             logging.warning('Creating job for "%s", "%s" failed with "%s"',
-                            str(args), str(kwargs), str(sys.exc_info()))
+                            str(args), str(kwargs), traceback.format_exc())
             return None
         if self._cluster.submit_job(_job):
             return _job.job
@@ -1489,7 +1511,7 @@ class JobCluster():
         return self
 
     def __exit__(self, exc_type, exc_value, trace):
-        self.wait()
+        self.close()
 
     def stats(self):
         """Show statistics for cluster(s).
@@ -1628,7 +1650,7 @@ class SharedJobCluster(JobCluster):
                             auth_code=self.auth_code, certfile=certfile, keyfile=keyfile)
         sock.settimeout(10)
         sock.connect((self.scheduler_node, self.scheduler_port))
-        req = 'ADD_COMPUTE:' + cPickle.dumps(self._compute)
+        req = 'ADD_COMPUTE:' + cPickle.dumps({'ID':self._compute.id})
         sock.write_msg(self._compute.id, req)
         uid, msg = sock.read_msg()
         sock.close()
@@ -1654,7 +1676,7 @@ class SharedJobCluster(JobCluster):
             _job = _DispyJob_(self._compute.id, args, kwargs)
         except:
             logging.warning('Creating job for "%s", "%s" failed with "%s"',
-                            str(args), str(kwargs), str(sys.exc_info()))
+                            str(args), str(kwargs), traceback.format_exc())
             return None
 
         scheduler_sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
@@ -1669,7 +1691,7 @@ class SharedJobCluster(JobCluster):
             _job.uid = cPickle.loads(msg)
         except:
             logging.warning('Creating job for "%s", "%s" failed with "%s"',
-                            str(args), str(kwargs), str(sys.exc_info()))
+                            str(args), str(kwargs), traceback.format_exc())
             _job.job._dispy_job_ = None
             del _job.job
             return None
@@ -1719,7 +1741,7 @@ class SharedJobCluster(JobCluster):
                                           certfile=self.certfile, keyfile=self.keyfile)
             scheduler_sock.settimeout(2)
             scheduler_sock.connect((self.scheduler_node, self.scheduler_port))
-            req = 'DEL_COMPUTE:' + cPickle.dumps(self._compute.id)
+            req = 'DEL_COMPUTE:' + cPickle.dumps({'ID':self._compute.id})
             scheduler_sock.write_msg(self._compute.id, req)
             scheduler_sock.close()
             del self._compute

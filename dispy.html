@@ -64,7 +64,7 @@ computations.
   <li>
 <tt>JobCluster(computation, nodes=['*'], depends=[], callback=None,
            ip_addr=None, port=51347, node_port=51348,
-           loglevel=logging.WARNING, cleanup=True,
+           dest_path=None, loglevel=logging.WARNING, cleanup=True,
            pulse_interval=None, ping_interval=None, resubmit=False,
            secret='', keyfile=None, certfile=None)</tt><br/>
 where
@@ -123,6 +123,14 @@ where
   run with the same port.
 </li>
 <li>
+  <tt>dest_path</tt> is directory on the nodes where files are
+  transferred to. Default is to create a separate directory for each
+  computation. If a computation transfers files (dependencies) and
+  same computation is run again with same files, the transfer can be
+  avoided by specifying same dest_path, along with the option
+  'cleanup=False'.
+</li>
+<li>
   <tt>loglevel</tt> is message priority for logging module.
 </li>
 <li>
@@ -179,7 +187,8 @@ where
   SharedJobCluster has almost the same syntax, except as noted below:
 <tt>SharedJobCluster(computation, nodes=['*'], depends=[], ip_addr=None, port=51347,
                  scheduler_node=None, scheduler_port=51349,
-                 loglevel=logging.WARNING, cleanup=True, resubmit=False,
+                 dest_path=None, loglevel=logging.WARNING, cleanup=True,
+                 resubmit=False,
                  secret='', keyfile=None, certfile=None)</tt><br/>
 where all arguments common to <tt>JobCluster</tt> are same, and
 <ul>
