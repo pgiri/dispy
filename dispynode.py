@@ -38,6 +38,7 @@ import select
 import atexit
 import logging
 import marshal
+import shelve
 
 from dispy import _DispySocket, _DispyJob_, _JobReply, DispyJob, \
      _Compute, _XferFile, _xor_string, _node_name_ipaddr
@@ -76,10 +77,11 @@ def dispy_provisional_result(result):
 class _DispyJobInfo():
     """Internal use only.
     """
-    def __init__(self, job_reply, reply_addr, compute_id):
+    def __init__(self, job_reply, reply_addr, compute):
         self.job_reply = job_reply
         self.reply_addr = reply_addr
-        self.compute_id = compute_id
+        self.compute_id = compute.id
+        self.compute_dest_path = compute.dest_path
         self.proc = None
 
 def _same_file(tgt, xf):
@@ -275,6 +277,16 @@ class _DispyNode():
                             self.lock.release()
                         except:
                             logging.warning('Ignoring PULSE from %s', addr[0])
+                    elif msg.startswith('SERVERPORT:'):
+                        try:
+                            info = cPickle.loads(msg[len('SERVERPORT:'):])
+                            sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                                                timeout=2, ip_addr=info['ip_addr'], port=info['port'])
+                            info = {'ip_addr':self.address[0], 'port':self.address[1]}
+                            sock.write_msg(0, cPickle.dumps(info))
+                            sock.close()
+                        except:
+                            pass
                     else:
                         logging.warning('Ignoring ping message from %s', addr[0])
                 elif sock == self.cmd_sock.sock:
@@ -303,6 +315,7 @@ class _DispyNode():
                     else:
                         logging.debug('Ignoring message: %s', msg)
             if timeout:
+                logging.debug('timeout')
                 now = time.time()
                 if self.pulse_interval and (now - last_pulse_time) >= self.pulse_interval:
                     n = self.cpus - self.avail_cpus
@@ -325,12 +338,12 @@ class _DispyNode():
                             compute.last_activity = now
                     zombies = [(cid, compute) for cid, compute in self.computations.iteritems() \
                                if (now - compute.last_activity) > zombie_interval]
-                    if all(compute.scheduler_ip_addr == self.scheduler_ip_addr \
-                           for cid, compute in zombies):
-                        self.scheduler_ip_addr = None
                     for cid, compute in zombies:
                         # TODO: shelve (persist) them in case scheduler comes alive?
                         del self.computations[cid]
+                    if all(compute.scheduler_ip_addr != self.scheduler_ip_addr \
+                           for compute in self.computations.itervalues()):
+                        self.scheduler_ip_addr = None
                     self.lock.release()
                     for cid, compute in zombies:
                         self.cleanup_computation(compute)
@@ -359,8 +372,33 @@ class _DispyNode():
                 continue
             req = conn.read(len(self.auth_code))
             if req != self.auth_code:
-                logging.warning('Invalid / unauthorized request ignored (%s, %s)',
-                                req, self.auth_code)
+                msg = conn.read(len('RETRIEVE_JOB:'))
+                if msg == 'RETRIEVE_JOB:':
+                    uid, msg = conn.read_msg()
+                    try:
+                        msg = cPickle.loads(msg)
+                        assert msg['uid'] is not None
+                        assert msg['hash'] is not None
+                        assert msg['compute_id'] is not None
+                        for d in os.listdir(self.dest_path_prefix):
+                            info_file = os.path.join(self.dest_path_prefix, d,
+                                                     '_dispy_store_%s' % msg['uid'])
+                            if os.path.isfile(info_file):
+                                fd = open(info_file, 'rb')
+                                resp = cPickle.load(fd)
+                                fd.close()
+                                if resp.hash == msg['hash']:
+                                    os.remove(f)
+                                    break
+                        else:
+                            resp = 'Invalid job'
+                    except:
+                        resp = 'Invalid job'
+                        logging.debug(traceback.format_exc())
+                    conn.write_msg(0, cPickle.dumps(resp))
+                else:
+                    logging.warning('Invalid / unauthorized request ignored: %s',
+                                    msg[:min(15, len(msg))])
                 conn.close()
                 continue
             uid, msg = conn.read_msg()
@@ -404,7 +442,7 @@ class _DispyNode():
 
                     if compute.type == _Compute.func_type:
                         reply = _JobReply(_job, self.ip_addr)
-                        job_info = _DispyJobInfo(reply, reply_addr, compute.id)
+                        job_info = _DispyJobInfo(reply, reply_addr, compute)
                         args = (job_info, self.certfile, self.keyfile,
                                 _job.args, _job.kwargs, self.reply_Q,
                                 compute.env, compute.name, compute.code, compute.dest_path,
@@ -685,7 +723,7 @@ class _DispyNode():
                 logging.debug('Killed process for job %s', uid)
                 reply_addr = (addr[0], compute.job_result_port)
                 reply = _JobReply(_job, self.ip_addr)
-                job_info = _DispyJobInfo(reply, reply_addr, compute.id)
+                job_info = _DispyJobInfo(reply, reply_addr, compute)
                 reply.status = DispyJob.Terminated
                 self._send_job_reply(job_info)
             else:
@@ -727,7 +765,7 @@ class _DispyNode():
         program.extend(args)
         logging.debug('Executing "%s"', str(program))
         reply = _JobReply(_job, self.ip_addr)
-        job_info = _DispyJobInfo(reply, reply_addr, _job.compute_id)
+        job_info = _DispyJobInfo(reply, reply_addr, compute)
         self.lock.acquire()
         self.job_infos[_job.uid] = job_info
         self.lock.release()
@@ -752,16 +790,20 @@ class _DispyNode():
         logging.debug('Sending result for job %s (%s) to %s',
                       job_reply.uid, job_reply.status, job_info.reply_addr[0])
         sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
-                            certfile=self.certfile, keyfile=self.keyfile)
-        sock.settimeout(5)
+                            certfile=self.certfile, keyfile=self.keyfile, timeout=5)
         try:
             sock.connect(job_info.reply_addr)
             sock.write_msg(job_reply.uid, cPickle.dumps(job_reply))
         except:
             logging.error("Couldn't send results for %s to %s (%s)",
                           job_reply.uid, str(job_info.reply_addr), str(traceback.format_exc()))
-            # TODO: shelve the result, in case node comes back?
-        sock.close()
+        finally:
+            sock.close()
+            f = os.path.join(job_info.compute_dest_path, '_dispy_store_%s' % job_reply.uid)
+            logging.debug('storing job info in %s', f)
+            fd = open(f, 'wb')
+            cPickle.dump(job_reply, fd)
+            fd.close()
 
     def shutdown(self):
         self.lock.acquire()
@@ -868,10 +910,10 @@ if __name__ == '__main__':
     else:
         config['cpus'] = cpus
 
-    if config['cleanup_interval']:
-        config['cleanup_interval'] = float(config['cleanup_interval'])
-        if config['cleanup_interval'] < 1:
-            raise Exception('cleanup_interval must be at least 1')
+    if config['zombie_interval']:
+        config['zombie_interval'] = float(config['zombie_interval'])
+        if config['zombie_interval'] < 1:
+            raise Exception('zombie_interval must be at least 1')
 
     logging.basicConfig(format='%(asctime)s %(message)s', level=config['loglevel'])
     del config['loglevel']

@@ -42,6 +42,8 @@ import functools
 import types
 import itertools
 import Queue
+import shelve
+import datetime
 
 _dispy_version = '1.0'
 
@@ -493,7 +495,7 @@ class _Cluster(object):
     __metaclass__ = MetaSingleton
 
     def __init__(self, ip_addr=None, port=None, node_port=None,
-                 secret='', keyfile=None, certfile=None, shared=False):
+                 secret='', keyfile=None, certfile=None, shared=False, fault_recover=False):
         if not hasattr(self, 'ip_addr'):
             atexit.register(self.shutdown)
             if ip_addr:
@@ -545,6 +547,14 @@ class _Cluster(object):
             self._scheduler.start()
             self.start_time = time.time()
             self.cluster_id = 1
+            self.fault_recover = (fault_recover == True)
+            if self.fault_recover:
+                now = datetime.datetime.now()
+                self.store_file = '_dispy_store_%.4i%.2i%.2i%.2i%.2i%.2i' % \
+                                  (now.year, now.month, now.day, now.hour, now.minute, now.second)
+                logging.info('Storing job information in "%s"', self.store_file)
+            else:
+                self.store_file = None
         self._ready.wait()
 
     def send_ping_cluster(self, cluster):
@@ -649,6 +659,11 @@ class _Cluster(object):
         else:
             _job.finish(status)
             if status != DispyJob.ProvisionalResult:
+                if self.store_file:
+                    shelf = shelve.open(self.store_file)
+                    logging.debug('removing job %s', _job.uid)
+                    del shelf[str(_job.uid)]
+                    shelf.close()
                 assert cluster._pending_jobs > 0
                 cluster._pending_jobs -= 1
                 if cluster._pending_jobs == 0:
@@ -667,6 +682,11 @@ class _Cluster(object):
                 job.exception = traceback.format_exc()
         finally:
             if status != DispyJob.ProvisionalResult:
+                if self.store_file:
+                    shelf = shelve.open(self.store_file)
+                    logging.debug('removing job %s', _job.uid)
+                    del shelf[str(_job.uid)]
+                    shelf.close()
                 self._sched_cv.acquire()
                 assert cluster._pending_jobs > 0
                 cluster._pending_jobs -= 1
@@ -691,6 +711,8 @@ class _Cluster(object):
 
     def run_job(self, _job, cluster):
         # called via worker
+        if self.store_file:
+            self.store_job_info(_job)
         try:
             _job.run()
         except EnvironmentError:
@@ -1117,6 +1139,18 @@ class _Cluster(object):
         logging.debug('Scheduler quit')
         self._sched_cv.release()
 
+    def store_job_info(self, _job):
+        if not self.store_file:
+            return
+        shelf = shelve.open(self.store_file)
+        logging.debug('storing job %s', _job.uid)
+        state = {'id':_job.job.id, 'hash':_job.hash, 'compute_id':_job.compute_id,
+                 'args':_job.args, 'kwargs':_job.kwargs,
+                 'ip_addr':_job.node.ip_addr, 'port':_job.node.port}
+        shelf[str(_job.uid)] = state
+        shelf.close()
+        return
+
     def submit_job(self, _job):
         self._sched_cv.acquire()
         #_job.uid = id(_job)
@@ -1219,6 +1253,12 @@ class _Cluster(object):
         if select_job_node:
             self.worker_Q.put((99, None, None))
             self.worker_Q.join()
+        if self.store_file:
+            shelf = shelve.open(self.store_file)
+            n = len(shelf)
+            shelf.close()
+            if n == 0:
+                os.remove(self.store_file)
         logging.debug('shutdown complete')
 
     def stats(self, compute, wall_time=None):
@@ -1252,7 +1292,7 @@ class JobCluster():
     def __init__(self, computation, nodes=['*'], depends=[], callback=None, max_cpus=None,
                  ip_addr=None, port=None, node_port=None, dest_path=None,
                  loglevel=logging.WARNING, cleanup=True, ping_interval=None, pulse_interval=None,
-                 resubmit=False, secret='', keyfile=None, certfile=None):
+                 resubmit=False, secret='', keyfile=None, certfile=None, fault_recover=False):
         """Create an instance of cluster for a specific computation.
 
         @computation is either a string (which is name of program, possibly
@@ -1323,6 +1363,15 @@ class JobCluster():
         scheduled for a dead node are automatically cancelled; if
         resubmit is True, then jobs scheduled for a dead node are
         resubmitted to other eligible nodes.
+
+        @fault_recover must be either True or False. When this is
+        True, dispy stores information about jobs in a file of the
+        form '_dispy_store_YYYYMMDDHHMMSS' in current directory. If
+        user program terminates for some reason (such as raising an
+        exception), it is possible to retrieve results of scheduled
+        jobs later (after they are finished) by calling 'recover'
+        function (implemented and described elsewhere in this file).
+
         """
 
         logging.basicConfig(format='%(asctime)s %(message)s', level=loglevel)
@@ -1373,7 +1422,7 @@ class JobCluster():
             shared = False
         self._cluster = _Cluster(ip_addr=ip_addr, port=port, node_port=node_port,
                                  secret=secret, keyfile=keyfile, certfile=certfile,
-                                 shared=shared)
+                                 shared=shared, fault_recover=fault_recover)
         self.ip_addr = self._cluster.ip_addr
         #self.job_result_port = self._cluster.job_result_port
         if not shared:
@@ -1738,13 +1787,57 @@ class SharedJobCluster(JobCluster):
             self._complete.wait()
             scheduler_sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                           auth_code=self.auth_code,
-                                          certfile=self.certfile, keyfile=self.keyfile)
-            scheduler_sock.settimeout(2)
+                                          certfile=self.certfile, keyfile=self.keyfile, timeout=2)
             scheduler_sock.connect((self.scheduler_node, self.scheduler_port))
             req = 'DEL_COMPUTE:' + cPickle.dumps({'ID':self._compute.id})
             scheduler_sock.write_msg(self._compute.id, req)
             scheduler_sock.close()
             del self._compute
+
+def recover(store):
+    """Recover results of jobs submitted.
+
+    @store is filename where dispy stored information about jobs. This
+        file is of the form '_dispy_store_YYYYMMDDHHMMSS' in the
+        directory where dispy ran. Once results are retrived,
+        information about those jobs are removed, so results can't be
+        retrieved more than once.
+    """
+    # TODO: If dispynode is restarted on a node, its server port most
+    # likely will be different; we need to get current server port by
+    # inquiring its ping port, or move the code for retrieving jobs in
+    # dispynode into ping_sock
+    jobs = []
+    shelf = shelve.open(store)
+    dummy_auth = ' ' * len(hashlib.sha1('').hexdigest())
+    for uid in shelf:
+        info = shelf[uid]
+        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), timeout=2)
+        try:
+            sock.connect((info['ip_addr'], info['port']))
+            sock.write(dummy_auth + 'RETRIEVE_JOB:')
+            sock.write_msg(0, cPickle.dumps({'uid':uid, 'hash':info['hash'],
+                                             'compute_id':info['compute_id']}))
+            ruid, resp = sock.read_msg()
+            reply = cPickle.loads(resp)
+            if not isinstance(reply, _JobReply):
+                print 'Failed to get reply for %s: %s' % (uid, reply)
+                continue
+            job = DispyJob()
+            job.id = info['id']
+            job.result = reply.result
+            job.stdout = reply.stdout
+            job.stderr = reply.stderr
+            job.exception = reply.exception
+            job.ip_addr = info['ip_addr']
+            jobs.append(job)
+        except:
+            print 'Failed to get reply for %s' % (uid)
+            print traceback.format_exc()
+        else:
+            del shelf[uid]
+    shelf.close()
+    return jobs
 
 if __name__ == '__main__':
     import argparse
