@@ -398,6 +398,7 @@ class _Scheduler(object):
                                         keyfile=self.node_keyfile, server=True)
                     try:
                         uid, msg = conn.read_msg()
+                        conn.write_msg(uid, 'ACK')
                         conn.close()
                     except:
                         logging.warning('Failed to read job results from %s: %s',

@@ -279,14 +279,16 @@ class _DispyNode():
                             logging.warning('Ignoring PULSE from %s', addr[0])
                     elif msg.startswith('SERVERPORT:'):
                         try:
-                            info = cPickle.loads(msg[len('SERVERPORT:'):])
-                            sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
-                                                timeout=2, ip_addr=info['ip_addr'], port=info['port'])
-                            info = {'ip_addr':self.address[0], 'port':self.address[1]}
-                            sock.write_msg(0, cPickle.dumps(info))
+                            req = cPickle.loads(msg[len('SERVERPORT:'):])
+                            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                            sock.settimeout(1)
+                            reply = {'ip_addr':self.address[0], 'port':self.address[1],
+                                     'sign':self.signature}
+                            sock.sendto(cPickle.dumps(reply), (req['ip_addr'], req['port']))
                             sock.close()
                         except:
-                            pass
+                            logging.debug(traceback.format_exc())
+                            # pass
                     else:
                         logging.warning('Ignoring ping message from %s', addr[0])
                 elif sock == self.cmd_sock.sock:
@@ -315,7 +317,6 @@ class _DispyNode():
                     else:
                         logging.debug('Ignoring message: %s', msg)
             if timeout:
-                logging.debug('timeout')
                 now = time.time()
                 if self.pulse_interval and (now - last_pulse_time) >= self.pulse_interval:
                     n = self.cpus - self.avail_cpus
@@ -339,7 +340,6 @@ class _DispyNode():
                     zombies = [(cid, compute) for cid, compute in self.computations.iteritems() \
                                if (now - compute.last_activity) > zombie_interval]
                     for cid, compute in zombies:
-                        # TODO: shelve (persist) them in case scheduler comes alive?
                         del self.computations[cid]
                     if all(compute.scheduler_ip_addr != self.scheduler_ip_addr \
                            for compute in self.computations.itervalues()):
@@ -372,33 +372,8 @@ class _DispyNode():
                 continue
             req = conn.read(len(self.auth_code))
             if req != self.auth_code:
-                msg = conn.read(len('RETRIEVE_JOB:'))
-                if msg == 'RETRIEVE_JOB:':
-                    uid, msg = conn.read_msg()
-                    try:
-                        msg = cPickle.loads(msg)
-                        assert msg['uid'] is not None
-                        assert msg['hash'] is not None
-                        assert msg['compute_id'] is not None
-                        for d in os.listdir(self.dest_path_prefix):
-                            info_file = os.path.join(self.dest_path_prefix, d,
-                                                     '_dispy_store_%s' % msg['uid'])
-                            if os.path.isfile(info_file):
-                                fd = open(info_file, 'rb')
-                                resp = cPickle.load(fd)
-                                fd.close()
-                                if resp.hash == msg['hash']:
-                                    os.remove(f)
-                                    break
-                        else:
-                            resp = 'Invalid job'
-                    except:
-                        resp = 'Invalid job'
-                        logging.debug(traceback.format_exc())
-                    conn.write_msg(0, cPickle.dumps(resp))
-                else:
-                    logging.warning('Invalid / unauthorized request ignored: %s',
-                                    msg[:min(15, len(msg))])
+                logging.warning('Invalid / unauthorized request ignored: %s',
+                                req[:min(15, len(req))])
                 conn.close()
                 continue
             uid, msg = conn.read_msg()
@@ -454,6 +429,7 @@ class _DispyNode():
                             logging.warning('Failed to send response for new job to %s',
                                             str(addr))
                             continue
+                        job_info.job_reply.status = DispyJob.Running
                         job_info.proc = multiprocessing.Process(target=_dispy_job_func, args=args)
                         self.lock.acquire()
                         self.avail_cpus -= 1
@@ -726,6 +702,44 @@ class _DispyNode():
                 job_info = _DispyJobInfo(reply, reply_addr, compute)
                 reply.status = DispyJob.Terminated
                 self._send_job_reply(job_info)
+            elif msg.startswith('RETRIEVE_JOB:'):
+                req = msg[len('RETRIEVE_JOB:'):]
+                try:
+                    req = cPickle.loads(req)
+                    assert req['uid'] is not None
+                    assert req['hash'] is not None
+                    assert req['compute_id'] is not None
+                    job_info = self.job_infos.get(req['uid'], None)
+                    if job_info is not None:
+                        conn.write_msg(req['uid'], cPickle.dumps(job_info.job_reply))
+                        ruid, ack = conn.read_msg()
+                        # no need to check ack
+                        resp = None
+                    else:
+                        for d in os.listdir(self.dest_path_prefix):
+                            info_file = os.path.join(self.dest_path_prefix, d,
+                                                     '_dispy_job_reply_%s' % req['uid'])
+                            if os.path.isfile(info_file):
+                                fd = open(info_file, 'rb')
+                                resp = cPickle.load(fd)
+                                fd.close()
+                                if resp.hash == req['hash']:
+                                    conn.write_msg(req['uid'], cPickle.dumps(resp))
+                                    ruid, ack = conn.read_msg()
+                                    assert ack == 'ACK'
+                                    assert ruid == req['uid']
+                                    os.remove(info_file)
+                                    if req['compute_id'] not in self.computations:
+                                        p = os.path.dirname(info_file)
+                                        if len(os.listdir(p)) == 0:
+                                            os.rmdir(p)
+                                    resp = None
+                                    break
+                        else:
+                            resp = cPickle.dumps('Invalid job')
+                except:
+                    resp = cPickle.dumps('Invalid job')
+                    # logging.debug(traceback.format_exc())
             else:
                 logging.warning('Invalid request "%s" from %s',
                                 msg[:min(10, len(msg))], addr[0])
@@ -766,6 +780,7 @@ class _DispyNode():
         logging.debug('Executing "%s"', str(program))
         reply = _JobReply(_job, self.ip_addr)
         job_info = _DispyJobInfo(reply, reply_addr, compute)
+        job_info.job_reply.status = DispyJob.Running
         self.lock.acquire()
         self.job_infos[_job.uid] = job_info
         self.lock.release()
@@ -794,16 +809,20 @@ class _DispyNode():
         try:
             sock.connect(job_info.reply_addr)
             sock.write_msg(job_reply.uid, cPickle.dumps(job_reply))
+            uid, ack = sock.read_msg()
+            assert ack == 'ACK'
+            assert uid == job_reply.uid
         except:
-            logging.error("Couldn't send results for %s to %s (%s)",
-                          job_reply.uid, str(job_info.reply_addr), str(traceback.format_exc()))
-        finally:
-            sock.close()
-            f = os.path.join(job_info.compute_dest_path, '_dispy_store_%s' % job_reply.uid)
-            logging.debug('storing job info in %s', f)
+            logging.error("Couldn't send results for %s to %s",
+                          job_reply.uid, str(job_info.reply_addr))
+            # logging.debug(traceback.format_exc())
+            f = os.path.join(job_info.compute_dest_path, '_dispy_job_reply_%s' % job_reply.uid)
+            logging.debug('storing job info in %s', job_reply.uid, f)
             fd = open(f, 'wb')
             cPickle.dump(job_reply, fd)
             fd.close()
+        finally:
+            sock.close()
 
     def shutdown(self):
         self.lock.acquire()

@@ -172,12 +172,12 @@ where
   able to figure out how to circumvent.
 </li>
 <li>
-  <tt>keyfile</tt> is file containing private key for SSL
+  <tt>keyfile</tt> is path to file containing private key for SSL
   communication (see Python 'ssl' module). This key may be stored in
   'certfile' itself, in which case this should be None.
 </li>
 <li>
-  <tt>certfile</tt> is file containing SSL certificate (see Python
+  <tt>certfile</tt> is path to file containing SSL certificate (see Python
   'ssl' module).
 </li>
 </ul>
@@ -208,6 +208,9 @@ where all arguments common to <tt>JobCluster</tt> are same, and
   instead, 'dispyscheduler' must be called with '--pulse_interval'
   option appropriately.
 </li>
+<li>
+  <tt>secret</tt> is a string that is (hashed and) used for
+  handshaking of communication with dispyscheduler.
 </ul>
 </li>
 
