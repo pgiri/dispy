@@ -495,7 +495,7 @@ class _Cluster(object):
     __metaclass__ = MetaSingleton
 
     def __init__(self, ip_addr=None, port=None, node_port=None,
-                 secret='', keyfile=None, certfile=None, shared=False, fault_recover_file=None):
+                 secret='', keyfile=None, certfile=None, shared=False, fault_recover=None):
         if not hasattr(self, 'ip_addr'):
             atexit.register(self.shutdown)
             if ip_addr:
@@ -518,21 +518,23 @@ class _Cluster(object):
             self.pulse_interval = None
             self.ping_interval = None
 
-            if fault_recover_file:
-                if fault_recover_file is True:
+            if fault_recover:
+                if fault_recover is True:
                     now = datetime.datetime.now()
                     self.fault_recover_file = '_dispy_fault_recover_%.4i%.2i%.2i%.2i%.2i%.2i' % \
                                               (now.year, now.month, now.day, now.hour, now.minute, now.second)
-                elif isinstance(fault_recover_file, str):
+                elif isinstance(fault_recover, str):
+                    if os.path.exists(fault_recover):
+                        raise Exception('fault_recover file "%s" exists; remove it' % fault_recover)
                     try:
-                        fd = open(fault_recover_file, 'wb')
+                        fd = open(fault_recover, 'wb')
                         fd.close()
-                        os.remove(fault_recover_file)
-                        self.fault_recover_file = fault_recover_file
+                        os.remove(fault_recover)
+                        self.fault_recover_file = fault_recover
                     except:
-                        raise Exception('Invalid file "%s"' % fault_recover_file)
+                        raise Exception('Could not open fault_recover file "%s" for writing' % fault_recover)
                 else:
-                    raise Exception('Invalid file "%s"' % fault_recover_file)
+                    raise Exception('Invalid fault_recover option: "%s"' % fault_recover)
                 logging.info('Storing fault recovery information in "%s"', self.fault_recover_file)
             else:
                 self.fault_recover_file = None
@@ -1241,6 +1243,8 @@ class _Cluster(object):
 
     def shutdown(self):
         # TODO: make sure JobCluster instances are done
+        if not hasattr(self, '_scheduler'):
+            return
         if self._scheduler:
             logging.debug('Shutting down scheduler ...')
             self._sched_cv.acquire()
@@ -1307,7 +1311,7 @@ class JobCluster():
     def __init__(self, computation, nodes=['*'], depends=[], callback=None, max_cpus=None,
                  ip_addr=None, port=None, node_port=None, dest_path=None,
                  loglevel=logging.WARNING, cleanup=True, ping_interval=None, pulse_interval=None,
-                 resubmit=False, secret='', keyfile=None, certfile=None, fault_recover_file=None):
+                 resubmit=False, secret='', keyfile=None, certfile=None, fault_recover=None):
         """Create an instance of cluster for a specific computation.
 
         @computation is either a string (which is name of program, possibly
@@ -1390,7 +1394,7 @@ class JobCluster():
         resubmit is True, then jobs scheduled for a dead node are
         resubmitted to other eligible nodes.
 
-        @fault_recover_file must be either True or file path. When this
+        @fault_recover must be either True or file path. When this
         is True, dispy stores information about jobs in a file of the
         form '_dispy_fault_recover_YYYYMMDDHHMMSS' in current directory. If it
         is a path, dispy will use given path to store information
@@ -1450,7 +1454,7 @@ class JobCluster():
             shared = False
         self._cluster = _Cluster(ip_addr=ip_addr, port=port, node_port=node_port,
                                  secret=secret, keyfile=keyfile, certfile=certfile,
-                                 shared=shared, fault_recover_file=fault_recover_file)
+                                 shared=shared, fault_recover=fault_recover)
         self.ip_addr = self._cluster.ip_addr
         #self.job_result_port = self._cluster.job_result_port
         if not shared:
@@ -1837,8 +1841,8 @@ def fault_recover_jobs(fault_recover_file, ip_addr=None, secret='', node_port=51
         more than once.
 
     @ip_addr is IP address to use for this client, in case multiple
-        network interfaces have been configured. Default is to determine
-        default IP address.
+        network interfaces have been configured. Default is to use IP
+        address associated with the 'hostname'.
 
     @secret is a string that is (hashed and) used for handshaking
         of communication with nodes.
