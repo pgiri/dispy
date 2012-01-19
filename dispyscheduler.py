@@ -308,14 +308,18 @@ class _Scheduler(object):
             return
         logging.debug('Sending results for %s to %s, %s', uid, ip, port)
         sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
-        sock.settimeout(2)
+        sock.settimeout(3)
         try:
             sock.connect((ip, port))
             sock.write_msg(uid, cPickle.dumps(result))
+            ruid, ack = sock.read_msg()
+            assert ack == 'ACK'
+            assert uid == ruid
         except:
-            logging.warning("Couldn't send results for job %s to %s (%s)",
-                            uid, ip, str(sys.exc_info()))
-        sock.close()
+            logging.warning("Couldn't send results for job %s to %s", uid, ip)
+            # TODO: store this result?
+        finally:
+            sock.close()
 
     def terminate_jobs(self, _jobs):
         for _job in _jobs:

@@ -522,19 +522,27 @@ class _Cluster(object):
                 if fault_recover is True:
                     now = datetime.datetime.now()
                     self.fault_recover_file = '_dispy_fault_recover_%.4i%.2i%.2i%.2i%.2i%.2i' % \
-                                              (now.year, now.month, now.day, now.hour, now.minute, now.second)
+                                              (now.year, now.month, now.day,
+                                               now.hour, now.minute, now.second)
                 elif isinstance(fault_recover, str):
                     if os.path.exists(fault_recover):
                         raise Exception('fault_recover file "%s" exists; remove it' % fault_recover)
-                    try:
-                        fd = open(fault_recover, 'wb')
-                        fd.close()
-                        os.remove(fault_recover)
-                        self.fault_recover_file = fault_recover
-                    except:
-                        raise Exception('Could not open fault_recover file "%s" for writing' % fault_recover)
+                    self.fault_recover_file = fault_recover
                 else:
                     raise Exception('Invalid fault_recover option: "%s"' % fault_recover)
+                try:
+                    fd = open(self.fault_recover_file, 'wb')
+                    fd.close()
+                    os.remove(self.fault_recover_file)
+                except:
+                    raise Exception('Could not open fault_recover file "%s" for writing' % \
+                                    fault_recover)
+                # TODO: it is safer to use file locking instead of
+                # thread locking, but it is more efficient to use
+                # thread locking in this case. However,
+                # 'fault_recover_jobs' function must not be used when
+                # a cluster using the same file is also active
+                self.fault_recover_lock = threading.Lock()
                 logging.info('Storing fault recovery information in "%s"', self.fault_recover_file)
             else:
                 self.fault_recover_file = None
@@ -673,12 +681,14 @@ class _Cluster(object):
             _job.finish(status)
             if status != DispyJob.ProvisionalResult:
                 if self.fault_recover_file:
+                    self.fault_recover_lock.acquire()
                     shelf = shelve.open(self.fault_recover_file)
                     try:
                         del shelf[str(_job.uid)]
                     except:
                         logging.warning('Apparently job %s is recovered?', _job.uid)
                     shelf.close()
+                    self.fault_recover_lock.release()
                 assert cluster._pending_jobs > 0
                 cluster._pending_jobs -= 1
                 if cluster._pending_jobs == 0:
@@ -698,12 +708,14 @@ class _Cluster(object):
         finally:
             if status != DispyJob.ProvisionalResult:
                 if self.fault_recover_file:
+                    self.fault_recover_lock.acquire()
                     shelf = shelve.open(self.fault_recover_file)
                     try:
                         del shelf[str(_job.uid)]
                     except:
                         logging.warning('Apparently job %s is recovered?', _job.uid)
                     shelf.close()
+                    self.fault_recover_lock.release()
                 self._sched_cv.acquire()
                 assert cluster._pending_jobs > 0
                 cluster._pending_jobs -= 1
@@ -1160,12 +1172,14 @@ class _Cluster(object):
     def store_job_info(self, _job):
         if not self.fault_recover_file:
             return
+        self.fault_recover_lock.acquire()
         shelf = shelve.open(self.fault_recover_file)
         state = {'id':_job.job.id, 'hash':_job.hash, 'compute_id':_job.compute_id,
                  'args':_job.args, 'kwargs':_job.kwargs,
                  'ip_addr':_job.node.ip_addr, 'port':_job.node.port}
         shelf[str(_job.uid)] = state
         shelf.close()
+        self.fault_recover_lock.release()
         return
 
     def submit_job(self, _job):
@@ -1273,11 +1287,13 @@ class _Cluster(object):
             self.worker_Q.put((99, None, None))
             self.worker_Q.join()
         if self.fault_recover_file:
+            self.fault_recover_lock.acquire()
             shelf = shelve.open(self.fault_recover_file)
             n = len(shelf)
             shelf.close()
             if n == 0:
                 os.remove(self.fault_recover_file)
+            self.fault_recover_lock.release()
         logging.debug('shutdown complete')
 
     def stats(self, compute, wall_time=None):
@@ -1835,6 +1851,9 @@ def fault_recover_jobs(fault_recover_file, ip_addr=None, secret='', node_port=51
     client was earlier started with 'fault_recover_file' option, the
     results of jobs submitted can be recovered with this function.
 
+    NB: This function must NOT be used when a JobCluster using same
+    fault_recover_file is running.
+
     @fault_recover_file is path to file in which dispy stored
         information about jobs. Once results are retrived, information
         about those jobs are removed, so results can't be retrieved
@@ -1864,7 +1883,6 @@ def fault_recover_jobs(fault_recover_file, ip_addr=None, secret='', node_port=51
     srv_sock.bind((ip_addr, 0))
 
     port_req = cPickle.dumps({'ip_addr':ip_addr, 'port':srv_sock.getsockname()[1]})
-
     node_infos = {}
     shelf = shelve.open(fault_recover_file)
     for uid in shelf:
@@ -1878,7 +1896,7 @@ def fault_recover_jobs(fault_recover_file, ip_addr=None, secret='', node_port=51
             try:
                 reply, addr = srv_sock.recvfrom(1024)
                 reply = cPickle.loads(reply)
-                print 'Port for %s is: %s' % (reply['ip_addr'], reply['port'])
+                # print 'Port for %s is: %s' % (reply['ip_addr'], reply['port'])
                 auth_code = hashlib.sha1(_xor_string(reply['sign'], secret)).hexdigest()
                 node_infos[job_info['ip_addr']] = {'port':reply['port'], 'auth_code':auth_code}
                 break
@@ -1888,6 +1906,7 @@ def fault_recover_jobs(fault_recover_file, ip_addr=None, secret='', node_port=51
         else:
             print 'Could not get server port information from %s' % job_info['ip_addr']
         sock.close()
+    srv_sock.close()
 
     jobs = []
     for uid in shelf:
@@ -1925,12 +1944,17 @@ def fault_recover_jobs(fault_recover_file, ip_addr=None, secret='', node_port=51
             # print traceback.format_exc()
         else:
             del shelf[uid]
-            pass
 
     pending = len(shelf)
     shelf.close()
     if pending == 0:
-        os.remove(fault_recover_file)
+        # depending on db used, the file may have extension that
+        # apparently is not easy to determine, so removing the file
+        # may fail
+        try:
+            os.remove(fault_recover_file)
+        except:
+            print 'Could not remove file "%s"' % fault_recover_file
     return jobs
 
 if __name__ == '__main__':

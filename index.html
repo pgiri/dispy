@@ -147,7 +147,7 @@ if __name__ == '__main__':
 <p>
 In this program, a cluster is created with function 'compute'. This
 computation is then scheduled for execution with various
-arguments. dispy's scheduler then schedules the jobs to all the nods
+arguments. dispy's scheduler schedules the jobs to all the nods
 on local network running 'dispynode'. The nodes
 execute the computation with the job's arguments in isolation -
 computations shouldn't depend on global state, such as modules
@@ -202,30 +202,41 @@ SharedJobCluster is similar):
   </p>
 
 <p>
-Once a job is created (the result of cluster.submit function), its
-'id' field can be set to any value appropriate. This may be useful,
-for example, to distinguish one job from another. In the above
-example, 'id' is set to unique number, although dispy doesn't require
-this field to be unique.
+After a cluster is created for a computation, it can be evaluated with
+multiple instances of data by calling cluster.submit function. The
+result is a 'job', which is an instance of DispyJob (see
+dispy.py). User can set its 'id' field to any value appropriate. This
+may be useful, for example, to distinguish one job from another. In
+the above example, 'id' is set to unique number, although dispy
+doesn't require this field to be unique - dispy doesn't use 'id'
+field, at all.
 </p>
 
 <p>
 Job's 'status' field is read-only field; its value is one of Created,
-Running, Finished or Cancelled, indicating current status of job.  If
-job is created for SharedJobCluster, status is not updated to Running
-when job is actually running.
+Running, Finished, Cancelled or Terminated, indicating current status
+of job.  If job is created for SharedJobCluster, status is not updated
+to Running when job is actually running.
 </p>
   
 <p>
 When a submitted job is called with job(), it returns that job's
-execution result, possibly waiting until the job is finished. After a job is complete,<ul>
-  <li>job.result will have function's return value (job.result is same as return value of job()) </li>
+execution result, possibly waiting until the job is finished. After a
+job is complete,<ul>
+  <li>job.result will have function's return value (job.result is same
+  as return value of job()) </li>
   <li>job.stdout and job.stderr will have stdout and stderr strings</li>
   <li>job.exception will have exception trace if executing job raises any exception;
     in this case the result of job.result will be <tt>None</tt></li>
   <li>job.start_time will be the time when job is scheduled for execution on a node</li>
   <li>job.end_time will be time when results became available</li>
   </ul>
+
+result, stdout and stderr should not be large - these are buffered and
+hence will consume memory (not stored on disk). Moreover, like args
+and kwargs, result should be serializable (picklable object). If
+result is (or has) an instance of python class, that class may have to
+provide __getstate__ function to serialize the object.
 </p>
 
 <p>
