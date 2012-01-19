@@ -49,7 +49,7 @@ from dispy import _DispySocket, _Compute, DispyJob, _DispyJob_, _Node, _JobReply
      MetaSingleton, _xor_string, _parse_nodes, _node_name_ipaddr, _XferFile
 from dispynode import _same_file
 
-_dispy_version = '1.0'
+_dispy_version = '1.1'
 MaxFileSize = 10240000
 
 class _Scheduler(object):

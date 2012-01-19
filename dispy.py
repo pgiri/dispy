@@ -45,7 +45,7 @@ import Queue
 import shelve
 import datetime
 
-_dispy_version = '1.0'
+_dispy_version = '1.1'
 
 class DispyJob():
     """Job scheduled for execution with dispy.
@@ -525,21 +525,22 @@ class _Cluster(object):
                                               (now.year, now.month, now.day,
                                                now.hour, now.minute, now.second)
                 elif isinstance(fault_recover, str):
-                    if os.path.exists(fault_recover):
-                        raise Exception('fault_recover file "%s" exists; remove it' % fault_recover)
                     self.fault_recover_file = fault_recover
                 else:
                     raise Exception('Invalid fault_recover option: "%s"' % fault_recover)
                 try:
-                    fd = open(self.fault_recover_file, 'wb')
-                    fd.close()
-                    os.remove(self.fault_recover_file)
+                    shelf = shelve.open(self.fault_recover_file, flag='r')
                 except:
-                    raise Exception('Could not open fault_recover file "%s" for writing' % \
-                                    fault_recover)
-                # TODO: it is safer to use file locking instead of
+                    shelf = None
+                if shelf is not None:
+                    shelf.close()
+                    raise Exception('fault_recover file "%s" exists; remove it' % \
+                                    self.fault_recover_file)
+                shelf = shelve.open(self.fault_recover_file, flag='n')
+                shelf.close()
+                # TODO?: it is safer to use file locking instead of
                 # thread locking, but it is more efficient to use
-                # thread locking in this case. However,
+                # thread locking (in this case). However,
                 # 'fault_recover_jobs' function must not be used when
                 # a cluster using the same file is also active
                 self.fault_recover_lock = threading.Lock()
@@ -809,6 +810,7 @@ class _Cluster(object):
             socks.append(ping_sock)
         else:
             ping_sock = None
+
         self._ready.set()
 
         if self.pulse_interval:
@@ -850,8 +852,8 @@ class _Cluster(object):
                     if cluster is None:
                         # job cancelled while closing computation?
                         if self.shared is False:
+                            assert node.busy > 0
                             node.busy -= 1
-                            assert node.busy >= 0
                         self._sched_cv.release()
                         continue
                     compute = cluster._compute

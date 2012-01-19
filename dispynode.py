@@ -43,7 +43,7 @@ import shelve
 from dispy import _DispySocket, _DispyJob_, _JobReply, DispyJob, \
      _Compute, _XferFile, _xor_string, _node_name_ipaddr
 
-_dispy_version = '1.0'
+_dispy_version = '1.1'
 MaxFileSize = 10240000
 
 def dispy_provisional_result(result):
@@ -175,7 +175,6 @@ class _DispyNode():
         self.zombie_interval = 60 * zombie_interval
 
         logging.debug('auth_code for %s: %s', ip_addr, self.auth_code)
-        self.server_started = threading.Event()
         self.cmd_sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                      auth_code=self.auth_code)
         self.cmd_sock.bind((self.ip_addr, 0))
@@ -192,9 +191,7 @@ class _DispyNode():
         self.ping_thread = threading.Thread(target=self.__ping_pong,
                                             args=(node_port, scheduler_ip_addr))
         self.ping_thread.daemon = True
-        self.ping_thread.start()
-
-        # atexit.register(self.shutdown)
+        # start from _serve so ping is not sent before server starts
 
     def send_pong_msg(self, reset_interval=True):
         ping_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -214,8 +211,6 @@ class _DispyNode():
             sock.close()
 
     def __ping_pong(self, node_port, scheduler_ip_addr):
-        self.server_started.wait()
-
         if self.avail_cpus == self.cpus:
             self.send_pong_msg(reset_interval=False)
         pong_msg = {'ip_addr':self.ip_addr, 'fqdn':self.fqdn, 'port':self.address[1],
@@ -361,7 +356,7 @@ class _DispyNode():
                     self.lock.release()
 
     def _serve(self):
-        self.server_started.set()
+        self.ping_thread.start()
         while True:
             conn, addr = self.srv_sock.accept()
             try:
