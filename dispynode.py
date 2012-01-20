@@ -350,10 +350,8 @@ class _DispyNode():
                         sock.sendto('TERMINATED:%s' % data, (compute.scheduler_ip_addr,
                                                              compute.scheduler_port))
                         sock.close()
-                    self.lock.acquire()
                     if self.avail_cpus == self.cpus and self.scheduler_ip_addr is None:
                         self.send_pong_msg(reset_interval=True)
-                    self.lock.release()
 
     def _serve(self):
         self.ping_thread.start()
@@ -812,10 +810,24 @@ class _DispyNode():
                           job_reply.uid, str(job_info.reply_addr))
             # logging.debug(traceback.format_exc())
             f = os.path.join(job_info.compute_dest_path, '_dispy_job_reply_%s' % job_reply.uid)
-            logging.debug('storing job info in %s', job_reply.uid, f)
+            logging.debug('storing results for job %s', job_reply.uid)
             fd = open(f, 'wb')
             cPickle.dump(job_reply, fd)
             fd.close()
+            self.lock.acquire()
+            if self.computations[job_info.compute_id].pending_jobs == 0:
+                cleanup = self.computations.pop(job_info.compute_id)
+                if all(c.scheduler_ip_addr != self.scheduler_ip_addr \
+                       for c in self.computations.itervalues()):
+                    self.scheduler_ip_addr = None
+                    self.pulse_interval = None
+            else:
+                cleanup = None
+            self.lock.release()
+            if cleanup:
+                self.cleanup_computation(cleanup)
+            if self.avail_cpus == self.cpus:
+                self.send_pong_msg(reset_interval=True)
         finally:
             sock.close()
 

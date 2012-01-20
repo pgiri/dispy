@@ -497,7 +497,7 @@ class _Cluster(object):
     def __init__(self, ip_addr=None, port=None, node_port=None,
                  secret='', keyfile=None, certfile=None, shared=False, fault_recover=None):
         if not hasattr(self, 'ip_addr'):
-            atexit.register(self.shutdown)
+            # atexit.register(self.shutdown)
             if ip_addr:
                 ip_addr = _node_name_ipaddr(ip_addr)[1]
             else:
@@ -1475,8 +1475,19 @@ class JobCluster():
                                  shared=shared, fault_recover=fault_recover)
         self.ip_addr = self._cluster.ip_addr
         #self.job_result_port = self._cluster.job_result_port
+
+        # TODO: This is tricky: if user program raises an uncaught
+        # exception, it won't be able to process job results (unless
+        # there are other threads in the program) and if we register
+        # self.close with atexit and fault_recover option is used,
+        # user won't be able to retrieve them later for
+        # processing. For now, since callbacks are called from dispy,
+        # register self.close with at exit if callback is given. It
+        # may be simpler/consistent to just not register with atexit
+        # at all? Certainly won't be yet another option!
         if not shared:
-            atexit.register(self.close)
+            if self.callback or not self._cluster.fault_recover_file:
+                atexit.register(self.close)
 
         if inspect.isfunction(computation) or inspect.ismethod(computation):
             func = computation
