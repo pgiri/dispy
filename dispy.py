@@ -36,7 +36,6 @@ import weakref
 import re
 import ssl
 import hashlib
-import atexit
 import traceback
 import functools
 import types
@@ -497,7 +496,6 @@ class _Cluster(object):
     def __init__(self, ip_addr=None, port=None, node_port=None,
                  secret='', keyfile=None, certfile=None, shared=False, fault_recover=None):
         if not hasattr(self, 'ip_addr'):
-            # atexit.register(self.shutdown)
             if ip_addr:
                 ip_addr = _node_name_ipaddr(ip_addr)[1]
             else:
@@ -1476,19 +1474,6 @@ class JobCluster():
         self.ip_addr = self._cluster.ip_addr
         #self.job_result_port = self._cluster.job_result_port
 
-        # TODO: This is tricky: if user program raises an uncaught
-        # exception, it won't be able to process job results (unless
-        # there are other threads in the program) and if we register
-        # self.close with atexit and fault_recover option is used,
-        # user won't be able to retrieve them later for
-        # processing. For now, since callbacks are called from dispy,
-        # register self.close with at exit if callback is given. It
-        # may be simpler/consistent to just not register with atexit
-        # at all? Certainly won't be yet another option!
-        if not shared:
-            if self.callback or not self._cluster.fault_recover_file:
-                atexit.register(self.close)
-
         if inspect.isfunction(computation) or inspect.ismethod(computation):
             func = computation
             compute = _Compute(_Compute.func_type, func.func_name)
@@ -1689,8 +1674,6 @@ class SharedJobCluster(JobCluster):
             logging.warning('pulse_interval is not used in SharedJobCluster; ' \
                             'dispyscheduler should be started appropriately.')
         self.pulse_interval = None
-        atexit.register(self.close)
-
         self.certfile = certfile
         self.keyfile = keyfile
         self._cluster.job_uid = None
