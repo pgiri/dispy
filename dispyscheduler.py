@@ -244,7 +244,6 @@ class _Scheduler(object):
             if func is None:
                 worker_Q.task_done()
                 break
-            logging.debug('Calling %s', func.__name__)
             try:
                 func(*args)
             except:

@@ -63,7 +63,7 @@ computations.
 <ul>
   <li>
 <tt>JobCluster(computation, nodes=['*'], depends=[], callback=None,
-           ip_addr=None, port=51347, node_port=51348,
+           ip_addr=None, port=51347, node_port=51348, fault_recover=False,
            dest_path=None, loglevel=logging.WARNING, cleanup=True,
            pulse_interval=None, ping_interval=None, resubmit=False,
            secret='', keyfile=None, certfile=None)</tt><br/>
@@ -131,6 +131,21 @@ where
   'cleanup=False'.
 </li>
 <li>
+  <tt>fault_recover</tt> must be either True or a string. If it is a
+  string, dispy uses it as path to file where it stores information
+  about jobs scheduled but not finished yet. In case user program
+  terminates unexpectedly (for example, because of network failure,
+  uncaught exception), the results of submitted jobs can be later
+  retrieved through 'fault_recover_jobs' function (see below). If this
+  option is True, dispy will store information about jobs in a file of
+  the form '_dispy_fault_recover_YYYYMMDDHHMMSS' in the current
+  directory. Note that dispy keeps information about only the jobs
+  that have been submitted for execution but not finished yet. Once a
+  job is finished (i.e., job result is received by dispy's scheduler),
+  its information is lost. If it is necessary to keep the information
+  about finished jobs, callbacks can be used to persist job results.
+</li>
+<li>
   <tt>loglevel</tt> is message priority for logging module.
 </li>
 <li>
@@ -184,11 +199,11 @@ where
 </li>
 
 <li>
-  SharedJobCluster has almost the same syntax, except as noted below:
+  SharedJobCluster has almost the same syntax, except as noted below:<br />
 <tt>SharedJobCluster(computation, nodes=['*'], depends=[], ip_addr=None, port=51347,
                  scheduler_node=None, scheduler_port=51349,
                  dest_path=None, loglevel=logging.WARNING, cleanup=True,
-                 resubmit=False, fault_recover=False,
+                 resubmit=False,
                  secret='', keyfile=None, certfile=None)</tt><br/>
 where all arguments common to <tt>JobCluster</tt> are same, and
 <ul>
@@ -212,20 +227,6 @@ where all arguments common to <tt>JobCluster</tt> are same, and
   <tt>secret</tt> is a string that is (hashed and) used for
   handshaking of communication with dispyscheduler.
 </li>
-<li>
-  <tt>fault_recover</tt> must be either True or a string. If it is a
-  string, dispy uses it as path to file where it stores information
-  about jobs scheduled but not finished yet. In case dispy client or
-  user program terminates unexpectedly (for example, because of an
-  uncaught exception), the results of submitted jobs can be retrieved
-  through 'fault_recover_jobs' function (see below). If this option is
-  True, dispy will store information about jobs in a file of the form
-  '_dispy_fault_recover_YYYYMMDDHHMMSS' in the current directory. Note
-  that dispy keeps information about only the jobs that have been
-  submitted for execution but not finished yet. Once a job is finished
-  (rather, job result is received by dispy's scheduler), its
-  information is lost. If it is necessary to keep the information
-  about finished jobs, callbacks may be used.
 </ul>
 </li>
 
@@ -272,6 +273,56 @@ where all arguments common to <tt>JobCluster</tt> are same, and
   <tt>cluster.stats()</tt> will print statistics about nodes, time
   each node spent executing jobs etc.
 </li>
+
+<li>
+As noted above, if 'fault_recover' option is used when creating a
+cluster, dispy stores information about scheduled but unfinished jobs
+in a file. If user program then terminates unexpectedly, the nodes
+that execute those jobs can't send the results back to dispy. In such
+cases, the results for the jobs can be retrieved from the nodes
+with:<br/>
+<tt>fault_recover_jobs(fault_recover_file, ip_addr=None, secret='', node_port=51348,
+                       certfile=None, keyfile=None)</tt>
+where
+<ul>
+  <li><tt>fault_recover_file</tt> is path to the file used or created
+  when JobCluster is used.</li>
+  <li><tt>ip_addr</tt> is IP address to use for (client)
+    communication. This may be needed in case the client has multiple
+    interfaces and default interface is not the right choice (this
+    would be same as the 'ip_addr' option used for JobCluster).</li>
+  <li><tt>secret</tt> is a string that is (hashed and) used for
+  handshaking of communication with nodes (should same as the one used
+  when creating JobCluster).</li>
+  <li><tt>node_port</tt> is port to use for communicating with nodes
+  (servers). If this should be different from default, 'dispynode'
+  programs must be run with the same port. This option should be same
+  as the one used when creating JobCluster.</li>
+  <li><tt>certfile</tt> is path to file containing SSL certificate (see Python
+  'ssl' module) (same as the one used when creating JobCluster).</li>
+  <li><tt>keyfile</tt> is path to file containing private key for SSL
+  communication (see Python 'ssl' module). This key may be stored in
+  'certfile' itself, in which case this should be None. This option
+  should be same as the one used when creating JobCluster.</li>
+</ul>
+
+This function reads the information about jobs in the
+fault_recover_file, retrieves DispyJob instance (that contains
+results, stdout, stderr, status etc.) for each job that was scheduled
+for execution but unfinished at the time of crash, and returns them as
+a list. If a job has finished executing at the time
+'fault_recover_jobs' function is called, the information about that is
+deleted from both the node and fault_recover_file, so the results for
+finished jobs can't be retrieved more than once. However, if a job is
+still executing, the status field of DispyJob would be
+DispyJob.Running and the results for this job can be retrieved again
+(until that job finishes) by calling 'fault_recover_jobs'. Note that
+'fault_recover_jobs' is available as separate function - it doesn't
+need JobCluster or SharedJobCluster instance. In fact,
+'fault_recover_jobs' function must not be used when a cluster that
+uses same recover file is currently running.
+</li>
+
 </ul>
 
 <p>
@@ -282,42 +333,7 @@ if the program imported those modules before cluster is created.
 </p>
 
 <p>
-'fault_recover_jobs' function impemented in dispy.py is useful if user
-program that uses dispy crashes unexpectedly or network communication
-with the nodes is broken after submitting the jobs but before their
-results are received by dispy. In such cases, dispynode stores results
-of computation on in files. These results can be retrieved with this function:
-<tt>fault_recover_jobs(fault_recover_file, ip_addr=None, secret='', node_port=51348,
-                       certfile=None, keyfile=None)</tt>
-where
-<ul>
-  <li><tt>fault_recover_file</tt> is path to the file given earlier
-  when JobCluster is used.</li>
-  <li><tt>ip_addr</tt> is IP address to use for (client)
-    communication. This may be needed in case the client has multiple
-    interfaces and default interface is not the right choice.</li>
-  <li><tt>secret</tt> is a string that is (hashed and) used for
-  handshaking of communication with nodes.</li>
-  <li><tt>node_port</tt> is port to use for communicating with nodes
-  (servers). If this should be different from default, 'dispynode'
-  programs must be run with the same port.</li>
-  <li><tt>certfile</tt> is path to file containing SSL certificate (see Python
-  'ssl' module).</li>
-  <li><tt>keyfile</tt> is path to file containing private key for SSL
-  communication (see Python 'ssl' module). This key may be stored in
-  'certfile' itself, in which case this should be None.</li>
-</li>
-  </ul>
 
-This function reads the information about jobs in the
-fault_recover_file, retrieves DispyJob instance (that contains
-results, stdout, stderr, status etc.) for each job and returns them as
-a list. If a job has finished executing or terminated (e.g., because
-of an uncaught exception), the information about them is deleted from
-both the node and fault_recover_file, so the results can't be
-retrieved more than once. However, if a job is still executing, the
-status field of DispyJob would be DispyJob.Running and the results for
-this job can be retrieved again (until that job finishes).
   </p>
 
 <p>

@@ -55,9 +55,24 @@ are:
     processing.</li>
 
 <li>Nodes may become available dynamically: dispy will schedule jobs
-    whenever a node is available and computations can use that node. If
-    a node fails while executing scheduled jobs, those jobs may be
-    resubmitted to other nodes if computations allow it.</li>
+    whenever a node is available and computations can use that node.</li>
+
+<li>If callback function is provided, dispy executes that function
+    when a job is finished; this feature is useful for further
+    processing of job results</li>
+
+<li>Client-side and server-side fault recovery are supported:<br/>
+
+    If user program (client) terminates unexpectedly (e.g., due to
+    uncaught exception), the nodes continue to execute scheduled
+    jobs. If client-side fault recover option is used when creating a
+    cluster, the results of the scheduled (but unfinished at the time
+    of crash) jobs for that cluster can be retrieved later.<br />
+
+    If a computation is marked reentrant (with 'resubmit=True' option)
+    when a cluster is created and a node (server) executing jobs for
+    that computation fails, dispy automatically resubmits those jobs
+    to other available nodes.</li>
 
 <li>dispy can be used in a single process to use all the nodes
     exclusively (with <tt>JobCluster</tt> - simpler to use) or in
