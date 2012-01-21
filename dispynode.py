@@ -345,6 +345,8 @@ class _DispyNode():
                         sock.sendto('TERMINATED:%s' % data, (compute.scheduler_ip_addr,
                                                              compute.scheduler_port))
                         sock.close()
+                    if self.scheduler_ip_addr is None and self.avail_cpus == self.cpus:
+                        self.send_pong_msg(reset_interval=True)
 
     def _serve(self):
         self.ping_thread.start()
@@ -464,8 +466,12 @@ class _DispyNode():
                         logging.warning('Failed to send reply to %s', str(addr))
                     continue
                 self.lock.acquire()
-                if (self.scheduler_ip_addr is not None) or (self.avail_cpus != self.cpus):
-                    logging.debug('Ignoring computation request from %s', addr[0])
+                if not (((self.scheduler_ip_addr is None) or
+                         (self.scheduler_ip_addr == compute.scheduler_ip_addr)) and \
+                        (self.avail_cpus == self.cpus)):
+                    logging.debug('Ignoring computation request from %s: %s, %s, %s',
+                                  compute.scheduler_ip_addr, self.scheduler_ip_addr,
+                                  self.avail_cpus, self.cpus)
                     resp = 'Busy'
                     try:
                         conn.write_msg(uid, resp)
@@ -475,7 +481,7 @@ class _DispyNode():
                     self.lock.release()
                     continue
                 self.lock.release()
-                resp = 'ACK'
+
                 if compute.dest_path and isinstance(compute.dest_path, str):
                     compute.dest_path = compute.dest_path.strip(os.sep)
                 else:
@@ -490,7 +496,6 @@ class _DispyNode():
                         resp = 'NACK'
                 compute.dest_path = os.path.join(self.dest_path_prefix, compute.dest_path)
                 try:
-                    assert resp == 'ACK'
                     os.makedirs(compute.dest_path)
                     os.chmod(compute.dest_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
                 except:
@@ -555,11 +560,12 @@ class _DispyNode():
                     #               ','.join(xf.name for xf in compute.xfer_files))
                     resp += ':XFER_FILES:' + cPickle.dumps(xfer_files)
                 self.lock.acquire()
-                if self.scheduler_ip_addr is None:
+                if self.scheduler_ip_addr is None or self.scheduler_ip_addr == compute.scheduler_ip_addr:
                     self.computations[compute.id] = compute
                     self.scheduler_ip_addr = compute.scheduler_ip_addr
                     self.scheduler_port = compute.scheduler_port
                     self.pulse_interval = compute.pulse_interval
+                    resp = 'ACK'
                 else:
                     resp = 'Busy'
                     if os.path.isdir(compute.dest_path):
@@ -782,7 +788,9 @@ class _DispyNode():
         except:
             logging.error("Couldn't send results for %s to %s",
                           job_reply.uid, str(job_info.reply_addr))
-            # logging.debug(traceback.format_exc())
+            # store job result even if computation has not enabled
+            # fault recovery; user may be able to access node and
+            # retrieve result manually
             f = os.path.join(job_info.compute_dest_path, '_dispy_job_reply_%s' % job_reply.uid)
             logging.debug('storing results for job %s', job_reply.uid)
             try:
@@ -873,7 +881,8 @@ class _DispyNode():
                     except:
                         logging.warning('Could not remove file "%s"', tgt)
 
-        if compute.dest_path.startswith(self.dest_path_prefix) and \
+        if os.path.isdir(compute.dest_path) and \
+               compute.dest_path.startswith(self.dest_path_prefix) and \
                len(compute.dest_path) > len(self.dest_path_prefix) and \
                len(os.listdir(compute.dest_path)) == 0:
             logging.debug('Removing "%s"', compute.dest_path)
