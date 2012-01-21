@@ -1655,9 +1655,12 @@ class JobCluster():
 
     def close(self):
         if hasattr(self, 'submit'):
-            del self.submit
-            del self.cancel
-            del self.stats
+            try:
+                del self.submit
+                del self.cancel
+                del self.stats
+            except:
+                return
             self._complete.wait()
             self._cluster._close(self)
             logging.debug('Cluster "%s" deleted', self._compute.name)

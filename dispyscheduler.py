@@ -306,8 +306,7 @@ class _Scheduler(object):
             logging.debug('Ignoring result for job %s', uid)
             return
         logging.debug('Sending results for %s to %s, %s', uid, ip, port)
-        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
-        sock.settimeout(3)
+        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), timeout=3)
         try:
             sock.connect((ip, port))
             sock.write_msg(uid, cPickle.dumps(result))
@@ -783,7 +782,7 @@ class _Scheduler(object):
                             reschedule_jobs(dead_jobs)
                             for cid, cluster in self._clusters.iteritems():
                                 if cluster._compute.nodes.pop(node.ip_addr, None) is not None:
-                                    node.clusters.remove(cid)
+                                    node.clusters.pop(cid, None)
                             self._sched_cv.notify()
                             self._sched_cv.release()
                             del node

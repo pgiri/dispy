@@ -498,6 +498,7 @@ class _DispyNode():
                 try:
                     os.makedirs(compute.dest_path)
                     os.chmod(compute.dest_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+                    logging.debug('dest_path for "%s": %s', compute.name, compute.dest_path)
                 except:
                     logging.warning('Invalid destination path: "%s"', compute.dest_path)
                     resp = 'NACK (Invalid dest_path)'
@@ -670,7 +671,7 @@ class _DispyNode():
                     self.lock.acquire()
                     self.avail_cpus += 1
                     compute.pending_jobs -= 1
-                    if compute.pending_jobs == 0:
+                    if compute.pending_jobs == 0 and compute.zombie:
                         self.cleanup_computation(compute)
                     self.lock.release()
                 except:
@@ -813,7 +814,7 @@ class _DispyNode():
                 # otherwise, too
                 compute.last_activity = time.time()
                 compute.pending_jobs -= 1
-                if compute.pending_jobs == 0:
+                if compute.pending_jobs == 0 and compute.zombie:
                     self.cleanup_computation(compute)
             self.lock.release()
 
@@ -850,6 +851,8 @@ class _DispyNode():
 
     def cleanup_computation(self, compute):
         # called with lock held
+        if not compute.zombie:
+            return
         if compute.pending_jobs != 0:
             logging.debug('Waiting for %s jobs to finish before removing computation "%s"',
                           compute.pending_jobs, compute.name)
