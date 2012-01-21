@@ -43,6 +43,7 @@ import itertools
 import Queue
 import shelve
 import datetime
+import atexit
 
 _dispy_version = '1.1'
 
@@ -494,8 +495,9 @@ class _Cluster(object):
     __metaclass__ = MetaSingleton
 
     def __init__(self, ip_addr=None, port=None, node_port=None,
-                 secret='', keyfile=None, certfile=None, shared=False, fault_recover=None):
+                 secret='', keyfile=None, certfile=None, shared=False, fault_recover_file=None):
         if not hasattr(self, 'ip_addr'):
+            atexit.register(self._shutdown)
             if ip_addr:
                 ip_addr = _node_name_ipaddr(ip_addr)[1]
             else:
@@ -516,36 +518,16 @@ class _Cluster(object):
             self.pulse_interval = None
             self.ping_interval = None
 
-            if fault_recover:
-                if fault_recover is True:
-                    now = datetime.datetime.now()
-                    self.fault_recover_file = '_dispy_fault_recover_%.4i%.2i%.2i%.2i%.2i%.2i' % \
-                                              (now.year, now.month, now.day,
-                                               now.hour, now.minute, now.second)
-                elif isinstance(fault_recover, str):
-                    self.fault_recover_file = fault_recover
-                else:
-                    raise Exception('Invalid fault_recover option: "%s"' % fault_recover)
+            self.fault_recover_lock = threading.Lock()
+            if fault_recover_file:
                 try:
-                    shelf = shelve.open(self.fault_recover_file, flag='r')
+                    shelf = shelve.open(fault_recover_file, flag='r')
                 except:
                     shelf = None
                 if shelf is not None:
                     shelf.close()
                     raise Exception('fault_recover file "%s" exists; remove it' % \
-                                    self.fault_recover_file)
-                shelf = shelve.open(self.fault_recover_file, flag='n')
-                shelf.close()
-                # TODO?: it is safer to use file locking instead of
-                # thread locking, but it is more efficient to use
-                # thread locking (in this case). However,
-                # 'fault_recover_jobs' function must not be used when
-                # a cluster using the same file is also active
-                self.fault_recover_lock = threading.Lock()
-                logging.info('Storing fault recovery information in "%s"', self.fault_recover_file)
-            else:
-                self.fault_recover_file = None
-
+                                    fault_recover_file)
             self._clusters = {}
             self.unsched_jobs = 0
             self.job_uid = 1
@@ -679,13 +661,14 @@ class _Cluster(object):
         else:
             _job.finish(status)
             if status != DispyJob.ProvisionalResult:
-                if self.fault_recover_file:
+                if cluster.fault_recover_file:
                     self.fault_recover_lock.acquire()
-                    shelf = shelve.open(self.fault_recover_file)
+                    shelf = shelve.open(cluster.fault_recover_file, flag='c')
                     try:
                         del shelf[str(_job.uid)]
                     except:
-                        logging.warning('Apparently job %s is recovered?', _job.uid)
+                        # logging.warning('Apparently job %s is recovered?', _job.uid)
+                        pass
                     shelf.close()
                     self.fault_recover_lock.release()
                 assert cluster._pending_jobs > 0
@@ -706,13 +689,14 @@ class _Cluster(object):
                 job.exception = traceback.format_exc()
         finally:
             if status != DispyJob.ProvisionalResult:
-                if self.fault_recover_file:
+                if cluster.fault_recover_file:
                     self.fault_recover_lock.acquire()
-                    shelf = shelve.open(self.fault_recover_file)
+                    shelf = shelve.open(cluster.fault_recover_file, flag='c')
                     try:
                         del shelf[str(_job.uid)]
                     except:
-                        logging.warning('Apparently job %s is recovered?', _job.uid)
+                        # logging.warning('Apparently job %s is recovered?', _job.uid)
+                        pass
                     shelf.close()
                     self.fault_recover_lock.release()
                 self._sched_cv.acquire()
@@ -739,8 +723,9 @@ class _Cluster(object):
 
     def run_job(self, _job, cluster):
         # called via worker
-        if self.fault_recover_file:
-            self.store_job_info(_job)
+        if cluster.fault_recover_file:
+            self.store_job_info(_job, cluster)
+            # not really necessary to remove it in case of exception
         try:
             _job.run()
         except EnvironmentError:
@@ -1169,11 +1154,11 @@ class _Cluster(object):
         logging.debug('Scheduler quit')
         self._sched_cv.release()
 
-    def store_job_info(self, _job):
-        if not self.fault_recover_file:
+    def store_job_info(self, _job, cluster):
+        if not cluster.fault_recover_file:
             return
         self.fault_recover_lock.acquire()
-        shelf = shelve.open(self.fault_recover_file)
+        shelf = shelve.open(cluster.fault_recover_file, flag='c')
         state = {'id':_job.job.id, 'hash':_job.hash, 'compute_id':_job.compute_id,
                  'args':_job.args, 'kwargs':_job.kwargs,
                  'ip_addr':_job.node.ip_addr, 'port':_job.node.port}
@@ -1238,12 +1223,16 @@ class _Cluster(object):
                 return -1
         return 0
 
-    def close(self, cluster):
+    def _close(self, cluster):
         # called for JobCluster only
         self._sched_cv.acquire()
         compute = cluster._compute
-        if self._clusters.pop(compute.id, None) is None:
+        if self._clusters.pop(compute.id, None) != compute:
             logging.warning('Cluster %s is invalid', compute.name)
+            self._sched_cv.release()
+            return
+        elif compute._jobs or compute._pending_jobs:
+            logging.warning('Cluster %s has pending jobs', compute.name)
             self._sched_cv.release()
             return
         else:
@@ -1254,8 +1243,19 @@ class _Cluster(object):
             self._sched_cv.release()
             for node in nodes:
                 node.close(compute)
+        if cluster.fault_recover_file:
+            self.fault_recover_lock.acquire()
+            shelf = shelve.open(cluster.fault_recover_file, flag='r')
+            n = len(shelf)
+            shelf.close()
+            if n == 0:
+                try:
+                    os.remove(cluster.fault_recover_file)
+                except:
+                    pass
+            self.fault_recover_lock.release()
 
-    def shutdown(self):
+    def _shutdown(self):
         # TODO: make sure JobCluster instances are done
         if not hasattr(self, '_scheduler'):
             return
@@ -1286,14 +1286,6 @@ class _Cluster(object):
         if select_job_node:
             self.worker_Q.put((99, None, None))
             self.worker_Q.join()
-        if self.fault_recover_file:
-            self.fault_recover_lock.acquire()
-            shelf = shelve.open(self.fault_recover_file)
-            n = len(shelf)
-            shelf.close()
-            if n == 0:
-                os.remove(self.fault_recover_file)
-            self.fault_recover_lock.release()
         logging.debug('shutdown complete')
 
     def stats(self, compute, wall_time=None):
@@ -1468,11 +1460,41 @@ class JobCluster():
             shared = True
         else:
             shared = False
+
+        if not shared and fault_recover:
+            if fault_recover is True:
+                now = datetime.datetime.now()
+                self.fault_recover_file = '_dispy_fault_recover_%.4i%.2i%.2i%.2i%.2i%.2i' % \
+                                          (now.year, now.month, now.day,
+                                           now.hour, now.minute, now.second)
+            elif isinstance(fault_recover, str):
+                self.fault_recover_file = fault_recover
+            else:
+                raise Exception('Invalid fault_recover option: "%s"' % fault_recover)
+        else:
+            self.fault_recover_file = None
+
         self._cluster = _Cluster(ip_addr=ip_addr, port=port, node_port=node_port,
                                  secret=secret, keyfile=keyfile, certfile=certfile,
-                                 shared=shared, fault_recover=fault_recover)
+                                 shared=shared, fault_recover_file=self.fault_recover_file)
+
+        if self.fault_recover_file:
+            self._cluster.fault_recover_lock.acquire()
+            try:
+                shelf = shelve.open(self.fault_recover_file, flag='c')
+                shelf.close()
+            except:
+                raise Exception('Could not create fault recover file "%s"' % self.fault_recover_file)
+            finally:
+                self._cluster.fault_recover_lock.release()
+            # TODO?: it is safer to use file locking instead of thread
+            # locking, but it is more efficient to use thread locking
+            # (in this case). However, 'fault_recover_jobs' function
+            # must not be used when a cluster using the same file is
+            # also active
+            logging.info('Storing fault recovery information in "%s"', self.fault_recover_file)
+
         self.ip_addr = self._cluster.ip_addr
-        #self.job_result_port = self._cluster.job_result_port
 
         if inspect.isfunction(computation) or inspect.ismethod(computation):
             func = computation
@@ -1632,14 +1654,14 @@ class JobCluster():
         self.wait()
 
     def close(self):
-        if hasattr(self, '_compute'):
+        if hasattr(self, 'submit'):
+            del self.submit
+            del self.cancel
+            del self.stats
             self._complete.wait()
-            self._cluster.close(self)
+            self._cluster._close(self)
             logging.debug('Cluster "%s" deleted', self._compute.name)
             del self._compute
-
-    def __del__(self):
-        self.close()
 
 class SharedJobCluster(JobCluster):
     """SharedJobCluster should be used (instead of JobCluster) if two
@@ -1880,7 +1902,7 @@ def fault_recover_jobs(fault_recover_file, ip_addr=None, secret='', node_port=51
 
     port_req = cPickle.dumps({'ip_addr':ip_addr, 'port':srv_sock.getsockname()[1]})
     node_infos = {}
-    shelf = shelve.open(fault_recover_file)
+    shelf = shelve.open(fault_recover_file, flag='w')
     for uid in shelf:
         job_info = shelf[uid]
         if job_info['ip_addr'] in node_infos:
