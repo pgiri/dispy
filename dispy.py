@@ -1959,6 +1959,8 @@ def fault_recover_jobs(fault_recover_file, ip_addr=None, secret='', node_port=51
             job.stderr = reply.stderr
             job.exception = reply.exception
             job.ip_addr = job_info['ip_addr']
+            setattr(job, 'args', cPickle.loads(job_info['args']))
+            setattr(job, 'kwargs', cPickle.loads(job_info['kwargs']))
             jobs.append(job)
         except:
             print 'Failed to get reply for %s' % (uid)
