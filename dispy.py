@@ -1896,6 +1896,8 @@ def fault_recover_jobs(fault_recover_file, ip_addr=None, secret='', node_port=51
         None.
     """
 
+    shelf = shelve.open(fault_recover_file, flag='w')
+
     if not ip_addr:
         ip_addr = socket.gethostbyname(socket.gethostname())
 
@@ -1905,7 +1907,6 @@ def fault_recover_jobs(fault_recover_file, ip_addr=None, secret='', node_port=51
 
     port_req = cPickle.dumps({'ip_addr':ip_addr, 'port':srv_sock.getsockname()[1]})
     node_infos = {}
-    shelf = shelve.open(fault_recover_file, flag='w')
     for uid in shelf:
         job_info = shelf[uid]
         if job_info['ip_addr'] in node_infos:
@@ -1919,7 +1920,7 @@ def fault_recover_jobs(fault_recover_file, ip_addr=None, secret='', node_port=51
                 reply = cPickle.loads(reply)
                 # print 'Port for %s is: %s' % (reply['ip_addr'], reply['port'])
                 auth_code = hashlib.sha1(_xor_string(reply['sign'], secret)).hexdigest()
-                node_infos[job_info['ip_addr']] = {'port':reply['port'], 'auth_code':auth_code}
+                node_infos[reply['ip_addr']] = {'port':reply['port'], 'auth_code':auth_code}
                 break
             except:
                 # print traceback.format_exc()
