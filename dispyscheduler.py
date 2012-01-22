@@ -362,14 +362,14 @@ class _Scheduler(object):
         ping_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         ping_sock.bind(('', self.port))
 
-        job_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        job_sock.bind((self.ip_addr, 0))
-        job_sock.listen(5)
-
         sched_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sched_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sched_sock.bind((self.ip_addr, self.scheduler_port))
         sched_sock.listen(5)
+
+        job_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        job_sock.bind((self.ip_addr, 0))
+        job_sock.listen(5)
 
         logging.info('Ping port is %s', self.port)
         logging.info('Scheduler port is %s:%s', self.ip_addr, self.scheduler_port)

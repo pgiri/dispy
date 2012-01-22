@@ -428,7 +428,7 @@ class _DispyNode():
                         continue
                     elif compute.type == _Compute.prog_type:
                         prog_thread = threading.Thread(target=self.__job_program,
-                                                       args=(_job, reply_addr,))
+                                                       args=(_job, reply_addr))
                         try:
                             conn.write_msg(_job.uid, cPickle.dumps(_job.uid))
                             conn.close()
@@ -466,9 +466,9 @@ class _DispyNode():
                         logging.warning('Failed to send reply to %s', str(addr))
                     continue
                 self.lock.acquire()
-                if not (((self.scheduler_ip_addr is None) or
-                         (self.scheduler_ip_addr == compute.scheduler_ip_addr)) and \
-                        (self.avail_cpus == self.cpus)):
+                if not ((self.scheduler_ip_addr is None) or
+                        (self.scheduler_ip_addr == compute.scheduler_ip_addr and \
+                         self.scheduler_port == compute.scheduler_port)):
                     logging.debug('Ignoring computation request from %s: %s, %s, %s',
                                   compute.scheduler_ip_addr, self.scheduler_ip_addr,
                                   self.avail_cpus, self.cpus)
@@ -480,7 +480,6 @@ class _DispyNode():
                         pass
                     self.lock.release()
                     continue
-                self.lock.release()
 
                 if compute.dest_path and isinstance(compute.dest_path, str):
                     compute.dest_path = compute.dest_path.strip(os.sep)
@@ -511,6 +510,8 @@ class _DispyNode():
                         logging.warning('Failed to send reply to %s', str(addr))
                         continue
                     continue
+                finally:
+                    self.lock.release()
                 if compute.id in self.computations:
                     logging.warning('Computation "%s" (%s) is being replaced',
                                     compute.name, compute.id)
@@ -561,7 +562,8 @@ class _DispyNode():
                     #               ','.join(xf.name for xf in compute.xfer_files))
                     resp += ':XFER_FILES:' + cPickle.dumps(xfer_files)
                 self.lock.acquire()
-                if self.scheduler_ip_addr is None or self.scheduler_ip_addr == compute.scheduler_ip_addr:
+                if (self.scheduler_ip_addr is None) or \
+                       (self.scheduler_ip_addr == compute.scheduler_ip_addr):
                     self.computations[compute.id] = compute
                     self.scheduler_ip_addr = compute.scheduler_ip_addr
                     self.scheduler_port = compute.scheduler_port
@@ -630,6 +632,7 @@ class _DispyNode():
                         resp = 'NACK'
             elif msg.startswith('DEL_COMPUTE:'):
                 msg = msg[len('DEL_COMPUTE:'):]
+                conn.close()
                 try:
                     info = cPickle.loads(msg)
                     compute_id = info['ID']
@@ -647,6 +650,8 @@ class _DispyNode():
                 resp = None
             elif msg.startswith('TERMINATE_JOB:'):
                 msg = msg[len('TERMINATE_JOB:'):]
+                conn.close()
+                resp = None
                 try:
                     _job = cPickle.loads(msg)
                     compute = self.computations[_job.compute_id]
@@ -693,6 +698,7 @@ class _DispyNode():
                     if job_info is not None:
                         conn.write_msg(req['uid'], cPickle.dumps(job_info.job_reply))
                         ruid, ack = conn.read_msg()
+                        conn.close()
                         # no need to check ack
                         resp = None
                     else:
@@ -708,12 +714,16 @@ class _DispyNode():
                                     ruid, ack = conn.read_msg()
                                     assert ack == 'ACK'
                                     assert ruid == req['uid']
-                                    os.remove(info_file)
-                                    if req['compute_id'] not in self.computations:
-                                        p = os.path.dirname(info_file)
-                                        if len(os.listdir(p)) == 0:
-                                            os.rmdir(p)
                                     resp = None
+                                    conn.close()
+                                    try:
+                                        os.remove(info_file)
+                                        if req['compute_id'] not in self.computations:
+                                            p = os.path.dirname(info_file)
+                                            if len(os.listdir(p)) == 0:
+                                                os.rmdir(p)
+                                    except:
+                                        loggging.debug('Could not remove "%s"', info_file)
                                     break
                         else:
                             resp = cPickle.dumps('Invalid job')
