@@ -41,9 +41,8 @@ import marshal
 import shelve
 
 from dispy import _DispySocket, _DispyJob_, _JobReply, DispyJob, \
-     _Compute, _XferFile, _xor_string, _node_name_ipaddr, TaskPool
+     _Compute, _XferFile, _xor_string, _node_name_ipaddr, TaskPool, _dispy_version
 
-_dispy_version = '1.1'
 MaxFileSize = 10240000
 
 def dispy_provisional_result(result):
@@ -56,22 +55,20 @@ def dispy_provisional_result(result):
     necessary. The computations can use this function in such cases
     with the current result of computation as argument.
     """
-    sock = None
+    __dispy_job_reply = __dispy_job_info.job_reply
+    logging.debug('Sending provisional result for job %s to %s',
+                  __dispy_job_reply.uid, __dispy_job_info.reply_addr)
+    __dispy_job_reply.status = DispyJob.ProvisionalResult
+    __dispy_job_reply.result = result
+    sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), timeout=5,
+                        certfile=__dispy_job_certfile, keyfile=__dispy_job_keyfile)
     try:
-        __dispy_job_reply = __dispy_job_info.job_reply
-        logging.debug('Sending provisional result for job %s to %s',
-                      __dispy_job_reply.uid, __dispy_job_info.reply_addr)
-        __dispy_job_reply.status = DispyJob.ProvisionalResult
-        __dispy_job_reply.result = result
-        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
-                            certfile=__dispy_job_certfile, keyfile=__dispy_job_keyfile)
-        sock.settimeout(5)
         sock.connect(__dispy_job_info.reply_addr)
         sock.write_msg(__dispy_job_reply.uid, cPickle.dumps(__dispy_job_reply))
     except:
         logging.error("Couldn't send provisional results %s (%s)",
                       str(result), str(traceback.format_exc()))
-    if sock is not None:
+    finally:
         sock.close()
 
 class _DispyJobInfo():
@@ -720,6 +717,7 @@ class _DispyNode():
                 conn.close()
             return
 
+        # _serve starts here
         self.ping_thread.start()
         while True:
             conn, addr = self.srv_sock.accept()
@@ -899,9 +897,8 @@ class _DispyNode():
             sock.sendto('TERMINATED:%s' % data, (compute.scheduler_ip_addr, compute.scheduler_port))
             sock.close()
         if self.cmd_sock:
-            sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+            sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), timeout=5,
                                 auth_code=self.auth_code)
-            sock.settimeout(5)
             sock.connect((self.ip_addr, self.cmd_sock.sock.getsockname()[1]))
             sock.write_msg(0, 'terminate')
             sock.close()
@@ -946,7 +943,10 @@ class _DispyNode():
                len(compute.dest_path) > len(self.dest_path_prefix) and \
                len(os.listdir(compute.dest_path)) == 0:
             logging.debug('Removing "%s"', compute.dest_path)
-            os.rmdir(compute.dest_path)
+            try:
+                os.rmdir(compute.dest_path)
+            except:
+                logging.warning('Could not remove directory "%s"', compute.dest_path)
 
 if __name__ == '__main__':
     import argparse

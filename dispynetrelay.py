@@ -29,9 +29,7 @@ import cPickle
 import select
 import logging
 
-from dispy import _node_name_ipaddr
-
-_dispy_version = '1.1'
+from dispy import _node_name_ipaddr, _dispy_version
 
 class DispyNetRelay():
     """Internal use only.

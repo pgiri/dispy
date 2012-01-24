@@ -231,36 +231,6 @@ def _parse_nodes(nodes):
         node_spec[match_re] = {'port':node_port, 'ip_addr':ip_addr, 'name':name}
     return node_spec
 
-class Tasklet(threading.Thread):
-    def __init__(self, n, task_queue):
-        threading.Thread.__init__(self)
-        self.id = n
-        self.task_queue = task_queue
-        self.daemon = True
-        self.start()
-
-    def run(self):
-        while True:
-            func, args, kwargs = self.task_queue.get(block=True)
-            try:
-                func(*args, **kwargs)
-            except:
-                logging.debug('Executing function "%s" failed', func)
-                logging.debug(traceback.format_exc())
-            self.task_queue.task_done()
-
-class TaskPool:
-    def __init__(self, num_tasks):
-        self.task_queue = Queue.Queue()
-        for n in xrange(num_tasks):
-            Tasklet(n, self.task_queue)
-
-    def add_task(self, func, *args, **kwargs):
-        self.task_queue.put((func, args, kwargs))
-
-    def finish(self):
-        self.task_queue.join()
-
 class _Compute():
     """Internal use only.
     """
@@ -512,6 +482,37 @@ class _JobReply():
         self.stderr = None
         self.exception = None
 
+class Tasklet(threading.Thread):
+    def __init__(self, n, task_queue):
+        self.id = n
+        self.task_queue = task_queue
+        threading.Thread.__init__(self)
+        self.daemon = True
+        self.start()
+
+    def run(self):
+        while True:
+            func, args, kwargs = self.task_queue.get(block=True)
+            try:
+                func(*args, **kwargs)
+            except:
+                logging.debug('Executing function "%s" failed', func)
+                logging.debug(traceback.format_exc())
+                pass
+            self.task_queue.task_done()
+
+class TaskPool():
+    def __init__(self, num_tasks):
+        self.task_queue = Queue.Queue()
+        for n in xrange(num_tasks):
+            Tasklet(n, self.task_queue)
+
+    def add_task(self, func, *args, **kwargs):
+        self.task_queue.put((func, args, kwargs))
+
+    def finish(self):
+        self.task_queue.join()
+
 class MetaSingleton(type):
     __instance = None
     def __call__(cls, *args, **kw):
@@ -524,7 +525,7 @@ class _Cluster(object):
     """
     __metaclass__ = MetaSingleton
 
-    def __init__(self, ip_addr=None, port=None, node_port=None, num_tasks=16,
+    def __init__(self, ip_addr=None, port=None, node_port=None, num_tasks=8,
                  secret='', keyfile=None, certfile=None, shared=False, fault_recover_file=None):
         if not hasattr(self, 'ip_addr'):
             atexit.register(self._shutdown)
@@ -899,7 +900,9 @@ class _Cluster(object):
             self.finish_job(_job, reply.status, cluster)
             self._sched_cv.notify()
             self._sched_cv.release()
+            return # job_result_task
 
+        # __listen starts here
         job_result_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         job_result_sock.bind((self.ip_addr, 0))
         job_result_sock.listen(5)
@@ -1013,7 +1016,8 @@ class _Cluster(object):
                             if auth_code != node.auth_code:
                                 logging.warning('Invalid signature from %s', node.ip_addr)
                             dead_jobs = [_job for _job in self._sched_jobs.itervalues() \
-                                         if _job.node is not None and _job.node.ip_addr == node.ip_addr]
+                                         if _job.node is not None and \
+                                         _job.node.ip_addr == node.ip_addr]
                             reschedule_jobs(dead_jobs)
                             for cid, cluster in self._clusters.iteritems():
                                 if cluster._compute.nodes.pop(node.ip_addr, None) is not None:
@@ -1847,7 +1851,6 @@ class SharedJobCluster(JobCluster):
             self._cluster._sched_cv.release()
             scheduler_sock.write_msg(_job.uid, 'ACK', auth=False)
             scheduler_sock.close()
-            assert isinstance(_job.uid, int), type(_job.uid)
             if self.fault_recover_file:
                 # TODO: reply may come back before we store it!
                 self.store_job_info(_job)
@@ -1888,17 +1891,18 @@ class SharedJobCluster(JobCluster):
         assert self._pending_jobs >= 1
         self._cluster._sched_cv.release()
         scheduler_sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
-                                      auth_code=self.auth_code,
+                                      auth_code=self.auth_code, timeout=2,
                                       certfile=self.certfile, keyfile=self.keyfile)
         try:
             scheduler_sock.connect((self.scheduler_node, self.scheduler_port))
             req = 'TERMINATE_JOB:' + cPickle.dumps(_job)
             scheduler_sock.write_msg(self._compute.id, req)
-            scheduler_sock.close()
             logging.debug('Job %s is cancelled', _job.uid)
         except:
             logging.warning('Connection to scheduler failed: %s', traceback.format_exc())
             return -1
+        finally:
+            scheduler_sock.close()
         return 0
 
     def close(self):
@@ -1922,10 +1926,9 @@ class SharedJobCluster(JobCluster):
                 except:
                     pass
             self._cluster.fault_recover_lock.release()
-
             del self._compute
 
-def fault_recover_jobs(fault_recover_file, ip_addr=None, secret='', node_port=51348,
+def fault_recover_jobs(fault_recover_file, ip_addr=None, secret='', port=51348,
                        certfile=None, keyfile=None):
     """Recover results of jobs submitted. If dispy client is
     unexpectedly terminated (e.g., due to exceptions), and dispy
@@ -1943,6 +1946,13 @@ def fault_recover_jobs(fault_recover_file, ip_addr=None, secret='', node_port=51
     @ip_addr is IP address to use for this client, in case multiple
         network interfaces have been configured. Default is to use IP
         address associated with the 'hostname'.
+
+    @port is where node (or dispyscheduler in the case of
+        SharedJobCluster) are available. By default this is 51348 in
+        case of JobClustr/dispynode and 51349 in the case of
+        SharedJobCluster/dispyscheduler. When recovering jobs for
+        SharedJobCluster, the port must be set explicitly as default
+        value here is meant for JobCluster.
 
     @secret is a string that is (hashed and) used for handshaking
         of communication with nodes.
@@ -1974,11 +1984,11 @@ def fault_recover_jobs(fault_recover_file, ip_addr=None, secret='', node_port=51
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         for x in xrange(5):
-            sock.sendto('SERVERPORT:' + port_req, (job_info['ip_addr'], node_port))
+            sock.sendto('SERVERPORT:' + port_req, (job_info['ip_addr'], port))
             try:
                 reply, addr = srv_sock.recvfrom(1024)
                 reply = cPickle.loads(reply)
-                print 'Port for %s is: %s' % (reply['ip_addr'], reply['port'])
+                # print 'Port for %s is: %s' % (reply['ip_addr'], reply['port'])
                 auth_code = hashlib.sha1(_xor_string(reply['sign'], secret)).hexdigest()
                 if reply['ip_addr'] in node_infos:
                     continue
