@@ -41,7 +41,7 @@ import marshal
 import shelve
 
 from dispy import _DispySocket, _DispyJob_, _JobReply, DispyJob, \
-     _Compute, _XferFile, _xor_string, _node_name_ipaddr
+     _Compute, _XferFile, _xor_string, _node_name_ipaddr, TaskPool
 
 _dispy_version = '1.1'
 MaxFileSize = 10240000
@@ -160,6 +160,7 @@ class _DispyNode():
         if max_file_size is None:
             max_file_size = MaxFileSize
         self.max_file_size = max_file_size
+        self.task_pool = TaskPool(max(2, int(self.cpus/2.0)))
 
         self.avail_cpus = self.cpus
         self.computations = {}
@@ -349,6 +350,376 @@ class _DispyNode():
                         self.send_pong_msg(reset_interval=True)
 
     def _serve(self):
+        def job_request_task(conn, uid, msg, addr):
+            try:
+                _job = cPickle.loads(msg)
+            except:
+                logging.debug('Ignoring job request from %s', addr[0])
+                logging.debug(traceback.format_exc())
+                conn.close()
+                return
+            self.lock.acquire()
+            compute = self.computations.get(_job.compute_id, None)
+            if compute is not None and compute.scheduler_ip_addr != self.scheduler_ip_addr:
+                compute = None
+            self.lock.release()
+            _job.uid = uid
+            if self.avail_cpus == 0:
+                logging.warning('All cpus busy')
+                resp = 'NAK (all cpus busy)'
+                try:
+                    conn.write_msg(_job.uid, cPickle.dumps(resp))
+                except:
+                    pass
+                conn.close()
+                return
+            elif compute is None:
+                logging.warning('Invalid computation %s', _job.compute_id)
+                resp = 'NAK (invalid computation %s)' % _job.compute_id
+                try:
+                    conn.write_msg(_job.uid, cPickle.dumps(resp))
+                except:
+                    pass
+                conn.close()
+                return
+
+            reply_addr = (addr[0], self.computations[_job.compute_id].job_result_port)
+            logging.debug('New job id %s from %s', _job.uid, addr[0])
+            files = []
+            for f in _job.files:
+                tgt = os.path.join(self.computations[compute.id].dest_path,
+                                   os.path.basename(f['name']))
+                fd = open(tgt, 'wb')
+                fd.write(f['data'])
+                fd.close()
+                os.utime(tgt, (f['stat'].st_atime, f['stat'].st_mtime))
+                os.chmod(tgt, stat.S_IMODE(f['stat'].st_mode))
+                files.append(tgt)
+            _job.files = files
+
+            if compute.type == _Compute.func_type:
+                reply = _JobReply(_job, self.ip_addr)
+                job_info = _DispyJobInfo(reply, reply_addr, compute)
+                args = (job_info, self.certfile, self.keyfile,
+                        _job.args, _job.kwargs, self.reply_Q,
+                        compute.env, compute.name, compute.code, compute.dest_path,
+                        _job.files)
+                try:
+                    conn.write_msg(_job.uid, cPickle.dumps(_job.uid))
+                except:
+                    logging.warning('Failed to send response for new job to %s',
+                                    str(addr))
+                    return
+                finally:
+                    conn.close()
+                job_info.job_reply.status = DispyJob.Running
+                job_info.proc = multiprocessing.Process(target=_dispy_job_func, args=args)
+                self.lock.acquire()
+                self.avail_cpus -= 1
+                compute.pending_jobs += 1
+                self.job_infos[_job.uid] = job_info
+                self.lock.release()
+                job_info.proc.start()
+                return
+            elif compute.type == _Compute.prog_type:
+                prog_thread = threading.Thread(target=self.__job_program,
+                                               args=(_job, reply_addr))
+                try:
+                    conn.write_msg(_job.uid, cPickle.dumps(_job.uid))
+                except:
+                    logging.warning('Failed to send response for new job to %s',
+                                    str(addr))
+                    return
+                finally:
+                    conn.close()
+                self.lock.acquire()
+                self.avail_cpus -= 1
+                compute.pending_jobs += 1
+                self.lock.release()
+                prog_thread.start()
+                return
+            else:
+                resp = 'NAK (invalid computation type "%s")' % compute.type
+                try:
+                    conn.write_msg(_job.uid, cPickle.dumps(resp))
+                except:
+                    logging.warning('Failed to send response for new job to %s',
+                                    str(addr))
+                finally:
+                    conn.close()
+            return
+
+        def add_computation_task(conn, uid, msg, addr):
+            try:
+                compute = cPickle.loads(msg)
+            except:
+                logging.debug('Ignoring computation request from %s', addr[0])
+                resp = 'Invalid computation request'
+                try:
+                    conn.write_msg(uid, resp)
+                except:
+                    logging.warning('Failed to send reply to %s', str(addr))
+                conn.close()
+                return
+            self.lock.acquire()
+            if not ((self.scheduler_ip_addr is None) or
+                    (self.scheduler_ip_addr == compute.scheduler_ip_addr and \
+                     self.scheduler_port == compute.scheduler_port)):
+                logging.debug('Ignoring computation request from %s: %s, %s, %s',
+                              compute.scheduler_ip_addr, self.scheduler_ip_addr,
+                              self.avail_cpus, self.cpus)
+                resp = 'Busy'
+                try:
+                    conn.write_msg(uid, resp)
+                except:
+                    pass
+                self.lock.release()
+                conn.close()
+                return
+
+            if compute.dest_path and isinstance(compute.dest_path, str):
+                compute.dest_path = compute.dest_path.strip(os.sep)
+            else:
+                for x in xrange(20):
+                    compute.dest_path = os.urandom(8).encode('hex')
+                    if compute.dest_path.find(os.sep) >= 0:
+                        continue
+                    if not os.path.isdir(os.path.join(self.dest_path_prefix, compute.dest_path)):
+                        break
+                else:
+                    logging.warning('Failed to create unique dest_path: %s', compute.dest_path)
+                    resp = 'NACK'
+            compute.dest_path = os.path.join(self.dest_path_prefix, compute.dest_path)
+            try:
+                os.makedirs(compute.dest_path)
+                os.chmod(compute.dest_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+                logging.debug('dest_path for "%s": %s', compute.name, compute.dest_path)
+            except:
+                logging.warning('Invalid destination path: "%s"', compute.dest_path)
+                resp = 'NACK (Invalid dest_path)'
+                if os.path.isdir(compute.dest_path):
+                    os.rmdir(compute.dest_path)
+                try:
+                    conn.write_msg(uid, resp)
+                except:
+                    logging.warning('Failed to send reply to %s', str(addr))
+                self.lock.release()
+                conn.close()
+                return
+            self.lock.release()
+            if compute.id in self.computations:
+                logging.warning('Computation "%s" (%s) is being replaced',
+                                compute.name, compute.id)
+            setattr(compute, 'last_activity', time.time())
+            setattr(compute, 'pending_jobs', 0)
+            setattr(compute, 'zombie', False)
+            # logging.debug('xfer_files given: %s',
+            #               ','.join(xf.name for xf in compute.xfer_files))
+            if compute.type == _Compute.func_type:
+                if compute.env and 'PYTHONPATH' in compute.env:
+                    self.computations[compute.id].env = compute.env['PYTHONPATH']
+                try:
+                    code = compile(base64.b64decode(compute.code), '<string>', 'exec')
+                except:
+                    logging.warning('Computation "%s" could not be compiled', compute.name)
+                    resp = 'NACK (Compilation failed)'
+                    if os.path.isdir(compute.dest_path):
+                        os.rmdir(compute.dest_path)
+                    try:
+                        conn.write_msg(uid, resp)
+                    except:
+                        logging.warning('Failed to send reply to %s', str(addr))
+                    conn.close()
+                    return
+                compute.code = marshal.dumps(code)
+            elif compute.type == _Compute.prog_type:
+                assert not compute.code
+            xfer_files = []
+            for xf in compute.xfer_files:
+                tgt = os.path.join(compute.dest_path, os.path.basename(xf.name))
+                try:
+                    if _same_file(tgt, xf):
+                        logging.debug('Ignoring file "%s" / "%s"', xf.name, tgt)
+                        self.lock.acquire()
+                        if tgt not in self.file_uses:
+                            self.file_uses[tgt] = 0
+                        self.file_uses[tgt] += 1
+                        self.lock.release()
+                        continue
+                except:
+                    pass
+                xfer_files.append(xf)
+            if xfer_files:
+                # logging.debug('xfer_files needed: %s',
+                #               ','.join(xf.name for xf in compute.xfer_files))
+                resp += ':XFER_FILES:' + cPickle.dumps(xfer_files)
+            self.lock.acquire()
+            if (self.scheduler_ip_addr is None) or \
+                   (self.scheduler_ip_addr == compute.scheduler_ip_addr):
+                self.computations[compute.id] = compute
+                self.scheduler_ip_addr = compute.scheduler_ip_addr
+                self.scheduler_port = compute.scheduler_port
+                self.pulse_interval = compute.pulse_interval
+                resp = 'ACK'
+            else:
+                resp = 'Busy'
+                if os.path.isdir(compute.dest_path):
+                    os.rmdir(compute.dest_path)
+            self.lock.release()
+            if resp:
+                try:
+                    conn.write_msg(uid, resp)
+                except:
+                    pass
+            conn.close()
+            return # add_compute_task
+
+        def xfer_file_task(conn, uid, msg, addr):
+            try:
+                xf = cPickle.loads(msg)
+            except:
+                logging.debug('Ignoring file trasnfer request from %s', addr[0])
+                conn.close()
+                return
+            resp = ''
+            if xf.compute_id not in self.computations:
+                logging.error('computation "%s" is invalid' % xf.compute_id)
+                conn.close()
+                return
+            tgt = os.path.join(self.computations[xf.compute_id].dest_path,
+                               os.path.basename(xf.name))
+            if os.path.isfile(tgt):
+                if _same_file(tgt, xf):
+                    self.lock.acquire()
+                    if tgt in self.file_uses:
+                        self.file_uses[tgt] += 1
+                    else:
+                        self.file_uses[tgt] = 1
+                    self.lock.release()
+                    resp = 'ACK'
+                else:
+                    logging.warning('File "%s" already exists with different status as "%s"',
+                                    xf.name, tgt)
+            if not resp:
+                logging.debug('Copying file %s to %s (%s)', xf.name,
+                              tgt, xf.stat_buf.st_size)
+                try:
+                    fd = open(tgt, 'wb')
+                    n = 0
+                    while n < xf.stat_buf.st_size:
+                        data = conn.read(min(xf.stat_buf.st_size-n, 1024000))
+                        if not data:
+                            break
+                        fd.write(data)
+                        n += len(data)
+                        if n > self.max_file_size:
+                            logging.warning('File "%s" is too big (%s); it is truncated',
+                                            tgt, n)
+                            break
+                    fd.close()
+                    if n < xf.stat_buf.st_size:
+                        resp = 'NAK (read only %s bytes)' % n
+                    else:
+                        resp = 'ACK'
+                        logging.debug('Copied file %s, %s', tgt, resp)
+                        os.utime(tgt, (xf.stat_buf.st_atime, xf.stat_buf.st_mtime))
+                        os.chmod(tgt, stat.S_IMODE(xf.stat_buf.st_mode))
+                        self.file_uses[tgt] = 1
+                except:
+                    logging.warning('Copying file "%s" failed with "%s"',
+                                    xf.name, traceback.format_exc())
+                    resp = 'NACK'
+            return # xfer_file_task
+
+        def terminate_job_task(uid, msg, addr):
+            try:
+                _job = cPickle.loads(msg)
+                compute = self.computations[_job.compute_id]
+            except:
+                logging.debug('Ignoring job request from %s', addr[0])
+                return
+            self.lock.acquire()
+            job_info = self.job_infos.pop(uid, None)
+            self.lock.release()
+            if job_info is None:
+                logging.debug('Job %s completed; ignoring cancel request from %s',
+                              uid, addr[0])
+                return
+            try:
+                logging.debug('Killing job %s', uid)
+                job_info.proc.terminate()
+                # TODO: make sure process is really killed?
+                if isinstance(job_info.proc, multiprocessing.Process):
+                    job_info.proc.join(2)
+                else:
+                    job_info.proc.wait()
+            except:
+                logging.debug(traceback.format_exc())
+            logging.debug('Killed process for job %s', uid)
+            reply_addr = (addr[0], compute.job_result_port)
+            reply = _JobReply(_job, self.ip_addr)
+            job_info = _DispyJobInfo(reply, reply_addr, compute)
+            reply.status = DispyJob.Terminated
+            self._send_job_reply(job_info)
+            return
+
+        def retrieve_job_task(conn, uid, msg, addr):
+            try:
+                req = cPickle.loads(req)
+                assert req['uid'] is not None
+                assert req['hash'] is not None
+                assert req['compute_id'] is not None
+                job_info = self.job_infos.get(req['uid'], None)
+                resp = None
+                if job_info is not None:
+                    try:
+                        conn.write_msg(req['uid'], cPickle.dumps(job_info.job_reply))
+                        ruid, ack = conn.read_msg()
+                        # no need to check ack
+                    except:
+                        logging.debug('Could not send reply for job %s', req['uid'])
+                    conn.close()
+                    return
+                else:
+                    for d in os.listdir(self.dest_path_prefix):
+                        info_file = os.path.join(self.dest_path_prefix, d,
+                                                 '_dispy_job_reply_%s' % req['uid'])
+                        if os.path.isfile(info_file):
+                            fd = open(info_file, 'rb')
+                            resp = cPickle.load(fd)
+                            fd.close()
+                            if resp.hash == req['hash']:
+                                try:
+                                    conn.write_msg(req['uid'], cPickle.dumps(resp))
+                                    ruid, ack = conn.read_msg()
+                                except:
+                                    logging.debug('Could not send reply for job %s', req['uid'])
+                                    return
+                                finally:
+                                    conn.close()
+                                assert ack == 'ACK'
+                                assert ruid == req['uid']
+                                try:
+                                    os.remove(info_file)
+                                    if req['compute_id'] not in self.computations:
+                                        p = os.path.dirname(info_file)
+                                        if len(os.listdir(p)) == 0:
+                                            os.rmdir(p)
+                                except:
+                                    loggging.debug('Could not remove "%s"', info_file)
+                                return
+                    else:
+                        resp = cPickle.dumps('Invalid job: %s', req['uid'])
+            except:
+                resp = cPickle.dumps('Invalid job')
+            if resp:
+                try:
+                    conn.write_msg(0, resp)
+                except:
+                    pass
+                conn.close()
+            return
+
         self.ping_thread.start()
         while True:
             conn, addr = self.srv_sock.accept()
@@ -370,266 +741,16 @@ class _DispyNode():
                 continue
             if msg.startswith('JOB:'):
                 msg = msg[len('JOB:'):]
-                try:
-                    _job = cPickle.loads(msg)
-                except:
-                    logging.debug('Ignoring job request from %s', addr[0])
-                    logging.debug(traceback.format_exc())
-                    continue
-                self.lock.acquire()
-                compute = self.computations.get(_job.compute_id, None)
-                if compute is not None and compute.scheduler_ip_addr != self.scheduler_ip_addr:
-                    compute = None
-                self.lock.release()
-                _job.uid = uid
-                if self.avail_cpus == 0:
-                    logging.warning('All cpus busy')
-                    resp = 'NAK (all cpus busy)'
-                elif compute is None:
-                    logging.warning('Invalid computation %s', _job.compute_id)
-                    resp = 'NAK (invalid computation %s)' % _job.compute_id
-                else:
-                    reply_addr = (addr[0], self.computations[_job.compute_id].job_result_port)
-                    logging.debug('New job id %s from %s', _job.uid, addr[0])
-                    files = []
-                    for f in _job.files:
-                        tgt = os.path.join(self.computations[compute.id].dest_path,
-                                           os.path.basename(f['name']))
-                        fd = open(tgt, 'wb')
-                        fd.write(f['data'])
-                        fd.close()
-                        os.utime(tgt, (f['stat'].st_atime, f['stat'].st_mtime))
-                        os.chmod(tgt, stat.S_IMODE(f['stat'].st_mode))
-                        files.append(tgt)
-                    _job.files = files
-
-                    if compute.type == _Compute.func_type:
-                        reply = _JobReply(_job, self.ip_addr)
-                        job_info = _DispyJobInfo(reply, reply_addr, compute)
-                        args = (job_info, self.certfile, self.keyfile,
-                                _job.args, _job.kwargs, self.reply_Q,
-                                compute.env, compute.name, compute.code, compute.dest_path,
-                                _job.files)
-                        try:
-                            conn.write_msg(_job.uid, cPickle.dumps(_job.uid))
-                            conn.close()
-                        except:
-                            logging.warning('Failed to send response for new job to %s',
-                                            str(addr))
-                            continue
-                        job_info.job_reply.status = DispyJob.Running
-                        job_info.proc = multiprocessing.Process(target=_dispy_job_func, args=args)
-                        self.lock.acquire()
-                        self.avail_cpus -= 1
-                        compute.pending_jobs += 1
-                        self.job_infos[_job.uid] = job_info
-                        self.lock.release()
-                        job_info.proc.start()
-                        continue
-                    elif compute.type == _Compute.prog_type:
-                        prog_thread = threading.Thread(target=self.__job_program,
-                                                       args=(_job, reply_addr))
-                        try:
-                            conn.write_msg(_job.uid, cPickle.dumps(_job.uid))
-                            conn.close()
-                        except:
-                            logging.warning('Failed to send response for new job to %s',
-                                            str(addr))
-                            continue
-                        self.lock.acquire()
-                        self.avail_cpus -= 1
-                        compute.pending_jobs += 1
-                        self.lock.release()
-                        prog_thread.start()
-                        continue
-                    else:
-                        resp = 'NAK (invalid computation type "%s")' % compute.type
-                try:
-                    conn.write_msg(_job.uid, cPickle.dumps(resp))
-                    conn.close()
-                except:
-                    logging.warning('Failed to send response for new job to %s',
-                                    str(addr))
-                    continue
+                self.task_pool.add_task(job_request_task, conn, uid, msg, addr)
                 continue
             elif msg.startswith('COMPUTE:'):
                 msg = msg[len('COMPUTE:'):]
-                try:
-                    compute = cPickle.loads(msg)
-                except:
-                    logging.debug('Ignoring computation request from %s', addr[0])
-                    resp = 'Invalid computation request'
-                    try:
-                        conn.write_msg(uid, resp)
-                        conn.close()
-                    except:
-                        logging.warning('Failed to send reply to %s', str(addr))
-                    continue
-                self.lock.acquire()
-                if not ((self.scheduler_ip_addr is None) or
-                        (self.scheduler_ip_addr == compute.scheduler_ip_addr and \
-                         self.scheduler_port == compute.scheduler_port)):
-                    logging.debug('Ignoring computation request from %s: %s, %s, %s',
-                                  compute.scheduler_ip_addr, self.scheduler_ip_addr,
-                                  self.avail_cpus, self.cpus)
-                    resp = 'Busy'
-                    try:
-                        conn.write_msg(uid, resp)
-                        conn.close()
-                    except:
-                        pass
-                    self.lock.release()
-                    continue
-
-                if compute.dest_path and isinstance(compute.dest_path, str):
-                    compute.dest_path = compute.dest_path.strip(os.sep)
-                else:
-                    for x in xrange(20):
-                        compute.dest_path = os.urandom(8).encode('hex')
-                        if compute.dest_path.find(os.sep) >= 0:
-                            continue
-                        if not os.path.isdir(os.path.join(self.dest_path_prefix, compute.dest_path)):
-                            break
-                    else:
-                        logging.warning('Failed to create unique dest_path: %s', compute.dest_path)
-                        resp = 'NACK'
-                compute.dest_path = os.path.join(self.dest_path_prefix, compute.dest_path)
-                try:
-                    os.makedirs(compute.dest_path)
-                    os.chmod(compute.dest_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
-                    logging.debug('dest_path for "%s": %s', compute.name, compute.dest_path)
-                except:
-                    logging.warning('Invalid destination path: "%s"', compute.dest_path)
-                    resp = 'NACK (Invalid dest_path)'
-                    if os.path.isdir(compute.dest_path):
-                        os.rmdir(compute.dest_path)
-                    try:
-                        conn.write_msg(uid, resp)
-                        conn.close()
-                    except:
-                        logging.warning('Failed to send reply to %s', str(addr))
-                        continue
-                    continue
-                finally:
-                    self.lock.release()
-                if compute.id in self.computations:
-                    logging.warning('Computation "%s" (%s) is being replaced',
-                                    compute.name, compute.id)
-                setattr(compute, 'last_activity', time.time())
-                setattr(compute, 'pending_jobs', 0)
-                setattr(compute, 'zombie', False)
-                # logging.debug('xfer_files given: %s',
-                #               ','.join(xf.name for xf in compute.xfer_files))
-                if compute.type == _Compute.func_type:
-                    if compute.env and 'PYTHONPATH' in compute.env:
-                        self.computations[compute.id].env = compute.env['PYTHONPATH']
-                    try:
-                        code = compile(base64.b64decode(compute.code), '<string>', 'exec')
-                    except:
-                        logging.warning('Computation "%s" could not be compiled', compute.name)
-                        resp = 'NACK (Compilation failed)'
-                        if os.path.isdir(compute.dest_path):
-                            os.rmdir(compute.dest_path)
-                        try:
-                            conn.write_msg(uid, resp)
-                            conn.close()
-                        except:
-                            logging.warning('Failed to send reply to %s', str(addr))
-                            continue
-                        continue
-                    compute.code = marshal.dumps(code)
-                elif compute.type == _Compute.prog_type:
-                    assert not compute.code
-#                    compute.name = os.path.join(compute.dest_path,
-#                                                os.path.basename(compute.name))
-                xfer_files = []
-                for xf in compute.xfer_files:
-                    tgt = os.path.join(compute.dest_path, os.path.basename(xf.name))
-                    try:
-                        if _same_file(tgt, xf):
-                            logging.debug('Ignoring file "%s" / "%s"', xf.name, tgt)
-                            self.lock.acquire()
-                            if tgt not in self.file_uses:
-                                self.file_uses[tgt] = 0
-                            self.file_uses[tgt] += 1
-                            self.lock.release()
-                            continue
-                    except:
-                        pass
-                    xfer_files.append(xf)
-                if xfer_files:
-                    # logging.debug('xfer_files needed: %s',
-                    #               ','.join(xf.name for xf in compute.xfer_files))
-                    resp += ':XFER_FILES:' + cPickle.dumps(xfer_files)
-                self.lock.acquire()
-                if (self.scheduler_ip_addr is None) or \
-                       (self.scheduler_ip_addr == compute.scheduler_ip_addr):
-                    self.computations[compute.id] = compute
-                    self.scheduler_ip_addr = compute.scheduler_ip_addr
-                    self.scheduler_port = compute.scheduler_port
-                    self.pulse_interval = compute.pulse_interval
-                    resp = 'ACK'
-                else:
-                    resp = 'Busy'
-                    if os.path.isdir(compute.dest_path):
-                        os.rmdir(compute.dest_path)
-                self.lock.release()
+                self.task_pool.add_task(add_computation_task, conn, uid, msg, addr)
+                continue
             elif msg.startswith('FILEXFER:'):
                 msg = msg[len('FILEXFER:'):]
-                try:
-                    xf = cPickle.loads(msg)
-                except:
-                    logging.debug('Ignoring file trasnfer request from %s', addr[0])
-                    conn.close()
-                    continue
-                resp = ''
-                if xf.compute_id not in self.computations:
-                    logging.error('computation "%s" is invalid' % xf.compute_id)
-                    conn.close()
-                    continue
-                tgt = os.path.join(self.computations[xf.compute_id].dest_path,
-                                   os.path.basename(xf.name))
-                if os.path.isfile(tgt):
-                    if _same_file(tgt, xf):
-                        self.lock.acquire()
-                        if tgt in self.file_uses:
-                            self.file_uses[tgt] += 1
-                        else:
-                            self.file_uses[tgt] = 1
-                        self.lock.release()
-                        resp = 'ACK'
-                    else:
-                        logging.warning('File "%s" already exists with different status as "%s"',
-                                        xf.name, tgt)
-                if not resp:
-                    logging.debug('Copying file %s to %s (%s)', xf.name,
-                                  tgt, xf.stat_buf.st_size)
-                    try:
-                        fd = open(tgt, 'wb')
-                        n = 0
-                        while n < xf.stat_buf.st_size:
-                            data = conn.read(min(xf.stat_buf.st_size-n, 1024000))
-                            if not data:
-                                break
-                            fd.write(data)
-                            n += len(data)
-                            if n > self.max_file_size:
-                                logging.warning('File "%s" is too big (%s); it is truncated',
-                                                tgt, n)
-                                break
-                        fd.close()
-                        if n < xf.stat_buf.st_size:
-                            resp = 'NAK (read only %s bytes)' % n
-                        else:
-                            resp = 'ACK'
-                            logging.debug('Copied file %s, %s', tgt, resp)
-                            os.utime(tgt, (xf.stat_buf.st_atime, xf.stat_buf.st_mtime))
-                            os.chmod(tgt, stat.S_IMODE(xf.stat_buf.st_mode))
-                            self.file_uses[tgt] = 1
-                    except:
-                        logging.warning('Copying file "%s" failed with "%s"',
-                                        xf.name, traceback.format_exc())
-                        resp = 'NACK'
+                self.task_pool.add_task(xfer_file_task, conn, uid, msg, addr)
+                continue
             elif msg.startswith('DEL_COMPUTE:'):
                 msg = msg[len('DEL_COMPUTE:'):]
                 conn.close()
@@ -647,99 +768,25 @@ class _DispyNode():
                 except:
                     logging.debug('Deleting computation failed with %s', traceback.format_exc())
                     # raise
-                resp = None
+                continue
             elif msg.startswith('TERMINATE_JOB:'):
                 msg = msg[len('TERMINATE_JOB:'):]
                 conn.close()
-                resp = None
-                try:
-                    _job = cPickle.loads(msg)
-                    compute = self.computations[_job.compute_id]
-                except:
-                    logging.debug('Ignoring job request from %s', addr[0])
-                    continue
-                self.lock.acquire()
-                job_info = self.job_infos.pop(uid, None)
-                self.lock.release()
-                if job_info is None:
-                    logging.debug('Job %s completed; ignoring cancel request from %s',
-                                  uid, addr[0])
-                    continue
-                try:
-                    logging.debug('Killing job %s', uid)
-                    job_info.proc.terminate()
-                    # TODO: make sure process is really killed?
-                    if isinstance(job_info.proc, multiprocessing.Process):
-                        job_info.proc.join(2)
-                    else:
-                        job_info.proc.wait()
-                    self.lock.acquire()
-                    self.avail_cpus += 1
-                    compute.pending_jobs -= 1
-                    if compute.pending_jobs == 0 and compute.zombie:
-                        self.cleanup_computation(compute)
-                    self.lock.release()
-                except:
-                    logging.debug(traceback.format_exc())
-                logging.debug('Killed process for job %s', uid)
-                reply_addr = (addr[0], compute.job_result_port)
-                reply = _JobReply(_job, self.ip_addr)
-                job_info = _DispyJobInfo(reply, reply_addr, compute)
-                reply.status = DispyJob.Terminated
-                self._send_job_reply(job_info)
+                self.task_pool.add_task(terminate_job_task, uid, msg, addr)
+                continue
             elif msg.startswith('RETRIEVE_JOB:'):
                 req = msg[len('RETRIEVE_JOB:'):]
-                try:
-                    req = cPickle.loads(req)
-                    assert req['uid'] is not None
-                    assert req['hash'] is not None
-                    assert req['compute_id'] is not None
-                    job_info = self.job_infos.get(req['uid'], None)
-                    if job_info is not None:
-                        conn.write_msg(req['uid'], cPickle.dumps(job_info.job_reply))
-                        ruid, ack = conn.read_msg()
-                        conn.close()
-                        # no need to check ack
-                        resp = None
-                    else:
-                        for d in os.listdir(self.dest_path_prefix):
-                            info_file = os.path.join(self.dest_path_prefix, d,
-                                                     '_dispy_job_reply_%s' % req['uid'])
-                            if os.path.isfile(info_file):
-                                fd = open(info_file, 'rb')
-                                resp = cPickle.load(fd)
-                                fd.close()
-                                if resp.hash == req['hash']:
-                                    conn.write_msg(req['uid'], cPickle.dumps(resp))
-                                    ruid, ack = conn.read_msg()
-                                    assert ack == 'ACK'
-                                    assert ruid == req['uid']
-                                    resp = None
-                                    conn.close()
-                                    try:
-                                        os.remove(info_file)
-                                        if req['compute_id'] not in self.computations:
-                                            p = os.path.dirname(info_file)
-                                            if len(os.listdir(p)) == 0:
-                                                os.rmdir(p)
-                                    except:
-                                        loggging.debug('Could not remove "%s"', info_file)
-                                    break
-                        else:
-                            resp = cPickle.dumps('Invalid job')
-                except:
-                    resp = cPickle.dumps('Invalid job')
-                    # logging.debug(traceback.format_exc())
+                self.task_pool.add_task(retrieve_job_task, uid, msg, addr)
+                continue
             else:
                 logging.warning('Invalid request "%s" from %s',
                                 msg[:min(10, len(msg))], addr[0])
                 resp = 'NAK (invalid command: %s)' % (msg[:min(10, len(msg))])
-            if resp:
                 try:
                     conn.write_msg(uid, resp)
-                    conn.close()
                 except:
                     logging.warning('Failed to send reply to %s', str(addr))
+                conn.close()
 
     def __job_program(self, _job, reply_addr):
         compute = self.computations[_job.compute_id]

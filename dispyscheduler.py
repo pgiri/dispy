@@ -46,7 +46,7 @@ import collections
 import copy
 
 from dispy import _DispySocket, _Compute, DispyJob, _DispyJob_, _Node, _JobReply, \
-     MetaSingleton, _xor_string, _parse_nodes, _node_name_ipaddr, _XferFile
+     MetaSingleton, _xor_string, _parse_nodes, _node_name_ipaddr, _XferFile, TaskPool
 from dispynode import _same_file
 
 _dispy_version = '1.1'
@@ -61,7 +61,7 @@ class _Scheduler(object):
                  scheduler_port=None, pulse_interval=None, ping_interval=None,
                  node_secret='', node_keyfile=None, node_certfile=None,
                  cluster_secret='', cluster_keyfile=None, cluster_certfile=None,
-                 dest_path_prefix=None, max_file_size=None):
+                 dest_path_prefix=None, max_file_size=None, num_tasks=16):
         if not hasattr(self, 'ip_addr'):
             atexit.register(self.shutdown)
             if not loglevel:
@@ -131,10 +131,7 @@ class _Scheduler(object):
             self.auth_code = hashlib.sha1(_xor_string(self.sign, self.cluster_secret)).hexdigest()
             logging.debug('auth_code: %s', self.auth_code)
 
-            # TODO: for better performance, it may be better to
-            # implement one worker_Q per cluster (i.e., make this part
-            # of _Cluster) so each instance of _Cluster runs tasks for
-            # it separately from other instances
+            self.task_pool = TaskPool(num_tasks)
 
             self.worker_Qs = {}
 
@@ -299,7 +296,7 @@ class _Scheduler(object):
             self._sched_cv.notify()
             self._sched_cv.release()
 
-    def send_job_result(self, uid, ip, port, result):
+    def send_job_result(self, uid, cid, ip, port, result):
         if port is None:
             # when a computation is closed, port is set to None so we
             # don't send reply
@@ -314,7 +311,15 @@ class _Scheduler(object):
             assert ack == 'ACK'
             assert uid == ruid
         except:
-            logging.warning("Couldn't send results for job %s to %s", uid, ip)
+            f = os.path.join(self.dest_path_prefix, str(cid), '_dispy_job_reply_%s' % uid)
+            logging.debug('storing results for job %s', uid)
+            try:
+                fd = open(f, 'wb')
+                cPickle.dump(result, fd)
+                fd.close()
+            except:
+                logging.debug('Could not save results for job %s', uid)
+                logging.debug(traceback.format_exc())
             # TODO: store this result?
         finally:
             sock.close()
@@ -355,9 +360,394 @@ class _Scheduler(object):
                         cluster.end_time = time.time()
                     self.worker_Qs[cluster._compute.id].put(
                         (5, self.send_job_result,
-                         (_job.uid, compute.client_scheduler_ip_addr,
+                         (_job.uid, cluster._compute.id, compute.client_scheduler_ip_addr,
                           compute.client_job_result_port, reply)))
 
+        def job_reply_task(conn, addr):
+            conn = _DispySocket(conn, certfile=self.node_certfile,
+                                keyfile=self.node_keyfile, server=True)
+            try:
+                uid, msg = conn.read_msg()
+                conn.write_msg(uid, 'ACK')
+            except:
+                logging.warning('Failed to read job results from %s', str(addr))
+                return
+            finally:
+                conn.close()
+            logging.debug('Received reply for job %s from %s' % (uid, addr[0]))
+            self._sched_cv.acquire()
+            node = self._nodes.get(addr[0], None)
+            if node is None:
+                self._sched_cv.release()
+                logging.warning('Ignoring invalid reply for job %s from %s',
+                                uid, addr[0])
+                return
+            node.last_pulse = time.time()
+            _job = self._sched_jobs.get(uid, None)
+            if _job is None:
+                self._sched_cv.release()
+                logging.warning('Ignoring invalid job %s from %s', uid, addr[0])
+                return
+            _job.job.end_time = time.time()
+            cluster = self._clusters.get(_job.compute_id, None)
+            if cluster is None:
+                self._sched_cv.release()
+                logging.warning('Invalid cluster for job %s from %s', uid, addr[0])
+                return
+            compute = cluster._compute
+            try:
+                reply = cPickle.loads(msg)
+                assert reply.uid == _job.uid
+                assert reply.hash == _job.hash
+                assert _job.job.status not in [DispyJob.Created, DispyJob.Finished]
+                setattr(reply, 'cpus', node.cpus)
+                setattr(reply, 'start_time', _job.job.start_time)
+                setattr(reply, 'end_time', _job.job.end_time)
+                if reply.status == DispyJob.ProvisionalResult:
+                    logging.debug('Receveid provisional result for %s', uid)
+                    self.worker_Qs[compute.id].put(
+                        (5, self.send_job_result,
+                         (_job.uid, compute.id, compute.client_scheduler_ip_addr,
+                          compute.client_job_result_port, reply)))
+                    self._sched_cv.release()
+                    return
+                else:
+                    del self._sched_jobs[uid]
+            except:
+                self._sched_cv.release()
+                logging.warning('Invalid job result for %s from %s', uid, addr[0])
+                logging.debug(traceback.format_exc())
+                return
+
+            _job.node.busy -= 1
+            assert compute.nodes[addr[0]] == _job.node
+            if reply.status != DispyJob.Terminated:
+                _job.node.jobs += 1
+            _job.node.cpu_time += _job.job.end_time - _job.job.start_time
+            cluster._pending_jobs -= 1
+            if cluster._pending_jobs == 0:
+                cluster._complete.set()
+                cluster.end_time = time.time()
+            self.worker_Qs[compute.id].put(
+                (5, self.send_job_result,
+                 (_job.uid, compute.id, compute.client_scheduler_ip_addr,
+                  compute.client_job_result_port, reply)))
+            self._sched_cv.notify()
+            self._sched_cv.release()
+            return
+
+        def job_request_task(conn, msg, addr):
+            try:
+                _job = cPickle.loads(msg)
+            except:
+                logging.debug('Ignoring job request from %s', addr[0])
+                conn.close()
+                return
+            self._sched_cv.acquire()
+            cluster = self._clusters[_job.compute_id]
+            _job.uid = self.job_uid
+            self.job_uid += 1
+            if self.job_uid == sys.maxint:
+                # TODO: check if it is okay to reset
+                self.job_uid = 1
+            self._sched_cv.release()
+            setattr(_job, 'node', None)
+            job = type('DispyJob', (), {'status':DispyJob.Created,
+                                        'start_time':None, 'end_time':None})
+            setattr(_job, 'job', job)
+            resp = cPickle.dumps(_job.uid)
+            try:
+                conn.write_msg(0, resp)
+            except:
+                logging.warning('Failed to send response to %s: %s',
+                                str(addr), traceback.format_exc())
+                conn.close()
+                return
+            try:
+                uid, msg = conn.read_msg()
+                assert msg == 'ACK'
+                assert uid == _job.uid
+            except:
+                logging.warning('Invalid reply for job: %s, %s',
+                                _job.uid, traceback.format_exc())
+                conn.close()
+                return
+            conn.close()
+            self._sched_cv.acquire()
+            cluster._jobs.append(_job)
+            self.unsched_jobs += 1
+            cluster._pending_jobs += 1
+            self._sched_cv.notify()
+            self._sched_cv.release()
+            return
+
+        def xfer_file_task(conn, msg, addr):
+            try:
+                xf = cPickle.loads(msg)
+            except:
+                logging.debug('Ignoring file trasnfer request from %s', addr[0])
+                conn.close()
+                return
+            resp = ''
+            if xf.compute_id not in self._clusters:
+                logging.error('computation "%s" is invalid' % xf.compute_id)
+                conn.close()
+                return
+            compute = self._clusters[xf.compute_id]
+            dest_path = os.path.join(self.dest_path_prefix, str(compute.id))
+            if not os.path.isdir(dest_path):
+                os.makedirs(dest_path)
+            tgt = os.path.join(dest_path, os.path.basename(xf.name))
+            logging.debug('Copying file %s to %s (%s)', xf.name,
+                          tgt, xf.stat_buf.st_size)
+            try:
+                fd = open(tgt, 'wb')
+                n = 0
+                while n < xf.stat_buf.st_size:
+                    data = conn.read(min(xf.stat_buf.st_size-n, 1024000))
+                    if not data:
+                        break
+                    fd.write(data)
+                    n += len(data)
+                    if n > self.max_file_size:
+                        logging.warning('File "%s" is too big (%s); it is truncated',
+                                        tgt, n)
+                        break
+                fd.close()
+                if n < xf.stat_buf.st_size:
+                    resp = 'NAK (read only %s bytes)' % n
+                else:
+                    resp = 'ACK'
+                    logging.debug('Copied file %s, %s', tgt, resp)
+                    os.utime(tgt, (xf.stat_buf.st_atime, xf.stat_buf.st_mtime))
+                    os.chmod(tgt, stat.S_IMODE(xf.stat_buf.st_mode))
+            except:
+                logging.warning('Copying file "%s" failed with "%s"',
+                                xf.name, traceback.format_exc())
+                resp = 'NACK'
+            if resp:
+                try:
+                    conn.write_msg(0, resp)
+                except:
+                    logging.debug('Could not send reply for "%s"', xf.name)
+                conn.close()
+            return
+
+        def sched_sock_task(conn, addr):
+            resp = None
+            conn = _DispySocket(conn, certfile=self.cluster_certfile,
+                                keyfile=self.cluster_keyfile, timeout=2, server=True)
+            try:
+                req = conn.read(len(self.auth_code))
+                if req != self.auth_code:
+                    req = conn.read(len('CLUSTER'))
+                    if req == 'CLUSTER':
+                        resp = cPickle.dumps({'sign':self.sign,'version':_dispy_version})
+                        conn.write_msg(0, resp)
+                    else:
+                        logging.warning('Invalid/unauthorized request ignored')
+                    conn.close()
+                    return
+                uid, msg = conn.read_msg()
+                if not msg:
+                    logging.info('Closing connection')
+                    conn.close()
+                    return
+            except:
+                logging.warning('Failed to read message from %s: %s',
+                                str(addr), traceback.format_exc())
+                conn.close()
+                return
+            if msg.startswith('JOB:'):
+                msg = msg[len('JOB:'):]
+                self.task_pool.add_task(job_request_task, conn, msg, addr)
+                return
+            elif msg.startswith('COMPUTE:'):
+                msg = msg[len('COMPUTE:'):]
+                try:
+                    compute = cPickle.loads(msg)
+                except:
+                    logging.debug('Ignoring compute request from %s', addr[0])
+                    conn.close()
+                    return
+                setattr(compute, 'client_job_result_port', compute.job_result_port)
+                setattr(compute, 'client_scheduler_ip_addr', compute.scheduler_ip_addr)
+                setattr(compute, 'client_scheduler_port', compute.scheduler_port)
+                compute.job_result_port = job_sock.getsockname()[1]
+                compute.scheduler_ip_addr = self.ip_addr
+                compute.scheduler_port = self.port
+                setattr(compute, 'nodes', {})
+                cluster = _Cluster(self, compute)
+                compute = cluster._compute
+                self._sched_cv.acquire()
+                compute.id = cluster.id = self.cluster_id
+                self._clusters[cluster.id] = cluster
+                self.cluster_id += 1
+                dest_path = os.path.join(self.dest_path_prefix, str(compute.id))
+                if not os.path.isdir(dest_path):
+                    try:
+                        os.makedirs(dest_path)
+                    except:
+                        logging.warning('Could not create directory "%s"', dest_path)
+                for xf in compute.xfer_files:
+                    xf.compute_id = compute.id
+                    tgt = os.path.join(dest_path, os.path.basename(xf.name))
+                    xf.name = tgt
+                self._sched_cv.release()
+                resp = {'ID':compute.id}
+                resp = cPickle.dumps(resp)
+                logging.debug('New computation %s: %s, %s', compute.id, compute.name,
+                              len(compute.xfer_files))
+            elif msg.startswith('ADD_COMPUTE:'):
+                msg = msg[len('ADD_COMPUTE:'):]
+                self._sched_cv.acquire()
+                try:
+                    req = cPickle.loads(msg)
+                    cluster = self._clusters[req['ID']]
+                    for xf in cluster._compute.xfer_files:
+                        assert os.path.isfile(xf.name)
+                    resp = cPickle.dumps(cluster._compute.id)
+                    worker_Q = Queue.PriorityQueue()
+                    self.worker_Qs[cluster._compute.id] = worker_Q
+                    worker_thread = threading.Thread(target=self.worker, args=(worker_Q,))
+                    worker_thread.daemon = True
+                    worker_thread.start()
+                    worker_Q.put((50, self.add_cluster, (cluster,)))
+                except:
+                    logging.debug('Ignoring compute request from %s', addr[0])
+                    conn.close()
+                    return
+                self._sched_cv.release()
+            elif msg.startswith('DEL_COMPUTE:'):
+                conn.close()
+                msg = msg[len('DEL_COMPUTE:'):]
+                try:
+                    req = cPickle.loads(msg)
+                    assert isinstance(req['ID'], int)
+                except:
+                    logging.warning('Invalid compuation for deleting')
+                    return
+                self._sched_cv.acquire()
+                cluster = self._clusters.get(req['ID'], None)
+                if cluster is None:
+                    # this cluster is closed
+                    self._sched_cv.release()
+                    return
+                compute = cluster._compute
+                logging.debug('Deleting computation "%s"/%s', compute.name, compute.id)
+                _jobs = [_job for _job in self._sched_jobs.itervalues() \
+                         if _job.compute_id == compute.id]
+                self.unsched_jobs -= len(cluster._jobs)
+                nodes = compute.nodes.values()
+                for node in nodes:
+                    node.clusters.remove(compute.id)
+                compute.nodes = {}
+                for xf in compute.xfer_files:
+                    logging.debug('Removing file "%s"', xf.name)
+                    if os.path.isfile(xf.name):
+                        os.remove(xf.name)
+                dest_path = os.path.join(self.dest_path_prefix, str(compute.id))
+                if os.path.isdir(dest_path) and len(os.listdir(dest_path)) == 0:
+                    os.rmdir(dest_path)
+
+                # set client_job_result_port to None so result is not sent to client
+                compute.client_job_result_port = None
+                compute.resubmit = False
+                cluster._jobs = []
+                del self._clusters[compute.id]
+                if _jobs:
+                    self.worker_Qs[compute.id].put((30, self.terminate_jobs, (_jobs,)))
+                self.worker_Qs[compute.id].put(
+                    (40, self.close_compute_nodes, (compute, nodes)))
+                worker_Q = self.worker_Qs[compute.id]
+                del self.worker_Qs[compute.id]
+                self.main_worker_Q.put((30, self.close_work_Q, (worker_Q,)))
+                self._sched_cv.release()
+                return
+            elif msg.startswith('FILEXFER:'):
+                msg = msg[len('FILEXFER:'):]
+                self.task_pool.add_task(xfer_file_task, conn, msg, addr)
+                return
+            elif msg.startswith('TERMINATE_JOB:'):
+                conn.close()
+                msg = msg[len('TERMINATE_JOB:'):]
+                try:
+                    job = cPickle.loads(msg)
+                except:
+                    logging.warning('Invalid job cancel message')
+                    return
+                self._sched_cv.acquire()
+                cluster = self._clusters.get(job.compute_id, None)
+                if not cluster:
+                    logging.debug('Invalid job %s!', job.uid)
+                    self._sched_cv.release()
+                    return
+                compute = cluster._compute
+                _job = self._sched_jobs.get(job.uid, None)
+                if _job is None:
+                    for i, _job in enumerate(cluster._jobs):
+                        if _job.uid == job.uid:
+                            del cluster._jobs[i]
+                            self.unsched_jobs -= 1
+                            reply = _JobReply(_job, self.ip_addr, status=DispyJob.Cancelled)
+                            self.worker_Qs[compute.id].put(
+                                (5, self.send_job_result,
+                                 (_job.uid, compute.id, compute.client_scheduler_ip_addr,
+                                  compute.client_job_result_port, reply)))
+                            break
+                    else:
+                        logging.debug('Invalid job %s!', job.uid)
+                else:
+                    _job.job.status = DispyJob.Cancelled
+                    self.worker_Qs[compute.id].put((30, self.terminate_jobs, ([_job],)))
+                self._sched_cv.release()
+                return
+            elif msg.startswith('RETRIEVE_JOB:'):
+                req = msg[len('RETRIEVE_JOB:'):]
+                try:
+                    req = cPickle.loads(req)
+                    assert req['uid'] is not None
+                    assert req['hash'] is not None
+                    assert req['compute_id'] is not None
+                    info_file = os.path.join(self.dest_path_prefix, str(req['compute_id']),
+                                             '_dispy_job_reply_%s' % req['uid'])
+                    logging.debug('retrieving job %s from %s', req['uid'], info_file)
+                    if os.path.isfile(info_file):
+                        fd = open(info_file, 'rb')
+                        resp = cPickle.load(fd)
+                        fd.close()
+                        if resp.hash == req['hash']:
+                            conn.write_msg(req['uid'], cPickle.dumps(resp))
+                            ruid, ack = conn.read_msg()
+                            assert ack == 'ACK'
+                            assert ruid == req['uid']
+                            try:
+                                os.remove(info_file)
+                                if req['compute_id'] not in self.computations:
+                                    p = os.path.dirname(info_file)
+                                    if len(os.listdir(p)) == 0:
+                                        os.rmdir(p)
+                            except:
+                                loggging.debug('Could not remove "%s"', info_file)
+                            return
+                        else:
+                            resp = cPickle.dumps('Invalid job')
+                except:
+                    resp = cPickle.dumps('Invalid job')
+                    # logging.debug(traceback.format_exc())
+            else:
+                logging.debug('Ignoring invalid command')
+
+            if resp:
+                try:
+                    conn.write_msg(0, resp)
+                except:
+                    logging.warning('Failed to send response to %s: %s',
+                                    str(addr), traceback.format_exc())
+                conn.close()
+            return
+
+        # run function starts here
         ping_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         ping_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         ping_sock.bind(('', self.port))
@@ -396,310 +786,10 @@ class _Scheduler(object):
                     if addr[0] not in self._nodes:
                         logging.warning('Ignoring results from %s', addr[0])
                         continue
-                    conn = _DispySocket(conn, certfile=self.node_certfile,
-                                        keyfile=self.node_keyfile, server=True)
-                    try:
-                        uid, msg = conn.read_msg()
-                        conn.write_msg(uid, 'ACK')
-                        conn.close()
-                    except:
-                        logging.warning('Failed to read job results from %s: %s',
-                                        str(addr), traceback.format_exc())
-                        continue
-                    logging.debug('Received reply for job %s from %s' % (uid, addr[0]))
-                    self._sched_cv.acquire()
-                    node = self._nodes.get(addr[0], None)
-                    if node is None:
-                        self._sched_cv.release()
-                        logging.warning('Ignoring invalid reply for job %s from %s',
-                                        uid, addr[0])
-                        continue
-                    node.last_pulse = time.time()
-                    _job = self._sched_jobs.get(uid, None)
-                    if _job is None:
-                        self._sched_cv.release()
-                        logging.warning('Ignoring invalid job %s from %s', uid, addr[0])
-                        continue
-                    _job.job.end_time = time.time()
-                    cluster = self._clusters.get(_job.compute_id, None)
-                    if cluster is None:
-                        self._sched_cv.release()
-                        logging.warning('Invalid cluster for job %s from %s', uid, addr[0])
-                        continue
-                    compute = cluster._compute
-                    try:
-                        reply = cPickle.loads(msg)
-                        assert reply.uid == _job.uid
-                        assert reply.hash == _job.hash
-                        assert _job.job.status not in [DispyJob.Created, DispyJob.Finished]
-                        setattr(reply, 'cpus', node.cpus)
-                        setattr(reply, 'start_time', _job.job.start_time)
-                        setattr(reply, 'end_time', _job.job.end_time)
-                        if reply.status == DispyJob.ProvisionalResult:
-                            logging.debug('Receveid provisional result for %s', uid)
-                            self.worker_Qs[compute.id].put(
-                                (5, self.send_job_result,
-                                 (_job.uid, compute.client_scheduler_ip_addr,
-                                  compute.client_job_result_port, reply)))
-                            self._sched_cv.release()
-                            continue
-                        else:
-                            del self._sched_jobs[uid]
-                    except:
-                        self._sched_cv.release()
-                        logging.warning('Invalid job result for %s from %s', uid, addr[0])
-                        logging.debug(traceback.format_exc())
-                        continue
-
-                    _job.node.busy -= 1
-                    assert compute.nodes[addr[0]] == _job.node
-                    if reply.status != DispyJob.Terminated:
-                        _job.node.jobs += 1
-                    _job.node.cpu_time += _job.job.end_time - _job.job.start_time
-                    cluster._pending_jobs -= 1
-                    if cluster._pending_jobs == 0:
-                        cluster._complete.set()
-                        cluster.end_time = time.time()
-                    self.worker_Qs[compute.id].put(
-                        (5, self.send_job_result,
-                         (_job.uid, compute.client_scheduler_ip_addr,
-                          compute.client_job_result_port, reply)))
-                    self._sched_cv.notify()
-                    self._sched_cv.release()
+                    self.task_pool.add_task(job_reply_task, conn, addr)
                 elif sock == sched_sock:
                     conn, addr = sched_sock.accept()
-                    conn = _DispySocket(conn, certfile=self.cluster_certfile,
-                                        keyfile=self.cluster_keyfile, server=True)
-                    try:
-                        req = conn.read(len(self.auth_code))
-                        if req != self.auth_code:
-                            req = conn.read(len('CLUSTER'))
-                            if req == 'CLUSTER':
-                                resp = cPickle.dumps({'sign':self.sign,'version':_dispy_version})
-                                conn.write_msg(0, resp)
-                            else:
-                                logging.warning('Invalid/unauthorized request ignored')
-                            conn.close()
-                            continue
-                        uid, msg = conn.read_msg()
-                        if not msg:
-                            logging.info('Closing connection')
-                            conn.close()
-                            continue
-                    except:
-                        logging.warning('Failed to read message from %s: %s',
-                                        str(addr), traceback.format_exc())
-                        conn.close()
-                        continue
-                    if msg.startswith('JOB:'):
-                        msg = msg[len('JOB:'):]
-                        try:
-                            _job = cPickle.loads(msg)
-                        except:
-                            logging.debug('Ignoring job request from %s', addr[0])
-                            conn.close()
-                            continue
-                        self._sched_cv.acquire()
-                        cluster = self._clusters[_job.compute_id]
-                        _job.uid = self.job_uid
-                        self.job_uid += 1
-                        if self.job_uid == sys.maxint:
-                            # TODO: check if it is okay to reset
-                            self.job_uid = 1
-                        setattr(_job, 'node', None)
-                        job = type('DispyJob', (), {'status':DispyJob.Created,
-                                                    'start_time':None, 'end_time':None})
-                        setattr(_job, 'job', job)
-                        cluster._jobs.append(_job)
-                        self.unsched_jobs += 1
-                        cluster._pending_jobs += 1
-                        self._sched_cv.notify()
-                        self._sched_cv.release()
-                        resp = _job.uid
-                        resp = cPickle.dumps(resp)
-                    elif msg.startswith('COMPUTE:'):
-                        msg = msg[len('COMPUTE:'):]
-                        try:
-                            compute = cPickle.loads(msg)
-                        except:
-                            logging.debug('Ignoring compute request from %s', addr[0])
-                            conn.close()
-                            continue
-                        setattr(compute, 'client_job_result_port', compute.job_result_port)
-                        setattr(compute, 'client_scheduler_ip_addr', compute.scheduler_ip_addr)
-                        setattr(compute, 'client_scheduler_port', compute.scheduler_port)
-                        compute.job_result_port = job_sock.getsockname()[1]
-                        compute.scheduler_ip_addr = self.ip_addr
-                        compute.scheduler_port = self.port
-                        setattr(compute, 'nodes', {})
-                        cluster = _Cluster(self, compute)
-                        compute = cluster._compute
-                        self._sched_cv.acquire()
-                        compute.id = cluster.id = self.cluster_id
-                        self._clusters[cluster.id] = cluster
-                        self.cluster_id += 1
-                        dest_path = os.path.join(self.dest_path_prefix, str(compute.id))
-                        for xf in compute.xfer_files:
-                            xf.compute_id = compute.id
-                            tgt = os.path.join(dest_path, os.path.basename(xf.name))
-                            xf.name = tgt
-                        self._sched_cv.release()
-                        resp = {'ID':compute.id}
-                        resp = cPickle.dumps(resp)
-                        logging.debug('New computation %s: %s, %s', compute.id, compute.name,
-                                      len(compute.xfer_files))
-                    elif msg.startswith('ADD_COMPUTE:'):
-                        msg = msg[len('ADD_COMPUTE:'):]
-                        self._sched_cv.acquire()
-                        try:
-                            req = cPickle.loads(msg)
-                            cluster = self._clusters[req['ID']]
-                            for xf in cluster._compute.xfer_files:
-                                assert os.path.isfile(xf.name)
-                            resp = cPickle.dumps(cluster._compute.id)
-                            worker_Q = Queue.PriorityQueue()
-                            self.worker_Qs[cluster._compute.id] = worker_Q
-                            worker_thread = threading.Thread(target=self.worker, args=(worker_Q,))
-                            worker_thread.daemon = True
-                            worker_thread.start()
-                            worker_Q.put((50, self.add_cluster, (cluster,)))
-                        except:
-                            logging.debug('Ignoring compute request from %s', addr[0])
-                            resp = None
-                        finally:
-                            self._sched_cv.release()
-                    elif msg.startswith('DEL_COMPUTE:'):
-                        conn.close()
-                        msg = msg[len('DEL_COMPUTE:'):]
-                        try:
-                            req = cPickle.loads(msg)
-                            assert isinstance(req['ID'], int)
-                        except:
-                            logging.warning('Invalid compuation for deleting')
-                            continue
-                        self._sched_cv.acquire()
-                        cluster = self._clusters.get(req['ID'], None)
-                        if cluster is None:
-                            # this cluster is closed
-                            self._sched_cv.release()
-                            continue
-                        compute = cluster._compute
-                        logging.debug('Deleting computation "%s"/%s', compute.name, compute.id)
-                        _jobs = [_job for _job in self._sched_jobs.itervalues() \
-                                 if _job.compute_id == compute.id]
-                        self.unsched_jobs -= len(cluster._jobs)
-                        nodes = compute.nodes.values()
-                        for node in nodes:
-                            node.clusters.remove(compute.id)
-                        compute.nodes = {}
-                        for xf in compute.xfer_files:
-                            logging.debug('Removing file "%s"', xf.name)
-                            if os.path.isfile(xf.name):
-                                os.remove(xf.name)
-                        dest_path = os.path.join(self.dest_path_prefix, str(compute.id))
-                        if os.path.isdir(dest_path):
-                            os.rmdir(dest_path)
-
-                        # set client_job_result_port to None so result is not sent to client
-                        compute.client_job_result_port = None
-                        compute.resubmit = False
-                        cluster._jobs = []
-                        del self._clusters[compute.id]
-                        if _jobs:
-                            self.worker_Qs[compute.id].put((30, self.terminate_jobs, (_jobs,)))
-                        self.worker_Qs[compute.id].put(
-                            (40, self.close_compute_nodes, (compute, nodes)))
-                        worker_Q = self.worker_Qs[compute.id]
-                        del self.worker_Qs[compute.id]
-                        self.main_worker_Q.put((30, self.close_work_Q, (worker_Q,)))
-                        self._sched_cv.release()
-                        continue
-                    elif msg.startswith('FILEXFER:'):
-                        msg = msg[len('FILEXFER:'):]
-                        try:
-                            xf = cPickle.loads(msg)
-                        except:
-                            logging.debug('Ignoring file trasnfer request from %s', addr[0])
-                            conn.close()
-                            continue
-                        resp = ''
-                        if xf.compute_id not in self._clusters:
-                            logging.error('computation "%s" is invalid' % xf.compute_id)
-                            conn.close()
-                            continue
-                        compute = self._clusters[xf.compute_id]
-                        dest_path = os.path.join(self.dest_path_prefix, str(compute.id))
-                        if not os.path.isdir(dest_path):
-                            os.makedirs(dest_path)
-                        tgt = os.path.join(dest_path, os.path.basename(xf.name))
-                        logging.debug('Copying file %s to %s (%s)', xf.name,
-                                      tgt, xf.stat_buf.st_size)
-                        try:
-                            fd = open(tgt, 'wb')
-                            n = 0
-                            while n < xf.stat_buf.st_size:
-                                data = conn.read(min(xf.stat_buf.st_size-n, 1024000))
-                                if not data:
-                                    break
-                                fd.write(data)
-                                n += len(data)
-                                if n > self.max_file_size:
-                                    logging.warning('File "%s" is too big (%s); it is truncated',
-                                                    tgt, n)
-                                    break
-                            fd.close()
-                            if n < xf.stat_buf.st_size:
-                                resp = 'NAK (read only %s bytes)' % n
-                            else:
-                                resp = 'ACK'
-                                logging.debug('Copied file %s, %s', tgt, resp)
-                                os.utime(tgt, (xf.stat_buf.st_atime, xf.stat_buf.st_mtime))
-                                os.chmod(tgt, stat.S_IMODE(xf.stat_buf.st_mode))
-                        except:
-                            logging.warning('Copying file "%s" failed with "%s"',
-                                            xf.name, traceback.format_exc())
-                            resp = 'NACK'
-                    elif msg.startswith('TERMINATE_JOB:'):
-                        conn.close()
-                        msg = msg[len('TERMINATE_JOB:'):]
-                        try:
-                            job = cPickle.loads(msg)
-                        except:
-                            logging.warning('Invalid job cancel message')
-                            continue
-                        self._sched_cv.acquire()
-                        cluster = self._clusters.get(job.compute_id, None)
-                        if not cluster:
-                            logging.debug('Invalid job %s!', job.uid)
-                            self._sched_cv.release()
-                            continue
-                        compute = cluster._compute
-                        _job = self._sched_jobs.get(job.uid, None)
-                        if _job is None:
-                            for i, _job in enumerate(cluster._jobs):
-                                if _job.uid == job.uid:
-                                    del cluster._jobs[i]
-                                    self.unsched_jobs -= 1
-                                    reply = _JobReply(_job, self.ip_addr, status=DispyJob.Cancelled)
-                                    self.worker_Qs[compute.id].put(
-                                        (5, self.send_job_result,
-                                         (_job.uid, compute.client_scheduler_ip_addr,
-                                          compute.client_job_result_port, reply)))
-                                    break
-                            else:
-                                logging.debug('Invalid job %s!', job.uid)
-                        else:
-                            _job.job.status = DispyJob.Cancelled
-                            self.worker_Qs[compute.id].put((30, self.terminate_jobs, ([_job],)))
-                        self._sched_cv.release()
-                        continue
-                    if resp:
-                        try:
-                            conn.write_msg(0, resp)
-                        except:
-                            logging.warning('Failed to send response to %s: %s',
-                                            str(addr), traceback.format_exc())
-                    conn.close()
+                    self.task_pool.add_task(sched_sock_task, conn, addr)
                 elif sock == ping_sock:
                     msg, addr = ping_sock.recvfrom(1024)
                     if msg.startswith('PULSE:'):
@@ -778,20 +868,35 @@ class _Scheduler(object):
                             if auth_code != node.auth_code:
                                 logging.warning('Invalid signature from %s', node.ip_addr)
                             dead_jobs = [_job for _job in self._sched_jobs.itervalues() \
-                                         if _job.node is not None and _job.node.ip_addr == node.ip_addr]
+                                         if _job.node is not None and \
+                                         _job.node.ip_addr == node.ip_addr]
                             reschedule_jobs(dead_jobs)
                             for cid, cluster in self._clusters.iteritems():
                                 if cluster._compute.nodes.pop(node.ip_addr, None) is not None:
-                                    node.clusters.pop(cid, None)
+                                    node.clusters.remove(cid)
                             self._sched_cv.notify()
                             self._sched_cv.release()
                             del node
                         except:
                             logging.debug('Removing node failed: %s', traceback.format_exc())
+                    elif msg.startswith('SERVERPORT:'):
+                        try:
+                            req = cPickle.loads(msg[len('SERVERPORT:'):])
+                            logging.debug('Sending %s:%s to %s:%s',
+                                          self.ip_addr, self.scheduler_port,
+                                          req['ip_addr'], req['port'])
+                            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                            sock.settimeout(1)
+                            reply = {'ip_addr':self.ip_addr, 'port':self.scheduler_port,
+                                     'sign':self.sign}
+                            sock.sendto(cPickle.dumps(reply), (req['ip_addr'], req['port']))
+                            sock.close()
+                        except:
+                            logging.debug(traceback.format_exc())
+                            # pass
                     else:
                         logging.debug('Ignoring PONG message %s from: %s',
                                       msg[:min(5, len(msg))], addr[0])
-                        continue
                 elif sock == self.cmd_sock.sock:
                     logging.debug('Listener terminating ...')
                     conn, addr = self.cmd_sock.accept()
@@ -813,7 +918,7 @@ class _Scheduler(object):
                             compute = cluster._compute
                             self.worker_Qs[compute.id].put(
                                 (5, self.send_job_result,
-                                 (_job.uid, compute.client_scheduler_ip_addr,
+                                 (_job.uid, compute.id, compute.client_scheduler_ip_addr,
                                   compute.client_job_result_port, reply)))
                         self._sched_jobs = {}
                         self._sched_cv.notify()
@@ -930,7 +1035,7 @@ class _Scheduler(object):
                 reply = _JobReply(_job, self.ip_addr, status=DispyJob.Terminated)
                 self.worker_Qs[compute.id].put(
                     (5, self.send_job_result,
-                     (_job.uid, compute.client_scheduler_ip_addr,
+                     (_job.uid, cmopute.id, compute.client_scheduler_ip_addr,
                       compute.client_job_result_port, reply)))
             cluster._jobs = []
         logging.debug('Scheduler quit')
