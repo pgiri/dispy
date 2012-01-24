@@ -419,8 +419,9 @@ class _DispyJob_():
                 except:
                     logging.warning('File "%s" is not valid' % dep)
                     continue
-                    #raise Exception('File "%s" is not valid' % dep)
+                    # raise Exception('File "%s" is not valid' % dep)
                 sbuf = os.stat(dep)
+                # TODO: Check/limit size
                 fd = open(dep, 'rb')
                 data = fd.read()
                 fd.close()

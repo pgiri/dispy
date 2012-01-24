@@ -106,6 +106,7 @@ def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
     __dispy_job_reply = __dispy_job_info.job_reply
     if __dispy_job_env and isinstance(__dispy_job_env, list):
         sys.path = __dispy_job_env + sys.path
+    sys.path = [__dispy_path] + sys.path
     try:
         exec marshal.loads(__dispy_job_code)
         globals().update(locals())
@@ -119,7 +120,10 @@ def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
         __dispy_job_reply.status = DispyJob.Terminated
     for f in __dispy_job_files:
         if os.path.isfile(f):
-            os.remove(f)
+            try:
+                os.remove(f)
+            except:
+                logging.debug('Could not remove "%s"', f)
     __dispy_job_reply.stdout = sys.stdout.getvalue()
     __dispy_job_reply.stderr = sys.stderr.getvalue()
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
@@ -386,11 +390,18 @@ class _DispyNode():
             for f in _job.files:
                 tgt = os.path.join(self.computations[compute.id].dest_path,
                                    os.path.basename(f['name']))
-                fd = open(tgt, 'wb')
-                fd.write(f['data'])
-                fd.close()
-                os.utime(tgt, (f['stat'].st_atime, f['stat'].st_mtime))
-                os.chmod(tgt, stat.S_IMODE(f['stat'].st_mode))
+                try:
+                    fd = open(tgt, 'wb')
+                    fd.write(f['data'])
+                    fd.close()
+                except:
+                    logging.warning('Could not save file "%s"', tgt)
+                    continue
+                try:
+                    os.utime(tgt, (f['stat'].st_atime, f['stat'].st_mtime))
+                    os.chmod(tgt, stat.S_IMODE(f['stat'].st_mode))
+                except:
+                    logging.debug('Could not set modes for "%s"', tgt)
                 files.append(tgt)
             _job.files = files
 
@@ -546,10 +557,6 @@ class _DispyNode():
                 except:
                     pass
                 xfer_files.append(xf)
-            if xfer_files:
-                # logging.debug('xfer_files needed: %s',
-                #               ','.join(xf.name for xf in compute.xfer_files))
-                resp += ':XFER_FILES:' + cPickle.dumps(xfer_files)
             self.lock.acquire()
             if (self.scheduler_ip_addr is None) or \
                    (self.scheduler_ip_addr == compute.scheduler_ip_addr):
@@ -558,6 +565,10 @@ class _DispyNode():
                 self.scheduler_port = compute.scheduler_port
                 self.pulse_interval = compute.pulse_interval
                 resp = 'ACK'
+                if xfer_files:
+                    # logging.debug('xfer_files needed: %s',
+                    #               ','.join(xf.name for xf in compute.xfer_files))
+                    resp += ':XFER_FILES:' + cPickle.dumps(xfer_files)
             else:
                 resp = 'Busy'
                 if os.path.isdir(compute.dest_path):
@@ -626,6 +637,11 @@ class _DispyNode():
                     logging.warning('Copying file "%s" failed with "%s"',
                                     xf.name, traceback.format_exc())
                     resp = 'NACK'
+                try:
+                    conn.write_msg(0, resp)
+                except:
+                    logging.debug('Could not send reply for "%s"', xf.name)
+                conn.close()
             return # xfer_file_task
 
         def terminate_job_task(uid, msg, addr):
@@ -926,6 +942,9 @@ class _DispyNode():
             return
         for xf in compute.xfer_files:
             tgt = os.path.join(compute.dest_path, os.path.basename(xf.name))
+            if tgt not in self.file_uses:
+                logging.debug('File "%s" is unknown', tgt)
+                continue
             self.file_uses[tgt] -= 1
             if self.file_uses[tgt] == 0:
                 del self.file_uses[tgt]
