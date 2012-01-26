@@ -317,15 +317,39 @@ class _Scheduler(object):
             except:
                 logging.debug('Could not save results for job %s', uid)
                 logging.debug(traceback.format_exc())
-            # TODO: store this result?
+
+            self._sched_cv.acquire()
+            cluster = self._clusters.get(cid, None)
+            if cluster:
+                cluster.pending_results += 1
+            self._sched_cv.release()
         else:
             self._sched_cv.acquire()
             cluster = self._clusters.get(cid, None)
             if cluster:
-                cluster._compute.last_activity = time.time()
+                cluster.last_activity = time.time()
             self._sched_cv.release()
         finally:
             sock.close()
+
+    def send_pending_results(self, cluster):
+        compute = cluster._compute
+        result_dir = os.path.join(self.dest_path_prefix, str(compute.id))
+        for f in os.listdir(result_dir):
+            if not f.startswith('_dispy_job_reply_'):
+                continue
+            result_file = os.path.join(result_dir, f)
+            try:
+                fd = open(result_file, 'rb')
+                result = cPickle.load(fd)
+                fd.close()
+                self.worker_Qs[compute.id].put(
+                    (5, self.send_job_result,
+                     (result.uid, compute.id, cluster.client_scheduler_ip_addr,
+                      cluster.client_job_result_port, result)))
+                os.remove(result_file)
+            except:
+                logging.debug('Could not remove "%s"', result_file)
 
     def terminate_jobs(self, _jobs):
         for _job in _jobs:
@@ -363,8 +387,8 @@ class _Scheduler(object):
                         cluster.end_time = time.time()
                     self.worker_Qs[cluster._compute.id].put(
                         (5, self.send_job_result,
-                         (_job.uid, cluster._compute.id, compute.client_scheduler_ip_addr,
-                          compute.client_job_result_port, reply)))
+                         (_job.uid, cluster._compute.id, cluster.client_scheduler_ip_addr,
+                          cluster.client_job_result_port, reply)))
 
         def job_reply_task(conn, addr):
             conn = _DispySocket(conn, certfile=self.node_certfile,
@@ -410,8 +434,8 @@ class _Scheduler(object):
                     logging.debug('Receveid provisional result for %s', uid)
                     self.worker_Qs[compute.id].put(
                         (5, self.send_job_result,
-                         (_job.uid, compute.id, compute.client_scheduler_ip_addr,
-                          compute.client_job_result_port, reply)))
+                         (_job.uid, compute.id, cluster.client_scheduler_ip_addr,
+                          cluster.client_job_result_port, reply)))
                     self._sched_cv.release()
                     return
                 else:
@@ -434,8 +458,8 @@ class _Scheduler(object):
                     cluster.end_time = time.time()
             self.worker_Qs[compute.id].put(
                 (5, self.send_job_result,
-                 (_job.uid, compute.id, compute.client_scheduler_ip_addr,
-                  compute.client_job_result_port, reply)))
+                 (_job.uid, compute.id, cluster.client_scheduler_ip_addr,
+                  cluster.client_job_result_port, reply)))
             self._sched_cv.notify()
             self._sched_cv.release()
             return
@@ -486,7 +510,7 @@ class _Scheduler(object):
             cluster._jobs.append(_job)
             self.unsched_jobs += 1
             cluster._pending_jobs += 1
-            cluster._compute.last_activity = time.time()
+            cluster.last_activity = time.time()
             self._sched_cv.notify()
             self._sched_cv.release()
             return
@@ -580,18 +604,15 @@ class _Scheduler(object):
                     logging.debug('Ignoring compute request from %s', addr[0])
                     conn.close()
                     return
-                setattr(compute, 'client_job_result_port', compute.job_result_port)
-                setattr(compute, 'client_scheduler_ip_addr', compute.scheduler_ip_addr)
-                setattr(compute, 'client_scheduler_port', compute.scheduler_port)
-                setattr(compute, 'last_activity', time.time())
-                setattr(compute, 'pending_jobs', 0)
-                setattr(compute, 'zombie', False)
-                compute.job_result_port = job_sock.getsockname()[1]
-                compute.scheduler_ip_addr = self.ip_addr
-                compute.scheduler_port = self.port
                 setattr(compute, 'nodes', {})
                 cluster = _Cluster(self, compute)
                 compute = cluster._compute
+                cluster.client_job_result_port = compute.job_result_port
+                cluster.client_scheduler_ip_addr = compute.scheduler_ip_addr
+                cluster.client_scheduler_port = compute.scheduler_port
+                compute.job_result_port = job_sock.getsockname()[1]
+                compute.scheduler_ip_addr = self.ip_addr
+                compute.scheduler_port = self.port
                 self._sched_cv.acquire()
                 compute.id = cluster.id = self.cluster_id
                 self._clusters[cluster.id] = cluster
@@ -647,9 +668,8 @@ class _Scheduler(object):
                     # this cluster is closed
                     self._sched_cv.release()
                     return
-                compute = cluster._compute
-                compute.zombie = True
-                self.cleanup_computation(compute)
+                cluster.zombie = True
+                self.cleanup_computation(cluster)
                 self._sched_cv.release()
                 return
             elif msg.startswith('FILEXFER:'):
@@ -671,7 +691,7 @@ class _Scheduler(object):
                     self._sched_cv.release()
                     return
                 compute = cluster._compute
-                compute.last_activity = time.time()
+                cluster.last_activity = time.time()
                 _job = self._sched_jobs.get(job.uid, None)
                 if _job is None:
                     for i, _job in enumerate(cluster._jobs):
@@ -681,8 +701,8 @@ class _Scheduler(object):
                             reply = _JobReply(_job, self.ip_addr, status=DispyJob.Cancelled)
                             self.worker_Qs[compute.id].put(
                                 (5, self.send_job_result,
-                                 (_job.uid, compute.id, compute.client_scheduler_ip_addr,
-                                  compute.client_job_result_port, reply)))
+                                 (_job.uid, compute.id, cluster.client_scheduler_ip_addr,
+                                  cluster.client_job_result_port, reply)))
                             break
                     else:
                         logging.debug('Invalid job %s!', job.uid)
@@ -698,11 +718,11 @@ class _Scheduler(object):
                     assert req['uid'] is not None
                     assert req['hash'] is not None
                     assert req['compute_id'] is not None
-                    info_file = os.path.join(self.dest_path_prefix, str(req['compute_id']),
-                                             '_dispy_job_reply_%s' % req['uid'])
-                    logging.debug('retrieving job %s from %s', req['uid'], info_file)
-                    if os.path.isfile(info_file):
-                        fd = open(info_file, 'rb')
+                    result_file = os.path.join(self.dest_path_prefix, str(req['compute_id']),
+                                               '_dispy_job_reply_%s' % req['uid'])
+                    logging.debug('retrieving job %s from %s', req['uid'], result_file)
+                    if os.path.isfile(result_file):
+                        fd = open(result_file, 'rb')
                         resp = cPickle.load(fd)
                         fd.close()
                         if resp.hash == req['hash']:
@@ -711,13 +731,13 @@ class _Scheduler(object):
                             assert ack == 'ACK'
                             assert ruid == req['uid']
                             try:
-                                os.remove(info_file)
+                                os.remove(result_file)
                                 if req['compute_id'] not in self.computations:
-                                    p = os.path.dirname(info_file)
+                                    p = os.path.dirname(result_file)
                                     if len(os.listdir(p)) == 0:
                                         os.rmdir(p)
                             except:
-                                loggging.debug('Could not remove "%s"', info_file)
+                                loggging.debug('Could not remove "%s"', result_file)
                             return
                         else:
                             resp = cPickle.dumps('Invalid job')
@@ -794,10 +814,9 @@ class _Scheduler(object):
                             if 'client_scheduler_ip_addr' in info:
                                 self._sched_cv.acquire()
                                 for cluster in self._clusters.itervalues():
-                                    compute = cluster._compute
-                                    if compute.client_scheduler_ip_addr == info['client_scheduler_ip_addr'] and \
-                                       compute.client_scheduler_port == info['client_scheduler_port']:
-                                        compute.last_activity = time.time()
+                                    if cluster.client_scheduler_ip_addr == info['client_scheduler_ip_addr'] and \
+                                       cluster.client_scheduler_port == info['client_scheduler_port']:
+                                        cluster.last_activity = time.time()
                                         # TODO: need to send ack?
                                 self._sched_cv.release()
                             else:
@@ -924,8 +943,8 @@ class _Scheduler(object):
                             compute = cluster._compute
                             self.worker_Qs[compute.id].put(
                                 (5, self.send_job_result,
-                                 (_job.uid, compute.id, compute.client_scheduler_ip_addr,
-                                  compute.client_job_result_port, reply)))
+                                 (_job.uid, compute.id, cluster.client_scheduler_ip_addr,
+                                  cluster.client_job_result_port, reply)))
                         self._sched_jobs = {}
                         self._sched_cv.notify()
                         self._sched_cv.release()
@@ -962,18 +981,23 @@ class _Scheduler(object):
                         self.send_ping_cluster(cluster)
                     self._sched_cv.release()
                 if zombie_interval and (now - last_zombie_time) >= zombie_interval:
+                    logging.debug('              ZOMBIE CHECK')
                     last_zombie_time = now
                     self._sched_cv.acquire()
                     for cluster in self._clusters.itervalues():
-                        compute = cluster._compute
-                        if (now - compute.last_activity) > zombie_interval:
-                            compute.zombie = True
-                    zombies = [cluster._compute for cluster in self._clusters.itervalues() \
-                               if cluster._compute.zombie and cluster._compute.pending_jobs == 0]
-                    for compute in zombies:
+                        if (now - cluster.last_activity) > zombie_interval:
+                            cluster.zombie = True
+                    zombies = [cluster for cluster in self._clusters.itervalues() \
+                               if cluster.zombie and cluster._pending_jobs == 0]
+                    for cluster in zombies:
                         logging.debug('Deleting zombie computation "%s" / %s',
-                                      compute.name, compute.id)
-                        self.cleanup_computation(compute)
+                                      cluster._compute.name, cluster._compute.id)
+                        self.cleanup_computation(cluster)
+                    phoenix = [cluster for cluster in self._clusters.itervalues() \
+                               if cluster.pending_results]
+                    for cluster in phoenix:
+                        self.worker_Qs[cluster._compute.id].put(
+                            (6, self.send_pending_results, (cluster,)))
                     self._sched_cv.release()
 
     def load_balance_schedule(self):
@@ -1055,8 +1079,8 @@ class _Scheduler(object):
                 reply = _JobReply(_job, self.ip_addr, status=DispyJob.Terminated)
                 self.worker_Qs[compute.id].put(
                     (5, self.send_job_result,
-                     (_job.uid, cmopute.id, compute.client_scheduler_ip_addr,
-                      compute.client_job_result_port, reply)))
+                     (_job.uid, cmopute.id, cluster.client_scheduler_ip_addr,
+                      cluster.client_job_result_port, reply)))
             cluster._jobs = []
         logging.debug('Scheduler quit')
         self._sched_cv.release()
@@ -1128,14 +1152,14 @@ class _Scheduler(object):
                 node.close(cluster._compute)
             del self._clusters[compute_id]
 
-    def cleanup_computation(self, compute):
+    def cleanup_computation(self, cluster):
         # called with _sched_cv held
-        if not compute.zombie:
+        if not cluster.zombie:
             return
-        if compute.pending_jobs != 0:
-            logging.debug('Waiting for %s jobs to finish before removing computation "%s"',
-                          compute.pending_jobs, compute.name)
-            return
+        if cluster._pending_jobs:
+            logging.debug('Waiting for %s jobs to complete before deleting "%s" / %s',
+                          cluster._pending_jobs, cluster._compute.name, cluster._compute.id)
+        compute = cluster._compute
         nodes = compute.nodes.values()
         for node in nodes:
             node.clusters.remove(compute.id)
@@ -1173,6 +1197,12 @@ class _Cluster():
         self.start_time = time.time()
         self.end_time = None
         self.scheduler = scheduler
+        self.zombie = False
+        self.last_activity = time.time()
+        self.client_job_result_port = None
+        self.client_scheduler_ip_addr = None
+        self.client_scheduler_port = None
+        self.pending_results = 0
 
 if __name__ == '__main__':
     import argparse

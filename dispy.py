@@ -261,9 +261,6 @@ class _Compute():
         if 'auth_code' in state:
             del state['auth_code']
             del state['nodes']
-            state.pop('client_job_result_port', None)
-            state.pop('client_scheduler_ip_addr', None)
-            state.pop('client_scheduler_port', None)
         return state
 
 class _XferFile():
