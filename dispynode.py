@@ -270,7 +270,7 @@ class _DispyNode():
                             assert info['ip_addr'] == self.scheduler_ip_addr
                             self.lock.acquire()
                             for compute in self.computations.itervalues():
-                                compute.last_activity = time.time()
+                                compute.last_pulse = time.time()
                             self.lock.release()
                         except:
                             logging.warning('Ignoring PULSE from %s', addr[0])
@@ -331,7 +331,7 @@ class _DispyNode():
                     last_zombie_time = now
                     self.lock.acquire()
                     for compute in self.computations.itervalues():
-                        if (now - compute.last_activity) > zombie_interval:
+                        if (now - compute.last_pulse) > zombie_interval:
                             compute.zombie = True
                     zombies = [compute for compute in self.computations.itervalues() \
                                if compute.zombie and compute.pending_jobs == 0]
@@ -517,7 +517,7 @@ class _DispyNode():
             if compute.id in self.computations:
                 logging.warning('Computation "%s" (%s) is being replaced',
                                 compute.name, compute.id)
-            setattr(compute, 'last_activity', time.time())
+            setattr(compute, 'last_pulse', time.time())
             setattr(compute, 'pending_jobs', 0)
             setattr(compute, 'zombie', False)
             # logging.debug('xfer_files given: %s',
@@ -888,10 +888,10 @@ class _DispyNode():
                 logging.warning('Computation for %s / %s is invalid!',
                                 job_reply.uid, job_info.compute_id)
             else:
-                # technically last_activity should be updated only
+                # technically last_pulse should be updated only
                 # when successfully sent reply, but no harm if done
                 # otherwise, too
-                compute.last_activity = time.time()
+                compute.last_pulse = time.time()
                 compute.pending_jobs -= 1
                 if compute.pending_jobs == 0 and compute.zombie:
                     self.cleanup_computation(compute)

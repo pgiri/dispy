@@ -1950,8 +1950,8 @@ class SharedJobCluster(JobCluster):
                 self._cluster.fault_recover_lock.release()
             del self._compute
 
-def fault_recover_jobs(fault_recover_file, ip_addr=None, secret='', port=51348,
-                       certfile=None, keyfile=None):
+def fault_recover_jobs(fault_recover_file, ip_addr=None, port=51348,
+                       secret='', certfile=None, keyfile=None):
     """Recover results of jobs submitted. If dispy client is
     unexpectedly terminated (e.g., due to exceptions), and dispy
     client was earlier started with 'fault_recover_file' option, the

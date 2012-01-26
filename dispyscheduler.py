@@ -53,8 +53,29 @@ from dispynode import _same_file
 
 MaxFileSize = 10240000
 
+class _Cluster():
+    """Internal use only.
+    """
+    def __init__(self, compute):
+        self._compute = compute
+        compute.node_spec = _parse_nodes(compute.node_spec)
+        logging.debug('node_spec: %s', str(compute.node_spec))
+        self._pending_jobs = 0
+        self._jobs = []
+        self.cpu_time = 0
+        self.start_time = time.time()
+        self.end_time = None
+        self.zombie = False
+        self.last_pulse = time.time()
+        self.client_job_result_port = None
+        self.client_scheduler_ip_addr = None
+        self.client_scheduler_port = None
+        self.pending_results = 0
+
 class _Scheduler(object):
     """Internal use only.
+
+    See dispy's JobCluster and SharedJobCluster for documentation.
     """
     __metaclass__ = MetaSingleton
 
@@ -102,7 +123,10 @@ class _Scheduler(object):
             if max_file_size is None:
                 max_file_size = MaxFileSize
             self.max_file_size = max_file_size
-            self.zombie_interval = 60 * zombie_interval
+            if zombie_interval:
+                self.zombie_interval = 60 * zombie_interval
+            else:
+                self.zombie_interval = None
 
             if pulse_interval:
                 try:
@@ -327,12 +351,13 @@ class _Scheduler(object):
             self._sched_cv.acquire()
             cluster = self._clusters.get(cid, None)
             if cluster:
-                cluster.last_activity = time.time()
+                cluster.last_pulse = time.time()
             self._sched_cv.release()
         finally:
             sock.close()
 
     def send_pending_results(self, cluster):
+        # called with _sched_cv locked
         compute = cluster._compute
         result_dir = os.path.join(self.dest_path_prefix, str(compute.id))
         for f in os.listdir(result_dir):
@@ -350,6 +375,7 @@ class _Scheduler(object):
                 os.remove(result_file)
             except:
                 logging.debug('Could not remove "%s"', result_file)
+        cluster.pending_results = 0
 
     def terminate_jobs(self, _jobs):
         for _job in _jobs:
@@ -383,7 +409,6 @@ class _Scheduler(object):
                     reply = _JobReply(_job, _job.node.ip_addr, status=DispyJob.Terminated)
                     cluster._pending_jobs -= 1
                     if cluster._pending_jobs == 0:
-                        cluster._complete.set()
                         cluster.end_time = time.time()
                     self.worker_Qs[cluster._compute.id].put(
                         (5, self.send_job_result,
@@ -454,7 +479,6 @@ class _Scheduler(object):
                 _job.node.cpu_time += _job.job.end_time - _job.job.start_time
                 cluster._pending_jobs -= 1
                 if cluster._pending_jobs == 0:
-                    cluster._complete.set()
                     cluster.end_time = time.time()
             self.worker_Qs[compute.id].put(
                 (5, self.send_job_result,
@@ -510,7 +534,7 @@ class _Scheduler(object):
             cluster._jobs.append(_job)
             self.unsched_jobs += 1
             cluster._pending_jobs += 1
-            cluster.last_activity = time.time()
+            cluster.last_pulse = time.time()
             self._sched_cv.notify()
             self._sched_cv.release()
             return
@@ -605,7 +629,7 @@ class _Scheduler(object):
                     conn.close()
                     return
                 setattr(compute, 'nodes', {})
-                cluster = _Cluster(self, compute)
+                cluster = _Cluster(compute)
                 compute = cluster._compute
                 cluster.client_job_result_port = compute.job_result_port
                 cluster.client_scheduler_ip_addr = compute.scheduler_ip_addr
@@ -691,7 +715,7 @@ class _Scheduler(object):
                     self._sched_cv.release()
                     return
                 compute = cluster._compute
-                cluster.last_activity = time.time()
+                cluster.last_pulse = time.time()
                 _job = self._sched_jobs.get(job.uid, None)
                 if _job is None:
                     for i, _job in enumerate(cluster._jobs):
@@ -816,13 +840,13 @@ class _Scheduler(object):
                                 for cluster in self._clusters.itervalues():
                                     if cluster.client_scheduler_ip_addr == info['client_scheduler_ip_addr'] and \
                                        cluster.client_scheduler_port == info['client_scheduler_port']:
-                                        cluster.last_activity = time.time()
+                                        cluster.last_pulse = time.time()
                                         # TODO: need to send ack?
                                 self._sched_cv.release()
                             else:
                                 node = self._nodes.get(info['ip_addr'], None)
                                 if node is not None:
-                                    assert 0 <= info['cpus'] <= node.cpus
+                                    # assert 0 <= info['cpus'] <= node.cpus
                                     node.last_pulse = time.time()
                                     msg = 'PULSE:' + cPickle.dumps({'ip_addr':self.ip_addr})
                                     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -981,11 +1005,10 @@ class _Scheduler(object):
                         self.send_ping_cluster(cluster)
                     self._sched_cv.release()
                 if zombie_interval and (now - last_zombie_time) >= zombie_interval:
-                    logging.debug('              ZOMBIE CHECK')
                     last_zombie_time = now
                     self._sched_cv.acquire()
                     for cluster in self._clusters.itervalues():
-                        if (now - cluster.last_activity) > zombie_interval:
+                        if (now - cluster.last_pulse) > zombie_interval:
                             cluster.zombie = True
                     zombies = [cluster for cluster in self._clusters.itervalues() \
                                if cluster.zombie and cluster._pending_jobs == 0]
@@ -1181,28 +1204,6 @@ class _Scheduler(object):
         worker_Q = self.worker_Qs[compute.id]
         del self.worker_Qs[compute.id]
         self.main_worker_Q.put((30, self.close_work_Q, (worker_Q,)))
-
-class _Cluster():
-    """Internal use only.
-    """
-    def __init__(self, scheduler, compute):
-        self._compute = compute
-        compute.node_spec = _parse_nodes(compute.node_spec)
-        logging.debug('node_spec: %s', str(compute.node_spec))
-        self._lock = threading.Lock()
-        self._pending_jobs = 0
-        self._jobs = []
-        self._complete = threading.Event()
-        self.cpu_time = 0
-        self.start_time = time.time()
-        self.end_time = None
-        self.scheduler = scheduler
-        self.zombie = False
-        self.last_activity = time.time()
-        self.client_job_result_port = None
-        self.client_scheduler_ip_addr = None
-        self.client_scheduler_port = None
-        self.pending_results = 0
 
 if __name__ == '__main__':
     import argparse
