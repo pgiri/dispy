@@ -514,7 +514,6 @@ class _DispyNode():
                 self.lock.release()
                 conn.close()
                 return
-            self.lock.release()
             if compute.id in self.computations:
                 logging.warning('Computation "%s" (%s) is being replaced',
                                 compute.name, compute.id)
@@ -533,6 +532,7 @@ class _DispyNode():
                     resp = 'NACK (Compilation failed)'
                     if os.path.isdir(compute.dest_path):
                         os.rmdir(compute.dest_path)
+                    self.lock.release()
                     try:
                         conn.write_msg(uid, resp)
                     except:
@@ -548,16 +548,13 @@ class _DispyNode():
                 try:
                     if _same_file(tgt, xf):
                         logging.debug('Ignoring file "%s" / "%s"', xf.name, tgt)
-                        self.lock.acquire()
                         if tgt not in self.file_uses:
                             self.file_uses[tgt] = 0
                         self.file_uses[tgt] += 1
-                        self.lock.release()
                         continue
                 except:
                     pass
                 xfer_files.append(xf)
-            self.lock.acquire()
             if (self.scheduler_ip_addr is None) or \
                    (self.scheduler_ip_addr == compute.scheduler_ip_addr):
                 self.computations[compute.id] = compute
@@ -566,8 +563,6 @@ class _DispyNode():
                 self.pulse_interval = compute.pulse_interval
                 resp = 'ACK'
                 if xfer_files:
-                    # logging.debug('xfer_files needed: %s',
-                    #               ','.join(xf.name for xf in compute.xfer_files))
                     resp += ':XFER_FILES:' + cPickle.dumps(xfer_files)
             else:
                 resp = 'Busy'
@@ -663,7 +658,7 @@ class _DispyNode():
                 job_info.proc.terminate()
                 # TODO: make sure process is really killed?
                 if isinstance(job_info.proc, multiprocessing.Process):
-                    job_info.proc.join(2)
+                    job_info.proc.join(1)
                 else:
                     job_info.proc.wait()
             except:
@@ -682,55 +677,68 @@ class _DispyNode():
                 assert req['uid'] is not None
                 assert req['hash'] is not None
                 assert req['compute_id'] is not None
-                job_info = self.job_infos.get(req['uid'], None)
-                resp = None
-                if job_info is not None:
-                    try:
-                        conn.write_msg(req['uid'], cPickle.dumps(job_info.job_reply))
-                        ruid, ack = conn.read_msg()
-                        # no need to check ack
-                    except:
-                        logging.debug('Could not send reply for job %s', req['uid'])
-                    conn.close()
-                    return
-                else:
-                    for d in os.listdir(self.dest_path_prefix):
-                        info_file = os.path.join(self.dest_path_prefix, d,
-                                                 '_dispy_job_reply_%s' % req['uid'])
-                        if os.path.isfile(info_file):
-                            fd = open(info_file, 'rb')
-                            resp = cPickle.load(fd)
-                            fd.close()
-                            if resp.hash == req['hash']:
-                                try:
-                                    conn.write_msg(req['uid'], cPickle.dumps(resp))
-                                    ruid, ack = conn.read_msg()
-                                except:
-                                    logging.debug('Could not send reply for job %s', req['uid'])
-                                    return
-                                finally:
-                                    conn.close()
-                                assert ack == 'ACK'
-                                assert ruid == req['uid']
-                                try:
-                                    os.remove(info_file)
-                                    if req['compute_id'] not in self.computations:
-                                        p = os.path.dirname(info_file)
-                                        if len(os.listdir(p)) == 0:
-                                            os.rmdir(p)
-                                except:
-                                    loggging.debug('Could not remove "%s"', info_file)
-                                return
-                    else:
-                        resp = cPickle.dumps('Invalid job: %s', req['uid'])
             except:
                 resp = cPickle.dumps('Invalid job')
-            if resp:
                 try:
                     conn.write_msg(0, resp)
                 except:
                     pass
                 conn.close()
+                return
+
+            job_info = self.job_infos.get(req['uid'], None)
+            resp = None
+            if job_info is not None:
+                try:
+                    conn.write_msg(req['uid'], cPickle.dumps(job_info.job_reply))
+                    ruid, ack = conn.read_msg()
+                    # no need to check ack
+                except:
+                    logging.debug('Could not send reply for job %s', req['uid'])
+                conn.close()
+                return
+
+            for d in os.listdir(self.dest_path_prefix):
+                info_file = os.path.join(self.dest_path_prefix, d,
+                                         '_dispy_job_reply_%s' % req['uid'])
+                if os.path.isfile(info_file):
+                    try:
+                        fd = open(info_file, 'rb')
+                        resp = cPickle.load(fd)
+                        fd.close()
+                    except:
+                        resp = None
+                    if hasattr(resp, 'hash') and resp.hash == req['hash']:
+                        try:
+                            conn.write_msg(req['uid'], cPickle.dumps(resp))
+                            ruid, ack = conn.read_msg()
+                            assert ack == 'ACK'
+                            assert ruid == req['uid']
+                        except:
+                            logging.debug('Could not send reply for job %s', req['uid'])
+                            return
+                        finally:
+                            conn.close()
+                        try:
+                            os.remove(info_file)
+                            if req['compute_id'] not in self.computations:
+                                p = os.path.dirname(info_file)
+                                if p.startswith(self.dest_path_prefix) and \
+                                       len(p) > len(self.dest_path_prefix) and \
+                                       len(os.listdir(p)) == 0:
+                                    os.rmdir(p)
+                        except:
+                            loggging.debug('Could not remove "%s"', info_file)
+                        return
+            else:
+                resp = cPickle.dumps('Invalid job: %s', req['uid'])
+
+            if resp:
+                try:
+                    conn.write_msg(0, resp)
+                except:
+                    pass
+            conn.close()
             return
 
         # _serve starts here
@@ -927,14 +935,14 @@ class _DispyNode():
             logging.debug('Waiting for %s jobs to finish before removing computation "%s"',
                           compute.pending_jobs, compute.name)
             return
-        if compute.zombie:
-            del self.computations[compute.id]
-            if compute.scheduler_ip_addr == self.scheduler_ip_addr and \
-                   all(c.scheduler_ip_addr != self.scheduler_ip_addr \
-                       for c in self.computations.itervalues()):
-                assert self.avail_cpus == self.cpus
-                self.scheduler_ip_addr = None
-                self.pulse_interval = None
+
+        del self.computations[compute.id]
+        if compute.scheduler_ip_addr == self.scheduler_ip_addr and \
+               all(c.scheduler_ip_addr != self.scheduler_ip_addr \
+                   for c in self.computations.itervalues()):
+            assert self.avail_cpus == self.cpus
+            self.scheduler_ip_addr = None
+            self.pulse_interval = None
 
         if self.scheduler_ip_addr is None and self.avail_cpus == self.cpus:
             self.send_pong_msg(reset_interval=True)
@@ -1032,7 +1040,7 @@ if __name__ == '__main__':
         except KeyboardInterrupt:
             logging.info('Interrupted; terminating')
             node.shutdown()
-            time.sleep(2)
+            time.sleep(1)
             break
         except:
             logging.warning(traceback.print_exc())

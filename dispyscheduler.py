@@ -62,7 +62,7 @@ class _Scheduler(object):
                  scheduler_port=None, pulse_interval=None, ping_interval=None,
                  node_secret='', node_keyfile=None, node_certfile=None,
                  cluster_secret='', cluster_keyfile=None, cluster_certfile=None,
-                 dest_path_prefix=None, max_file_size=None, num_tasks=16):
+                 dest_path_prefix=None, max_file_size=None, num_tasks=16, zombie_interval=60):
         if not hasattr(self, 'ip_addr'):
             atexit.register(self.shutdown)
             if not loglevel:
@@ -102,6 +102,7 @@ class _Scheduler(object):
             if max_file_size is None:
                 max_file_size = MaxFileSize
             self.max_file_size = max_file_size
+            self.zombie_interval = 60 * zombie_interval
 
             if pulse_interval:
                 try:
@@ -298,11 +299,6 @@ class _Scheduler(object):
             self._sched_cv.release()
 
     def send_job_result(self, uid, cid, ip, port, result):
-        if port is None:
-            # when a computation is closed, port is set to None so we
-            # don't send reply
-            logging.debug('Ignoring result for job %s', uid)
-            return
         logging.debug('Sending results for %s to %s, %s', uid, ip, port)
         sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), timeout=3)
         try:
@@ -322,6 +318,12 @@ class _Scheduler(object):
                 logging.debug('Could not save results for job %s', uid)
                 logging.debug(traceback.format_exc())
             # TODO: store this result?
+        else:
+            self._sched_cv.acquire()
+            cluster = self._clusters.get(cid, None)
+            if cluster:
+                cluster._compute.last_activity = time.time()
+            self._sched_cv.release()
         finally:
             sock.close()
 
@@ -422,13 +424,14 @@ class _Scheduler(object):
 
             _job.node.busy -= 1
             assert compute.nodes[addr[0]] == _job.node
-            if reply.status != DispyJob.Terminated:
-                _job.node.jobs += 1
-            _job.node.cpu_time += _job.job.end_time - _job.job.start_time
-            cluster._pending_jobs -= 1
-            if cluster._pending_jobs == 0:
-                cluster._complete.set()
-                cluster.end_time = time.time()
+            if reply.status != DispyJob.ProvisionalResult:
+                if reply.status != DispyJob.Terminated:
+                    _job.node.jobs += 1
+                _job.node.cpu_time += _job.job.end_time - _job.job.start_time
+                cluster._pending_jobs -= 1
+                if cluster._pending_jobs == 0:
+                    cluster._complete.set()
+                    cluster.end_time = time.time()
             self.worker_Qs[compute.id].put(
                 (5, self.send_job_result,
                  (_job.uid, compute.id, compute.client_scheduler_ip_addr,
@@ -445,7 +448,6 @@ class _Scheduler(object):
                 conn.close()
                 return
             self._sched_cv.acquire()
-            cluster = self._clusters[_job.compute_id]
             _job.uid = self.job_uid
             self.job_uid += 1
             if self.job_uid == sys.maxint:
@@ -475,9 +477,16 @@ class _Scheduler(object):
                 return
             conn.close()
             self._sched_cv.acquire()
+            cluster = self._clusters.get(_job.compute_id, None)
+            if cluster is None:
+                logging.debug('cluster %s is not valid anymore for job %s',
+                              _job.compute_id, _job.uid)
+                self._sched_cv.release()
+                return
             cluster._jobs.append(_job)
             self.unsched_jobs += 1
             cluster._pending_jobs += 1
+            cluster._compute.last_activity = time.time()
             self._sched_cv.notify()
             self._sched_cv.release()
             return
@@ -574,6 +583,9 @@ class _Scheduler(object):
                 setattr(compute, 'client_job_result_port', compute.job_result_port)
                 setattr(compute, 'client_scheduler_ip_addr', compute.scheduler_ip_addr)
                 setattr(compute, 'client_scheduler_port', compute.scheduler_port)
+                setattr(compute, 'last_activity', time.time())
+                setattr(compute, 'pending_jobs', 0)
+                setattr(compute, 'zombie', False)
                 compute.job_result_port = job_sock.getsockname()[1]
                 compute.scheduler_ip_addr = self.ip_addr
                 compute.scheduler_port = self.port
@@ -595,7 +607,8 @@ class _Scheduler(object):
                     tgt = os.path.join(dest_path, os.path.basename(xf.name))
                     xf.name = tgt
                 self._sched_cv.release()
-                resp = {'ID':compute.id}
+                resp = {'ID':compute.id,
+                        'pulse_interval':(self.zombie_interval / 5.0) if self.zombie_interval else None}
                 resp = cPickle.dumps(resp)
                 logging.debug('New computation %s: %s, %s', compute.id, compute.name,
                               len(compute.xfer_files))
@@ -635,34 +648,8 @@ class _Scheduler(object):
                     self._sched_cv.release()
                     return
                 compute = cluster._compute
-                logging.debug('Deleting computation "%s"/%s', compute.name, compute.id)
-                _jobs = [_job for _job in self._sched_jobs.itervalues() \
-                         if _job.compute_id == compute.id]
-                self.unsched_jobs -= len(cluster._jobs)
-                nodes = compute.nodes.values()
-                for node in nodes:
-                    node.clusters.remove(compute.id)
-                compute.nodes = {}
-                for xf in compute.xfer_files:
-                    logging.debug('Removing file "%s"', xf.name)
-                    if os.path.isfile(xf.name):
-                        os.remove(xf.name)
-                dest_path = os.path.join(self.dest_path_prefix, str(compute.id))
-                if os.path.isdir(dest_path) and len(os.listdir(dest_path)) == 0:
-                    os.rmdir(dest_path)
-
-                # set client_job_result_port to None so result is not sent to client
-                compute.client_job_result_port = None
-                compute.resubmit = False
-                cluster._jobs = []
-                del self._clusters[compute.id]
-                if _jobs:
-                    self.worker_Qs[compute.id].put((30, self.terminate_jobs, (_jobs,)))
-                self.worker_Qs[compute.id].put(
-                    (40, self.close_compute_nodes, (compute, nodes)))
-                worker_Q = self.worker_Qs[compute.id]
-                del self.worker_Qs[compute.id]
-                self.main_worker_Q.put((30, self.close_work_Q, (worker_Q,)))
+                compute.zombie = True
+                self.cleanup_computation(compute)
                 self._sched_cv.release()
                 return
             elif msg.startswith('FILEXFER:'):
@@ -684,6 +671,7 @@ class _Scheduler(object):
                     self._sched_cv.release()
                     return
                 compute = cluster._compute
+                compute.last_activity = time.time()
                 _job = self._sched_jobs.get(job.uid, None)
                 if _job is None:
                     for i, _job in enumerate(cluster._jobs):
@@ -776,8 +764,14 @@ class _Scheduler(object):
         else:
             timeout = max(pulse_timeout, self.ping_interval)
 
-        last_pulse_time = time.time()
-        last_ping_time = last_pulse_time
+        if timeout and self.zombie_interval:
+            timeout = min(timeout, self.zombie_interval)
+            zombie_interval = max(5 * timeout, self.zombie_interval)
+        else:
+            timeout = max(timeout, self.zombie_interval)
+            zombie_interval = self.zombie_interval
+
+        last_ping_time = last_pulse_time = last_zombie_time = time.time()
         while True:
             ready = select.select([sched_sock, self.cmd_sock.sock, ping_sock, job_sock],
                                   [], [], timeout)[0]
@@ -797,13 +791,24 @@ class _Scheduler(object):
                         msg = msg[len('PULSE:'):]
                         try:
                             info = cPickle.loads(msg)
-                            node = self._nodes[info['ip_addr']]
-                            assert 0 <= info['cpus'] <= node.cpus
-                            node.last_pulse = time.time()
-                            msg = 'PULSE:' + cPickle.dumps({'ip_addr':self.ip_addr})
-                            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                            sock.sendto(msg, (info['ip_addr'], info['port']))
-                            sock.close()
+                            if 'client_scheduler_ip_addr' in info:
+                                self._sched_cv.acquire()
+                                for cluster in self._clusters.itervalues():
+                                    compute = cluster._compute
+                                    if compute.client_scheduler_ip_addr == info['client_scheduler_ip_addr'] and \
+                                       compute.client_scheduler_port == info['client_scheduler_port']:
+                                        compute.last_activity = time.time()
+                                        # TODO: need to send ack?
+                                self._sched_cv.release()
+                            else:
+                                node = self._nodes.get(info['ip_addr'], None)
+                                if node is not None:
+                                    assert 0 <= info['cpus'] <= node.cpus
+                                    node.last_pulse = time.time()
+                                    msg = 'PULSE:' + cPickle.dumps({'ip_addr':self.ip_addr})
+                                    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                                    sock.sendto(msg, (info['ip_addr'], info['port']))
+                                    sock.close()
                         except:
                             logging.warning('Ignoring pulse message from %s', addr[0])
                             #logging.debug(traceback.format_exc())
@@ -956,6 +961,20 @@ class _Scheduler(object):
                     for cluster in clusters.itervalues():
                         self.send_ping_cluster(cluster)
                     self._sched_cv.release()
+                if zombie_interval and (now - last_zombie_time) >= zombie_interval:
+                    last_zombie_time = now
+                    self._sched_cv.acquire()
+                    for cluster in self._clusters.itervalues():
+                        compute = cluster._compute
+                        if (now - compute.last_activity) > zombie_interval:
+                            compute.zombie = True
+                    zombies = [cluster._compute for cluster in self._clusters.itervalues() \
+                               if cluster._compute.zombie and cluster._compute.pending_jobs == 0]
+                    for compute in zombies:
+                        logging.debug('Deleting zombie computation "%s" / %s',
+                                      compute.name, compute.id)
+                        self.cleanup_computation(compute)
+                    self._sched_cv.release()
 
     def load_balance_schedule(self):
         node = None
@@ -1086,25 +1105,20 @@ class _Scheduler(object):
 
     def stats(self):
         print
-        heading = '%020s  |  %05s  |  %05s  |  %010s  |  %13s' % \
-                  ('Node', 'CPUs', 'Jobs', 'Sec/Job', 'Node Time Sec')
+        heading = '%020s  |  %05s  |  %05s  |  %13s' % \
+                  ('Node', 'CPUs', 'Jobs', 'Node Time Sec')
         print heading
         print '-' * len(heading)
         tot_cpu_time = 0
         for ip_addr in sorted(self._nodes, key=lambda addr: self._nodes[addr].cpu_time,
                               reverse=True):
             node = self._nodes[ip_addr]
-            if node.jobs:
-                secs_per_job = node.cpu_time / node.jobs
-            else:
-                secs_per_job = 0
             tot_cpu_time += node.cpu_time
-            print '%020s  |  %05s  |  %05s  |  %10.3f  |  %13.3f' % \
-                  (ip_addr, node.cpus, node.jobs, secs_per_job, node.cpu_time)
+            print '%020s  |  %05s  |  %05s  |  %13.3f' % \
+                  (ip_addr, node.cpus, node.jobs, node.cpu_time)
         wall_time = time.time() - self.start_time
         print
-        print 'Total job time: %.3f sec, wall time: %.3f sec, speedup: %.3f' % \
-              (tot_cpu_time, wall_time, tot_cpu_time / wall_time)
+        print 'Total job time: %.3f sec' % (tot_cpu_time)
         print
 
     def close(self, compute_id):
@@ -1113,6 +1127,36 @@ class _Scheduler(object):
             for ip_addr, node in self._nodes.iteritems():
                 node.close(cluster._compute)
             del self._clusters[compute_id]
+
+    def cleanup_computation(self, compute):
+        # called with _sched_cv held
+        if not compute.zombie:
+            return
+        if compute.pending_jobs != 0:
+            logging.debug('Waiting for %s jobs to finish before removing computation "%s"',
+                          compute.pending_jobs, compute.name)
+            return
+        nodes = compute.nodes.values()
+        for node in nodes:
+            node.clusters.remove(compute.id)
+        compute.nodes = {}
+        for xf in compute.xfer_files:
+            logging.debug('Removing file "%s"', xf.name)
+            if os.path.isfile(xf.name):
+                os.remove(xf.name)
+        dest_path = os.path.join(self.dest_path_prefix, str(compute.id))
+        if os.path.isdir(dest_path) and len(os.listdir(dest_path)) == 0:
+            try:
+                os.rmdir(dest_path)
+            except:
+                logging.warning('Could not remove directory "%s"', dest_path)
+
+        del self._clusters[compute.id]
+        self.worker_Qs[compute.id].put(
+            (40, self.close_compute_nodes, (compute, nodes)))
+        worker_Q = self.worker_Qs[compute.id]
+        del self.worker_Qs[compute.id]
+        self.main_worker_Q.put((30, self.close_work_Q, (worker_Q,)))
 
 class _Cluster():
     """Internal use only.
@@ -1160,6 +1204,8 @@ if __name__ == '__main__':
                         help='number of seconds between pulse messages to indicate whether node is alive')
     parser.add_argument('--ping_interval', dest='ping_interval', type=float, default=None,
                         help='number of seconds between ping messages to discover nodes')
+    parser.add_argument('--zombie_interval', dest='zombie_interval', default=60, type=float,
+                        help='interval in minutes to presume unresponsive scheduler is zombie')
     parser.add_argument('--dest_path_prefix', dest='dest_path_prefix',
                         default=os.path.join(os.sep, 'tmp', 'dispyscheduler'),
                         help='path prefix where files sent by dispy are stored')
@@ -1169,6 +1215,11 @@ if __name__ == '__main__':
         config['loglevel'] = logging.DEBUG
     else:
         config['loglevel'] = logging.INFO
+
+    if config['zombie_interval']:
+        config['zombie_interval'] = float(config['zombie_interval'])
+        if config['zombie_interval'] < 1:
+            raise Exception('zombie_interval must be at least 1')
 
     scheduler = _Scheduler(**config)
     while True:

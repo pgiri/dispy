@@ -328,9 +328,8 @@ class _Node():
 
     def send(self, uid, msg, reply=True):
         logging.debug('Sending to %s:%s', self.ip_addr, self.port)
-        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), timeout=3,
                             auth_code=self.auth_code, certfile=self.certfile, keyfile=self.keyfile)
-        sock.settimeout(5)
         try:
             sock.connect((self.ip_addr, self.port))
             sock.write_msg(uid, msg)
@@ -350,9 +349,8 @@ class _Node():
 
     def xfer_file(self, xf):
         logging.debug('XferFile: %s to %s', xf.name, self.ip_addr)
-        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), timeout=3,
                             auth_code=self.auth_code, certfile=self.certfile, keyfile=self.keyfile)
-        sock.settimeout(5)
         try:
             sock.connect((self.ip_addr, self.port))
             msg = 'FILEXFER:' + cPickle.dumps(xf)
@@ -641,8 +639,7 @@ class _Cluster(object):
             self.ping_interval = max(self.ping_interval, cluster.ping_interval)
         if compute.pulse_interval or cluster.ping_interval:
             sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
-                                auth_code=self.auth_code)
-            sock.settimeout(5)
+                                auth_code=self.auth_code, timeout=2)
             sock.connect((self.ip_addr, self.cmd_sock.sock.getsockname()[1]))
             sock.write_msg(0, 'reset_interval')
             sock.close()
@@ -883,7 +880,7 @@ class _Cluster(object):
                 node.busy -= 1
                 node.cpu_time += job.end_time - job.start_time
             else:
-                if addr[0] != cluster.scheduler_node:
+                if addr[0] != cluster.scheduler_ip_addr:
                     logging.warning('Ignoring job reply from %s', addr[0])
                     self._sched_cv.release()
                     return
@@ -1076,24 +1073,41 @@ class _Cluster(object):
                 now = time.time()
                 if pulse_timeout and (now - last_pulse_time) >= pulse_timeout:
                     last_pulse_time = now
-                    self._sched_cv.acquire()
-                    dead_nodes = {}
-                    for node in self._nodes.itervalues():
-                        if node.busy and node.last_pulse is not None and \
-                               (node.last_pulse + pulse_timeout) <= now:
-                            logging.warning('Node %s is not responding; removing it (%s, %s, %s)',
-                                            node.ip_addr, node.busy, node.last_pulse, now)
-                            dead_nodes[node.ip_addr] = node
-                    for ip_addr in dead_nodes:
-                        del self._nodes[ip_addr]
+                    if self.shared:
+                        self._sched_cv.acquire()
+                        clusters = {}
                         for cluster in self._clusters.itervalues():
-                            cluster._compute.nodes.pop(ip_addr, None)
-                    dead_jobs = [_job for _job in self._sched_jobs.itervalues() \
-                                 if _job.node is not None and _job.node.ip_addr in dead_nodes]
-                    reschedule_jobs(dead_jobs)
-                    if dead_nodes or dead_jobs:
-                        self._sched_cv.notify()
-                    self._sched_cv.release()
+                            if clusters.get(cluster.scheduler_ip_addr, None) == cluster.scheduler_port:
+                                continue
+                            msg = cPickle.dumps({'client_scheduler_ip_addr':self.ip_addr,
+                                                 'client_scheduler_port':self.port,
+                                                 'version':_dispy_version})
+                            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                            sock.sendto('PULSE:' + cPickle.dumps(msg), (cluster.scheduler_ip_addr,
+                                                                        cluster.scheduler_port))
+                            sock.close()
+                            clusters[cluster.scheduler_ip_addr] = cluster.scheduler_port
+                        self._sched_cv.release()
+                    else:
+                        self._sched_cv.acquire()
+                        dead_nodes = {}
+                        for node in self._nodes.itervalues():
+                            if node.busy and node.last_pulse is not None and \
+                                   (node.last_pulse + pulse_timeout) <= now:
+                                logging.warning('Node %s is not responding; removing it (%s, %s, %s)',
+                                                node.ip_addr, node.busy, node.last_pulse, now)
+                                dead_nodes[node.ip_addr] = node
+                        for ip_addr in dead_nodes:
+                            del self._nodes[ip_addr]
+                            for cluster in self._clusters.itervalues():
+                                cluster._compute.nodes.pop(ip_addr, None)
+                        dead_jobs = [_job for _job in self._sched_jobs.itervalues() \
+                                     if _job.node is not None and _job.node.ip_addr in dead_nodes]
+                        reschedule_jobs(dead_jobs)
+                        if dead_nodes or dead_jobs:
+                            self._sched_cv.notify()
+                        self._sched_cv.release()
+
                 if self.ping_interval and (now - last_ping_time) >= self.ping_interval:
                     last_ping_time = now
                     self._sched_cv.acquire()
@@ -1191,6 +1205,8 @@ class _Cluster(object):
             cluster._jobs = []
 
         self._nodes = {}
+        self.unsched_jobs = 0
+        self._sched_jobs = {}
         logging.debug('Scheduler quit')
         self._sched_cv.release()
 
@@ -1308,8 +1324,6 @@ class _Cluster(object):
             self._sched_cv.release()
             self._scheduler.join()
             self._scheduler = None
-            self.unsched_jobs = 0
-            self._sched_jobs = {}
         if self._listener and self.cmd_sock:
             logging.debug('Shutting down listener')
             sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
@@ -1336,7 +1350,7 @@ class _Cluster(object):
         print heading
         print '-' * len(heading)
         cpu_time = 0.0
-        for ip_addr in sorted(compute.nodes, key=lambda addr: compute.nodes[addr].cpu_time,
+        for ip_addr in sorted(compute.nodes, key=lambda addr: compute.nodes[addr].jobs,
                               reverse=True):
             node = compute.nodes[ip_addr]
             if node.jobs:
@@ -1744,18 +1758,18 @@ class SharedJobCluster(JobCluster):
         self._cluster._sched_cv.release()
         self._compute.node_spec = nodes
         if scheduler_node:
-            self.scheduler_node = _node_name_ipaddr(scheduler_node)[1]
+            self.scheduler_ip_addr = _node_name_ipaddr(scheduler_node)[1]
         else:
-            self.scheduler_node = self.ip_addr
+            self.scheduler_ip_addr = self.ip_addr
 
         sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                             certfile=certfile, keyfile=keyfile)
         sock.settimeout(5)
         try:
-            sock.connect((self.scheduler_node, self.scheduler_port))
+            sock.connect((self.scheduler_ip_addr, self.scheduler_port))
         except:
             raise Exception("Couldn't connect to scheduler at %s:%s" % \
-                            (self.scheduler_node, self.scheduler_port))
+                            (self.scheduler_ip_addr, self.scheduler_port))
         req = ' ' * len(hashlib.sha1('').hexdigest()) + 'CLUSTER'
         sock.write(req)
         uid, msg = sock.read_msg()
@@ -1770,13 +1784,17 @@ class SharedJobCluster(JobCluster):
         sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                             auth_code=self.auth_code, certfile=certfile, keyfile=keyfile)
         sock.settimeout(5)
-        sock.connect((self.scheduler_node, self.scheduler_port))
+        sock.connect((self.scheduler_ip_addr, self.scheduler_port))
         req = 'COMPUTE:' + cPickle.dumps(self._compute)
         sock.write_msg(0, req)
         uid, msg = sock.read_msg()
         sock.close()
         resp = cPickle.loads(msg)
         self._compute.id = resp['ID']
+        if resp['pulse_interval'] and self._cluster.pulse_interval:
+            self._cluster.pulse_interval = min(self._cluster.pulse_interval, resp['pulse_interval'])
+        else:
+            self._cluster.pulse_interval = max(self._cluster.pulse_interval, resp['pulse_interval'])
         assert self._compute.id is not None
         for xf in self._compute.xfer_files:
             xf.compute_id = self._compute.id
@@ -1785,7 +1803,7 @@ class SharedJobCluster(JobCluster):
                                 auth_code=self.auth_code, certfile=certfile, keyfile=keyfile)
             sock.settimeout(5)
             try:
-                sock.connect((self.scheduler_node, self.scheduler_port))
+                sock.connect((self.scheduler_ip_addr, self.scheduler_port))
                 msg = 'FILEXFER:' + cPickle.dumps(xf)
                 sock.write_msg(0, msg)
                 fd = open(xf.name, 'rb')
@@ -1805,7 +1823,7 @@ class SharedJobCluster(JobCluster):
         sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                             auth_code=self.auth_code, certfile=certfile, keyfile=keyfile)
         sock.settimeout(10)
-        sock.connect((self.scheduler_node, self.scheduler_port))
+        sock.connect((self.scheduler_ip_addr, self.scheduler_port))
         req = 'ADD_COMPUTE:' + cPickle.dumps({'ID':self._compute.id})
         sock.write_msg(self._compute.id, req)
         uid, msg = sock.read_msg()
@@ -1814,6 +1832,11 @@ class SharedJobCluster(JobCluster):
         if resp == self._compute.id:
             logging.debug('Computation %s created with %s', self._compute.name, self._compute.id)
             self._cluster.add_cluster(self)
+            sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                                auth_code=self._cluster.auth_code, timeout=2)
+            sock.connect((self._cluster.ip_addr, self._cluster.cmd_sock.sock.getsockname()[1]))
+            sock.write_msg(0, 'reset_interval')
+            sock.close()
         else:
             raise Exception('Computation "%s" could not be sent to scheduler' % self._compute.name)
 
@@ -1840,7 +1863,7 @@ class SharedJobCluster(JobCluster):
                                       certfile=self.certfile, keyfile=self.keyfile,
                                       timeout=2)
         try:
-            scheduler_sock.connect((self.scheduler_node, self.scheduler_port))
+            scheduler_sock.connect((self.scheduler_ip_addr, self.scheduler_port))
             req = 'JOB:' + cPickle.dumps(_job)
             scheduler_sock.write_msg(self._compute.id, req)
             uid, msg = scheduler_sock.read_msg()
@@ -1870,7 +1893,7 @@ class SharedJobCluster(JobCluster):
         shelf = shelve.open(self.fault_recover_file, flag='c')
         state = {'id':_job.job.id, 'hash':_job.hash, 'compute_id':_job.compute_id,
                  'args':_job.args, 'kwargs':_job.kwargs,
-                 'ip_addr':self.scheduler_node, 'port':self.scheduler_port}
+                 'ip_addr':self.scheduler_ip_addr, 'port':self.scheduler_port}
         shelf[str(_job.uid)] = state
         shelf.close()
         self._cluster.fault_recover_lock.release()
@@ -1895,7 +1918,7 @@ class SharedJobCluster(JobCluster):
                                       auth_code=self.auth_code, timeout=2,
                                       certfile=self.certfile, keyfile=self.keyfile)
         try:
-            scheduler_sock.connect((self.scheduler_node, self.scheduler_port))
+            scheduler_sock.connect((self.scheduler_ip_addr, self.scheduler_port))
             req = 'TERMINATE_JOB:' + cPickle.dumps(_job)
             scheduler_sock.write_msg(self._compute.id, req)
             logging.debug('Job %s is cancelled', _job.uid)
@@ -1912,21 +1935,22 @@ class SharedJobCluster(JobCluster):
             scheduler_sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                           auth_code=self.auth_code,
                                           certfile=self.certfile, keyfile=self.keyfile, timeout=2)
-            scheduler_sock.connect((self.scheduler_node, self.scheduler_port))
+            scheduler_sock.connect((self.scheduler_ip_addr, self.scheduler_port))
             req = 'DEL_COMPUTE:' + cPickle.dumps({'ID':self._compute.id})
             scheduler_sock.write_msg(self._compute.id, req)
             scheduler_sock.close()
 
-            self._cluster.fault_recover_lock.acquire()
-            shelf = shelve.open(self.fault_recover_file, flag='r')
-            n = len(shelf)
-            shelf.close()
-            if n == 0:
-                try:
-                    os.remove(self.fault_recover_file)
-                except:
-                    pass
-            self._cluster.fault_recover_lock.release()
+            if self.fault_recover_file:
+                self._cluster.fault_recover_lock.acquire()
+                shelf = shelve.open(self.fault_recover_file, flag='r')
+                n = len(shelf)
+                shelf.close()
+                if n == 0:
+                    try:
+                        os.remove(self.fault_recover_file)
+                    except:
+                        pass
+                self._cluster.fault_recover_lock.release()
             del self._compute
 
 def fault_recover_jobs(fault_recover_file, ip_addr=None, secret='', port=51348,
