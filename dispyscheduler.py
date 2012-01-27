@@ -573,18 +573,19 @@ class _Scheduler(object):
             try:
                 req = conn.read(len(self.auth_code))
                 if req != self.auth_code:
+                    conn.close()
                     logging.warning('Invalid/unauthorized request ignored')
                     return
                 uid, msg = conn.read_msg()
                 if not msg:
+                    conn.close()
                     logging.info('Closing connection')
                     return
             except:
                 logging.warning('Failed to read message from %s: %s',
                                 str(addr), traceback.format_exc())
-                return
-            finally:
                 conn.close()
+                return
             if msg.startswith('JOB:'):
                 msg = msg[len('JOB:'):]
                 self.task_pool.add_task(job_request_task, conn, msg, addr)
@@ -715,19 +716,24 @@ class _Scheduler(object):
                                                '_dispy_job_reply_%s' % req['uid'])
                     if os.path.isfile(result_file):
                         fd = open(result_file, 'rb')
-                        resp = cPickle.load(fd)
+                        job_reply = cPickle.load(fd)
                         fd.close()
-                        if resp.hash == req['hash']:
-                            conn.write_msg(req['uid'], cPickle.dumps(resp))
+                        if job_reply.hash == req['hash']:
+                            conn.write_msg(req['uid'], cPickle.dumps(job_reply))
                             ruid, ack = conn.read_msg()
                             assert ack == 'ACK'
                             assert ruid == req['uid']
                             try:
                                 os.remove(result_file)
-                                if req['compute_id'] not in self.computations:
+                                self._sched_cv.acquire()
+                                cluster = self._clusters.get(req['compute_id'], None)
+                                if cluster is None:
                                     p = os.path.dirname(result_file)
                                     if len(os.listdir(p)) == 0:
                                         os.rmdir(p)
+                                else:
+                                    cluster.pending_results -= 1
+                                self._sched_cv.release()
                             except:
                                 loggging.debug('Could not remove "%s"', result_file)
                             return
@@ -983,7 +989,7 @@ class _Scheduler(object):
                                       cluster._compute.name, cluster._compute.id)
                         self.cleanup_computation(cluster)
                     phoenix = [cluster for cluster in self._clusters.itervalues() \
-                               if cluster.pending_results]
+                               if not cluster.zombie and cluster.pending_results]
                     for cluster in phoenix:
                         compute = cluster._compute
                         result_dir = os.path.join(self.dest_path_prefix, str(compute.id))
@@ -1168,8 +1174,11 @@ class _Scheduler(object):
         if not cluster.zombie:
             return
         if cluster._pending_jobs:
-            logging.debug('Waiting for %s jobs to complete before deleting "%s" / %s',
-                          cluster._pending_jobs, cluster._compute.name, cluster._compute.id)
+            logging.debug('pedning jobs for "%s" / %s: %s',
+                          cluster._compute.name, cluster._compute.id, cluster._pending_jobs)
+            if cluster._pending_jobs > 0:
+                return
+
         compute = cluster._compute
         nodes = compute.nodes.values()
         for node in nodes:

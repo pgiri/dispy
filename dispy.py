@@ -1968,8 +1968,8 @@ class SharedJobCluster(JobCluster):
                 self._cluster.fault_recover_lock.release()
             del self._compute
 
-def fault_recover_jobs(fault_recover_file, ip_addr=None, port=51348,
-                       secret='', certfile=None, keyfile=None):
+def fault_recover_jobs(fault_recover_file, port=51348,
+                       secret='', certfile=None, keyfile=None, ip_addr=None):
     """Recover results of jobs submitted. If dispy client is
     unexpectedly terminated (e.g., due to exceptions), and dispy
     client was earlier started with 'fault_recover_file' option, the
@@ -1983,16 +1983,16 @@ def fault_recover_jobs(fault_recover_file, ip_addr=None, port=51348,
         about those jobs are removed, so results can't be retrieved
         more than once.
 
-    @ip_addr is IP address to use for this client, in case multiple
-        network interfaces have been configured. Default is to use IP
-        address associated with the 'hostname'.
-
     @port is where node (or dispyscheduler in the case of
         SharedJobCluster) are available. By default this is 51348 in
         case of JobClustr/dispynode and 51347 in the case of
         SharedJobCluster/dispyscheduler. When recovering jobs for
         SharedJobCluster, the port must be set explicitly as default
         value here is meant for JobCluster.
+
+    @ip_addr is IP address to use for this client, in case multiple
+        network interfaces have been configured. Default is to use IP
+        address associated with the 'hostname'.
 
     @secret is a string that is (hashed and) used for handshaking
         of communication with nodes.
@@ -2047,23 +2047,22 @@ def fault_recover_jobs(fault_recover_file, ip_addr=None, port=51348,
     srv_sock.close()
 
     jobs = []
-    for uid in shelf:
+    uids = shelf.keys()
+    for uid in uids:
         job_info = shelf[uid]
         node_info = node_infos.get(job_info['ip_addr'], None)
         if node_info is None:
             continue
-        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
-                            timeout=2, certfile=certfile, keyfile=keyfile)
+        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), timeout=2,
+                            auth_code=node_info['auth_code'], certfile=certfile, keyfile=keyfile)
         try:
             sock.connect((job_info['ip_addr'], node_info['port']))
-            sock.write(node_info['auth_code'])
             req = 'RETRIEVE_JOB:' + cPickle.dumps({'uid':int(uid), 'hash':job_info['hash'],
                                                    'compute_id':job_info['compute_id']})
             sock.write_msg(0, req)
             ruid, resp = sock.read_msg()
             assert ruid == int(uid)
-            sock.write_msg(ruid, 'ACK')
-            sock.close()
+            sock.write_msg(ruid, 'ACK', auth=False)
             reply = cPickle.loads(resp)
             if not isinstance(reply, _JobReply):
                 print 'Failed to get reply for %s: %s' % (uid, reply)
@@ -2079,11 +2078,13 @@ def fault_recover_jobs(fault_recover_file, ip_addr=None, port=51348,
             setattr(job, 'args', cPickle.loads(job_info['args']))
             setattr(job, 'kwargs', cPickle.loads(job_info['kwargs']))
             jobs.append(job)
+            if job.status in [DispyJob.Finished, DispyJob.Terminated]:
+                del shelf[uid]
         except:
             print 'Failed to get reply for %s' % (uid)
             # print traceback.format_exc()
-        else:
-            del shelf[uid]
+        finally:
+            sock.close()
 
     pending = len(shelf)
     shelf.close()

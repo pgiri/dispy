@@ -339,7 +339,7 @@ class _DispyNode():
                         logging.debug('Deleting zombie computation "%s"', compute.name)
                         self.cleanup_computation(compute)
                     phoenix = [compute for compute in self.computations.itervalues() \
-                               if compute.pending_results]
+                               if not compute.zombie and compute.pending_results]
                     for compute in phoenix:
                         files = [f for f in os.listdir(compute.dest_path) \
                                  if f.startswith('_dispy_job_reply_')]
@@ -702,7 +702,7 @@ class _DispyNode():
 
         def retrieve_job_task(conn, uid, msg, addr):
             try:
-                req = cPickle.loads(req)
+                req = cPickle.loads(msg)
                 assert req['uid'] is not None
                 assert req['hash'] is not None
                 assert req['compute_id'] is not None
@@ -733,9 +733,8 @@ class _DispyNode():
                 if os.path.isfile(info_file):
                     try:
                         fd = open(info_file, 'rb')
-                        job_info = cPiackle.load(fd)
+                        job_reply = cPickle.load(fd)
                         fd.close()
-                        job_reply = job_info.job_reply
                     except:
                         job_reply = None
                     if hasattr(job_reply, 'hash') and job_reply.hash == req['hash']:
@@ -751,17 +750,22 @@ class _DispyNode():
                             conn.close()
                         try:
                             os.remove(info_file)
-                            if req['compute_id'] not in self.computations:
+                            self.lock.acquire()
+                            compute = self.computations.get(req['compute_id'], None)
+                            if compute is None:
                                 p = os.path.dirname(info_file)
                                 if p.startswith(self.dest_path_prefix) and \
                                        len(p) > len(self.dest_path_prefix) and \
                                        len(os.listdir(p)) == 0:
                                     os.rmdir(p)
+                            else:
+                                compute.pending_results -= 1
+                            self.lock.release()
                         except:
                             loggging.debug('Could not remove "%s"', info_file)
                         return
             else:
-                resp = cPickle.dumps('Invalid job: %s', req['uid'])
+                resp = cPickle.dumps('Invalid job: %s' % req['uid'])
 
             if resp:
                 try:
@@ -827,8 +831,8 @@ class _DispyNode():
                 self.task_pool.add_task(terminate_job_task, uid, msg, addr)
                 continue
             elif msg.startswith('RETRIEVE_JOB:'):
-                req = msg[len('RETRIEVE_JOB:'):]
-                self.task_pool.add_task(retrieve_job_task, uid, msg, addr)
+                msg = msg[len('RETRIEVE_JOB:'):]
+                self.task_pool.add_task(retrieve_job_task, conn, uid, msg, addr)
                 continue
             else:
                 logging.warning('Invalid request "%s" from %s',
@@ -969,9 +973,10 @@ class _DispyNode():
         if not compute.zombie:
             return
         if compute.pending_jobs != 0:
-            logging.debug('Waiting for %s jobs to finish before removing computation "%s"',
-                          compute.pending_jobs, compute.name)
-            return
+            logging.debug('pending jobs for computation "%s"/%s: %s',
+                          compute.name, compute.id, compute.pending_jobs)
+            if compute.pending_jobs > 0:
+                return
 
         del self.computations[compute.id]
         if compute.scheduler_ip_addr == self.scheduler_ip_addr and \
