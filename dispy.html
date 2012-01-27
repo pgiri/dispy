@@ -107,7 +107,12 @@ where
   as the argument. The results of computation can be retrieved with
   'result' field of job, etc.  If a job sends provisional results with
   'dispy_provisional_result' multiple times, then dispy will call
-  provided callback each such time.
+  provided callback each such time. The (provisional) results of
+  computation can be retrieved with 'result' field of job, etc. While
+  computations are run on nodes in isolated environments, callbacks
+  are run in the context of user programs from which
+  (Shared)JobCluster is called - for example, callbacks can access
+  global variables in user programs.
 </li>
 <li>
   <tt>ip_addr</tt> is IP address to use for (client)

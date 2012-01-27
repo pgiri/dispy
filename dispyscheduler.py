@@ -573,24 +573,18 @@ class _Scheduler(object):
             try:
                 req = conn.read(len(self.auth_code))
                 if req != self.auth_code:
-                    req = conn.read(len('CLUSTER'))
-                    if req == 'CLUSTER':
-                        resp = cPickle.dumps({'sign':self.sign,'version':_dispy_version})
-                        conn.write_msg(0, resp)
-                    else:
-                        logging.warning('Invalid/unauthorized request ignored')
-                    conn.close()
+                    logging.warning('Invalid/unauthorized request ignored')
                     return
                 uid, msg = conn.read_msg()
                 if not msg:
                     logging.info('Closing connection')
-                    conn.close()
                     return
             except:
                 logging.warning('Failed to read message from %s: %s',
                                 str(addr), traceback.format_exc())
-                conn.close()
                 return
+            finally:
+                conn.close()
             if msg.startswith('JOB:'):
                 msg = msg[len('JOB:'):]
                 self.task_pool.add_task(job_request_task, conn, msg, addr)
@@ -719,7 +713,6 @@ class _Scheduler(object):
                     assert req['compute_id'] is not None
                     result_file = os.path.join(self.dest_path_prefix, str(req['compute_id']),
                                                '_dispy_job_reply_%s' % req['uid'])
-                    logging.debug('retrieving job %s from %s', req['uid'], result_file)
                     if os.path.isfile(result_file):
                         fd = open(result_file, 'rb')
                         resp = cPickle.load(fd)
@@ -770,9 +763,9 @@ class _Scheduler(object):
         job_sock.bind((self.ip_addr, 0))
         job_sock.listen(5)
 
-        logging.info('Ping port is %s', self.port)
-        logging.info('Scheduler port is %s:%s', self.ip_addr, self.scheduler_port)
-        logging.info('Job results port is %s:%s', self.ip_addr, job_sock.getsockname()[1])
+        logging.info('Scheduler running at %s:%s', self.ip_addr, self.port)
+        logging.debug('TCP port is %s:%s', self.ip_addr, self.scheduler_port)
+        logging.debug('Job results port is %s:%s', self.ip_addr, job_sock.getsockname()[1])
 
         if self.pulse_interval:
             pulse_timeout = 5.0 * self.pulse_interval
@@ -813,7 +806,6 @@ class _Scheduler(object):
                             info = cPickle.loads(msg)
                         except:
                             logging.warning('Ignoring pulse message from %s', addr[0])
-                            #logging.debug(traceback.format_exc())
                             continue
                         if 'client_scheduler_ip_addr' in info:
                             self._sched_cv.acquire()
@@ -910,16 +902,15 @@ class _Scheduler(object):
                                           self.ip_addr, self.scheduler_port,
                                           req['ip_addr'], req['port'])
                             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                            sock.settimeout(1)
                             reply = {'ip_addr':self.ip_addr, 'port':self.scheduler_port,
-                                     'sign':self.sign}
+                                     'sign':self.sign, 'version':_dispy_version}
                             sock.sendto(cPickle.dumps(reply), (req['ip_addr'], req['port']))
                             sock.close()
                         except:
                             logging.debug(traceback.format_exc())
                             # pass
                     else:
-                        logging.debug('Ignoring PONG message %s from: %s',
+                        logging.debug('Ignoring UDP message %s from: %s',
                                       msg[:min(5, len(msg))], addr[0])
                 elif sock == self.cmd_sock.sock:
                     logging.debug('Listener terminating ...')

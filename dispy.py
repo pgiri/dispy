@@ -45,7 +45,7 @@ import shelve
 import datetime
 import atexit
 
-_dispy_version = '1.1'
+_dispy_version = '1.2'
 
 class DispyJob():
     """Job scheduled for execution with dispy.
@@ -1302,7 +1302,6 @@ class _Cluster(object):
             shelf = shelve.open(cluster.fault_recover_file, flag='r')
             n = len(shelf)
             shelf.close()
-            logging.debug('Jobs not done yet: %s', n)
             if n == 0:
                 try:
                     os.remove(cluster.fault_recover_file)
@@ -1400,7 +1399,11 @@ class JobCluster():
           sends provisional results with 'dispy_provisional_result'
           multiple times, then dispy will call provided callback each
           such time. The (provisional) results of computation can be
-          retrieved with 'result' field of job, etc.
+          retrieved with 'result' field of job, etc. While
+          computations are run on nodes in isolated environments,
+          callbacks are run in the context of user programs from which
+          (Shared)JobCluster is called - for example, callbacks can
+          access global variables in user programs.
 
         @ip_addr and @port indicate the address where the cluster will bind to.
           If multiple instances of JobCluster are used, these arguments are used
@@ -1509,7 +1512,7 @@ class JobCluster():
                 raise Exception("Invalid callback function; "
                                 "it must take excatly one argument - an instance of DispyJob")
         self.callback = callback
-        if hasattr(self, 'scheduler_port'):
+        if hasattr(self, 'scheduler_udp_port'):
             shared = True
         else:
             shared = False
@@ -1720,6 +1723,11 @@ class SharedJobCluster(JobCluster):
     'dispyscheduler' must be running on a node and 'scheduler_node'
     parameter should be set to that node's IP address or host name.
 
+    @scheduler_node is name or IP address where dispyscheduler is
+      running to which jobs are submitted.
+
+    @port is port where dispyscheduler is running at @scheduler_node.
+
     @pulse_interval for SharedJobCluster is not used; instead,
     dispyscheduler must be called with appropriate pulse_interval.
     The behaviour is same as for JobCluster.
@@ -1737,7 +1745,7 @@ class SharedJobCluster(JobCluster):
             else:
                 raise Exception('"nodes" must be list of IP addresses or host names')
         self.scheduler_udp_port = port
-        self.scheduler_port = scheduler_port
+
         JobCluster.__init__(self, computation, nodes='dummy', depends=depends,
                             callback=callback, ip_addr=ip_addr, port=0,
                             cleanup=cleanup, pulse_interval=None,
@@ -1771,10 +1779,14 @@ class SharedJobCluster(JobCluster):
                 reply, addr = srv_sock.recvfrom(1024)
                 reply = cPickle.loads(reply)
                 logging.debug('Scheduler is %s:%s' % (reply['ip_addr'], reply['port']))
+                if reply['version'] != _dispy_version:
+                    raise Exception('dispyscheduler version "%s" is different from dispy version "%s"' % \
+                                    reply['version'], _dispy_version)
                 self.scheduler_port = reply['port']
+                self.auth_code = hashlib.sha1(_xor_string(reply['sign'], secret)).hexdigest()
+                logging.debug('auth_code: %s', self.auth_code)
                 break
             except:
-                logging.debug(traceback.format_exc())
                 continue
             finally:
                 sock.close()
@@ -1783,46 +1795,30 @@ class SharedJobCluster(JobCluster):
                             self.scheduler_ip_addr, self.scheduler_udp_port)
         srv_sock.close()
 
-        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
-                            certfile=certfile, keyfile=keyfile)
-        sock.settimeout(5)
+        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), timeout=5,
+                            auth_code=self.auth_code, certfile=certfile, keyfile=keyfile)
         try:
             sock.connect((self.scheduler_ip_addr, self.scheduler_port))
+            req = 'COMPUTE:' + cPickle.dumps(self._compute)
+            sock.write_msg(0, req)
+            uid, msg = sock.read_msg()
+            sock.close()
+            resp = cPickle.loads(msg)
+            self._compute.id = resp['ID']
+            assert self._compute.id is not None
         except:
             raise Exception("Couldn't connect to scheduler at %s:%s" % \
                             (self.scheduler_ip_addr, self.scheduler_port))
-        req = ' ' * len(hashlib.sha1('').hexdigest()) + 'CLUSTER'
-        sock.write(req)
-        uid, msg = sock.read_msg()
-        resp = cPickle.loads(msg)
-        sock.close()
-        if resp['version'] != _dispy_version:
-            raise Exception('dispyscheduler version "%s" is different from dispy version "%s"' % \
-                            resp['version'], _dispy_version)
-        self.auth_code = hashlib.sha1(_xor_string(resp['sign'], secret)).hexdigest()
-        logging.debug('auth_code: %s', self.auth_code)
-
-        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
-                            auth_code=self.auth_code, certfile=certfile, keyfile=keyfile)
-        sock.settimeout(5)
-        sock.connect((self.scheduler_ip_addr, self.scheduler_port))
-        req = 'COMPUTE:' + cPickle.dumps(self._compute)
-        sock.write_msg(0, req)
-        uid, msg = sock.read_msg()
-        sock.close()
-        resp = cPickle.loads(msg)
-        self._compute.id = resp['ID']
         if resp['pulse_interval'] and self._cluster.pulse_interval:
             self._cluster.pulse_interval = min(self._cluster.pulse_interval, resp['pulse_interval'])
         else:
             self._cluster.pulse_interval = max(self._cluster.pulse_interval, resp['pulse_interval'])
-        assert self._compute.id is not None
+
         for xf in self._compute.xfer_files:
             xf.compute_id = self._compute.id
             logging.debug('Sending file "%s"', xf.name)
-            sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+            sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), timeout=5,
                                 auth_code=self.auth_code, certfile=certfile, keyfile=keyfile)
-            sock.settimeout(5)
             try:
                 sock.connect((self.scheduler_ip_addr, self.scheduler_port))
                 msg = 'FILEXFER:' + cPickle.dumps(xf)
@@ -1841,9 +1837,8 @@ class SharedJobCluster(JobCluster):
                 # TODO: delete computation?
             sock.close()
             
-        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), timeout=10,
                             auth_code=self.auth_code, certfile=certfile, keyfile=keyfile)
-        sock.settimeout(10)
         sock.connect((self.scheduler_ip_addr, self.scheduler_port))
         req = 'ADD_COMPUTE:' + cPickle.dumps({'ID':self._compute.id})
         sock.write_msg(self._compute.id, req)
@@ -1853,8 +1848,8 @@ class SharedJobCluster(JobCluster):
         if resp == self._compute.id:
             logging.debug('Computation %s created with %s', self._compute.name, self._compute.id)
             self._cluster.add_cluster(self)
-            sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
-                                auth_code=self._cluster.auth_code, timeout=2)
+            sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), timeout=2,
+                                auth_code=self._cluster.auth_code)
             sock.connect((self._cluster.ip_addr, self._cluster.cmd_sock.sock.getsockname()[1]))
             sock.write_msg(0, 'reset_interval')
             sock.close()
@@ -1879,23 +1874,22 @@ class SharedJobCluster(JobCluster):
                             str(args), str(kwargs), traceback.format_exc())
             return None
 
-        scheduler_sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), timeout=3,
                                       auth_code=self.auth_code,
-                                      certfile=self.certfile, keyfile=self.keyfile,
-                                      timeout=2)
+                                      certfile=self.certfile, keyfile=self.keyfile)
         try:
-            scheduler_sock.connect((self.scheduler_ip_addr, self.scheduler_port))
+            sock.connect((self.scheduler_ip_addr, self.scheduler_port))
             req = 'JOB:' + cPickle.dumps(_job)
-            scheduler_sock.write_msg(self._compute.id, req)
-            uid, msg = scheduler_sock.read_msg()
+            sock.write_msg(self._compute.id, req)
+            uid, msg = sock.read_msg()
             _job.uid = cPickle.loads(msg)
             self._cluster._sched_cv.acquire()
             self._cluster._sched_jobs[_job.uid] = _job
             self._pending_jobs += 1
             self._complete.clear()
             self._cluster._sched_cv.release()
-            scheduler_sock.write_msg(_job.uid, 'ACK', auth=False)
-            scheduler_sock.close()
+            sock.write_msg(_job.uid, 'ACK', auth=False)
+            sock.close()
             if self.fault_recover_file:
                 # TODO: reply may come back before we store it!
                 self.store_job_info(_job)
@@ -1935,31 +1929,31 @@ class SharedJobCluster(JobCluster):
         job.status = DispyJob.Cancelled
         assert self._pending_jobs >= 1
         self._cluster._sched_cv.release()
-        scheduler_sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
-                                      auth_code=self.auth_code, timeout=2,
-                                      certfile=self.certfile, keyfile=self.keyfile)
+        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), timeout=3,
+                            auth_code=self.auth_code,
+                            certfile=self.certfile, keyfile=self.keyfile)
         try:
-            scheduler_sock.connect((self.scheduler_ip_addr, self.scheduler_port))
+            sock.connect((self.scheduler_ip_addr, self.scheduler_port))
             req = 'TERMINATE_JOB:' + cPickle.dumps(_job)
-            scheduler_sock.write_msg(self._compute.id, req)
+            sock.write_msg(self._compute.id, req)
             logging.debug('Job %s is cancelled', _job.uid)
         except:
             logging.warning('Connection to scheduler failed: %s', traceback.format_exc())
             return -1
         finally:
-            scheduler_sock.close()
+            sock.close()
         return 0
 
     def close(self):
         if hasattr(self, '_compute'):
             self._complete.wait()
-            scheduler_sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
-                                          auth_code=self.auth_code,
-                                          certfile=self.certfile, keyfile=self.keyfile, timeout=2)
-            scheduler_sock.connect((self.scheduler_ip_addr, self.scheduler_port))
+            sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), timeout=3,
+                                auth_code=self.auth_code,
+                                certfile=self.certfile, keyfile=self.keyfile)
+            sock.connect((self.scheduler_ip_addr, self.scheduler_port))
             req = 'DEL_COMPUTE:' + cPickle.dumps({'ID':self._compute.id})
-            scheduler_sock.write_msg(self._compute.id, req)
-            scheduler_sock.close()
+            sock.write_msg(self._compute.id, req)
+            sock.close()
 
             if self.fault_recover_file:
                 self._cluster.fault_recover_lock.acquire()
@@ -2035,6 +2029,9 @@ def fault_recover_jobs(fault_recover_file, ip_addr=None, port=51348,
                 reply, addr = srv_sock.recvfrom(1024)
                 reply = cPickle.loads(reply)
                 # print 'Port for %s is: %s' % (reply['ip_addr'], reply['port'])
+                if reply['version'] != _dispy_version:
+                    raise Exception('peer version "%s" is different from dispy version "%s"' % \
+                                    reply['version'], _dispy_version)
                 auth_code = hashlib.sha1(_xor_string(reply['sign'], secret)).hexdigest()
                 if reply['ip_addr'] in node_infos:
                     continue

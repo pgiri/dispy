@@ -231,7 +231,7 @@ class _DispyNode():
         ping_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         ping_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         ping_sock.bind(('', node_port))
-        logging.info('Listening at %s:%s', self.address[0], node_port)
+        logging.info('node running at %s:%s', self.address[0], node_port)
 
         if self.pulse_interval and self.zombie_interval:
             timeout = min(self.pulse_interval, self.zombie_interval)
@@ -280,7 +280,7 @@ class _DispyNode():
                             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                             sock.settimeout(1)
                             reply = {'ip_addr':self.address[0], 'port':self.address[1],
-                                     'sign':self.signature}
+                                     'sign':self.signature, 'version':_dispy_version}
                             sock.sendto(cPickle.dumps(reply), (req['ip_addr'], req['port']))
                             sock.close()
                         except:
