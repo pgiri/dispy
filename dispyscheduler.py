@@ -1178,7 +1178,11 @@ class _Scheduler(object):
         for xf in compute.xfer_files:
             logging.debug('Removing file "%s"', xf.name)
             if os.path.isfile(xf.name):
-                os.remove(xf.name)
+                try:
+                    os.remove(xf.name)
+                except:
+                    logging.warning('Could not remove file "%s"', xf.name)
+                    
         dest_path = os.path.join(self.dest_path_prefix, str(compute.id))
         if os.path.isdir(dest_path) and len(os.listdir(dest_path)) == 0:
             try:

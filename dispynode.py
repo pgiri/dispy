@@ -338,6 +338,31 @@ class _DispyNode():
                     for compute in zombies:
                         logging.debug('Deleting zombie computation "%s"', compute.name)
                         self.cleanup_computation(compute)
+                    phoenix = [compute for compute in self.computations.itervalues() \
+                               if compute.pending_results]
+                    for compute in phoenix:
+                        files = [f for f in os.listdir(compute.dest_path) \
+                                 if f.startswith('_dispy_job_reply_')]
+                        # limit number queued so as not to take up too much time
+                        files = files[:min(len(files), 128)]
+                        for f in files:
+                            result_file = os.path.join(compute.dest_path, f)
+                            try:
+                                fd = open(result_file, 'rb')
+                                job_result = cPickle.load(fd)
+                                fd.close()
+                            except:
+                                logging.debug('Could not load "%s"', result_file)
+                                logging.debug(traceback.format_exc())
+                                continue
+                            try:
+                                os.remove(result_file)
+                            except:
+                                logging.debug('Could not remove "%s"', result_file)
+                            compute.pending_results -= 1
+                            job_info = _DispyJobInfo(job_result, (compute.scheduler_ip_addr,
+                                                                  compute.job_result_port), compute)
+                            self.task_pool.add_task(self._send_job_reply, job_info, resend=True)
                     self.lock.release()
                     for compute in zombies:
                         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -362,6 +387,8 @@ class _DispyNode():
             self.lock.acquire()
             compute = self.computations.get(_job.compute_id, None)
             if compute is not None and compute.scheduler_ip_addr != self.scheduler_ip_addr:
+                compute = None
+            elif addr[0] != compute.scheduler_ip_addr:
                 compute = None
             self.lock.release()
             _job.uid = uid
@@ -410,8 +437,7 @@ class _DispyNode():
                 job_info = _DispyJobInfo(reply, reply_addr, compute)
                 args = (job_info, self.certfile, self.keyfile,
                         _job.args, _job.kwargs, self.reply_Q,
-                        compute.env, compute.name, compute.code, compute.dest_path,
-                        _job.files)
+                        compute.env, compute.name, compute.code, compute.dest_path, _job.files)
                 try:
                     conn.write_msg(_job.uid, cPickle.dumps(_job.uid))
                 except:
@@ -519,6 +545,7 @@ class _DispyNode():
                                 compute.name, compute.id)
             setattr(compute, 'last_pulse', time.time())
             setattr(compute, 'pending_jobs', 0)
+            setattr(compute, 'pending_results', 0)
             setattr(compute, 'zombie', False)
             # logging.debug('xfer_files given: %s',
             #               ','.join(xf.name for xf in compute.xfer_files))
@@ -640,15 +667,17 @@ class _DispyNode():
             return # xfer_file_task
 
         def terminate_job_task(uid, msg, addr):
+            self.lock.acquire()
             try:
                 _job = cPickle.loads(msg)
                 compute = self.computations[_job.compute_id]
+                assert addr[0] == compute.scheduler_ip_addr
+                job_info = self.job_infos.pop(uid, None)
             except:
                 logging.debug('Ignoring job request from %s', addr[0])
                 return
-            self.lock.acquire()
-            job_info = self.job_infos.pop(uid, None)
-            self.lock.release()
+            finally:
+                self.lock.release()
             if job_info is None:
                 logging.debug('Job %s completed; ignoring cancel request from %s',
                               uid, addr[0])
@@ -704,13 +733,14 @@ class _DispyNode():
                 if os.path.isfile(info_file):
                     try:
                         fd = open(info_file, 'rb')
-                        resp = cPickle.load(fd)
+                        job_info = cPiackle.load(fd)
                         fd.close()
+                        job_reply = job_info.job_reply
                     except:
-                        resp = None
-                    if hasattr(resp, 'hash') and resp.hash == req['hash']:
+                        job_reply = None
+                    if hasattr(job_reply, 'hash') and job_reply.hash == req['hash']:
                         try:
-                            conn.write_msg(req['uid'], cPickle.dumps(resp))
+                            conn.write_msg(req['uid'], cPickle.dumps(job_reply))
                             ruid, ack = conn.read_msg()
                             assert ack == 'ACK'
                             assert ruid == req['uid']
@@ -851,7 +881,7 @@ class _DispyNode():
                 job_info.job_reply = job_reply
                 self._send_job_reply(job_info)
 
-    def _send_job_reply(self, job_info):
+    def _send_job_reply(self, job_info, resend=False):
         """Internal use only.
         """
         job_reply = job_info.job_reply
@@ -879,23 +909,30 @@ class _DispyNode():
                 fd.close()
             except:
                 logging.debug('Could not save results for job %s', job_reply.uid)
+            else:
+                self.lock.acquire()
+                compute = self.computations.get(job_info.compute_id, None)
+                if compute is not None:
+                    compute.pending_results += 1
+                self.lock.release()
         finally:
             sock.close()
-            self.lock.acquire()
-            self.avail_cpus += 1
-            compute = self.computations.get(job_info.compute_id, None)
-            if compute is None:
-                logging.warning('Computation for %s / %s is invalid!',
-                                job_reply.uid, job_info.compute_id)
-            else:
-                # technically last_pulse should be updated only
-                # when successfully sent reply, but no harm if done
-                # otherwise, too
-                compute.last_pulse = time.time()
-                compute.pending_jobs -= 1
-                if compute.pending_jobs == 0 and compute.zombie:
-                    self.cleanup_computation(compute)
-            self.lock.release()
+            if not resend:
+                self.lock.acquire()
+                self.avail_cpus += 1
+                compute = self.computations.get(job_info.compute_id, None)
+                if compute is None:
+                    logging.warning('Computation for %s / %s is invalid!',
+                                    job_reply.uid, job_info.compute_id)
+                else:
+                    # technically last_pulse should be updated only
+                    # when successfully sent reply, but no harm if done
+                    # otherwise, too
+                    compute.last_pulse = time.time()
+                    compute.pending_jobs -= 1
+                    if compute.pending_jobs == 0 and compute.zombie:
+                        self.cleanup_computation(compute)
+                self.lock.release()
 
     def shutdown(self):
         self.lock.acquire()
@@ -962,6 +999,8 @@ class _DispyNode():
                     logging.debug('Removing file "%s"', tgt)
                     try:
                         os.remove(tgt)
+                        if os.path.splitext(tgt)[1] == '.py' and os.path.isfile(tgt + 'c'):
+                            os.remove(tgt + 'c')
                     except:
                         logging.warning('Could not remove file "%s"', tgt)
 
