@@ -200,11 +200,10 @@ where
 
 <li>
   SharedJobCluster has almost the same syntax, except as noted below:<br />
-<tt>SharedJobCluster(computation, nodes=['*'], depends=[], ip_addr=None, port=51347,
-                 scheduler_node=None, scheduler_port=51349,
+<tt>SharedJobCluster(computation, nodes=['*'], depends=[], ip_addr=None,
+                 scheduler_node=None, port=51347,
                  dest_path=None, loglevel=logging.WARNING, cleanup=True,
-                 resubmit=False,
-                 secret='', keyfile=None, certfile=None)</tt><br/>
+                 resubmit=False, secret='', keyfile=None, certfile=None)</tt><br/>
 where all arguments common to <tt>JobCluster</tt> are same, and
 <ul>
 <li>
@@ -212,11 +211,6 @@ where all arguments common to <tt>JobCluster</tt> are same, and
   where <a href="dispyscheduler.html">dispyscheduler</a> is running; if
   it is not given, the node where SharedJobCluster is invoked is
   used
-</li>
-<li>
-  <tt>scheduler_port</tt> is port
-  where <a href="dispyscheduler.html">dispyscheduler</a> is listening
-  for connections
 </li>
 <li>
   <tt>pulse_interval</tt> is not used in case of SharedJobCluster;

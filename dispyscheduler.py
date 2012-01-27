@@ -80,7 +80,7 @@ class _Scheduler(object):
     __metaclass__ = MetaSingleton
 
     def __init__(self, loglevel, nodes=[], ip_addr=None, port=None, node_port=None,
-                 scheduler_port=None, pulse_interval=None, ping_interval=None,
+                 scheduler_port=0, pulse_interval=None, ping_interval=None,
                  node_secret='', node_keyfile=None, node_certfile=None,
                  cluster_secret='', cluster_keyfile=None, cluster_certfile=None,
                  dest_path_prefix=None, max_file_size=None, num_tasks=16, zombie_interval=60):
@@ -97,8 +97,6 @@ class _Scheduler(object):
                 port = 51347
             if not node_port:
                 node_port = 51348
-            if scheduler_port is None:
-                scheduler_port = 51349
             if not nodes:
                 nodes = ['*']
 
@@ -324,7 +322,7 @@ class _Scheduler(object):
 
     def send_job_result(self, uid, cid, ip, port, result):
         logging.debug('Sending results for %s to %s, %s', uid, ip, port)
-        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), timeout=3)
+        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), timeout=2)
         try:
             sock.connect((ip, port))
             sock.write_msg(uid, cPickle.dumps(result))
@@ -348,34 +346,11 @@ class _Scheduler(object):
                 cluster.pending_results += 1
             self._sched_cv.release()
         else:
-            self._sched_cv.acquire()
             cluster = self._clusters.get(cid, None)
             if cluster:
                 cluster.last_pulse = time.time()
-            self._sched_cv.release()
         finally:
             sock.close()
-
-    def send_pending_results(self, cluster):
-        # called with _sched_cv locked
-        compute = cluster._compute
-        result_dir = os.path.join(self.dest_path_prefix, str(compute.id))
-        for f in os.listdir(result_dir):
-            if not f.startswith('_dispy_job_reply_'):
-                continue
-            result_file = os.path.join(result_dir, f)
-            try:
-                fd = open(result_file, 'rb')
-                result = cPickle.load(fd)
-                fd.close()
-                self.worker_Qs[compute.id].put(
-                    (5, self.send_job_result,
-                     (result.uid, compute.id, cluster.client_scheduler_ip_addr,
-                      cluster.client_job_result_port, result)))
-                os.remove(result_file)
-            except:
-                logging.debug('Could not remove "%s"', result_file)
-        cluster.pending_results = 0
 
     def terminate_jobs(self, _jobs):
         for _job in _jobs:
@@ -789,6 +764,7 @@ class _Scheduler(object):
         sched_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sched_sock.bind((self.ip_addr, self.scheduler_port))
         sched_sock.listen(5)
+        self.scheduler_port = sched_sock.getsockname()[1]
 
         job_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         job_sock.bind((self.ip_addr, 0))
@@ -835,27 +811,26 @@ class _Scheduler(object):
                         msg = msg[len('PULSE:'):]
                         try:
                             info = cPickle.loads(msg)
-                            if 'client_scheduler_ip_addr' in info:
-                                self._sched_cv.acquire()
-                                for cluster in self._clusters.itervalues():
-                                    if cluster.client_scheduler_ip_addr == info['client_scheduler_ip_addr'] and \
-                                       cluster.client_scheduler_port == info['client_scheduler_port']:
-                                        cluster.last_pulse = time.time()
-                                        # TODO: need to send ack?
-                                self._sched_cv.release()
-                            else:
-                                node = self._nodes.get(info['ip_addr'], None)
-                                if node is not None:
-                                    # assert 0 <= info['cpus'] <= node.cpus
-                                    node.last_pulse = time.time()
-                                    msg = 'PULSE:' + cPickle.dumps({'ip_addr':self.ip_addr})
-                                    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                                    sock.sendto(msg, (info['ip_addr'], info['port']))
-                                    sock.close()
                         except:
                             logging.warning('Ignoring pulse message from %s', addr[0])
                             #logging.debug(traceback.format_exc())
                             continue
+                        if 'client_scheduler_ip_addr' in info:
+                            self._sched_cv.acquire()
+                            for cluster in self._clusters.itervalues():
+                                if cluster.client_scheduler_ip_addr == info['client_scheduler_ip_addr'] and \
+                                       cluster.client_scheduler_port == info['client_scheduler_port']:
+                                    cluster.last_pulse = time.time()
+                            self._sched_cv.release()
+                        else:
+                            node = self._nodes.get(info['ip_addr'], None)
+                            if node is not None:
+                                # assert 0 <= info['cpus'] <= node.cpus
+                                node.last_pulse = time.time()
+                                msg = 'PULSE:' + cPickle.dumps({'ip_addr':self.ip_addr})
+                                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                                sock.sendto(msg, (info['ip_addr'], info['port']))
+                                sock.close()
                     elif msg.startswith('PONG:'):
                         try:
                             status = cPickle.loads(msg[len('PONG:'):])
@@ -1019,8 +994,30 @@ class _Scheduler(object):
                     phoenix = [cluster for cluster in self._clusters.itervalues() \
                                if cluster.pending_results]
                     for cluster in phoenix:
-                        self.worker_Qs[cluster._compute.id].put(
-                            (6, self.send_pending_results, (cluster,)))
+                        compute = cluster._compute
+                        result_dir = os.path.join(self.dest_path_prefix, str(compute.id))
+                        files = [f for f in os.listdir(result_dir) \
+                                 if f.startswith('_dispy_job_reply_')]
+                        # limit number queued so as not to take up too much time
+                        files = files[:min(len(files), 128)]
+                        for f in files:
+                            result_file = os.path.join(result_dir, f)
+                            try:
+                                fd = open(result_file, 'rb')
+                                result = cPickle.load(fd)
+                                fd.close()
+                                self.worker_Qs[compute.id].put(
+                                    (5, self.send_job_result,
+                                     (result.uid, compute.id, cluster.client_scheduler_ip_addr,
+                                      cluster.client_job_result_port, result)))
+                            except:
+                                logging.debug('Could not load "%s"', result_file)
+                            else:
+                                cluster.pending_results -= 1
+                            try:
+                                os.remove(result_file)
+                            except:
+                                logging.debug('Could not remove "%s"', result_file)
                     self._sched_cv.release()
 
     def load_balance_schedule(self):

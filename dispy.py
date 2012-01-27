@@ -902,18 +902,19 @@ class _Cluster(object):
         job_result_sock.bind((self.ip_addr, 0))
         job_result_sock.listen(5)
         self.job_result_port = job_result_sock.getsockname()[1]
-        logging.info('Listening at %s, %s, %s',
-                     self.ip_addr, self.port, self.job_result_port)
 
         socks = [self.cmd_sock.sock, job_result_sock]
         if not self.shared:
             ping_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             ping_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             ping_sock.bind(('', self.port))
+            self.port = ping_sock.getsockname()[1]
             socks.append(ping_sock)
         else:
             ping_sock = None
 
+        logging.info('Listening at %s, %s, %s',
+                     self.ip_addr, self.port, self.job_result_port)
         self._ready.set()
 
         if self.pulse_interval:
@@ -1076,12 +1077,12 @@ class _Cluster(object):
                         for cluster in self._clusters.itervalues():
                             if clusters.get(cluster.scheduler_ip_addr, None) == cluster.scheduler_port:
                                 continue
-                            msg = cPickle.dumps({'client_scheduler_ip_addr':self.ip_addr,
-                                                 'client_scheduler_port':self.port,
-                                                 'version':_dispy_version})
+                            msg = {'client_scheduler_ip_addr':self.ip_addr,
+                                   'client_scheduler_port':self.port,
+                                   'version':_dispy_version}
                             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                             sock.sendto('PULSE:' + cPickle.dumps(msg), (cluster.scheduler_ip_addr,
-                                                                        cluster.scheduler_port))
+                                                                        cluster.scheduler_udp_port))
                             sock.close()
                             clusters[cluster.scheduler_ip_addr] = cluster.scheduler_port
                         self._sched_cv.release()
@@ -1726,7 +1727,7 @@ class SharedJobCluster(JobCluster):
     SharedJobCluster does not support fault recovery (yet).
     """
     def __init__(self, computation, nodes=['*'], depends=[], callback=None,
-                 ip_addr=None, port=None, scheduler_node=None, scheduler_port=None,
+                 ip_addr=None, port=51347, scheduler_node=None,
                  loglevel=logging.WARNING, cleanup=True,
                  pulse_interval=None, ping_interval=None, resubmit=False,
                  secret='', keyfile=None, certfile=None, fault_recover=None):
@@ -1735,11 +1736,10 @@ class SharedJobCluster(JobCluster):
                 nodes = [nodes]
             else:
                 raise Exception('"nodes" must be list of IP addresses or host names')
-        if not scheduler_port:
-            scheduler_port = 51349
+        self.scheduler_udp_port = port
         self.scheduler_port = scheduler_port
         JobCluster.__init__(self, computation, nodes='dummy', depends=depends,
-                            callback=callback, ip_addr=ip_addr, port=port,
+                            callback=callback, ip_addr=ip_addr, port=0,
                             cleanup=cleanup, pulse_interval=None,
                             resubmit=resubmit, loglevel=loglevel, fault_recover=fault_recover)
         if pulse_interval is not None:
@@ -1758,6 +1758,30 @@ class SharedJobCluster(JobCluster):
             self.scheduler_ip_addr = _node_name_ipaddr(scheduler_node)[1]
         else:
             self.scheduler_ip_addr = self.ip_addr
+
+        srv_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        srv_sock.settimeout(2)
+        srv_sock.bind((self.ip_addr, 0))
+        port_req = cPickle.dumps({'ip_addr':self.ip_addr, 'port':srv_sock.getsockname()[1]})
+        for x in xrange(5):
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                sock.sendto('SERVERPORT:' + port_req, (self.scheduler_ip_addr,
+                                                       self.scheduler_udp_port))
+                reply, addr = srv_sock.recvfrom(1024)
+                reply = cPickle.loads(reply)
+                logging.debug('Scheduler is %s:%s' % (reply['ip_addr'], reply['port']))
+                self.scheduler_port = reply['port']
+                break
+            except:
+                logging.debug(traceback.format_exc())
+                continue
+            finally:
+                sock.close()
+        else:
+            raise Exception('Could not connect to scheduler at %s:%s',
+                            self.scheduler_ip_addr, self.scheduler_udp_port)
+        srv_sock.close()
 
         sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                             certfile=certfile, keyfile=keyfile)
@@ -1971,7 +1995,7 @@ def fault_recover_jobs(fault_recover_file, ip_addr=None, port=51348,
 
     @port is where node (or dispyscheduler in the case of
         SharedJobCluster) are available. By default this is 51348 in
-        case of JobClustr/dispynode and 51349 in the case of
+        case of JobClustr/dispynode and 51347 in the case of
         SharedJobCluster/dispyscheduler. When recovering jobs for
         SharedJobCluster, the port must be set explicitly as default
         value here is meant for JobCluster.
