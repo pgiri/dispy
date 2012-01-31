@@ -53,7 +53,7 @@ from dispynode import _same_file
 
 MaxFileSize = 10240000
 
-class _Cluster():
+class _Cluster(object):
     """Internal use only.
     """
     def __init__(self, compute):
@@ -297,7 +297,12 @@ class _Scheduler(object):
                             _job.uid, _job.node.ip_addr, cluster._compute.name)
             self._sched_cv.acquire()
             if cluster._compute.nodes.pop(_job.node.ip_addr, None) is not None:
-                _job.node.clusters.remove(cluster.compute.id)
+                try:
+                    _job.node.clusters.remove(cluster.compute.id)
+                except:
+                    logging.debug('Cluster %s/%s is already removed from %s',
+                                  cluster.compute.name, cluster.compute.id, _job.node.ip_addr)
+                    pass
                 # TODO: remove the node from all clusters and globally?
             # this job might have been deleted already due to timeout
             if self._sched_jobs.pop(_job.uid, None) == _job:
@@ -529,7 +534,11 @@ class _Scheduler(object):
             compute = self._clusters[xf.compute_id]
             dest_path = os.path.join(self.dest_path_prefix, str(compute.id))
             if not os.path.isdir(dest_path):
-                os.makedirs(dest_path)
+                try:
+                    os.makedirs(dest_path)
+                except:
+                    conn.close()
+                    return
             tgt = os.path.join(dest_path, os.path.basename(xf.name))
             logging.debug('Copying file %s to %s (%s)', xf.name,
                           tgt, xf.stat_buf.st_size)
@@ -617,10 +626,13 @@ class _Scheduler(object):
                         os.makedirs(dest_path)
                     except:
                         logging.warning('Could not create directory "%s"', dest_path)
+                        if compute.xfer_files:
+                            self._sched_cv.release()
+                            conn.close()
+                            return
                 for xf in compute.xfer_files:
                     xf.compute_id = compute.id
-                    tgt = os.path.join(dest_path, os.path.basename(xf.name))
-                    xf.name = tgt
+                    xf.name = os.path.join(dest_path, os.path.basename(xf.name))
                 self._sched_cv.release()
                 resp = {'ID':compute.id,
                         'pulse_interval':(self.zombie_interval / 5.0) if self.zombie_interval else None}
@@ -735,7 +747,7 @@ class _Scheduler(object):
                                     cluster.pending_results -= 1
                                 self._sched_cv.release()
                             except:
-                                loggging.debug('Could not remove "%s"', result_file)
+                                logging.debug('Could not remove "%s"', result_file)
                             return
                         else:
                             resp = cPickle.dumps('Invalid job')
@@ -895,7 +907,13 @@ class _Scheduler(object):
                             reschedule_jobs(dead_jobs)
                             for cid, cluster in self._clusters.iteritems():
                                 if cluster._compute.nodes.pop(node.ip_addr, None) is not None:
-                                    node.clusters.remove(cid)
+                                    try:
+                                        node.clusters.remove(cid)
+                                    except:
+                                        logging.debug('Cluster %s/%s is already removed from %s',
+                                                      cluster.compute.name, cluster.compute.id,
+                                                      node.ip_addr)
+                                        pass
                             self._sched_cv.notify()
                             self._sched_cv.release()
                             del node
@@ -1096,7 +1114,7 @@ class _Scheduler(object):
                 reply = _JobReply(_job, self.ip_addr, status=DispyJob.Terminated)
                 self.worker_Qs[compute.id].put(
                     (5, self.send_job_result,
-                     (_job.uid, cmopute.id, cluster.client_scheduler_ip_addr,
+                     (_job.uid, compute.id, cluster.client_scheduler_ip_addr,
                       cluster.client_job_result_port, reply)))
             cluster._jobs = []
         logging.debug('Scheduler quit')
@@ -1182,7 +1200,12 @@ class _Scheduler(object):
         compute = cluster._compute
         nodes = compute.nodes.values()
         for node in nodes:
-            node.clusters.remove(compute.id)
+            try:
+                node.clusters.remove(compute.id)
+            except:
+                logging.debug('Cluster %s/%s is already removed from %s',
+                              compute.name, compute.id, node.ip_addr)
+                pass
         compute.nodes = {}
         for xf in compute.xfer_files:
             logging.debug('Removing file "%s"', xf.name)

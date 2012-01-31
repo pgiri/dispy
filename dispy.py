@@ -47,7 +47,7 @@ import atexit
 
 _dispy_version = '1.2'
 
-class DispyJob():
+class DispyJob(object):
     """Job scheduled for execution with dispy.
 
     Once a job is scheduled (with a tuple of arguments), the __call__
@@ -111,11 +111,11 @@ class DispyJob():
             self.finish.clear()
         return self.result
 
-class _DispySocket():
+class _DispySocket(object):
     """Internal use only.
     """
-    def __init__(self, sock, auth_code=None, certfile=None, keyfile=None, server=False,
-                 ip_addr=None, port=None, timeout=None):
+    def __init__(self, sock, auth_code=None, certfile=None, keyfile=None,
+                 server=False, timeout=None):
         if certfile:
             self.sock = ssl.wrap_socket(sock, server_side=server, keyfile=keyfile,
                                         certfile=certfile, ssl_version=ssl.PROTOCOL_TLSv1)
@@ -126,18 +126,16 @@ class _DispySocket():
             setattr(self, method, getattr(self.sock, method))
         if timeout is not None:
             sock.settimeout(timeout)
-        if sock.type == socket.SOCK_STREAM and ip_addr is not None and port is not None:
-            sock.connect((ip_addr, port))
 
     def read(self, data_len=4096):
-        data = ''
+        data = bytearray()
         while len(data) < data_len:
-            chunk = self.sock.recv(data_len - len(data))
-            if not chunk:
+            prev_len = len(data)
+            data[len(data):] = self.sock.recv(data_len - len(data))
+            if len(data) == prev_len:
                 logging.error('Socket disconnected?')
-                return data
-            data += chunk
-        return data
+                break
+        return str(data)
 
     def read_msg(self):
         try:
@@ -157,15 +155,17 @@ class _DispySocket():
             logging.error('Socket disconnected(timeout)?')
             return (None, None)
 
-    def write(self, data, auth=True):
-        if auth and self.auth_code:
-            self.sock.sendall(self.auth_code)
-        self.sock.sendall(data)
+    def write(self, data):
+        buf = buffer(data, 0)
+        while len(buf) > 0:
+            n = self.sock.send(buf)
+            if n > 0:
+                buf = buffer(buf, n)
 
     def write_msg(self, uid, data, auth=True):
         if auth and self.auth_code:
-            self.sock.sendall(self.auth_code)
-        self.sock.sendall(struct.pack('>LL', uid, len(data)) + data)
+            self.write(self.auth_code)
+        self.write(struct.pack('>LL', uid, len(data)) + data)
 
 def _xor_string(data, key):
     """Internal use only.
@@ -231,7 +231,7 @@ def _parse_nodes(nodes):
         node_spec[match_re] = {'port':node_port, 'ip_addr':ip_addr, 'name':name}
     return node_spec
 
-class _Compute():
+class _Compute(object):
     """Internal use only.
     """
     func_type = 1
@@ -263,7 +263,7 @@ class _Compute():
             del state['nodes']
         return state
 
-class _XferFile():
+class _XferFile(object):
     """Internal use only.
     """
     def __init__(self, name, stat_buf, compute_id=None):
@@ -271,7 +271,7 @@ class _XferFile():
         self.stat_buf = stat_buf
         self.compute_id = compute_id
 
-class _Node():
+class _Node(object):
     """Internal use only.
     """
     def __init__(self, ip_addr, port, cpus, sign, secret, keyfile=None, certfile=None):
@@ -357,7 +357,7 @@ class _Node():
                 data = fd.read(10240000)
                 if not data:
                     break
-                sock.write(data, auth=False)
+                sock.write(data)
             fd.close()
             ruid, resp = sock.read_msg()
             assert resp == 'ACK'
@@ -379,7 +379,7 @@ class _Node():
             logging.debug('Deleting computation %s/%s from %s failed',
                           compute.id, compute.name, self.ip_addr)
 
-class _DispyJob_():
+class _DispyJob_(object):
     """Internal use only.
     """
     def __init__(self, compute_id, args, kwargs):
@@ -465,7 +465,7 @@ class _DispyJob_():
             self.job = None
         job.finish.set()
 
-class _JobReply():
+class _JobReply(object):
     """Internal use only.
     """
     def __init__(self, _job, ip_addr, status=None, certfile=None, keyfile=None):
@@ -492,12 +492,12 @@ class Tasklet(threading.Thread):
             try:
                 func(*args, **kwargs)
             except:
-                logging.debug('Executing function "%s" failed', func)
+                logging.debug('Executing function "%s" failed', func.__name__)
                 logging.debug(traceback.format_exc())
-                pass
+                # pass
             self.task_queue.task_done()
 
-class TaskPool():
+class TaskPool(object):
     def __init__(self, num_tasks):
         self.task_queue = Queue.Queue()
         for n in xrange(num_tasks):
@@ -1364,7 +1364,7 @@ class _Cluster(object):
         print msg
         print
 
-class JobCluster():
+class JobCluster(object):
     """Create an instance of cluster for a specific job.
     """
 
@@ -1828,7 +1828,7 @@ class SharedJobCluster(JobCluster):
                     data = fd.read(10240000)
                     if not data:
                         break
-                    sock.write(data, auth=False)
+                    sock.write(data)
                 fd.close()
                 ruid, resp = sock.read_msg()
                 assert resp == 'ACK'

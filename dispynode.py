@@ -43,7 +43,7 @@ import shelve
 from dispy import _DispySocket, _DispyJob_, _JobReply, DispyJob, \
      _Compute, _XferFile, _xor_string, _node_name_ipaddr, TaskPool, _dispy_version
 
-MaxFileSize = 10240000
+MaxFileSize = 102400000
 
 def dispy_provisional_result(result):
     """Sends provisional result of computation back to the client.
@@ -60,18 +60,18 @@ def dispy_provisional_result(result):
                   __dispy_job_reply.uid, __dispy_job_info.reply_addr)
     __dispy_job_reply.status = DispyJob.ProvisionalResult
     __dispy_job_reply.result = result
-    sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), timeout=5,
+    sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), timeout=2,
                         certfile=__dispy_job_certfile, keyfile=__dispy_job_keyfile)
     try:
         sock.connect(__dispy_job_info.reply_addr)
         sock.write_msg(__dispy_job_reply.uid, cPickle.dumps(__dispy_job_reply))
     except:
-        logging.error("Couldn't send provisional results %s (%s)",
-                      str(result), str(traceback.format_exc()))
+        logging.warning("Couldn't send provisional results %s:\n%s",
+                        str(result), traceback.format_exc())
     finally:
         sock.close()
 
-class _DispyJobInfo():
+class _DispyJobInfo(object):
     """Internal use only.
     """
     def __init__(self, job_reply, reply_addr, compute):
@@ -129,7 +129,7 @@ def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     __dispy_reply_Q.put(__dispy_job_reply)
 
-class _DispyNode():
+class _DispyNode(object):
     """Internal use only.
     """
     def __init__(self, cpus, ip_addr='', node_port=51348, dest_path_prefix='',
@@ -637,7 +637,7 @@ class _DispyNode():
                     fd = open(tgt, 'wb')
                     n = 0
                     while n < xf.stat_buf.st_size:
-                        data = conn.read(min(xf.stat_buf.st_size-n, 1024000))
+                        data = conn.read(min(xf.stat_buf.st_size-n, 10240000))
                         if not data:
                             break
                         fd.write(data)
@@ -762,7 +762,7 @@ class _DispyNode():
                                 compute.pending_results -= 1
                             self.lock.release()
                         except:
-                            loggging.debug('Could not remove "%s"', info_file)
+                            logging.debug('Could not remove "%s"', info_file)
                         return
             else:
                 resp = cPickle.dumps('Invalid job: %s' % req['uid'])
@@ -781,11 +781,12 @@ class _DispyNode():
             conn, addr = self.srv_sock.accept()
             try:
                 conn = _DispySocket(conn, certfile=self.certfile, keyfile=self.keyfile, server=True)
+                conn.settimeout(2)
+                req = conn.read(len(self.auth_code))
             except:
                 logging.warning('Invalid client authentication?')
                 conn.close()
                 continue
-            req = conn.read(len(self.auth_code))
             if req != self.auth_code:
                 logging.warning('Invalid / unauthorized request ignored: %s',
                                 req[:min(15, len(req))])
@@ -938,36 +939,6 @@ class _DispyNode():
                         self.cleanup_computation(compute)
                 self.lock.release()
 
-    def shutdown(self):
-        self.lock.acquire()
-        for uid, job_info in self.job_infos.iteritems():
-            job_info.proc.terminate()
-            logging.debug('process for %s is killed', uid)
-            if isinstance(job_info.proc, multiprocessing.Process):
-                job_info.proc.join(2)
-            else:
-                job_info.proc.wait()
-                job_info.proc.terminate()
-        self.job_infos = {}
-        computations = self.computations.items()
-        self.computations = {}
-        self.lock.release()
-        if self.reply_Q:
-            self.reply_Q.put(None)
-        for cid, compute in computations:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            logging.debug('Sending TERMINATE to %s', compute.scheduler_ip_addr)
-            data = cPickle.dumps({'ip_addr':self.address[0], 'port':self.address[1],
-                                  'sign':self.signature})
-            sock.sendto('TERMINATED:%s' % data, (compute.scheduler_ip_addr, compute.scheduler_port))
-            sock.close()
-        if self.cmd_sock:
-            sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), timeout=5,
-                                auth_code=self.auth_code)
-            sock.connect((self.ip_addr, self.cmd_sock.sock.getsockname()[1]))
-            sock.write_msg(0, 'terminate')
-            sock.close()
-
     def cleanup_computation(self, compute):
         # called with lock held
         if not compute.zombie:
@@ -1018,6 +989,36 @@ class _DispyNode():
                 os.rmdir(compute.dest_path)
             except:
                 logging.warning('Could not remove directory "%s"', compute.dest_path)
+
+    def shutdown(self):
+        self.lock.acquire()
+        job_infos = self.job_infos
+        self.job_infos = {}
+        computations = self.computations.items()
+        self.computations = {}
+        if self.reply_Q:
+            self.reply_Q.put(None)
+        self.lock.release()
+        for uid, job_info in job_infos.iteritems():
+            job_info.proc.terminate()
+            logging.debug('process for %s is killed', uid)
+            if isinstance(job_info.proc, multiprocessing.Process):
+                job_info.proc.join(2)
+            else:
+                job_info.proc.wait()
+        for cid, compute in computations:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            logging.debug('Sending TERMINATE to %s', compute.scheduler_ip_addr)
+            data = cPickle.dumps({'ip_addr':self.address[0], 'port':self.address[1],
+                                  'sign':self.signature})
+            sock.sendto('TERMINATED:' + data, (compute.scheduler_ip_addr, compute.scheduler_port))
+            sock.close()
+        if self.cmd_sock:
+            sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), timeout=5,
+                                auth_code=self.auth_code)
+            sock.connect((self.ip_addr, self.cmd_sock.sock.getsockname()[1]))
+            sock.write_msg(0, 'terminate')
+            sock.close()
 
 if __name__ == '__main__':
     import argparse
@@ -1083,7 +1084,11 @@ if __name__ == '__main__':
             node._serve()
         except KeyboardInterrupt:
             logging.info('Interrupted; terminating')
-            node.shutdown()
+            try:
+                node.shutdown()
+            except:
+                logging.debug(traceback.format_exc())
+                pass
             time.sleep(1)
             break
         except:

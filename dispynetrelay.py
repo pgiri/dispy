@@ -31,7 +31,7 @@ import logging
 
 from dispy import _node_name_ipaddr, _dispy_version
 
-class DispyNetRelay():
+class DispyNetRelay(object):
     """Internal use only.
     """
     def __init__(self):
