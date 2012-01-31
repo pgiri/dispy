@@ -642,7 +642,7 @@ class _DispyNode(object):
                             break
                         fd.write(data)
                         n += len(data)
-                        if n > self.max_file_size:
+                        if self.max_file_size and n > self.max_file_size:
                             logging.warning('File "%s" is too big (%s); it is truncated',
                                             tgt, n)
                             break
@@ -1039,7 +1039,7 @@ if __name__ == '__main__':
                         help='name or IP address of scheduler to announce when starting')
     parser.add_argument('--scheduler_port', dest='scheduler_port', type=int, default=51347,
                         help='port number used by scheduler')
-    parser.add_argument('--max_file_size', dest='max_file_size', default=None,
+    parser.add_argument('--max_file_size', dest='max_file_size', default=None, type=int,
                         help='maximum file size of any file transferred')
     parser.add_argument('--zombie_interval', dest='zombie_interval', default=60, type=float,
                         help='interval in minutes to presume unresponsive scheduler is zombie')
