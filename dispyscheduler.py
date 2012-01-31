@@ -551,7 +551,7 @@ class _Scheduler(object):
                         break
                     fd.write(data)
                     n += len(data)
-                    if n > self.max_file_size:
+                    if self.max_file_size and n > self.max_file_size:
                         logging.warning('File "%s" is too big (%s); it is truncated',
                                         tgt, n)
                         break
@@ -1264,6 +1264,8 @@ if __name__ == '__main__':
     parser.add_argument('--dest_path_prefix', dest='dest_path_prefix',
                         default=os.path.join(os.sep, 'tmp', 'dispyscheduler'),
                         help='path prefix where files sent by dispy are stored')
+    parser.add_argument('--max_file_size', dest='max_file_size', default=None, type=int,
+                        help='maximum file size of any file transferred')
 
     config = vars(parser.parse_args(sys.argv[1:]))
     if config['loglevel']:
