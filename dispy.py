@@ -28,6 +28,7 @@ import inspect
 import stat
 import cPickle
 import threading
+import functools
 import select
 import struct
 import base64
@@ -37,7 +38,6 @@ import re
 import ssl
 import hashlib
 import traceback
-import functools
 import types
 import itertools
 import Queue
@@ -45,7 +45,9 @@ import shelve
 import datetime
 import atexit
 
-_dispy_version = '1.2'
+from dispysocket import _DispySocket, Coro, CoroScheduler, AsyncNotifier, RepeatTimer
+
+_dispy_version = '1.3'
 
 class DispyJob(object):
     """Job scheduled for execution with dispy.
@@ -110,62 +112,6 @@ class DispyJob(object):
         if clear:
             self.finish.clear()
         return self.result
-
-class _DispySocket(object):
-    """Internal use only.
-    """
-    def __init__(self, sock, auth_code=None, certfile=None, keyfile=None,
-                 server=False, timeout=None):
-        if certfile:
-            self.sock = ssl.wrap_socket(sock, server_side=server, keyfile=keyfile,
-                                        certfile=certfile, ssl_version=ssl.PROTOCOL_TLSv1)
-        else:
-            self.sock = sock
-        self.auth_code = auth_code
-        for method in ['connect', 'settimeout', 'close', 'bind', 'listen', 'accept']:
-            setattr(self, method, getattr(self.sock, method))
-        if timeout is not None:
-            sock.settimeout(timeout)
-
-    def read(self, data_len=4096):
-        data = bytearray()
-        while len(data) < data_len:
-            prev_len = len(data)
-            data[len(data):] = self.sock.recv(data_len - len(data))
-            if len(data) == prev_len:
-                logging.error('Socket disconnected?')
-                break
-        return str(data)
-
-    def read_msg(self):
-        try:
-            info_len = struct.calcsize('>LL')
-            info = self.read(info_len)
-            if len(info) < info_len:
-                logging.error('Socket disconnected?(%s, %s)', len(info), info_len)
-                return (None, None)
-            (uid, msg_len) = struct.unpack('>LL', info)
-            assert msg_len > 0
-            msg = self.read(msg_len)
-            if len(msg) < msg_len:
-                logging.error('Socket disconnected?(%s, %s)', len(msg), msg_len)
-                return (None, None)
-            return (uid, msg)
-        except socket.timeout:
-            logging.error('Socket disconnected(timeout)?')
-            return (None, None)
-
-    def write(self, data):
-        buf = buffer(data, 0)
-        while len(buf) > 0:
-            n = self.sock.send(buf)
-            if n > 0:
-                buf = buffer(buf, n)
-
-    def write_msg(self, uid, data, auth=True):
-        if auth and self.auth_code:
-            self.write(self.auth_code)
-        self.write(struct.pack('>LL', uid, len(data)) + data)
 
 def _xor_string(data, key):
     """Internal use only.
@@ -374,7 +320,7 @@ class _Node(object):
                       compute.cleanup)
         msg = 'DEL_COMPUTE:' + cPickle.dumps({'ID':compute.id})
         try:
-            self.send(0, msg, False)
+            self.send(0, msg, reply=False)
         except:
             logging.debug('Deleting computation %s/%s from %s failed',
                           compute.id, compute.name, self.ip_addr)
@@ -524,6 +470,8 @@ class _Cluster(object):
     def __init__(self, ip_addr=None, port=None, node_port=None, num_tasks=8,
                  secret='', keyfile=None, certfile=None, shared=False, fault_recover_file=None):
         if not hasattr(self, 'ip_addr'):
+            self.coro_scheduler = CoroScheduler()
+            self.notifier = AsyncNotifier()
             atexit.register(self._shutdown)
             if ip_addr:
                 ip_addr = _node_name_ipaddr(ip_addr)[1]
@@ -564,14 +512,10 @@ class _Cluster(object):
             self.terminate_scheduler = False
             self.auth_code = os.urandom(20).encode('hex')
             self.cmd_sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
-                                         auth_code=self.auth_code)
+                                         auth_code=self.auth_code, blocking=False)
             self.cmd_sock.bind((self.ip_addr, 0))
-            self.cmd_sock.listen(1)
-
-            self._ready = threading.Event()
-            self._listener = threading.Thread(target=self.__listen)
-            self._listener.daemon = True
-            self._listener.start()
+            self.cmd_sock.listen(2)
+            self.cmd_coro = Coro(self.cmd_server)
 
             self.worker_Q = Queue.PriorityQueue()
             self.worker_thread = threading.Thread(target=self.worker)
@@ -585,7 +529,37 @@ class _Cluster(object):
             self._scheduler.start()
             self.start_time = time.time()
             self.cluster_id = 1
-        self._ready.wait()
+
+            job_result_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            job_result_sock.bind((self.ip_addr, 0))
+            job_result_sock.listen(100)
+            self.job_result_port = job_result_sock.getsockname()[1]
+            self.job_result_sock = _DispySocket(job_result_sock, blocking=False)
+            logging.debug('job result server at %s:%s', self.ip_addr, self.job_result_port)
+            self.job_result_coro = Coro(self.job_result_server)
+
+            if self.shared:
+                self.udp_coro = None
+            else:
+                udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                udp_sock.bind(('', self.port))
+                self.port = udp_sock.getsockname()[1]
+                udp_sock = _DispySocket(udp_sock, blocking=False)
+                logging.info('UDP server running at %s, %s', self.ip_addr, self.port)
+                self.udp_coro = Coro(self.udp_server, udp_sock)
+
+            if self.pulse_interval:
+                self.pulse_timeout = 5.0 * self.pulse_interval
+            else:
+                self.pulse_timeout = None
+            if self.pulse_timeout and self.ping_interval:
+                timeout = min(self.pulse_timeout, self.ping_interval)
+            else:
+                timeout = max(self.pulse_timeout, self.ping_interval)
+
+            self.last_pulse_time = self.last_ping_time = time.time()
+            self.timer = RepeatTimer(timeout, self.timer_task)
 
     def send_ping_cluster(self, cluster):
         # called with _sched_cv locked
@@ -634,11 +608,14 @@ class _Cluster(object):
             self.pulse_interval = max(self.pulse_interval, compute.pulse_interval)
         if cluster.ping_interval:
             self.ping_interval = max(self.ping_interval, cluster.ping_interval)
-        if compute.pulse_interval or cluster.ping_interval:
+        if self.pulse_interval or self.ping_interval:
             sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                 auth_code=self.auth_code, timeout=2)
-            sock.connect((self.ip_addr, self.cmd_sock.sock.getsockname()[1]))
-            sock.write_msg(0, 'reset_interval')
+            try:
+                sock.connect((self.ip_addr, self.cmd_sock.sock.getsockname()[1]))
+                sock.write_msg(0, 'reset_interval')
+            except:
+                logging.warning('Could not update timer intervals')
             sock.close()
 
         self._sched_cv.acquire()
@@ -783,335 +760,320 @@ class _Cluster(object):
             self._sched_cv.notify()
             self._sched_cv.release()
 
-    def __listen(self):
-        def reschedule_jobs(dead_jobs):
-            # called with _sched_cv locked
-            for _job in dead_jobs:
-                # TODO: should we send terminate request to the node?
-                cluster = self._clusters[_job.compute_id]
-                del self._sched_jobs[_job.uid]
-                if cluster._compute.resubmit:
-                    logging.debug('Rescheduling job %s from %s',
-                                  _job.uid, _job.node.ip_addr)
-                    _job.job.status = DispyJob.Created
-                    cluster._jobs.append(_job)
-                    self.unsched_jobs += 1
-                else:
-                    logging.debug('Terminating job %s scheduled on %s',
-                                  _job.uid, _job.node.ip_addr)
-                    if _job.job.status == DispyJob.Running:
-                        status = DispyJob.Terminated
-                    else:
-                        status = DispyJob.Cancelled
-                    self.finish_job(_job, status, cluster)
-
-        def job_result_task(conn, addr):
-            conn = _DispySocket(conn, certfile=self.certfile,
-                                keyfile=self.keyfile, server=True, timeout=2)
-            try:
-                uid, msg = conn.read_msg()
-                conn.write_msg(uid, 'ACK')
-            except:
-                logging.warning('Failed to read job result from %s: %s',
-                                str(addr), traceback.format_exc())
-                return
-            finally:
-                conn.close()
-            logging.debug('Received reply for job %s from %s', uid, addr[0])
-            self._sched_cv.acquire()
-            node = self._nodes.get(addr[0], None)
-            _job = self._sched_jobs.get(uid, None)
-            if (node is None and self.shared is False) or (_job is None):
-                self._sched_cv.release()
-                logging.warning('Ignoring invalid reply for job %s from %s',
-                                uid, addr[0])
-                return
-            cluster = self._clusters.get(_job.compute_id, None)
-            if cluster is None:
-                # job cancelled while closing computation?
-                if self.shared is False:
-                    assert node.busy > 0
-                    node.busy -= 1
-                self._sched_cv.release()
-                return
-            compute = cluster._compute
-            job = _job.job
-            try:
-                reply = cPickle.loads(msg)
-                assert reply.hash == _job.hash
-                job.result = reply.result
-                job.stdout = reply.stdout
-                job.stderr = reply.stderr
-                job.exception = reply.exception
-                if self.shared:
-                    job.ip_addr = reply.ip_addr
-                    job.start_time = getattr(reply, 'start_time', None)
-                    job.end_time = getattr(reply, 'end_time', None)
-                else:
-                    job.end_time = time.time()
-                    assert reply.ip_addr == node.ip_addr
-                    job.ip_addr = node.ip_addr
-                    node.last_pulse = time.time()
-                if reply.status == DispyJob.ProvisionalResult:
-                    self.finish_job(_job, DispyJob.ProvisionalResult, cluster)
-                    self._sched_cv.release()
-                    return
-                else:
-                    del self._sched_jobs[uid]
-            except:
-                self._sched_cv.release()
-                logging.warning('Invalid job result for %s from %s',
-                                uid, addr[0])
-                logging.debug('%s, %s', str(reply), traceback.format_exc())
-                return
-
-            if self.shared is False:
-                if reply.status == DispyJob.Terminated:
-                    assert job.status in [DispyJob.Running, DispyJob.Cancelled,
-                                          DispyJob.Terminated], \
-                           'invalid job status for %s: %s' % (uid, job.status)
-                else:
-                    assert job.status in [DispyJob.Running, DispyJob.ProvisionalResult], \
-                           'status of %s: %s, %s' % (uid, job.status, reply.status)
-                    node.jobs += 1
-                node.busy -= 1
-                node.cpu_time += job.end_time - job.start_time
-            else:
-                if addr[0] != cluster.scheduler_ip_addr:
-                    logging.warning('Ignoring job reply from %s', addr[0])
-                    self._sched_cv.release()
-                    return
-                node = self._nodes.get(job.ip_addr, None)
-                if node is None:
-                    node = _Node(job.ip_addr, 0, getattr(reply, 'cpus', 0), '', None,
-                                 keyfile=None, certfile=None)
-                    self._nodes[job.ip_addr] = node
-                    compute.nodes[job.ip_addr] = node
-                job.status = reply.status
-                if job.status == DispyJob.Finished:
-                    node.jobs += 1
-                if job.end_time is not None:
-                    node.cpu_time += job.end_time - job.start_time
-            self.finish_job(_job, reply.status, cluster)
-            self._sched_cv.notify()
-            self._sched_cv.release()
-            return # job_result_task
-
-        # __listen starts here
-        job_result_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        job_result_sock.bind((self.ip_addr, 0))
-        job_result_sock.listen(5)
-        self.job_result_port = job_result_sock.getsockname()[1]
-
-        socks = [self.cmd_sock.sock, job_result_sock]
-        if not self.shared:
-            ping_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            ping_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            ping_sock.bind(('', self.port))
-            self.port = ping_sock.getsockname()[1]
-            socks.append(ping_sock)
-        else:
-            ping_sock = None
-
-        logging.info('Listening at %s, %s, %s',
-                     self.ip_addr, self.port, self.job_result_port)
-        self._ready.set()
-
-        if self.pulse_interval:
-            pulse_timeout = 5.0 * self.pulse_interval
-        else:
-            pulse_timeout = None
-        if pulse_timeout and self.ping_interval:
-            timeout = min(pulse_timeout, self.ping_interval)
-        else:
-            timeout = max(pulse_timeout, self.ping_interval)
-
-        last_pulse_time = time.time()
-        last_ping_time = last_pulse_time
+    def udp_server(self, udp_sock, coro=None):
         while True:
-            ready = select.select(socks, [], [], timeout)[0]
-            for sock in ready:
-                if sock == job_result_sock:
-                    conn, addr = job_result_sock.accept()
-                    self.task_pool.add_task(job_result_task, conn, addr)
+            msg, addr = yield udp_sock.recvfrom(1024, coro=coro, timeout=False)
+            if msg.startswith('PULSE:'):
+                msg = msg[len('PULSE:'):]
+                try:
+                    info = cPickle.loads(msg)
+                    node = self._nodes[info['ip_addr']]
+                    assert 0 <= info['cpus'] <= node.cpus
+                    node.last_pulse = time.time()
+                    msg = 'PULSE:' + cPickle.dumps({'ip_addr':self.ip_addr})
+                    sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM),
+                                        blocking=False)
+                    yield sock.sendto(msg, (info['ip_addr'], info['port']), coro=coro)
+                    sock.close()
+                except:
+                    logging.warning('Ignoring pulse message from %s', addr[0])
+                    #logging.debug(traceback.format_exc())
                     continue
-                elif sock == ping_sock:
-                    msg, addr = ping_sock.recvfrom(1024)
-                    if msg.startswith('PULSE:'):
-                        msg = msg[len('PULSE:'):]
-                        try:
-                            info = cPickle.loads(msg)
-                            node = self._nodes[info['ip_addr']]
-                            assert 0 <= info['cpus'] <= node.cpus
-                            node.last_pulse = time.time()
-                            msg = 'PULSE:' + cPickle.dumps({'ip_addr':self.ip_addr})
-                            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                            sock.sendto(msg, (info['ip_addr'], info['port']))
-                            sock.close()
-                        except:
-                            logging.warning('Ignoring pulse message from %s', addr[0])
-                            #logging.debug(traceback.format_exc())
-                            continue
-                    elif msg.startswith('PONG:'):
-                        try:
-                            status = cPickle.loads(msg[len('PONG:'):])
-                            assert status['port'] > 0 and status['cpus'] > 0
-                            assert len(status['ip_addr']) > 0
-                            assert status['version'] == _dispy_version
-                        except:
-                            logging.debug('Ignoring node %s', addr[0])
-                            continue
-                        logging.debug('Discovered %s:%s with %s cpus',
-                                      status['ip_addr'], status['port'], status['cpus'])
-                        if status['cpus'] <= 0:
-                            logging.debug('Ignoring node %s', status['ip_addr'])
-                            continue
-                        self._sched_cv.acquire()
-                        node = self._nodes.get(status['ip_addr'], None)
-                        if node is None:
-                            node = _Node(status['ip_addr'], status['port'],
-                                         status['cpus'], status['sign'],
-                                         self._secret, self.keyfile, self.certfile)
-                            self._nodes[node.ip_addr] = node
-                        else:
-                            node.last_pulse = time.time()
-                            h = _xor_string(status['sign'], self._secret)
-                            h = hashlib.sha1(h).hexdigest()
-                            if node.port == status['port'] and node.auth_code == h:
-                                self._sched_cv.release()
-                                continue
-                            node.port = status['port']
-                            node.auth_code = h
-                        node_computations = []
-                        for cid, cluster in self._clusters.iteritems():
-                            compute = cluster._compute
-                            if node.ip_addr in compute.nodes:
-                                continue
-                            for node_spec, host in compute.node_spec.iteritems():
-                                if re.match(node_spec, node.ip_addr):
-                                    if host['name'].find('*') >= 0:
-                                        node.name = node.ip_addr
-                                    else:
-                                        node.name = host['name']
-                                    node_computations.append(compute)
-                                    break
+            elif msg.startswith('PONG:'):
+                try:
+                    status = cPickle.loads(msg[len('PONG:'):])
+                    assert status['port'] > 0 and status['cpus'] > 0
+                    assert len(status['ip_addr']) > 0
+                    assert status['version'] == _dispy_version
+                except:
+                    logging.debug('Ignoring node %s', addr[0])
+                    continue
+                logging.debug('Discovered %s:%s with %s cpus',
+                              status['ip_addr'], status['port'], status['cpus'])
+                if status['cpus'] <= 0:
+                    logging.debug('Ignoring node %s', status['ip_addr'])
+                    continue
+                self._sched_cv.acquire()
+                node = self._nodes.get(status['ip_addr'], None)
+                if node is None:
+                    node = _Node(status['ip_addr'], status['port'],
+                                 status['cpus'], status['sign'],
+                                 self._secret, self.keyfile, self.certfile)
+                    self._nodes[node.ip_addr] = node
+                else:
+                    node.last_pulse = time.time()
+                    h = _xor_string(status['sign'], self._secret)
+                    h = hashlib.sha1(h).hexdigest()
+                    if node.port == status['port'] and node.auth_code == h:
                         self._sched_cv.release()
-                        if node_computations:
-                            self.worker_Q.put((10, self.setup_node, (node, node_computations)))
-                    elif msg.startswith('TERMINATED:'):
-                        try:
-                            data = cPickle.loads(msg[len('TERMINATED:'):])
-                            self._sched_cv.acquire()
-                            node = self._nodes.pop(data['ip_addr'], None)
-                            if not node:
-                                self._sched_cv.release()
-                                continue
-                            logging.debug('Removing node %s', node.ip_addr)
-                            h = _xor_string(data['sign'], self._secret)
-                            auth_code = hashlib.sha1(h).hexdigest()
-                            if auth_code != node.auth_code:
-                                logging.warning('Invalid signature from %s', node.ip_addr)
-                            dead_jobs = [_job for _job in self._sched_jobs.itervalues() \
-                                         if _job.node is not None and \
-                                         _job.node.ip_addr == node.ip_addr]
-                            reschedule_jobs(dead_jobs)
-                            for cid, cluster in self._clusters.iteritems():
-                                if cluster._compute.nodes.pop(node.ip_addr, None) is not None:
-                                    node.clusters.remove(cid)
-                            self._sched_cv.release()
-                            del node
-                        except:
-                            logging.debug('Removing node failed: %s', traceback.format_exc())
-                            pass
-                    else:
-                        logging.debug('Ignoring PONG message %s from: %s',
-                                      msg[:min(5, len(msg))], addr[0])
                         continue
-                elif sock == self.cmd_sock.sock:
-                    conn, addr = self.cmd_sock.accept()
-                    conn = _DispySocket(conn)
-                    req = conn.read(len(self.auth_code))
-                    if req != self.auth_code:
-                        conn.close()
+                    node.port = status['port']
+                    node.auth_code = h
+                node_computations = []
+                for cid, cluster in self._clusters.iteritems():
+                    compute = cluster._compute
+                    if node.ip_addr in compute.nodes:
                         continue
-                    uid, msg = conn.read_msg()
-                    conn.close()
-                    if msg == 'reset_interval':
-                        if self.pulse_interval:
-                            pulse_timeout = 5.0 * self.pulse_interval
-                        else:
-                            pulse_timeout = None
-                        if pulse_timeout and self.ping_interval:
-                            timeout = min(pulse_timeout, self.ping_interval)
-                        else:
-                            timeout = max(pulse_timeout, self.ping_interval)
-                    elif msg == 'terminate':
-                        logging.debug('Terminating all running jobs')
-                        self._sched_cv.acquire()
-                        self.terminate_scheduler = True
-                        for uid, _job in self._sched_jobs.iteritems():
-                            # TODO: handle shared scheduler jobs appropriately
-                            if _job.job.status == DispyJob.Running:
-                                # TODO: send terminate request to nodes?
-                                status = DispyJob.Terminated
+                    for node_spec, host in compute.node_spec.iteritems():
+                        if re.match(node_spec, node.ip_addr):
+                            if host['name'].find('*') >= 0:
+                                node.name = node.ip_addr
                             else:
-                                status = DispyJob.Cancelled
-                            self.finish_job(_job, status, self._clusters[_job.compute_id])
-                        self._sched_jobs = {}
-                        self._sched_cv.notify()
-                        self._sched_cv.release()
-                        logging.debug('listener is terminated')
-                        self.cmd_sock.close()
-                        self.cmd_sock = None
-                        return
-                    else:
-                        logging.warning('Invalid command: %s', msg)
-
-            if timeout:
-                now = time.time()
-                if pulse_timeout and (now - last_pulse_time) >= pulse_timeout:
-                    last_pulse_time = now
-                    if self.shared:
-                        self._sched_cv.acquire()
-                        clusters = {}
-                        for cluster in self._clusters.itervalues():
-                            if clusters.get(cluster.scheduler_ip_addr, None) == cluster.scheduler_port:
-                                continue
-                            msg = {'client_scheduler_ip_addr':self.ip_addr,
-                                   'client_scheduler_port':self.port,
-                                   'version':_dispy_version}
-                            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                            sock.sendto('PULSE:' + cPickle.dumps(msg), (cluster.scheduler_ip_addr,
-                                                                        cluster.scheduler_udp_port))
-                            sock.close()
-                            clusters[cluster.scheduler_ip_addr] = cluster.scheduler_port
-                        self._sched_cv.release()
-                    else:
-                        self._sched_cv.acquire()
-                        dead_nodes = {}
-                        for node in self._nodes.itervalues():
-                            if node.busy and node.last_pulse is not None and \
-                                   (node.last_pulse + pulse_timeout) <= now:
-                                logging.warning('Node %s is not responding; removing it (%s, %s, %s)',
-                                                node.ip_addr, node.busy, node.last_pulse, now)
-                                dead_nodes[node.ip_addr] = node
-                        for ip_addr in dead_nodes:
-                            del self._nodes[ip_addr]
-                            for cluster in self._clusters.itervalues():
-                                cluster._compute.nodes.pop(ip_addr, None)
-                        dead_jobs = [_job for _job in self._sched_jobs.itervalues() \
-                                     if _job.node is not None and _job.node.ip_addr in dead_nodes]
-                        reschedule_jobs(dead_jobs)
-                        if dead_nodes or dead_jobs:
-                            self._sched_cv.notify()
-                        self._sched_cv.release()
-
-                if self.ping_interval and (now - last_ping_time) >= self.ping_interval:
-                    last_ping_time = now
+                                node.name = host['name']
+                            node_computations.append(compute)
+                            break
+                self._sched_cv.release()
+                if node_computations:
+                    self.worker_Q.put((10, self.setup_node, (node, node_computations)))
+            elif msg.startswith('TERMINATED:'):
+                try:
+                    data = cPickle.loads(msg[len('TERMINATED:'):])
                     self._sched_cv.acquire()
-                    for cluster in self._clusters.itervalues():
-                        self.send_ping_cluster(cluster)
+                    node = self._nodes.pop(data['ip_addr'], None)
+                    if not node:
+                        self._sched_cv.release()
+                        continue
+                    logging.debug('Removing node %s', node.ip_addr)
+                    h = _xor_string(data['sign'], self._secret)
+                    auth_code = hashlib.sha1(h).hexdigest()
+                    if auth_code != node.auth_code:
+                        logging.warning('Invalid signature from %s', node.ip_addr)
+                    dead_jobs = [_job for _job in self._sched_jobs.itervalues() \
+                                 if _job.node is not None and \
+                                 _job.node.ip_addr == node.ip_addr]
+                    self.reschedule_jobs(dead_jobs)
+                    for cid, cluster in self._clusters.iteritems():
+                        if cluster._compute.nodes.pop(node.ip_addr, None) is not None:
+                            node.clusters.remove(cid)
                     self._sched_cv.release()
+                    del node
+                except:
+                    logging.debug('Removing node failed: %s', traceback.format_exc())
+                    pass
+            else:
+                logging.debug('Ignoring UDP message %s from: %s',
+                              msg[:min(5, len(msg))], addr[0])
+
+    def job_result_server(self, coro=None):
+        while True:
+            new_sock, addr = yield self.job_result_sock.accept(coro)
+            logging.debug('received job result from %s', str(addr))
+            Coro(self.job_result_task, new_sock, addr)
+
+    def job_result_task(self, sock, addr, coro=None):
+        sock = _DispySocket(sock, certfile=self.certfile, keyfile=self.keyfile,
+                            server=True, blocking=False)
+        try:
+            uid, msg = yield sock.read_msg(coro=coro)
+            yield sock.write_msg(uid, 'ACK', coro=coro)
+        except:
+            logging.warning('Failed to read job result from %s: %s',
+                            str(addr), traceback.format_exc())
+            return
+        finally:
+            sock.close()
+
+        logging.debug('Received reply for job %s from %s', uid, addr[0])
+        self._sched_cv.acquire()
+        node = self._nodes.get(addr[0], None)
+        _job = self._sched_jobs.get(uid, None)
+        if (node is None and self.shared is False) or (_job is None):
+            self._sched_cv.release()
+            logging.warning('Ignoring invalid reply for job %s from %s',
+                            uid, addr[0])
+            return
+        cluster = self._clusters.get(_job.compute_id, None)
+        if cluster is None:
+            # job cancelled while closing computation?
+            if self.shared is False:
+                assert node.busy > 0
+                node.busy -= 1
+            self._sched_cv.release()
+            return
+        compute = cluster._compute
+        job = _job.job
+        try:
+            reply = cPickle.loads(msg)
+            assert reply.hash == _job.hash
+            job.result = reply.result
+            job.stdout = reply.stdout
+            job.stderr = reply.stderr
+            job.exception = reply.exception
+            if self.shared:
+                job.ip_addr = reply.ip_addr
+                job.start_time = getattr(reply, 'start_time', None)
+                job.end_time = getattr(reply, 'end_time', None)
+            else:
+                job.end_time = time.time()
+                assert reply.ip_addr == node.ip_addr
+                job.ip_addr = node.ip_addr
+                node.last_pulse = time.time()
+            if reply.status == DispyJob.ProvisionalResult:
+                self.finish_job(_job, DispyJob.ProvisionalResult, cluster)
+                self._sched_cv.release()
+                return
+            else:
+                del self._sched_jobs[uid]
+        except:
+            self._sched_cv.release()
+            logging.warning('Invalid job result for %s from %s',
+                            uid, addr[0])
+            logging.debug('%s, %s', str(reply), traceback.format_exc())
+            return
+
+        if self.shared is False:
+            if reply.status == DispyJob.Terminated:
+                assert job.status in [DispyJob.Running, DispyJob.Cancelled,
+                                      DispyJob.Terminated], \
+                       'invalid job status for %s: %s' % (uid, job.status)
+            else:
+                assert job.status in [DispyJob.Running, DispyJob.ProvisionalResult], \
+                       'status of %s: %s, %s' % (uid, job.status, reply.status)
+                node.jobs += 1
+            node.busy -= 1
+            node.cpu_time += job.end_time - job.start_time
+        else:
+            if addr[0] != cluster.scheduler_ip_addr:
+                logging.warning('Ignoring job reply from %s', addr[0])
+                self._sched_cv.release()
+                return
+            node = self._nodes.get(job.ip_addr, None)
+            if node is None:
+                node = _Node(job.ip_addr, 0, getattr(reply, 'cpus', 0), '', None,
+                             keyfile=None, certfile=None)
+                self._nodes[job.ip_addr] = node
+                compute.nodes[job.ip_addr] = node
+            job.status = reply.status
+            if job.status == DispyJob.Finished:
+                node.jobs += 1
+            if job.end_time is not None:
+                node.cpu_time += job.end_time - job.start_time
+        self.finish_job(_job, reply.status, cluster)
+        self._sched_cv.notify()
+        self._sched_cv.release()
+        return # job_result_task
+
+    def reschedule_jobs(self, dead_jobs):
+        # called with _sched_cv locked
+        for _job in dead_jobs:
+            # TODO: should we send terminate request to the node?
+            cluster = self._clusters[_job.compute_id]
+            del self._sched_jobs[_job.uid]
+            if cluster._compute.resubmit:
+                logging.debug('Rescheduling job %s from %s',
+                              _job.uid, _job.node.ip_addr)
+                _job.job.status = DispyJob.Created
+                cluster._jobs.append(_job)
+                self.unsched_jobs += 1
+            else:
+                logging.debug('Terminating job %s scheduled on %s',
+                              _job.uid, _job.node.ip_addr)
+                if _job.job.status == DispyJob.Running:
+                    status = DispyJob.Terminated
+                else:
+                    status = DispyJob.Cancelled
+                self.finish_job(_job, status, cluster)
+
+    def timer_task(self):
+        now = time.time()
+        if self.pulse_timeout and (now - self.last_pulse_time) >= self.pulse_timeout:
+            self.last_pulse_time = now
+            if self.shared:
+                self._sched_cv.acquire()
+                clusters = {}
+                for cluster in self._clusters.itervalues():
+                    if clusters.get(cluster.scheduler_ip_addr, None) == cluster.scheduler_port:
+                        continue
+                    msg = {'client_scheduler_ip_addr':self.ip_addr,
+                           'client_scheduler_port':self.port,
+                           'version':_dispy_version}
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    sock.sendto('PULSE:' + cPickle.dumps(msg), (cluster.scheduler_ip_addr,
+                                                                cluster.scheduler_udp_port))
+                    sock.close()
+                    clusters[cluster.scheduler_ip_addr] = cluster.scheduler_port
+                self._sched_cv.release()
+            else:
+                self._sched_cv.acquire()
+                dead_nodes = {}
+                for node in self._nodes.itervalues():
+                    if node.busy and node.last_pulse is not None and \
+                           (node.last_pulse + self.pulse_timeout) <= now:
+                        logging.warning('Node %s is not responding; removing it (%s, %s, %s)',
+                                        node.ip_addr, node.busy, node.last_pulse, now)
+                        dead_nodes[node.ip_addr] = node
+                for ip_addr in dead_nodes:
+                    del self._nodes[ip_addr]
+                    for cluster in self._clusters.itervalues():
+                        cluster._compute.nodes.pop(ip_addr, None)
+                dead_jobs = [_job for _job in self._sched_jobs.itervalues() \
+                             if _job.node is not None and _job.node.ip_addr in dead_nodes]
+                self.reschedule_jobs(dead_jobs)
+                if dead_nodes or dead_jobs:
+                    self._sched_cv.notify()
+                self._sched_cv.release()
+
+        if self.ping_interval and (now - self.last_ping_time) >= self.ping_interval:
+            self.last_ping_time = now
+            self._sched_cv.acquire()
+            for cluster in self._clusters.itervalues():
+                self.send_ping_cluster(cluster)
+            self._sched_cv.release()
+
+    def cmd_server(self, coro=None):
+        while True:
+            conn, addr = yield self.cmd_sock.accept(coro=coro)
+            conn = _DispySocket(conn, blocking=False)
+            req = yield conn.read(len(self.auth_code), coro=coro)
+            if req != self.auth_code:
+                logging.debug('invalid auth for cmd')
+                conn.close()
+                continue
+            uid, msg = yield conn.read_msg(coro=coro)
+            conn.close()
+            if msg == 'terminate':
+                self.job_result_sock.close()
+                self.job_result_coro.terminate_coro()
+                self.udp_sock.close()
+                self.udp_coro.terminate_coro()
+                self.cmd_sock.close()
+                self.cmd_sock = None
+                self.timer.terminate()
+                self.coro_scheduler.terminate()
+                self.notifier.terminate()
+                self.shutdown()
+                break
+            elif msg == 'reset_interval':
+                if self.pulse_interval:
+                    self.pulse_timeout = 5.0 * self.pulse_interval
+                else:
+                    self.pulse_timeout = None
+                if self.pulse_timeout and self.ping_interval:
+                    timeout = min(self.pulse_timeout, self.ping_interval)
+                else:
+                    timeout = max(self.pulse_timeout, self.ping_interval)
+                self.timer.set_interval(timeout)
+            else:
+                logging.warning('Ignoring invalid command')
+
+    def terminate(self):
+        self._sched_cv.acquire()
+        self.terminate_scheduler = True
+        for uid, _job in self._sched_jobs.iteritems():
+            # TODO: handle shared scheduler jobs appropriately
+            if _job.job.status == DispyJob.Running:
+                # TODO: send terminate request to nodes?
+                status = DispyJob.Terminated
+            else:
+                status = DispyJob.Cancelled
+                self.finish_job(_job, status, self._clusters[_job.compute_id])
+        self._sched_jobs = {}
+        self._sched_cv.notify()
+        self._sched_cv.release()
+        logging.debug('listener is terminated')
+        self.cmd_sock.close()
+        self.cmd_sock = None
+        return
 
     def load_balance_schedule(self):
         host = None
@@ -1321,16 +1283,10 @@ class _Cluster(object):
             self._sched_cv.release()
             self._scheduler.join()
             self._scheduler = None
-        if self._listener and self.cmd_sock:
-            logging.debug('Shutting down listener')
-            sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
-                                auth_code=self.auth_code)
-            sock.settimeout(5)
-            sock.connect((self.ip_addr, self.cmd_sock.sock.getsockname()[1]))
-            sock.write_msg(0, 'terminate')
-            sock.close()
-            self._listener.join()
-            self._listener = None
+            self.terminate()
+            self.coro_scheduler.terminate()
+            self.notifier.terminate()
+
         self._sched_cv.acquire()
         select_job_node = self.select_job_node
         self.select_job_node = None
@@ -1494,6 +1450,7 @@ class JobCluster(object):
                 assert 1.0 <= pulse_interval <= 1000
             except:
                 raise Exception('Invalid pulse_interval; must be between 1 and 1000')
+        logging.debug('ping_interval: %s, pulse_interval: %s', self.ping_interval, pulse_interval)
         if callback:
             assert inspect.isfunction(callback) or inspect.ismethod(callback), \
                    "callback must be a function or method"
@@ -1628,6 +1585,7 @@ class JobCluster(object):
             if not cleanup:
                 logging.warning('"cleanup" argument is ignored if dest_path is not given')
             compute.cleanup = True
+        time.sleep(1)
         compute.job_result_port = self._cluster.job_result_port
         compute.scheduler_ip_addr = self._cluster.ip_addr
         compute.scheduler_port = self._cluster.port
@@ -1837,7 +1795,7 @@ class SharedJobCluster(JobCluster):
                 # TODO: delete computation?
             sock.close()
             
-        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), timeout=10,
+        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), timeout=5,
                             auth_code=self.auth_code, certfile=certfile, keyfile=keyfile)
         sock.connect((self.scheduler_ip_addr, self.scheduler_port))
         req = 'ADD_COMPUTE:' + cPickle.dumps({'ID':self._compute.id})
@@ -1848,7 +1806,7 @@ class SharedJobCluster(JobCluster):
         if resp == self._compute.id:
             logging.debug('Computation %s created with %s', self._compute.name, self._compute.id)
             self._cluster.add_cluster(self)
-            sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), timeout=2,
+            sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), timeout=5,
                                 auth_code=self._cluster.auth_code)
             sock.connect((self._cluster.ip_addr, self._cluster.cmd_sock.sock.getsockname()[1]))
             sock.write_msg(0, 'reset_interval')

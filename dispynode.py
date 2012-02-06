@@ -40,8 +40,10 @@ import logging
 import marshal
 import shelve
 
-from dispy import _DispySocket, _DispyJob_, _JobReply, DispyJob, \
+from dispy import _DispyJob_, _JobReply, DispyJob, \
      _Compute, _XferFile, _xor_string, _node_name_ipaddr, TaskPool, _dispy_version
+
+from dispysocket import _DispySocket, Coro, CoroScheduler, AsyncNotifier, RepeatTimer
 
 MaxFileSize = 102400000
 
@@ -137,7 +139,6 @@ class _DispyNode(object):
                  secret='', keyfile=None, certfile=None, max_file_size=None,
                  zombie_interval=60):
         self.cpus = cpus
-        self.srv_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.fqdn = socket.getfqdn()
         if ip_addr:
             ip_addr = _node_name_ipaddr(ip_addr)[1]
@@ -147,9 +148,11 @@ class _DispyNode(object):
         self.scheduler_port = scheduler_port
         self.pulse_interval = None
 
-        self.srv_sock.bind((ip_addr, 0))
-        self.address = self.srv_sock.getsockname()
-        self.srv_sock.listen(2)
+        self.tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.tcp_sock.bind((ip_addr, 0))
+        self.address = self.tcp_sock.getsockname()
+        self.tcp_sock.listen(5)
+        self.tcp_sock = _DispySocket(self.tcp_sock, blocking=False)
 
         if dest_path_prefix:
             self.dest_path_prefix = dest_path_prefix.strip().rstrip(os.sep)
@@ -178,11 +181,17 @@ class _DispyNode(object):
 
         logging.debug('auth_code for %s: %s', ip_addr, self.auth_code)
         self.cmd_sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
-                                     auth_code=self.auth_code)
+                                     auth_code=self.auth_code, blocking=False)
         self.cmd_sock.bind((self.ip_addr, 0))
-        self.cmd_sock.listen(1)
+        self.cmd_sock.listen(2)
         logging.info('Serving %s cpus at %s:%s',
                      self.cpus, self.address[0], self.address[1])
+
+        self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.udp_sock.bind(('', node_port))
+        logging.info('node running at %s:%s', self.address[0], node_port)
+        self.udp_sock = _DispySocket(self.udp_sock, blocking=False)
 
         scheduler_ip_addr = _node_name_ipaddr(scheduler_node)[1]
 
@@ -190,10 +199,21 @@ class _DispyNode(object):
         self.reply_Q_thread = threading.Thread(target=self.__reply_Q)
         self.reply_Q_thread.start()
 
-        self.ping_thread = threading.Thread(target=self.__ping_pong,
-                                            args=(node_port, scheduler_ip_addr))
-        self.ping_thread.daemon = True
-        # start from _serve so ping is not sent before server starts
+        self.coro_scheduler = CoroScheduler()
+        self.notifier = AsyncNotifier()
+
+        self.cmd_coro = Coro(self.cmd_server)
+        self.tcp_coro = Coro(self.tcp_server)
+        self.udp_coro = Coro(self.udp_server, scheduler_ip_addr)
+
+        if self.pulse_interval and self.zombie_interval:
+            timeout = min(self.pulse_interval, self.zombie_interval)
+            self.zombie_interval = max(5 * self.pulse_interval, self.zombie_interval)
+        else:
+            timeout = max(self.pulse_interval, self.zombie_interval)
+            self.zombie_interval = self.zombie_interval
+        self.last_pulse_time = self.last_zombie_time = time.time()
+        self.timer = RepeatTimer(timeout, self.timer_task)
 
     def send_pong_msg(self, reset_interval=True):
         ping_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -205,14 +225,13 @@ class _DispyNode(object):
         ping_sock.close()
         if reset_interval:
             self.pulse_interval = None
-            sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+            sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), timeout=2,
                                 auth_code=self.auth_code)
-            sock.settimeout(5)
-            sock.connect((self.ip_addr, self.cmd_sock.sock.getsockname()[1]))
+            sock.connect((self.ip_addr, self.cmd_sock.getsockname()[1]))
             sock.write_msg(0, 'reset_interval')
             sock.close()
 
-    def __ping_pong(self, node_port, scheduler_ip_addr):
+    def udp_server(self, scheduler_ip_addr, coro=None):
         if self.avail_cpus == self.cpus:
             self.send_pong_msg(reset_interval=False)
         pong_msg = {'ip_addr':self.ip_addr, 'fqdn':self.fqdn, 'port':self.address[1],
@@ -228,155 +247,58 @@ class _DispyNode(object):
                 logging.warning("Couldn't send ping message to %s:%s",
                                 scheduler_ip_addr, self.scheduler_port)
 
-        ping_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        ping_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        ping_sock.bind(('', node_port))
-        logging.info('node running at %s:%s', self.address[0], node_port)
-
-        if self.pulse_interval and self.zombie_interval:
-            timeout = min(self.pulse_interval, self.zombie_interval)
-            zombie_interval = max(5 * self.pulse_interval, self.zombie_interval)
-        else:
-            timeout = max(self.pulse_interval, self.zombie_interval)
-            zombie_interval = self.zombie_interval
-
-        last_pulse_time = last_zombie_time = time.time()
         while True:
-            ready = select.select([ping_sock, self.cmd_sock.sock], [], [], timeout)[0]
-            for sock in ready:
-                if sock == ping_sock:
-                    msg, addr = ping_sock.recvfrom(1024)
-                    if msg.startswith('PING:'):
-                        logging.debug('Ping message from %s (%s)', addr[0], addr[1])
-                        if self.cpus != self.avail_cpus:
-                            logging.debug('Busy (%s/%s); ignoring ping message from %s',
-                                          self.cpus, self.avail_cpus, addr[0])
-                            continue
-                        try:
-                            info = cPickle.loads(msg[len('PING:'):])
-                            socket.inet_aton(info['scheduler_ip_addr'])
-                            assert isinstance(info['scheduler_port'], int)
-                            assert info['version'] == _dispy_version
-                            addr = (info['scheduler_ip_addr'], info['scheduler_port'])
-                        except:
-                            # raise
-                            logging.debug('Ignoring ping message from %s (%s)',
-                                          addr[0], addr[1])
-                            continue
-                        ping_sock.sendto(pong_msg, addr)
-                    elif msg.startswith('PULSE:'):
-                        try:
-                            info = cPickle.loads(msg[len('PULSE:'):])
-                            assert info['ip_addr'] == self.scheduler_ip_addr
-                            self.lock.acquire()
-                            for compute in self.computations.itervalues():
-                                compute.last_pulse = time.time()
-                            self.lock.release()
-                        except:
-                            logging.warning('Ignoring PULSE from %s', addr[0])
-                    elif msg.startswith('SERVERPORT:'):
-                        try:
-                            req = cPickle.loads(msg[len('SERVERPORT:'):])
-                            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                            sock.settimeout(1)
-                            reply = {'ip_addr':self.address[0], 'port':self.address[1],
-                                     'sign':self.signature, 'version':_dispy_version}
-                            sock.sendto(cPickle.dumps(reply), (req['ip_addr'], req['port']))
-                            sock.close()
-                        except:
-                            logging.debug(traceback.format_exc())
-                            # pass
-                    else:
-                        logging.warning('Ignoring ping message from %s', addr[0])
-                elif sock == self.cmd_sock.sock:
-                    conn, addr = self.cmd_sock.accept()
-                    conn = _DispySocket(conn)
-                    req = conn.read(len(self.auth_code))
-                    if req != self.auth_code:
-                        logging.debug('invalid auth for cmd')
-                        conn.close()
-                        continue
-                    uid, msg = conn.read_msg()
-                    conn.close()
-                    if msg == 'terminate':
-                        logging.debug('Ping thread terminating')
-                        ping_sock.close()
-                        self.cmd_sock.close()
-                        self.cmd_sock = None
-                        return
-                    elif msg == 'reset_interval':
-                        if self.pulse_interval and self.zombie_interval:
-                            timeout = min(self.pulse_interval, self.zombie_interval)
-                            zombie_interval = max(5 * self.pulse_interval, self.zombie_interval)
-                        else:
-                            timeout = max(self.pulse_interval, self.zombie_interval)
-                            zombie_interval = self.zombie_interval
-                    else:
-                        logging.debug('Ignoring message: %s', msg)
-            if timeout:
-                now = time.time()
-                if self.pulse_interval and (now - last_pulse_time) >= self.pulse_interval:
-                    n = self.cpus - self.avail_cpus
-                    assert n >= 0
-                    if n > 0 and self.scheduler_ip_addr:
-                        last_pulse_time = now
-                        # logging.debug('Sending PULSE to %s', self.scheduler_ip_addr)
-                        msg = 'PULSE:' + cPickle.dumps({'ip_addr':self.ip_addr,
-                                                        'port':node_port, 'cpus':n})
-                        logging.debug('sending PULSE')
-                        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                        sock.sendto(msg, (self.scheduler_ip_addr, self.scheduler_port))
-                        sock.close()
-                if zombie_interval and (now - last_zombie_time) >= zombie_interval:
-                    last_zombie_time = now
+            msg, addr = yield self.udp_sock.recvfrom(1024, coro=coro, timeout=False)
+            if msg.startswith('PING:'):
+                if self.cpus != self.avail_cpus:
+                    logging.debug('Busy (%s/%s); ignoring ping message from %s',
+                                  self.cpus, self.avail_cpus, addr[0])
+                    continue
+                try:
+                    info = cPickle.loads(msg[len('PING:'):])
+                    socket.inet_aton(info['scheduler_ip_addr'])
+                    assert isinstance(info['scheduler_port'], int)
+                    assert info['version'] == _dispy_version
+                    addr = (info['scheduler_ip_addr'], info['scheduler_port'])
+                except:
+                    # raise
+                    logging.debug('Ignoring ping message from %s (%s)',
+                                  addr[0], addr[1])
+                    continue
+                yield self.udp_sock.sendto(pong_msg, addr, coro=coro)
+            elif msg.startswith('PULSE:'):
+                try:
+                    info = cPickle.loads(msg[len('PULSE:'):])
+                    assert info['ip_addr'] == self.scheduler_ip_addr
                     self.lock.acquire()
                     for compute in self.computations.itervalues():
-                        if (now - compute.last_pulse) > zombie_interval:
-                            compute.zombie = True
-                    zombies = [compute for compute in self.computations.itervalues() \
-                               if compute.zombie and compute.pending_jobs == 0]
-                    for compute in zombies:
-                        logging.debug('Deleting zombie computation "%s"', compute.name)
-                        self.cleanup_computation(compute)
-                    phoenix = [compute for compute in self.computations.itervalues() \
-                               if not compute.zombie and compute.pending_results]
-                    for compute in phoenix:
-                        files = [f for f in os.listdir(compute.dest_path) \
-                                 if f.startswith('_dispy_job_reply_')]
-                        # limit number queued so as not to take up too much time
-                        files = files[:min(len(files), 128)]
-                        for f in files:
-                            result_file = os.path.join(compute.dest_path, f)
-                            try:
-                                fd = open(result_file, 'rb')
-                                job_result = cPickle.load(fd)
-                                fd.close()
-                            except:
-                                logging.debug('Could not load "%s"', result_file)
-                                logging.debug(traceback.format_exc())
-                                continue
-                            try:
-                                os.remove(result_file)
-                            except:
-                                logging.debug('Could not remove "%s"', result_file)
-                            compute.pending_results -= 1
-                            job_info = _DispyJobInfo(job_result, (compute.scheduler_ip_addr,
-                                                                  compute.job_result_port), compute)
-                            self.task_pool.add_task(self._send_job_reply, job_info, resend=True)
+                        compute.last_pulse = time.time()
                     self.lock.release()
-                    for compute in zombies:
-                        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                        logging.debug('Sending TERMINATE to %s', compute.scheduler_ip_addr)
-                        data = cPickle.dumps({'ip_addr':self.address[0], 'port':self.address[1],
-                                              'sign':self.signature})
-                        sock.sendto('TERMINATED:%s' % data, (compute.scheduler_ip_addr,
-                                                             compute.scheduler_port))
-                        sock.close()
-                    if self.scheduler_ip_addr is None and self.avail_cpus == self.cpus:
-                        self.send_pong_msg(reset_interval=True)
+                except:
+                    logging.warning('Ignoring PULSE from %s', addr[0])
+            elif msg.startswith('SERVERPORT:'):
+                try:
+                    req = cPickle.loads(msg[len('SERVERPORT:'):])
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    reply = {'ip_addr':self.address[0], 'port':self.address[1],
+                             'sign':self.signature, 'version':_dispy_version}
+                    sock = _DispySocket(sock, blocking=False)
+                    yield sock.sendto(cPickle.dumps(reply), (req['ip_addr'], req['port']),
+                                      coro=coro)
+                    sock.close()
+                except:
+                    logging.debug(traceback.format_exc())
+                    # pass
+            else:
+                logging.warning('Ignoring ping message from %s', addr[0])
 
-    def _serve(self):
-        def job_request_task(conn, uid, msg, addr):
+    def tcp_server(self, coro=None):
+        while True:
+            conn, addr = yield self.tcp_sock.accept(coro=coro)
+            Coro(self.tcp_serve_task, conn, addr)
+
+    def tcp_serve_task(self, conn, addr, coro=None):
+        def job_request_task(conn, uid, msg, addr, coro):
             try:
                 _job = cPickle.loads(msg)
             except:
@@ -396,7 +318,7 @@ class _DispyNode(object):
                 logging.warning('All cpus busy')
                 resp = 'NAK (all cpus busy)'
                 try:
-                    conn.write_msg(_job.uid, cPickle.dumps(resp))
+                    yield conn.write_msg(_job.uid, cPickle.dumps(resp), coro=coro)
                 except:
                     pass
                 conn.close()
@@ -405,7 +327,7 @@ class _DispyNode(object):
                 logging.warning('Invalid computation %s', _job.compute_id)
                 resp = 'NAK (invalid computation %s)' % _job.compute_id
                 try:
-                    conn.write_msg(_job.uid, cPickle.dumps(resp))
+                    yield conn.write_msg(_job.uid, cPickle.dumps(resp), coro=coro)
                 except:
                     pass
                 conn.close()
@@ -439,7 +361,7 @@ class _DispyNode(object):
                         _job.args, _job.kwargs, self.reply_Q,
                         compute.env, compute.name, compute.code, compute.dest_path, _job.files)
                 try:
-                    conn.write_msg(_job.uid, cPickle.dumps(_job.uid))
+                    yield conn.write_msg(_job.uid, cPickle.dumps(_job.uid), coro=coro)
                 except:
                     logging.warning('Failed to send response for new job to %s',
                                     str(addr))
@@ -459,7 +381,7 @@ class _DispyNode(object):
                 prog_thread = threading.Thread(target=self.__job_program,
                                                args=(_job, reply_addr))
                 try:
-                    conn.write_msg(_job.uid, cPickle.dumps(_job.uid))
+                    yield conn.write_msg(_job.uid, cPickle.dumps(_job.uid), coro=coro)
                 except:
                     logging.warning('Failed to send response for new job to %s',
                                     str(addr))
@@ -475,22 +397,21 @@ class _DispyNode(object):
             else:
                 resp = 'NAK (invalid computation type "%s")' % compute.type
                 try:
-                    conn.write_msg(_job.uid, cPickle.dumps(resp))
+                    yield conn.write_msg(_job.uid, cPickle.dumps(resp), coro=coro)
                 except:
                     logging.warning('Failed to send response for new job to %s',
                                     str(addr))
                 finally:
                     conn.close()
-            return
 
-        def add_computation_task(conn, uid, msg, addr):
+        def add_computation_task(conn, uid, msg, addr, coro):
             try:
                 compute = cPickle.loads(msg)
             except:
                 logging.debug('Ignoring computation request from %s', addr[0])
                 resp = 'Invalid computation request'
                 try:
-                    conn.write_msg(uid, resp)
+                    yield conn.write_msg(uid, resp, coro=coro)
                 except:
                     logging.warning('Failed to send reply to %s', str(addr))
                 conn.close()
@@ -504,7 +425,7 @@ class _DispyNode(object):
                               self.avail_cpus, self.cpus)
                 resp = 'Busy'
                 try:
-                    conn.write_msg(uid, resp)
+                    yield conn.write_msg(uid, resp, coro=coro)
                 except:
                     pass
                 self.lock.release()
@@ -534,7 +455,7 @@ class _DispyNode(object):
                 if os.path.isdir(compute.dest_path):
                     os.rmdir(compute.dest_path)
                 try:
-                    conn.write_msg(uid, resp)
+                    yield conn.write_msg(uid, resp, coro=coro)
                 except:
                     logging.warning('Failed to send reply to %s', str(addr))
                 self.lock.release()
@@ -547,8 +468,8 @@ class _DispyNode(object):
             setattr(compute, 'pending_jobs', 0)
             setattr(compute, 'pending_results', 0)
             setattr(compute, 'zombie', False)
-            # logging.debug('xfer_files given: %s',
-            #               ','.join(xf.name for xf in compute.xfer_files))
+            logging.debug('xfer_files given: %s',
+                          ','.join(xf.name for xf in compute.xfer_files))
             if compute.type == _Compute.func_type:
                 if compute.env and 'PYTHONPATH' in compute.env:
                     self.computations[compute.id].env = compute.env['PYTHONPATH']
@@ -561,7 +482,7 @@ class _DispyNode(object):
                         os.rmdir(compute.dest_path)
                     self.lock.release()
                     try:
-                        conn.write_msg(uid, resp)
+                        yield conn.write_msg(uid, resp, coro=coro)
                     except:
                         logging.warning('Failed to send reply to %s', str(addr))
                     conn.close()
@@ -591,6 +512,11 @@ class _DispyNode(object):
                 resp = 'ACK'
                 if xfer_files:
                     resp += ':XFER_FILES:' + cPickle.dumps(xfer_files)
+                sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                                    auth_code=self.auth_code, blocking=False)
+                yield sock.connect((self.ip_addr, self.cmd_sock.getsockname()[1]), coro=coro)
+                yield sock.write_msg(0, 'reset_interval', coro=coro)
+                sock.close()
             else:
                 resp = 'Busy'
                 if os.path.isdir(compute.dest_path):
@@ -598,13 +524,12 @@ class _DispyNode(object):
             self.lock.release()
             if resp:
                 try:
-                    conn.write_msg(uid, resp)
+                    yield conn.write_msg(uid, resp, coro=coro)
                 except:
                     pass
             conn.close()
-            return # add_compute_task
 
-        def xfer_file_task(conn, uid, msg, addr):
+        def xfer_file_task(conn, uid, msg, addr, coro):
             try:
                 xf = cPickle.loads(msg)
             except:
@@ -637,7 +562,7 @@ class _DispyNode(object):
                     fd = open(tgt, 'wb')
                     n = 0
                     while n < xf.stat_buf.st_size:
-                        data = conn.read(min(xf.stat_buf.st_size-n, 10240000))
+                        data = yield conn.read(min(xf.stat_buf.st_size-n, 10240000), coro=coro)
                         if not data:
                             break
                         fd.write(data)
@@ -660,13 +585,13 @@ class _DispyNode(object):
                                     xf.name, traceback.format_exc())
                     resp = 'NACK'
                 try:
-                    conn.write_msg(0, resp)
+                    yield conn.write_msg(0, resp, coro=coro)
                 except:
                     logging.debug('Could not send reply for "%s"', xf.name)
                 conn.close()
             return # xfer_file_task
 
-        def terminate_job_task(uid, msg, addr):
+        def terminate_job_task(uid, msg, addr, coro):
             self.lock.acquire()
             try:
                 _job = cPickle.loads(msg)
@@ -700,7 +625,7 @@ class _DispyNode(object):
             self._send_job_reply(job_info)
             return
 
-        def retrieve_job_task(conn, uid, msg, addr):
+        def retrieve_job_task(conn, uid, msg, addr, coro):
             try:
                 req = cPickle.loads(msg)
                 assert req['uid'] is not None
@@ -709,23 +634,23 @@ class _DispyNode(object):
             except:
                 resp = cPickle.dumps('Invalid job')
                 try:
-                    conn.write_msg(0, resp)
+                    yield conn.write_msg(0, resp, coro=coro)
                 except:
                     pass
                 conn.close()
-                return
+                raise StopIteration
 
             job_info = self.job_infos.get(req['uid'], None)
             resp = None
             if job_info is not None:
                 try:
-                    conn.write_msg(req['uid'], cPickle.dumps(job_info.job_reply))
-                    ruid, ack = conn.read_msg()
+                    yield conn.write_msg(req['uid'], cPickle.dumps(job_info.job_reply), coro=coro)
+                    ruid, ack = yield conn.read_msg(coro=coro)
                     # no need to check ack
                 except:
                     logging.debug('Could not send reply for job %s', req['uid'])
                 conn.close()
-                return
+                raise StopIteration
 
             for d in os.listdir(self.dest_path_prefix):
                 info_file = os.path.join(self.dest_path_prefix, d,
@@ -739,13 +664,13 @@ class _DispyNode(object):
                         job_reply = None
                     if hasattr(job_reply, 'hash') and job_reply.hash == req['hash']:
                         try:
-                            conn.write_msg(req['uid'], cPickle.dumps(job_reply))
-                            ruid, ack = conn.read_msg()
+                            yield conn.write_msg(req['uid'], cPickle.dumps(job_reply), coro=coro)
+                            ruid, ack = yield conn.read_msg(coro=coro)
                             assert ack == 'ACK'
                             assert ruid == req['uid']
                         except:
                             logging.debug('Could not send reply for job %s', req['uid'])
-                            return
+                            raise StopIteration
                         finally:
                             conn.close()
                         try:
@@ -763,87 +688,166 @@ class _DispyNode(object):
                             self.lock.release()
                         except:
                             logging.debug('Could not remove "%s"', info_file)
-                        return
+                        raise StopIteration
             else:
                 resp = cPickle.dumps('Invalid job: %s' % req['uid'])
 
             if resp:
                 try:
-                    conn.write_msg(0, resp)
+                    yield conn.write_msg(0, resp, coro=coro)
                 except:
                     pass
             conn.close()
-            return
 
-        # _serve starts here
-        self.ping_thread.start()
-        while True:
-            conn, addr = self.srv_sock.accept()
+        # tcp_serve_task starts
+        try:
+            conn = _DispySocket(conn, certfile=self.certfile, keyfile=self.keyfile, server=True,
+                                blocking=False)
+            req = yield conn.read(len(self.auth_code), coro=coro)
+            assert req == self.auth_code
+        except:
+            logging.warning('Invalid client authentication?')
+            conn.close()
+            raise StopIteration
+        uid, msg = yield conn.read_msg(coro=coro)
+        if not msg:
+            conn.close()
+            raise StopIteration
+        if msg.startswith('JOB:'):
+            msg = msg[len('JOB:'):]
+            yield job_request_task(conn, uid, msg, addr, coro)
+        elif msg.startswith('COMPUTE:'):
+            msg = msg[len('COMPUTE:'):]
+            yield add_computation_task(conn, uid, msg, addr, coro)
+        elif msg.startswith('FILEXFER:'):
+            msg = msg[len('FILEXFER:'):]
+            yield xfer_file_task(conn, uid, msg, addr, coro)
+        elif msg.startswith('DEL_COMPUTE:'):
+            msg = msg[len('DEL_COMPUTE:'):]
+            conn.close()
             try:
-                conn = _DispySocket(conn, certfile=self.certfile, keyfile=self.keyfile, server=True)
-                conn.settimeout(2)
-                req = conn.read(len(self.auth_code))
+                info = cPickle.loads(msg)
+                compute_id = info['ID']
+                self.lock.acquire()
+                compute = self.computations.get(compute_id, None)
+                if compute is None:
+                    logging.warning('Computation "%s" is not valid', compute_id)
+                else:
+                    compute.zombie = True
+                    self.cleanup_computation(compute)
+                self.lock.release()
             except:
-                logging.warning('Invalid client authentication?')
+                logging.debug('Deleting computation failed with %s', traceback.format_exc())
+                # raise
+        elif msg.startswith('TERMINATE_JOB:'):
+            msg = msg[len('TERMINATE_JOB:'):]
+            conn.close()
+            yield terminate_job_task(uid, msg, addr, coro)
+        elif msg.startswith('RETRIEVE_JOB:'):
+            msg = msg[len('RETRIEVE_JOB:'):]
+            yield retrieve_job_task(conn, uid, msg, addr, coro)
+        else:
+            logging.warning('Invalid request "%s" from %s',
+                            msg[:min(10, len(msg))], addr[0])
+            resp = 'NAK (invalid command: %s)' % (msg[:min(10, len(msg))])
+            try:
+                yield conn.write_msg(uid, resp, coro=coro)
+            except:
+                logging.warning('Failed to send reply to %s', str(addr))
                 conn.close()
-                continue
+
+    def cmd_server(self, coro=None):
+        while True:
+            conn, addr = yield self.cmd_sock.accept(coro=coro)
+            conn = _DispySocket(conn, blocking=False)
+            req = yield conn.read(len(self.auth_code), coro=coro)
             if req != self.auth_code:
-                logging.warning('Invalid / unauthorized request ignored: %s',
-                                req[:min(15, len(req))])
+                logging.debug('invalid auth for cmd')
                 conn.close()
                 continue
-            uid, msg = conn.read_msg()
-            if not msg:
-                conn.close()
-                continue
-            if msg.startswith('JOB:'):
-                msg = msg[len('JOB:'):]
-                self.task_pool.add_task(job_request_task, conn, uid, msg, addr)
-                continue
-            elif msg.startswith('COMPUTE:'):
-                msg = msg[len('COMPUTE:'):]
-                self.task_pool.add_task(add_computation_task, conn, uid, msg, addr)
-                continue
-            elif msg.startswith('FILEXFER:'):
-                msg = msg[len('FILEXFER:'):]
-                self.task_pool.add_task(xfer_file_task, conn, uid, msg, addr)
-                continue
-            elif msg.startswith('DEL_COMPUTE:'):
-                msg = msg[len('DEL_COMPUTE:'):]
-                conn.close()
-                try:
-                    info = cPickle.loads(msg)
-                    compute_id = info['ID']
-                    self.lock.acquire()
-                    compute = self.computations.get(compute_id, None)
-                    if compute is None:
-                        logging.warning('Computation "%s" is not valid', compute_id)
-                    else:
-                        compute.zombie = True
-                        self.cleanup_computation(compute)
-                    self.lock.release()
-                except:
-                    logging.debug('Deleting computation failed with %s', traceback.format_exc())
-                    # raise
-                continue
-            elif msg.startswith('TERMINATE_JOB:'):
-                msg = msg[len('TERMINATE_JOB:'):]
-                conn.close()
-                self.task_pool.add_task(terminate_job_task, uid, msg, addr)
-                continue
-            elif msg.startswith('RETRIEVE_JOB:'):
-                msg = msg[len('RETRIEVE_JOB:'):]
-                self.task_pool.add_task(retrieve_job_task, conn, uid, msg, addr)
-                continue
-            else:
-                logging.warning('Invalid request "%s" from %s',
-                                msg[:min(10, len(msg))], addr[0])
-                resp = 'NAK (invalid command: %s)' % (msg[:min(10, len(msg))])
-                try:
-                    conn.write_msg(uid, resp)
-                except:
-                    logging.warning('Failed to send reply to %s', str(addr))
-                conn.close()
+            uid, msg = yield conn.read_msg(coro)
+            conn.close()
+            if msg == 'terminate':
+                self.tcp_sock.close()
+                self.tcp_coro.terminate_coro()
+                self.udp_sock.close()
+                self.udp_coro.terminate_coro()
+                self.cmd_sock.close()
+                self.cmd_sock = None
+                self.timer.terminate()
+                self.coro_scheduler.terminate()
+                self.notifier.terminate()
+                self.shutdown()
+                break
+            elif msg == 'reset_interval':
+                if self.pulse_interval and self.zombie_interval:
+                    timeout = min(self.pulse_interval, self.zombie_interval)
+                    self.zombie_interval = max(5 * self.pulse_interval, self.zombie_interval)
+                else:
+                    timeout = max(self.pulse_interval, self.zombie_interval)
+                    self.zombie_interval = self.zombie_interval
+                self.timer.set_interval(timeout)
+
+    def timer_task(self):
+        now = time.time()
+        if self.pulse_interval and (now - self.last_pulse_time) >= self.pulse_interval:
+            n = self.cpus - self.avail_cpus
+            assert n >= 0
+            if n > 0 and self.scheduler_ip_addr:
+                self.last_pulse_time = now
+                # logging.debug('Sending PULSE to %s', self.scheduler_ip_addr)
+                msg = 'PULSE:' + cPickle.dumps({'ip_addr':self.ip_addr,
+                                                'port':self.udp_sock.getsockname()[1], 'cpus':n})
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                sock.sendto(msg, (self.scheduler_ip_addr, self.scheduler_port))
+                sock.close()
+        if self.zombie_interval and (now - self.last_zombie_time) >= self.zombie_interval:
+            self.last_zombie_time = now
+            self.lock.acquire()
+            for compute in self.computations.itervalues():
+                if (now - compute.last_pulse) > self.zombie_interval:
+                    compute.zombie = True
+            zombies = [compute for compute in self.computations.itervalues() \
+                       if compute.zombie and compute.pending_jobs == 0]
+            for compute in zombies:
+                logging.debug('Deleting zombie computation "%s"', compute.name)
+                self.cleanup_computation(compute)
+            phoenix = [compute for compute in self.computations.itervalues() \
+                       if not compute.zombie and compute.pending_results]
+            for compute in phoenix:
+                files = [f for f in os.listdir(compute.dest_path) \
+                         if f.startswith('_dispy_job_reply_')]
+                # limit number queued so as not to take up too much time
+                files = files[:min(len(files), 128)]
+                for f in files:
+                    result_file = os.path.join(compute.dest_path, f)
+                    try:
+                        fd = open(result_file, 'rb')
+                        job_result = cPickle.load(fd)
+                        fd.close()
+                    except:
+                        logging.debug('Could not load "%s"', result_file)
+                        logging.debug(traceback.format_exc())
+                        continue
+                    try:
+                        os.remove(result_file)
+                    except:
+                        logging.debug('Could not remove "%s"', result_file)
+                    compute.pending_results -= 1
+                    job_info = _DispyJobInfo(job_result, (compute.scheduler_ip_addr,
+                                                          compute.job_result_port), compute)
+                    self.task_pool.add_task(self._send_job_reply, job_info, resend=True)
+            self.lock.release()
+            for compute in zombies:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                logging.debug('Sending TERMINATE to %s', compute.scheduler_ip_addr)
+                data = cPickle.dumps({'ip_addr':self.address[0], 'port':self.address[1],
+                                      'sign':self.signature})
+                sock.sendto('TERMINATED:%s' % data, (compute.scheduler_ip_addr,
+                                                     compute.scheduler_port))
+                sock.close()
+            if self.scheduler_ip_addr is None and self.avail_cpus == self.cpus:
+                self.send_pong_msg(reset_interval=False)
 
     def __job_program(self, _job, reply_addr):
         compute = self.computations[_job.compute_id]
@@ -1081,7 +1085,7 @@ if __name__ == '__main__':
 
     while True:
         try:
-            node._serve()
+            node.coro_scheduler.join()
         except KeyboardInterrupt:
             logging.info('Interrupted; terminating')
             try:
