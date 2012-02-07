@@ -450,48 +450,11 @@ class _Scheduler(object):
                     self._sched_cv.notify()
                 self._sched_cv.release()
 
-    def run_job(self, _job, cluster):
-        # called via worker
-        try:
-            _job.run()
-        except EnvironmentError:
-            logging.warning('Failed to run job %s on %s for computation %s; removing this node',
-                            _job.uid, _job.node.ip_addr, cluster._compute.name)
-            self._sched_cv.acquire()
-            if cluster._compute.nodes.pop(_job.node.ip_addr, None) is not None:
-                try:
-                    _job.node.clusters.remove(cluster.compute.id)
-                except:
-                    logging.debug('Cluster %s/%s is already removed from %s',
-                                  cluster.compute.name, cluster.compute.id, _job.node.ip_addr)
-                    pass
-                # TODO: remove the node from all clusters and globally?
-            # this job might have been deleted already due to timeout
-            if self._sched_jobs.pop(_job.uid, None) == _job:
-                cluster._jobs.append(_job)
-                self.unsched_jobs += 1
-                _job.node.busy -= 1
-            self._sched_cv.notify()
-            self._sched_cv.release()
-        except:
-            logging.debug(traceback.format_exc())
-            logging.warning('Failed to run job %s on %s for computation %s; rescheduling it',
-                            _job.uid, _job.node.ip_addr, cluster._compute.name)
-            # TODO: delay executing again for some time?
-            self._sched_cv.acquire()
-            # this job might have been deleted already due to timeout
-            if self._sched_jobs.pop(_job.uid, None) == _job:
-                cluster._jobs.append(_job)
-                self.unsched_jobs += 1
-                _job.node.busy -= 1
-            self._sched_cv.notify()
-            self._sched_cv.release()
-
     def send_job_result(self, uid, cid, ip, port, result, coro=None):
         logging.debug('Sending results for %s to %s, %s', uid, ip, port)
         sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), blocking=False)
         try:
-            yield sock.connect((ip, port), coro)
+            yield sock.connect((ip, port), coro=coro)
             yield sock.write_msg(uid, cPickle.dumps(result), coro=coro)
             ruid, ack = yield sock.read_msg(coro=coro)
             assert ack == 'ACK'
@@ -858,7 +821,7 @@ class _Scheduler(object):
                 logging.debug('invalid auth for cmd')
                 conn.close()
                 continue
-            uid, msg = yield conn.read_msg(coro)
+            uid, msg = yield conn.read_msg(coro=coro)
             conn.close()
             if msg == 'terminate':
                 logging.debug('Terminating all running jobs')
@@ -1065,6 +1028,51 @@ class _Scheduler(object):
                     secs_per_job = host.cpu_time / host.jobs
         return node
 
+    def run_job(self, _job, cluster, coro=None):
+        try:
+            logging.debug('running job %s on %s', _job.uid, _job.node.ip_addr)
+            self.job.start_time = time.time()
+            resp = yield _job.node.send(_job.uid, 'JOB:' + cPickle.dumps(_job))
+            resp = cPickle.loads(resp)
+            # TODO: deal with NAKs (reschedule?)
+            if not isinstance(resp, int):
+                logging.warning('Failed to run %s on %s', _job.uid, _job.node.ip_addr)
+                raise Exception(str(resp))
+            assert resp == self.uid
+            self.job.status = DispyJob.Running
+        except EnvironmentError:
+            logging.warning('Failed to run job %s on %s for computation %s; removing this node',
+                            _job.uid, _job.node.ip_addr, cluster._compute.name)
+            self._sched_cv.acquire()
+            if cluster._compute.nodes.pop(_job.node.ip_addr, None) is not None:
+                try:
+                    _job.node.clusters.remove(cluster.compute.id)
+                except:
+                    logging.debug('Cluster %s/%s is already removed from %s',
+                                  cluster.compute.name, cluster.compute.id, _job.node.ip_addr)
+                    pass
+                # TODO: remove the node from all clusters and globally?
+            # this job might have been deleted already due to timeout
+            if self._sched_jobs.pop(_job.uid, None) == _job:
+                cluster._jobs.append(_job)
+                self.unsched_jobs += 1
+                _job.node.busy -= 1
+            self._sched_cv.notify()
+            self._sched_cv.release()
+        except:
+            logging.debug(traceback.format_exc())
+            logging.warning('Failed to run job %s on %s for computation %s; rescheduling it',
+                            _job.uid, _job.node.ip_addr, cluster._compute.name)
+            # TODO: delay executing again for some time?
+            self._sched_cv.acquire()
+            # this job might have been deleted already due to timeout
+            if self._sched_jobs.pop(_job.uid, None) == _job:
+                cluster._jobs.append(_job)
+                self.unsched_jobs += 1
+                _job.node.busy -= 1
+            self._sched_cv.notify()
+            self._sched_cv.release()
+
     def _run(self):
         while True:
             self._sched_cv.acquire()
@@ -1095,7 +1103,7 @@ class _Scheduler(object):
                 self._sched_jobs[_job.uid] = _job
                 self.unsched_jobs -= 1
                 node.busy += 1
-                self.worker_Q.put((1, self.run_job, (_job, cluster)))
+                Coro(self.run_job, _job, cluster)
             self._sched_cv.wait()
             self._sched_cv.release()
         self._sched_cv.acquire()
@@ -1148,6 +1156,9 @@ class _Scheduler(object):
         if select_job_node:
             self.worker_Q.join()
             self.clusters = {}
+        self.notifier.terminate()
+        self.coro_scheduler.terminate()
+        self.coro_scheduler.join()
 
     def stats(self):
         print

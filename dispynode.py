@@ -148,6 +148,9 @@ class _DispyNode(object):
         self.scheduler_port = scheduler_port
         self.pulse_interval = None
 
+        self.coro_scheduler = CoroScheduler()
+        self.notifier = AsyncNotifier()
+
         self.tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.tcp_sock.bind((ip_addr, 0))
         self.address = self.tcp_sock.getsockname()
@@ -198,9 +201,6 @@ class _DispyNode(object):
         self.reply_Q = multiprocessing.Queue()
         self.reply_Q_thread = threading.Thread(target=self.__reply_Q)
         self.reply_Q_thread.start()
-
-        self.coro_scheduler = CoroScheduler()
-        self.notifier = AsyncNotifier()
 
         self.cmd_coro = Coro(self.cmd_server)
         self.tcp_coro = Coro(self.tcp_server)
@@ -765,18 +765,9 @@ class _DispyNode(object):
                 logging.debug('invalid auth for cmd')
                 conn.close()
                 continue
-            uid, msg = yield conn.read_msg(coro)
+            uid, msg = yield conn.read_msg(coro=coro)
             conn.close()
             if msg == 'terminate':
-                self.tcp_sock.close()
-                self.tcp_coro.terminate_coro()
-                self.udp_sock.close()
-                self.udp_coro.terminate_coro()
-                self.cmd_sock.close()
-                self.cmd_sock = None
-                self.timer.terminate()
-                self.coro_scheduler.terminate()
-                self.notifier.terminate()
                 self.shutdown()
                 break
             elif msg == 'reset_interval':
@@ -1014,15 +1005,16 @@ class _DispyNode(object):
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             logging.debug('Sending TERMINATE to %s', compute.scheduler_ip_addr)
             data = cPickle.dumps({'ip_addr':self.address[0], 'port':self.address[1],
-                                  'sign':self.signature})
             sock.sendto('TERMINATED:' + data, (compute.scheduler_ip_addr, compute.scheduler_port))
             sock.close()
-        if self.cmd_sock:
-            sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), timeout=5,
-                                auth_code=self.auth_code)
-            sock.connect((self.ip_addr, self.cmd_sock.sock.getsockname()[1]))
-            sock.write_msg(0, 'terminate')
-            sock.close()
+
+        self.tcp_sock.close()
+        self.udp_sock.close()
+        self.cmd_sock.close()
+        self.timer.terminate()
+        self.notifier.terminate()
+        self.coro_scheduler.terminate()
+        self.coro_scheduler.join()
 
 if __name__ == '__main__':
     import argparse

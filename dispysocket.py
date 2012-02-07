@@ -68,7 +68,7 @@ class _DispySocket(object):
             self.connect = self.async_connect
             self.read_msg = self.async_read_msg
             self.write_msg = self.async_write_msg
-            self.notifier = AsyncNotifier()
+            self.notifier = AsyncNotifier.instance()
             self.notifier.add_socket(self)
 
     def async_read(self, data_len, coro=None):
@@ -531,16 +531,15 @@ class AsyncNotifier(object):
     @classmethod
     def instance(cls, *args, **kwargs):
         if not hasattr(cls, '__instance'):
-            if cls.__instance is None:
-                cls.__instance = cls(*args, **kwargs)
-            return cls.__instance
+            cls.__instance = cls(*args, **kwargs)
+        return cls.__instance
 
     def __init__(self, poll_interval=1, socket_timeout=5):
         if not hasattr(self, '_poller'):
             assert socket_timeout >= 5 * poll_interval
 
             if hasattr(select, 'epoll'):
-                self._poller = select.epoll
+                self._poller = select.epoll()
                 AsyncNotifier._Readable = select.EPOLLIN
                 AsyncNotifier._Writable = select.EPOLLOUT
                 AsyncNotifier._Error = select.EPOLLHUP | select.EPOLLERR
@@ -734,10 +733,10 @@ class RepeatTimer(threading.Thread):
     etc. until terminated.
     """
     def __init__(self, interval, function, args=(), kwargs={}):
-        threading.Thread.__init__(self)
         if interval is not None:
             interval = float(interval)
             assert interval > 0
+        threading.Thread.__init__(self)
         self._interval = None
         self._func = function
         self._args = args

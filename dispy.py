@@ -390,19 +390,6 @@ class _DispyJob_(object):
                  'args':self.args, 'kwargs':self.kwargs, 'files':self.files}
         return state
 
-    def run(self):
-        logging.debug('running job %s on %s', self.uid, self.node.ip_addr)
-        self.job.start_time = time.time()
-        resp = Coro(self.node.send, self.uid, 'JOB:' + cPickle.dumps(self)).value()
-        resp = cPickle.loads(resp)
-        # TODO: deal with NAKs (reschedule?)
-        if not isinstance(resp, int):
-            logging.warning('Failed to run %s on %s', self.uid, self.node.ip_addr)
-            raise Exception(str(resp))
-        assert resp == self.uid
-        self.job.status = DispyJob.Running
-        return resp
-
     def finish(self, status):
         job = self.job
         job.status = status
@@ -724,41 +711,6 @@ class _Cluster(object):
                     self._sched_cv.notify()
                 self._sched_cv.release()
 
-    def run_job(self, _job, cluster):
-        # called via worker
-        if cluster.fault_recover_file:
-            self.store_job_info(_job, cluster)
-            # not really necessary to remove it in case of exception
-        try:
-            _job.run()
-        except EnvironmentError:
-            logging.warning('Failed to run job %s on %s for computation %s; removing this node',
-                            _job.uid, _job.node.ip_addr, cluster._compute.name)
-            self._sched_cv.acquire()
-            if cluster._compute.nodes.pop(_job.node.ip_addr, None) is not None:
-                _job.node.clusters.remove(cluster.compute.id)
-                # TODO: remove the node from all clusters and globally?
-            # this job might have been deleted already due to timeout
-            if self._sched_jobs.pop(_job.uid, None) == _job:
-                cluster._jobs.insert(0, _job)
-                self.unsched_jobs += 1
-                _job.node.busy -= 1
-            self._sched_cv.notify()
-            self._sched_cv.release()
-        except:
-            logging.warning('Failed to run job %s on %s for computation %s; rescheduling it',
-                            _job.uid, _job.node.ip_addr, cluster._compute.name)
-            logging.debug(traceback.format_exc())
-            # TODO: delay executing again for some time?
-            self._sched_cv.acquire()
-            # this job might have been deleted already due to timeout
-            if self._sched_jobs.pop(_job.uid, None) == _job:
-                cluster._jobs.append(_job)
-                self.unsched_jobs += 1
-                _job.node.busy -= 1
-            self._sched_cv.notify()
-            self._sched_cv.release()
-
     def udp_server(self, udp_sock, coro=None):
         while True:
             msg, addr = yield udp_sock.recvfrom(1024, coro=coro, timeout=False)
@@ -855,7 +807,7 @@ class _Cluster(object):
 
     def job_result_server(self, coro=None):
         while True:
-            new_sock, addr = yield self.job_result_sock.accept(coro)
+            new_sock, addr = yield self.job_result_sock.accept(coro=coro)
             logging.debug('received job result from %s', str(addr))
             Coro(self.job_result_task, new_sock, addr)
 
@@ -1110,6 +1062,49 @@ class _Cluster(object):
                 host = node
         return host
 
+    def run_job(self, _job, cluster, coro=None):
+        if cluster.fault_recover_file:
+            self.store_job_info(_job, cluster)
+            # not really necessary to remove it in case of exception
+        try:
+            logging.debug('running job %s on %s', _job.uid, _job.node.ip_addr)
+            self.job.start_time = time.time()
+            resp = yield _job.node.send(_job.uid, 'JOB:' + cPickle.dumps(_job))
+            resp = cPickle.loads(resp)
+            # TODO: deal with NAKs (reschedule?)
+            if not isinstance(resp, int):
+                logging.warning('Failed to run %s on %s', _job.uid, _job.node.ip_addr)
+                raise Exception(str(resp))
+            assert resp == self.uid
+            self.job.status = DispyJob.Running
+        except EnvironmentError:
+            logging.warning('Failed to run job %s on %s for computation %s; removing this node',
+                            _job.uid, _job.node.ip_addr, cluster._compute.name)
+            self._sched_cv.acquire()
+            if cluster._compute.nodes.pop(_job.node.ip_addr, None) is not None:
+                _job.node.clusters.remove(cluster.compute.id)
+                # TODO: remove the node from all clusters and globally?
+            # this job might have been deleted already due to timeout
+            if self._sched_jobs.pop(_job.uid, None) == _job:
+                cluster._jobs.insert(0, _job)
+                self.unsched_jobs += 1
+                _job.node.busy -= 1
+            self._sched_cv.notify()
+            self._sched_cv.release()
+        except:
+            logging.warning('Failed to run job %s on %s for computation %s; rescheduling it',
+                            _job.uid, _job.node.ip_addr, cluster._compute.name)
+            logging.debug(traceback.format_exc())
+            # TODO: delay executing again for some time?
+            self._sched_cv.acquire()
+            # this job might have been deleted already due to timeout
+            if self._sched_jobs.pop(_job.uid, None) == _job:
+                cluster._jobs.append(_job)
+                self.unsched_jobs += 1
+                _job.node.busy -= 1
+            self._sched_cv.notify()
+            self._sched_cv.release()
+
     def __schedule(self):
         while True:
             self._sched_cv.acquire()
@@ -1139,7 +1134,7 @@ class _Cluster(object):
                 self._sched_jobs[_job.uid] = _job
                 self.unsched_jobs -= 1
                 node.busy += 1
-                self.worker_Q.put((1, self.run_job, (_job, cluster)))
+                Coro(self.run_job, _job, cluster)
             self._sched_cv.wait()
             self._sched_cv.release()
         self._sched_cv.acquire()
@@ -1293,6 +1288,9 @@ class _Cluster(object):
         if select_job_node:
             self.worker_Q.put((99, None, None))
             self.worker_Q.join()
+        self.notifier.terminate()
+        self.coro_scheduler.terminate()
+        self.coro_scheduler.join()
         logging.debug('shutdown complete')
 
     def stats(self, compute, wall_time=None):
