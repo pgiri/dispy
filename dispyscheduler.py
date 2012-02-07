@@ -46,9 +46,9 @@ import collections
 import copy
 
 from dispy import _Compute, DispyJob, _DispyJob_, _Node, _JobReply, \
-     MetaSingleton, _xor_string, _parse_nodes, _node_name_ipaddr, _XferFile, _dispy_version
+     _xor_string, _parse_nodes, _node_name_ipaddr, _XferFile, _dispy_version
 
-from dispysocket import _DispySocket, Coro, CoroScheduler, AsyncNotifier, RepeatTimer
+from dispysocket import _DispySocket, Coro, CoroScheduler, AsyncNotifier, RepeatTimer, MetaSingleton
 
 from dispynode import _same_file
 
@@ -1031,15 +1031,15 @@ class _Scheduler(object):
     def run_job(self, _job, cluster, coro=None):
         try:
             logging.debug('running job %s on %s', _job.uid, _job.node.ip_addr)
-            self.job.start_time = time.time()
-            resp = yield _job.node.send(_job.uid, 'JOB:' + cPickle.dumps(_job))
+            _job.job.start_time = time.time()
+            resp = yield _job.node.send(_job.uid, 'JOB:' + cPickle.dumps(_job), coro=coro)
             resp = cPickle.loads(resp)
             # TODO: deal with NAKs (reschedule?)
             if not isinstance(resp, int):
                 logging.warning('Failed to run %s on %s', _job.uid, _job.node.ip_addr)
                 raise Exception(str(resp))
-            assert resp == self.uid
-            self.job.status = DispyJob.Running
+            assert resp == _job.uid
+            _job.job.status = DispyJob.Running
         except EnvironmentError:
             logging.warning('Failed to run job %s on %s for computation %s; removing this node',
                             _job.uid, _job.node.ip_addr, cluster._compute.name)

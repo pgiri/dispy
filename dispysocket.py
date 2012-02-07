@@ -16,6 +16,7 @@ import errno
 
 class MetaSingleton(type):
     __instance = None
+
     def __call__(cls, *args, **kwargs):
         if cls.__instance is None:
             cls.__instance = super(MetaSingleton, cls).__call__(*args, **kwargs)
@@ -296,7 +297,7 @@ class Coro(object):
         self._caller_id = None
         self._state = None
         self._value = None
-        self._scheduler = CoroScheduler.instance()
+        self._scheduler = CoroScheduler()
         self._complete = threading.Event()
         self._scheduler._add(self)
 
@@ -330,9 +331,9 @@ class CoroScheduler(object):
     __metaclass__ = MetaSingleton
 
     @classmethod
-    def instance(cls):
+    def instance(cls, *args, **kwargs):
         if not hasattr(cls, '__instance'):
-            cls.__instance = cls()
+            cls.__instance = cls(*args, **kwargs)
         return cls.__instance
 
     _Running = 1
@@ -725,7 +726,7 @@ class _SelectNotifier(object):
             events[fd] = AsyncNotifier._Writable
         for fd in xlist:
             events[fd] = AsyncNotifier._Error
-        return events.items()
+        return events.iteritems()
 
 class RepeatTimer(threading.Thread):
     """Timer that calls given function every 'interval' seconds. The

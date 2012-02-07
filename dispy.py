@@ -45,7 +45,7 @@ import shelve
 import datetime
 import atexit
 
-from dispysocket import _DispySocket, Coro, CoroScheduler, AsyncNotifier, RepeatTimer
+from dispysocket import _DispySocket, Coro, CoroScheduler, AsyncNotifier, RepeatTimer, MetaSingleton
 
 _dispy_version = '1.3'
 
@@ -441,13 +441,6 @@ class TaskPool(object):
 
     def finish(self):
         self.task_queue.join()
-
-class MetaSingleton(type):
-    __instance = None
-    def __call__(cls, *args, **kw):
-        if cls.__instance is None:
-            cls.__instance = super(MetaSingleton, cls).__call__(*args, **kw)
-        return cls.__instance
 
 class _Cluster(object):
     """Internal use only.
@@ -1068,15 +1061,15 @@ class _Cluster(object):
             # not really necessary to remove it in case of exception
         try:
             logging.debug('running job %s on %s', _job.uid, _job.node.ip_addr)
-            self.job.start_time = time.time()
-            resp = yield _job.node.send(_job.uid, 'JOB:' + cPickle.dumps(_job))
+            _job.job.start_time = time.time()
+            resp = yield _job.node.send(_job.uid, 'JOB:' + cPickle.dumps(_job), coro=coro)
             resp = cPickle.loads(resp)
             # TODO: deal with NAKs (reschedule?)
             if not isinstance(resp, int):
                 logging.warning('Failed to run %s on %s', _job.uid, _job.node.ip_addr)
                 raise Exception(str(resp))
-            assert resp == self.uid
-            self.job.status = DispyJob.Running
+            assert resp == _job.uid
+            _job.job.status = DispyJob.Running
         except EnvironmentError:
             logging.warning('Failed to run job %s on %s for computation %s; removing this node',
                             _job.uid, _job.node.ip_addr, cluster._compute.name)
