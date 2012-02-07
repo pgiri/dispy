@@ -242,7 +242,7 @@ class _Node(object):
 
     def setup(self, compute):
         logging.debug('Sending computation "%s" to %s', compute.name, self.ip_addr)
-        resp = self.send(0, 'COMPUTE:' + cPickle.dumps(compute))
+        resp = Coro(self.send, 0, 'COMPUTE:' + cPickle.dumps(compute)).value()
 
         if isinstance(resp, str) and resp.startswith('ACK'):
             resp = resp[len('ACK'):]
@@ -269,15 +269,15 @@ class _Node(object):
             return -1
         return 0
 
-    def send(self, uid, msg, reply=True):
+    def send(self, uid, msg, reply=True, coro=None):
         logging.debug('Sending to %s:%s', self.ip_addr, self.port)
-        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), timeout=3,
+        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), blocking=False,
                             auth_code=self.auth_code, certfile=self.certfile, keyfile=self.keyfile)
         try:
-            sock.connect((self.ip_addr, self.port))
-            sock.write_msg(uid, msg)
+            yield sock.connect((self.ip_addr, self.port), coro=coro)
+            yield sock.write_msg(uid, msg, coro=coro)
             if reply:
-                ruid, resp = sock.read_msg()
+                ruid, resp = yield sock.read_msg(coro=coro)
                 # assert ruid == uid
             else:
                 resp = None
@@ -288,7 +288,7 @@ class _Node(object):
             # TODO: mark this node down, reschedule on different node?
             resp = None
         sock.close()
-        return resp
+        yield resp
 
     def xfer_file(self, xf):
         logging.debug('XferFile: %s to %s', xf.name, self.ip_addr)
@@ -320,7 +320,7 @@ class _Node(object):
                       compute.cleanup)
         msg = 'DEL_COMPUTE:' + cPickle.dumps({'ID':compute.id})
         try:
-            self.send(0, msg, reply=False)
+            Coro(self.send, 0, msg, reply=False)
         except:
             logging.debug('Deleting computation %s/%s from %s failed',
                           compute.id, compute.name, self.ip_addr)
@@ -393,7 +393,7 @@ class _DispyJob_(object):
     def run(self):
         logging.debug('running job %s on %s', self.uid, self.node.ip_addr)
         self.job.start_time = time.time()
-        resp = self.node.send(self.uid, 'JOB:' + cPickle.dumps(self))
+        resp = Coro(self.node.send, self.uid, 'JOB:' + cPickle.dumps(self)).value()
         resp = cPickle.loads(resp)
         # TODO: deal with NAKs (reschedule?)
         if not isinstance(resp, int):
@@ -467,7 +467,7 @@ class _Cluster(object):
     """
     __metaclass__ = MetaSingleton
 
-    def __init__(self, ip_addr=None, port=None, node_port=None, num_tasks=8,
+    def __init__(self, ip_addr=None, port=None, node_port=None,
                  secret='', keyfile=None, certfile=None, shared=False, fault_recover_file=None):
         if not hasattr(self, 'ip_addr'):
             self.coro_scheduler = CoroScheduler()
@@ -503,7 +503,6 @@ class _Cluster(object):
                     shelf.close()
                     raise Exception('fault_recover file "%s" exists; remove it' % \
                                     fault_recover_file)
-            self.task_pool = TaskPool(num_tasks)
             self._clusters = {}
             self.unsched_jobs = 0
             self.job_uid = 1
@@ -1232,7 +1231,7 @@ class _Cluster(object):
         self._sched_cv.release()
         if _job.node is not None:
             try:
-                _job.node.send(_job.uid, 'TERMINATE_JOB:' + cPickle.dumps(_job), reply=False)
+                Coro(_job.node.send, _job.uid, 'TERMINATE_JOB:' + cPickle.dumps(_job), reply=False)
                 logging.debug('Job %s is being terminated', _job.uid)
             except:
                 logging.warning('Terminating job %s failed: %s', _job.uid, traceback.format_exc())

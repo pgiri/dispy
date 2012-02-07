@@ -487,19 +487,20 @@ class _Scheduler(object):
             self._sched_cv.notify()
             self._sched_cv.release()
 
-    def send_job_result(self, uid, cid, ip, port, result):
+    def send_job_result(self, uid, cid, ip, port, result, coro=None):
         logging.debug('Sending results for %s to %s, %s', uid, ip, port)
-        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), timeout=2)
+        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), blocking=False)
         try:
-            sock.connect((ip, port))
-            sock.write_msg(uid, cPickle.dumps(result))
-            ruid, ack = sock.read_msg()
+            yield sock.connect((ip, port), coro)
+            yield sock.write_msg(uid, cPickle.dumps(result), coro=coro)
+            ruid, ack = yield sock.read_msg(coro=coro)
             assert ack == 'ACK'
             assert uid == ruid
         except:
             f = os.path.join(self.dest_path_prefix, str(cid), '_dispy_job_reply_%s' % uid)
             logging.debug('storing results for job %s', uid)
             try:
+                # TODO: file operations should be done asynchronously with coros
                 fd = open(f, 'wb')
                 cPickle.dump(result, fd)
                 fd.close()
@@ -522,7 +523,7 @@ class _Scheduler(object):
     def terminate_jobs(self, _jobs):
         for _job in _jobs:
             try:
-                _job.node.send(_job.uid, 'TERMINATE_JOB:' + cPickle.dumps(_job), reply=False)
+                Coro(_job.node.send, _job.uid, 'TERMINATE_JOB:' + cPickle.dumps(_job), reply=False)
             except:
                 logging.warning('Canceling job %s failed', _job.uid)
 
@@ -551,10 +552,9 @@ class _Scheduler(object):
                 cluster._pending_jobs -= 1
                 if cluster._pending_jobs == 0:
                     cluster.end_time = time.time()
-                self.worker_Q.put(
-                    (5, self.send_job_result,
-                     (_job.uid, cluster._compute.id, cluster.client_scheduler_ip_addr,
-                      cluster.client_job_result_port, reply)))
+                Coro(self.send_job_result, _job.uid, cluster._compute.id,
+                     cluster.client_scheduler_ip_addr,
+                     cluster.client_job_result_port, reply)
 
     def scheduler_server(self, coro=None):
         def job_request_task(self, conn, msg, addr, coro=None):
@@ -784,10 +784,9 @@ class _Scheduler(object):
                             del cluster._jobs[i]
                             self.unsched_jobs -= 1
                             reply = _JobReply(_job, self.ip_addr, status=DispyJob.Cancelled)
-                            self.worker_Q.put(
-                                (5, self.send_job_result,
-                                 (_job.uid, compute.id, cluster.client_scheduler_ip_addr,
-                                  cluster.client_job_result_port, reply)))
+                            Coro(self.send_job_result,
+                                 _job.uid, compute.id, cluster.client_scheduler_ip_addr,
+                                 cluster.client_job_result_port, reply)
                             break
                     else:
                         logging.debug('Invalid job %s!', job.uid)
@@ -869,10 +868,9 @@ class _Scheduler(object):
                     reply = _JobReply(_job, self.ip_addr, status=DispyJob.Terminated)
                     cluster = self._clusters[_job.compute_id]
                     compute = cluster._compute
-                    self.worker_Q.put(
-                        (5, self.send_job_result,
-                         (_job.uid, compute.id, cluster.client_scheduler_ip_addr,
-                          cluster.client_job_result_port, reply)))
+                    Coro(self.send_job_result,
+                         _job.uid, compute.id, cluster.client_scheduler_ip_addr,
+                         cluster.client_job_result_port, reply)
                 self._sched_jobs = {}
                 self._sched_cv.notify()
                 self._sched_cv.release()
@@ -937,10 +935,9 @@ class _Scheduler(object):
                         fd = open(result_file, 'rb')
                         result = cPickle.load(fd)
                         fd.close()
-                        self.worker_Qs[compute.id].put(
-                            (5, self.send_job_result,
-                             (result.uid, compute.id, cluster.client_scheduler_ip_addr,
-                              cluster.client_job_result_port, result)))
+                        Coro(self.send_job_result,
+                             result.uid, compute.id, cluster.client_scheduler_ip_addr,
+                             cluster.client_job_result_port, result)
                     except:
                         logging.debug('Could not load "%s"', result_file)
                     else:
@@ -1008,10 +1005,9 @@ class _Scheduler(object):
             setattr(reply, 'end_time', _job.job.end_time)
             if reply.status == DispyJob.ProvisionalResult:
                 logging.debug('Receveid provisional result for %s', uid)
-                self.worker_Q.put(
-                    (5, self.send_job_result,
-                     (_job.uid, compute.id, cluster.client_scheduler_ip_addr,
-                      cluster.client_job_result_port, reply)))
+                Coro(self.send_job_result,
+                     _job.uid, compute.id, cluster.client_scheduler_ip_addr,
+                     cluster.client_job_result_port, reply)
                 self._sched_cv.release()
                 raise StopIteration
             else:
@@ -1031,10 +1027,9 @@ class _Scheduler(object):
             cluster._pending_jobs -= 1
             if cluster._pending_jobs == 0:
                 cluster.end_time = time.time()
-        self.worker_Q.put(
-            (5, self.send_job_result,
-             (_job.uid, compute.id, cluster.client_scheduler_ip_addr,
-              cluster.client_job_result_port, reply)))
+        Coro(self.send_job_result,
+             _job.uid, compute.id, cluster.client_scheduler_ip_addr,
+             cluster.client_job_result_port, reply))
         self._sched_cv.notify()
         self._sched_cv.release()
 
@@ -1112,10 +1107,9 @@ class _Scheduler(object):
                 node.close(compute)
             for _job in cluster._jobs:
                 reply = _JobReply(_job, self.ip_addr, status=DispyJob.Terminated)
-                self.worker_Q.put(
-                    (5, self.send_job_result,
-                     (_job.uid, compute.id, cluster.client_scheduler_ip_addr,
-                      cluster.client_job_result_port, reply)))
+                Coro(self.send_job_result,
+                     _job.uid, compute.id, cluster.client_scheduler_ip_addr,
+                     cluster.client_job_result_port, reply)
             cluster._jobs = []
         logging.debug('Scheduler quit')
         self._sched_cv.release()

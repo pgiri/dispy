@@ -77,9 +77,8 @@ class _DispySocket(object):
             plen = len(self.result)
             self.result[len(self.result):] = self.sock.recv(data_len - len(self.result))
             if len(self.result) == data_len or self.sock.type == socket.SOCK_DGRAM:
-                self.result = str(self.result)
                 self.notifier.modify(self, 0)
-                coro.resume(self.result)
+                coro.resume(str(self.result))
             elif len(self.result) == plen:
                 # TODO: check for error and delete?
                 self.result = None
@@ -467,6 +466,7 @@ class CoroScheduler(object):
                             coro._caller_id = None
                         else:
                             logging.debug('caller %s gone!', coro._caller_id)
+                        self._delete(coro._id)
                     else:
                         coro._complete.set()
                         self._delete(coro._id)
@@ -524,11 +524,9 @@ class AsyncNotifier(object):
 
     __metaclass__ = MetaSingleton
 
-    # TODO: handle other pollers (select / kqueue)
-
-    _Readable = select.EPOLLIN
-    _Writable = select.EPOLLOUT
-    _Error = select.EPOLLHUP
+    _Readable = None
+    _Writable = None
+    _Error = None
 
     @classmethod
     def instance(cls, *args, **kwargs):
@@ -538,19 +536,37 @@ class AsyncNotifier(object):
             return cls.__instance
 
     def __init__(self, poll_interval=1, socket_timeout=5):
-        if not hasattr(self, 'poll_interval'):
+        if not hasattr(self, '_poller'):
             assert socket_timeout >= 5 * poll_interval
+
+            if hasattr(select, 'epoll'):
+                self._poller = select.epoll
+                AsyncNotifier._Readable = select.EPOLLIN
+                AsyncNotifier._Writable = select.EPOLLOUT
+                AsyncNotifier._Error = select.EPOLLHUP | select.EPOLLERR
+            elif hasattr(select, 'kqueue'):
+                self._poller = _KQueueNotifier()
+                AsyncNotifier._Readable = select.KQ_FILTER_READ
+                AsyncNotifier._Writable = select.KQ_FILTER_WRITE
+                AsyncNotifier._Error = select.KQ_EV_ERROR
+            else:
+                self._poller = _SelectNotifier()
+                AsyncNotifier._Readable = 0x01
+                AsyncNotifier._Writable = 0x04
+                AsyncNotifier._Error = 0x10
+
             self._poll_interval = poll_interval
             self._socket_timeout = socket_timeout
-            self._poller = select.epoll()
             self._socks = {}
             self._terminate = False
             self._lock = threading.Lock()
-            self._notifier_thread = threading.Thread(target=self.notifier)
+            self._notifier_thread = threading.Thread(target=self._notifier)
             self._notifier_thread.daemon = True
             self._notifier_thread.start()
+            # TODO: add controlling socket to wake up poller (for
+            # termination)
 
-    def notifier(self):
+    def _notifier(self):
         last_timeout = time.time()
         while not self._terminate:
             events = self._poller.poll(self._poll_interval)
@@ -558,20 +574,19 @@ class AsyncNotifier(object):
             self._lock.acquire()
             events = [(self._socks.get(fileno, None), event) for fileno, event in events]
             self._lock.release()
-            # logging.debug('poll events: %s', len(events))
-            for sock, event in events:
+            for sock, evnt in events:
                 if sock is None:
                     logging.debug('Invalid socket!')
                     continue
-                if event & AsyncNotifier._Readable:
+                if event == AsyncNotifier._Readable:
                     # logging.debug('sock %s is readable', sock.fileno)
                     sock.timestamp = now
                     sock.task()
-                elif event & AsyncNotifier._Writable:
+                elif event == AsyncNotifier._Writable:
                     # logging.debug('sock %s is writable', sock.fileno)
                     sock.timestamp = now
                     sock.task()
-                elif event & AsyncNotifier._Error:
+                elif event == AsyncNotifier._Error:
                     # logging.debug('Error on %s', sock.fileno)
                     continue
                     self._lock.acquire()
@@ -609,32 +624,15 @@ class AsyncNotifier(object):
         self._socks.pop(sock.fileno, None)
         self._lock.release()
 
-    def register(self, sock, flags):
-        if flags & AsyncNotifier._Readable:
-            event = select.EPOLLIN
-        elif flags & AsyncNotifier._Writable:
-            event = select.EPOLLOUT
-        elif flags & AsyncNotifier._Error:
-            event = select.EPOLLHUP
-        else:
-            event = 0
-
+    def register(self, sock, event):
         try:
             self._poller.register(sock.fileno, event)
         except:
             logging.warning('register of %s failed with %s', sock.fileno, traceback.format_exc())
 
-    def modify(self, sock, flags):
-        if not flags:
-            event = 0
+    def modify(self, sock, event):
+        if not event:
             sock.timestamp = None
-        elif flags & AsyncNotifier._Readable:
-            event = select.EPOLLIN
-        elif flags & AsyncNotifier._Writable:
-            event = select.EPOLLOUT
-        elif flags & AsyncNotifier._Error:
-            event = select.EPOLLHUP
-
         try:
             self._poller.modify(sock.fileno, event)
         except:
@@ -649,6 +647,86 @@ class AsyncNotifier(object):
 
     def terminate(self):
         self._terminate = True
+
+class _KQueueNotifier(object):
+    """Internal use only.
+    """
+
+    __metaclass__ = MetaSingleton
+
+    def __init__(self):
+        if not hasattr(self, 'poller'):
+            self.poller = select.kqueue()
+            self.fds = {}
+
+    def register(self, fd, event):
+        self.fds[fd] = event
+        self.update(fd, event, select.KQ_EV_ADD)
+
+    def unregister(self, fd):
+        event = self.fds.pop(fd, None)
+        if event is not None:
+            self.update(fd, event, select.KQ_EV_DELETE)
+
+    def modify(self, fd, event):
+        self.unregister(fd)
+        self.register(fd, event)
+
+    def update(self, fd, event, flags):
+        kevents = []
+        if event == AsyncNotifier._Readable:
+            kevents = [select.kevent(fd, filter=select.KQ_FILTER_READ, flags=flags)]
+        elif event == AsyncNotifier._Writable:
+            kevents = [select.kevent(fd, filter=select.KQ_FILTER_WRITE, flags=flags)]
+
+        if kevents:
+            self.poller.control(kevents, 0)
+
+    def poll(self, timeout):
+        kevents = self.poller.control(None, 500, timeout)
+        events = [(kevent.ident, kevent.filter) for kevent in kevents]
+        return events
+
+class _SelectNotifier(object):
+    """Internal use only.
+    """
+
+    __metaclass__ = MetaSingleton
+
+    def __init__(self):
+        if not hasattr(self, 'poller'):
+            self.poller = select.select
+            self.rset = set()
+            self.wset = set()
+            self.xset = set()
+
+    def register(self, fd, event):
+        if event == AsyncNotifier._Readable:
+            self.rset.add(fd)
+        elif event == AsyncNotifier._Writable:
+            self.wset.add(fd)
+        elif event == AsyncNotifier._Error:
+            self.xset.add(fd)
+
+    def unregister(self, fd):
+        self.rset.discard(fd)
+        self.wset.discard(fd)
+        self.xset.discard(fd)
+
+    def modify(self, fd, event):
+        self.unregister(fd)
+        self.register(fd, event)
+
+    def poll(self, timeout):
+        rlist, wlist, xlist = self.poller(self.rset, self.wset, self.xset, timeout)
+        events = {}
+        for fd in rlist:
+            events[fd] = AsyncNotifier._Readable
+        for fd in wlist:
+            events[fd] = AsyncNotifier._Writable
+        for fd in xlist:
+            events[fd] = AsyncNotifier._Error
+        return events.items()
 
 class RepeatTimer(threading.Thread):
     """Timer that calls given function every 'interval' seconds. The
