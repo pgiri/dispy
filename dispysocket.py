@@ -556,6 +556,12 @@ class AsyncNotifier(object):
                 AsyncNotifier._Readable = select.KQ_FILTER_READ
                 AsyncNotifier._Writable = select.KQ_FILTER_WRITE
                 AsyncNotifier._Error = select.KQ_EV_ERROR
+            elif hasattr(select, 'poll'):
+                logging.debug('SELECTING POLL')
+                self._poller = select.poll()
+                AsyncNotifier._Readable = select.POLLIN
+                AsyncNotifier._Writable = select.POLLOUT
+                AsyncNotifier._Error = select.POLLHUP | select.POLLERR
             else:
                 self._poller = _SelectNotifier()
                 AsyncNotifier._Readable = 0x01
