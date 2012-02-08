@@ -1,5 +1,25 @@
 #!/usr/bin/env python
 
+# dispysocket: Asynchronous I/O and coroutine support for dispy;
+# see accompanying 'dispy' for more details.
+
+# Copyright (C) 2012 Giridhar Pemmasani (pgiri@yahoo.com)
+
+# This file is part of dispy.
+
+# dispy is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+
+# dispy is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Lesser General Public License for more details.
+
+# You should have received a copy of the GNU Lesser General Public License
+# along with dispy.  If not, see <http://www.gnu.org/licenses/>.
+
 import time
 import threading
 import functools
@@ -299,11 +319,10 @@ class Coro(object):
             self._generator = func(*args, **kwargs)
         else:
             raise Exception('Invalid coroutine function %s', func.__name__)
-        self._callers = []
         self._id = None
-        self._caller_id = None
         self._state = None
         self._value = None
+        self._stack = []
         self._scheduler = CoroScheduler()
         self._complete = threading.Event()
         self._scheduler._add(self)
@@ -458,23 +477,19 @@ class CoroScheduler(object):
                 try:
                     retval = coro._generator.send(coro._value)
                 except StopIteration:
-                    if coro._callers:
+                    if coro._stack:
                         # return to caller
-                        coro._generator = coro._callers.pop(-1)
-                    elif coro._caller_id is not None:
-                        # return to caller coroutine
-                        caller = self._coros.get(coro._caller_id, None)
-                        if caller is not None:
-                            assert coro._caller_id not in self._running
+                        caller = coro._stack.pop(-1)
+                        if isinstance(caller, Coro):
+                            assert not coro._stack
                             self._sched_cv.acquire()
-                            self._running.add(coro._caller_id)
+                            self._running.add(caller._id)
                             caller._state = CoroScheduler._Running
                             self._sched_cv.release()
                             caller._value = coro._value
-                            coro._caller_id = None
-                        else:
-                            logging.debug('caller %s gone!', coro._caller_id)
-                        self._delete(coro._id)
+                            self._delete(coro._id)
+                        elif inspect.isgenerator(caller):
+                            coro._generator = caller
                     else:
                         coro._complete.set()
                         self._delete(coro._id)
@@ -494,13 +509,13 @@ class CoroScheduler(object):
                         # freeze current coroutine and activate new
                         # coroutine; control is returned to the caller
                         # when new coroutine is done
-                        retval._caller_id = coro._id
+                        assert not retval._stack
+                        retval._stack.append(coro)
                         freeze.append(coro)
                     elif inspect.isgenerator(retval):
-                        # add current generator to the list and
-                        # activate new generator (so we don't need
-                        # recursion to remember the stack)
-                        coro._callers.append(coro._generator)
+                        # push current generator onto stack and
+                        # activate new generator
+                        coro._stack.append(coro._generator)
                         coro._generator = retval
                         coro._value = None
 
@@ -557,7 +572,6 @@ class AsyncNotifier(object):
                 AsyncNotifier._Writable = select.KQ_FILTER_WRITE
                 AsyncNotifier._Error = select.KQ_EV_ERROR
             elif hasattr(select, 'poll'):
-                logging.debug('SELECTING POLL')
                 self._poller = select.poll()
                 AsyncNotifier._Readable = select.POLLIN
                 AsyncNotifier._Writable = select.POLLOUT
