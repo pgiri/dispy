@@ -292,6 +292,8 @@ class _DispyNode(object):
     def run(self):
         while True:
             conn, addr = self.tcp_sock.accept()
+            conn = _DispySocket(conn, certfile=self.certfile, keyfile=self.keyfile, server=True,
+                                blocking=False)
             Coro(self.tcp_serve_task, conn, addr)
 
     def tcp_serve_task(self, conn, addr, coro=None):
@@ -699,8 +701,6 @@ class _DispyNode(object):
 
         # tcp_serve_task starts
         try:
-            conn = _DispySocket(conn, certfile=self.certfile, keyfile=self.keyfile, server=True,
-                                blocking=False)
             req = yield conn.read(len(self.auth_code), coro=coro)
             assert req == self.auth_code
         except:
@@ -1012,6 +1012,7 @@ class _DispyNode(object):
         self.udp_sock.close()
         self.cmd_sock.close()
         self.timer.terminate()
+        self.notifier.join()
         self.notifier.terminate()
         self.coro_scheduler.terminate()
         self.coro_scheduler.join()

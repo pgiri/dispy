@@ -317,7 +317,7 @@ class _Node(object):
                       compute.cleanup)
         msg = 'DEL_COMPUTE:' + cPickle.dumps({'ID':compute.id})
         try:
-            Coro(self.send, 0, msg, reply=False)
+            Coro(self.send, 0, msg, reply=False).value()
         except:
             logging.debug('Deleting computation %s/%s from %s failed',
                           compute.id, compute.name, self.ip_addr)
@@ -767,12 +767,12 @@ class _Cluster(object):
     def job_result_server(self, coro=None):
         while True:
             new_sock, addr = yield self.job_result_sock.accept(coro=coro)
+            new_sock = _DispySocket(new_sock, certfile=self.certfile, keyfile=self.keyfile,
+                                    server=True, blocking=False)
             logging.debug('received job result from %s', str(addr))
             Coro(self.job_result_task, new_sock, addr)
 
     def job_result_task(self, sock, addr, coro=None):
-        sock = _DispySocket(sock, certfile=self.certfile, keyfile=self.keyfile,
-                            server=True, blocking=False)
         try:
             uid, msg = yield sock.read_msg(coro=coro)
             yield sock.write_msg(uid, 'ACK', coro=coro)
@@ -950,6 +950,7 @@ class _Cluster(object):
                 self.cmd_sock = None
                 self.timer.terminate()
                 self.coro_scheduler.terminate()
+                self.notifier.join()
                 self.notifier.terminate()
                 self.shutdown()
                 break
@@ -1541,7 +1542,6 @@ class JobCluster(object):
             if not cleanup:
                 logging.warning('"cleanup" argument is ignored if dest_path is not given')
             compute.cleanup = True
-        time.sleep(1)
         compute.job_result_port = self._cluster.job_result_port
         compute.scheduler_ip_addr = self._cluster.ip_addr
         compute.scheduler_port = self._cluster.port

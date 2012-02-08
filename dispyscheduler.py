@@ -491,7 +491,7 @@ class _Scheduler(object):
             except:
                 logging.warning('Closing node %s failed', node.ip_addr)
 
-    def reschedule_jobs(dead_jobs):
+    def reschedule_jobs(self, dead_jobs):
         # called with _sched_cv locked
         for _job in dead_jobs:
             cluster = self._clusters[_job.compute_id]
@@ -621,8 +621,6 @@ class _Scheduler(object):
 
         def scheduler_task(self, conn, addr, coro=None):
             resp = None
-            conn = _DispySocket(conn, certfile=self.cluster_certfile,
-                                keyfile=self.cluster_keyfile, blocking=False, server=True)
             try:
                 req = yield conn.read(len(self.auth_code), coro=coro)
                 if req != self.auth_code:
@@ -804,6 +802,8 @@ class _Scheduler(object):
         logging.info('Scheduler running at %s:%s', self.ip_addr, self.port)
         while True:
             conn, addr = yield self.scheduler_sock.accept(coro=coro)
+            conn = _DispySocket(conn, certfile=self.cluster_certfile,
+                                keyfile=self.cluster_keyfile, blocking=False, server=True)
             Coro(scheduler_task, self, conn, addr)
 
     def cmd_server(self, coro=None):
@@ -855,7 +855,7 @@ class _Scheduler(object):
                     cluster._compute.nodes.pop(ip_addr, None)
             dead_jobs = [_job for _job in self._sched_jobs.itervalues() \
                          if _job.node is not None and _job.node.ip_addr in dead_nodes]
-            reschedule_jobs(dead_jobs)
+            self.reschedule_jobs(dead_jobs)
             if dead_nodes or dead_jobs:
                 self._sched_cv.notify()
             self._sched_cv.release()
@@ -920,8 +920,6 @@ class _Scheduler(object):
         return node
 
     def job_result_task(self, conn, addr, coro=None):
-        conn = _DispySocket(conn, certfile=self.node_certfile,
-                            keyfile=self.node_keyfile, server=True, blocking=False)
         try:
             uid, msg = yield conn.read_msg(coro=coro)
             yield conn.write_msg(uid, 'ACK', coro=coro)
@@ -999,6 +997,8 @@ class _Scheduler(object):
                 logging.warning('Ignoring results from %s', addr[0])
                 conn.close()
                 continue
+            conn = _DispySocket(conn, certfile=self.node_certfile,
+                                keyfile=self.node_keyfile, server=True, blocking=False)
             Coro(self.job_result_task, conn, addr)
 
     def fast_node_schedule(self):
@@ -1150,6 +1150,7 @@ class _Scheduler(object):
         if select_job_node:
             self.worker_Q.join()
             self.clusters = {}
+        self.notifier.join()
         self.notifier.terminate()
         self.coro_scheduler.terminate()
         self.coro_scheduler.join()
