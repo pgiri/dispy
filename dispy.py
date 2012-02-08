@@ -28,17 +28,14 @@ import inspect
 import stat
 import cPickle
 import threading
-import functools
 import select
 import struct
 import base64
 import logging
-import weakref
 import re
 import ssl
 import hashlib
 import traceback
-import types
 import itertools
 import Queue
 import shelve
@@ -410,37 +407,6 @@ class _JobReply(object):
         self.stdout = None
         self.stderr = None
         self.exception = None
-
-class Tasklet(threading.Thread):
-    def __init__(self, n, task_queue):
-        self.id = n
-        self.task_queue = task_queue
-        threading.Thread.__init__(self)
-        self.daemon = True
-        self.start()
-
-    def run(self):
-        while True:
-            func, args, kwargs = self.task_queue.get(block=True)
-            try:
-                func(*args, **kwargs)
-            except:
-                logging.debug('Executing function "%s" failed', func.__name__)
-                logging.debug(traceback.format_exc())
-                # pass
-            self.task_queue.task_done()
-
-class TaskPool(object):
-    def __init__(self, num_tasks):
-        self.task_queue = Queue.Queue()
-        for n in xrange(num_tasks):
-            Tasklet(n, self.task_queue)
-
-    def add_task(self, func, *args, **kwargs):
-        self.task_queue.put((func, args, kwargs))
-
-    def finish(self):
-        self.task_queue.join()
 
 class _Cluster(object):
     """Internal use only.

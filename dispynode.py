@@ -34,14 +34,13 @@ import cStringIO
 import traceback
 import base64
 import hashlib
-import select
 import atexit
 import logging
 import marshal
 import shelve
 
 from dispy import _DispyJob_, _JobReply, DispyJob, \
-     _Compute, _XferFile, _xor_string, _node_name_ipaddr, TaskPool, _dispy_version
+     _Compute, _XferFile, _xor_string, _node_name_ipaddr, _dispy_version
 
 from dispysocket import _DispySocket, Coro, CoroScheduler, AsyncNotifier, RepeatTimer, MetaSingleton
 
@@ -155,7 +154,7 @@ class _DispyNode(object):
         self.tcp_sock.bind((ip_addr, 0))
         self.address = self.tcp_sock.getsockname()
         self.tcp_sock.listen(5)
-        self.tcp_sock = _DispySocket(self.tcp_sock, blocking=False)
+        self.tcp_sock = _DispySocket(self.tcp_sock)
 
         if dest_path_prefix:
             self.dest_path_prefix = dest_path_prefix.strip().rstrip(os.sep)
@@ -167,7 +166,6 @@ class _DispyNode(object):
         if max_file_size is None:
             max_file_size = MaxFileSize
         self.max_file_size = max_file_size
-        self.task_pool = TaskPool(max(2, int(self.cpus/2.0)))
 
         self.avail_cpus = self.cpus
         self.computations = {}
@@ -203,7 +201,6 @@ class _DispyNode(object):
         self.reply_Q_thread.start()
 
         self.cmd_coro = Coro(self.cmd_server)
-        self.tcp_coro = Coro(self.tcp_server)
         self.udp_coro = Coro(self.udp_server, scheduler_ip_addr)
 
         if self.pulse_interval and self.zombie_interval:
@@ -292,9 +289,9 @@ class _DispyNode(object):
             else:
                 logging.warning('Ignoring ping message from %s', addr[0])
 
-    def tcp_server(self, coro=None):
+    def run(self):
         while True:
-            conn, addr = yield self.tcp_sock.accept(coro=coro)
+            conn, addr = self.tcp_sock.accept()
             Coro(self.tcp_serve_task, conn, addr)
 
     def tcp_serve_task(self, conn, addr, coro=None):
@@ -611,6 +608,7 @@ class _DispyNode(object):
                 logging.debug('Killing job %s', uid)
                 job_info.proc.terminate()
                 # TODO: make sure process is really killed?
+                # called from coroutine, so not good to wait
                 if isinstance(job_info.proc, multiprocessing.Process):
                     job_info.proc.join(1)
                 else:
@@ -622,7 +620,7 @@ class _DispyNode(object):
             reply = _JobReply(_job, self.ip_addr)
             job_info = _DispyJobInfo(reply, reply_addr, compute)
             reply.status = DispyJob.Terminated
-            self._send_job_reply(job_info)
+            Coro(self._send_job_reply, job_info, resending=False)
             return
 
         def retrieve_job_task(conn, uid, msg, addr, coro):
@@ -827,7 +825,7 @@ class _DispyNode(object):
                     compute.pending_results -= 1
                     job_info = _DispyJobInfo(job_result, (compute.scheduler_ip_addr,
                                                           compute.job_result_port), compute)
-                    self.task_pool.add_task(self._send_job_reply, job_info, resend=True)
+                    Coro(self._send_job_reply, job_info, resending=True)
             self.lock.release()
             for compute in zombies:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -879,20 +877,20 @@ class _DispyNode(object):
                     else:
                         job_info.proc.wait()
                 job_info.job_reply = job_reply
-                self._send_job_reply(job_info)
+                Coro(self._send_job_reply, job_info, resending=False).value()
 
-    def _send_job_reply(self, job_info, resend=False):
+    def _send_job_reply(self, job_info, resending=False, coro=None):
         """Internal use only.
         """
         job_reply = job_info.job_reply
         logging.debug('Sending result for job %s (%s) to %s',
                       job_reply.uid, job_reply.status, job_info.reply_addr[0])
         sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
-                            certfile=self.certfile, keyfile=self.keyfile, timeout=5)
+                            certfile=self.certfile, keyfile=self.keyfile, blocking=False)
         try:
-            sock.connect(job_info.reply_addr)
-            sock.write_msg(job_reply.uid, cPickle.dumps(job_reply))
-            uid, ack = sock.read_msg()
+            yield sock.connect(job_info.reply_addr, coro=coro)
+            yield sock.write_msg(job_reply.uid, cPickle.dumps(job_reply), coro=coro)
+            uid, ack = yield sock.read_msg(coro=coro)
             assert ack == 'ACK'
             assert uid == job_reply.uid
         except:
@@ -917,7 +915,7 @@ class _DispyNode(object):
                 self.lock.release()
         finally:
             sock.close()
-            if not resend:
+            if not resending:
                 self.lock.acquire()
                 self.avail_cpus += 1
                 compute = self.computations.get(job_info.compute_id, None)
@@ -933,6 +931,7 @@ class _DispyNode(object):
                     if compute.pending_jobs == 0 and compute.zombie:
                         self.cleanup_computation(compute)
                 self.lock.release()
+        yield None
 
     def cleanup_computation(self, compute):
         # called with lock held
@@ -1078,7 +1077,7 @@ if __name__ == '__main__':
 
     while True:
         try:
-            node.coro_scheduler.join()
+            node.run()
         except KeyboardInterrupt:
             logging.info('Interrupted; terminating')
             try:

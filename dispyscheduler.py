@@ -26,24 +26,18 @@ import os
 import sys
 import time
 import socket
-import inspect
 import stat
 import cPickle
 import threading
-import select
 import struct
 import base64
 import logging
-import weakref
 import re
 import ssl
 import hashlib
 import atexit
 import traceback
-import itertools
 import Queue
-import collections
-import copy
 
 from dispy import _Compute, DispyJob, _DispyJob_, _Node, _JobReply, \
      _xor_string, _parse_nodes, _node_name_ipaddr, _XferFile, _dispy_version
@@ -992,7 +986,7 @@ class _Scheduler(object):
                 cluster.end_time = time.time()
         Coro(self.send_job_result,
              _job.uid, compute.id, cluster.client_scheduler_ip_addr,
-             cluster.client_job_result_port, reply))
+             cluster.client_job_result_port, reply)
         self._sched_cv.notify()
         self._sched_cv.release()
 
