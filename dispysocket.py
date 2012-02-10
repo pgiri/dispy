@@ -34,6 +34,7 @@ import hashlib
 import logging
 import errno
 import platform
+import random
 
 if platform.system() == 'Windows':
     from errno import WSAEINPROGRESS as EINPROGRESS
@@ -107,12 +108,14 @@ class _DispySocket(object):
             self.result[len(self.result):] = self.read_op(data_len - len(self.result))
             if len(self.result) == data_len:
                 self.notifier.modify(self, 0)
+                self.task = None
                 coro.resume(str(self.result))
             elif len(self.result) == plen:
                 # TODO: check for error and delete?
                 logging.warning('socket %s is dead? %s/%s', self.fileno, data_len, len(self.result))
                 self.result = None
                 self.notifier.modify(self, 0)
+                self.task = None
                 coro.resume(None)
 
         self.task = functools.partial(_read, self, coro, data_len)
@@ -137,12 +140,14 @@ class _DispySocket(object):
                 # TODO: close fd, inform coro
                 self.result = None
                 self.notifier.unregister(self)
+                self.task = None
                 coro.throw(*sys.exc_info())
             else:
                 if n > 0:
                     self.result = buffer(self.result, n)
                     if len(self.result) == 0:
                         self.notifier.modify(self, 0)
+                        self.task = None
                         coro.resume(0)
 
         self.task = functools.partial(_write, self, coro)
@@ -162,13 +167,14 @@ class _DispySocket(object):
     def close(self):
         if self.notifier:
             self.notifier.del_fd(self)
-        self.close()
+        self.sock.close()
 
     def async_recvfrom(self, data_len, coro=None, timeout=True):
         def _read(self, coro, data_len):
             self.result, addr = self.sock.recvfrom(data_len)
             self.result = (str(self.result), addr)
             self.notifier.modify(self, 0)
+            self.task = None
             coro.resume(self.result)
 
         self.task = functools.partial(_read, self, coro, data_len)
@@ -192,9 +198,11 @@ class _DispySocket(object):
                 # TODO: close socket, inform coro
                 logging.debug('write error', self.fileno)
                 self.notifier.unregister(self)
+                self.task = None
                 coro.throw(*sys.exc_info())
             else:
                 self.notifier.modify(self, 0)
+                self.task = None
                 coro.resume(self.result)
 
         self.task = functools.partial(_sendto, self, data, addr, coro)
@@ -212,6 +220,7 @@ class _DispySocket(object):
             conn, addr = self.sock.accept()
             self.result = (conn, addr)
             self.notifier.modify(self, 0)
+            self.task = None
             coro.resume(self.result)
 
         self.task = functools.partial(_accept, self, coro)
@@ -230,6 +239,7 @@ class _DispySocket(object):
             err = self.sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
             if not err:
                 self.notifier.modify(self, 0)
+                self.task = None
                 coro.resume(0)
             else:
                 logging.debug('connect error: %s', err)
@@ -331,19 +341,19 @@ class Coro(object):
         if self._scheduler:
             self._scheduler._suspend(self._id)
         else:
-            logging.warning('Coroutine %s removed?', self.name)
+            logging.warning('Coroutine %s/%s removed?', self.name, self._id)
 
     def resume(self, value):
         if self._scheduler:
             self._scheduler._resume(self._id, value)
         else:
-            logging.warning('Coroutine %s removed?', self.name)
+            logging.warning('Coroutine %s/%s removed?', self.name, self._id)
       
     def throw(self, *args):
         if self._scheduler:
             self._scheduler._throw(self._id, *args)
         else:
-            logging.warning('Coroutine %s removed?', self.name)
+            logging.warning('Coroutine %s/%s removed?', self.name, self._id)
 
     def value(self):
         self._complete.wait()
@@ -374,6 +384,7 @@ class CoroScheduler(object):
         if not hasattr(self, '_coros'):
             self._coros = {}
             self._running = set()
+            self._resumed = set()
             self._suspended = set()
             self._frozen = set()
             self._sched_cv = threading.Condition()
@@ -400,29 +411,37 @@ class CoroScheduler(object):
         coro = self._coros.get(cid, None)
         if coro is None:
             self._sched_cv.release()
-            logging.warning('Invalid coroutine %s to suspend: %s', cid, coro._state)
+            logging.warning('invalid coroutine %s to suspend', cid)
+            assert False
             return
-        if coro._state == CoroScheduler._Running or coro._state == CoroScheduler._Resumed:
-            self._running.discard(cid)
-        else:
-            # TODO: fix
-            self._running.discard(cid)
-            logging.warning('coro %s is in invalid state %s for suspend', coro._id, coro._state)
-        self._suspended.add(cid)
+        if coro._state != CoroScheduler._Running:
+            logging.warning('invalid coroutine %s/%s to suspend', coro.name, coro._id, coro._state)
+            assert False
+        self._running.discard(cid)
+        assert cid not in self._resumed
         coro._state = CoroScheduler._Suspended
+        self._suspended.add(cid)
         self._sched_cv.release()
 
     def _resume(self, cid, value):
         self._sched_cv.acquire()
         coro = self._coros.get(cid, None)
-        if coro is None or coro._state not in [CoroScheduler._Suspended, CoroScheduler._Stopped]:
+        if coro is None:
             self._sched_cv.release()
-            logging.warning('Invalid coroutine %s to resume: %s', cid, coro._state)
+            logging.warning('invalid coroutine %s to resume', cid)
+            assert False
             return
-        coro._value = value
+        if coro._state in [CoroScheduler._Suspended, CoroScheduler._Stopped]:
+            coro._value = value
+        else:
+            logging.warning('invalid coroutine %s/%s to resume: %s',
+                            coro.name, cid, coro._state)
+            # assert False
+        # assert cid not in self._resumed
         self._suspended.discard(cid)
+        self._running.discard(cid)
         coro._state = CoroScheduler._Resumed
-        self._running.add(cid)
+        self._resumed.add(cid)
         self._sched_cv.notify()
         self._sched_cv.release()
 
@@ -431,11 +450,14 @@ class CoroScheduler(object):
         coro = self._coros.get(cid, None)
         if coro is None:
             self._sched_cv.release()
-            logging.warning('Invalid coroutine %s to delete', cid)
+            logging.warning('invalid coroutine %s to delete', cid)
+            assert False
             return
-        if coro._state == CoroScheduler._Running or coro._state == CoroScheduler._Resumed:
+        if coro._state == CoroScheduler._Running:
             self._running.discard(cid)
-        if coro._state == CoroScheduler._Suspended or coro._state == CoroScheduler._Stopped:
+        elif coro._state == CoroScheduler._Resumed:
+            self._resumed.discard(cid)
+        elif coro._state == CoroScheduler._Suspended or coro._state == CoroScheduler._Stopped:
             self._suspended.discard(cid)
         coro._scheduler = None
         del self._coros[cid]
@@ -447,7 +469,7 @@ class CoroScheduler(object):
         self._sched_cv.acquire()
         coro = self._coros.get(cid, None)
         if coro is None or coro._state != CoroScheduler._Stopped:
-            logging.warning('Invalid coroutine %s to throw: %s', cid, coro._state)
+            logging.warning('invalid coroutine %s to throw: %s', cid, coro._state)
         else:
             coro._generator.throw(*args)
             self._suspended.discard(coro._id)
@@ -459,11 +481,16 @@ class CoroScheduler(object):
     def _run(self):
         while True:
             self._sched_cv.acquire()
-            while not self._running and not self._terminate:
+            while not self._running and not self._resumed and not self._terminate:
                 self._sched_cv.wait()
             if self._terminate:
                 self._sched_cv.release()
                 break
+            running = [self._coros.get(cid, None) for cid in self._resumed]
+            for coro in running:
+                coro._state = CoroScheduler._Running
+            self._running.update(self._resumed)
+            self._resumed = set()
             running = [self._coros.get(cid, None) for cid in self._running]
             self._sched_cv.release()
 
@@ -473,13 +500,10 @@ class CoroScheduler(object):
                     continue
                 assert coro._state in [CoroScheduler._Running, CoroScheduler._Resumed], \
                        'coro %s/%s is in invalid state: %s' % (coro.name, coro._id, coro._state)
-                self._sched_cv.acquire()
-                if coro._state == CoroScheduler._Resumed:
-                    coro._state = CoroScheduler._Running
-                self._sched_cv.release()
                 try:
                     retval = coro._generator.send(coro._value)
                 except StopIteration:
+                    self._sched_cv.acquire()
                     if coro._stack:
                         # return to caller
                         caller = coro._stack.pop(-1)
@@ -488,14 +512,15 @@ class CoroScheduler(object):
                             self._sched_cv.acquire()
                             caller._state = CoroScheduler._Running
                             self._running.add(caller._id)
-                            self._sched_cv.release()
                             caller._value = coro._value
                             self._delete(coro._id)
+                            self._sched_cv.release()
                         elif inspect.isgenerator(caller):
                             coro._generator = caller
                     else:
                         coro._complete.set()
                         self._delete(coro._id)
+                    self._sched_cv.acquire()
                 except:
                     logging.warning(traceback.format_exc())
                     coro._generator.throw(*sys.exc_info())
@@ -513,9 +538,12 @@ class CoroScheduler(object):
                         # freeze current coroutine and activate new
                         # coroutine; control is returned to the caller
                         # when new coroutine is done
+                        freeze.append(coro)
                         assert not retval._stack
                         retval._stack.append(coro)
-                        freeze.append(coro)
+                        retval._value = None
+                        retval._state = CoroScheduler._Running
+                        self._running.append(retval)
                     elif inspect.isgenerator(retval):
                         # push current generator onto stack and
                         # activate new generator
@@ -540,6 +568,11 @@ class CoroScheduler(object):
     def join(self):
         self._complete.wait()
 
+    def wake(self):
+        self._sched_cv.acquire()
+        self._sched_cv.notify()
+        self._sched_cv.release()
+
 class AsyncNotifier(object):
     """Asynchronous I/O completion, to be used with _DispySocket (and
     coroutines).
@@ -562,7 +595,7 @@ class AsyncNotifier(object):
             cls.__instance = cls(*args, **kwargs)
         return cls.__instance
 
-    def __init__(self, poll_interval=1, fd_timeout=5):
+    def __init__(self, poll_interval=1, fd_timeout=10):
         if not hasattr(self, '_poller'):
             assert fd_timeout >= 5 * poll_interval
 

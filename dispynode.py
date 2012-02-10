@@ -304,7 +304,7 @@ class _DispyNode(object):
                 logging.debug('Ignoring job request from %s', addr[0])
                 logging.debug(traceback.format_exc())
                 conn.close()
-                return
+                raise StopIteration
             self.lock.acquire()
             compute = self.computations.get(_job.compute_id, None)
             if compute is not None and compute.scheduler_ip_addr != self.scheduler_ip_addr:
@@ -321,7 +321,7 @@ class _DispyNode(object):
                 except:
                     pass
                 conn.close()
-                return
+                raise StopIteration
             elif compute is None:
                 logging.warning('Invalid computation %s', _job.compute_id)
                 resp = 'NAK (invalid computation %s)' % _job.compute_id
@@ -330,7 +330,7 @@ class _DispyNode(object):
                 except:
                     pass
                 conn.close()
-                return
+                raise StopIteration
 
             reply_addr = (addr[0], self.computations[_job.compute_id].job_result_port)
             logging.debug('New job id %s from %s', _job.uid, addr[0])
@@ -364,7 +364,7 @@ class _DispyNode(object):
                 except:
                     logging.warning('Failed to send response for new job to %s',
                                     str(addr))
-                    return
+                    raise StopIteration
                 finally:
                     conn.close()
                 job_info.job_reply.status = DispyJob.Running
@@ -375,7 +375,7 @@ class _DispyNode(object):
                 self.job_infos[_job.uid] = job_info
                 self.lock.release()
                 job_info.proc.start()
-                return
+                raise StopIteration
             elif compute.type == _Compute.prog_type:
                 prog_thread = threading.Thread(target=self.__job_program,
                                                args=(_job, reply_addr))
@@ -384,7 +384,7 @@ class _DispyNode(object):
                 except:
                     logging.warning('Failed to send response for new job to %s',
                                     str(addr))
-                    return
+                    raise StopIteration
                 finally:
                     conn.close()
                 self.lock.acquire()
@@ -392,7 +392,7 @@ class _DispyNode(object):
                 compute.pending_jobs += 1
                 self.lock.release()
                 prog_thread.start()
-                return
+                raise StopIteration
             else:
                 resp = 'NAK (invalid computation type "%s")' % compute.type
                 try:
@@ -414,7 +414,7 @@ class _DispyNode(object):
                 except:
                     logging.warning('Failed to send reply to %s', str(addr))
                 conn.close()
-                return
+                raise StopIteration
             self.lock.acquire()
             if not ((self.scheduler_ip_addr is None) or
                     (self.scheduler_ip_addr == compute.scheduler_ip_addr and \
@@ -429,7 +429,7 @@ class _DispyNode(object):
                     pass
                 self.lock.release()
                 conn.close()
-                return
+                raise StopIteration
 
             if compute.dest_path and isinstance(compute.dest_path, str):
                 compute.dest_path = compute.dest_path.strip(os.sep)
@@ -459,7 +459,7 @@ class _DispyNode(object):
                     logging.warning('Failed to send reply to %s', str(addr))
                 self.lock.release()
                 conn.close()
-                return
+                raise StopIteration
             if compute.id in self.computations:
                 logging.warning('Computation "%s" (%s) is being replaced',
                                 compute.name, compute.id)
@@ -485,7 +485,7 @@ class _DispyNode(object):
                     except:
                         logging.warning('Failed to send reply to %s', str(addr))
                     conn.close()
-                    return
+                    raise StopIteration
                 compute.code = marshal.dumps(code)
             elif compute.type == _Compute.prog_type:
                 assert not compute.code
@@ -534,12 +534,12 @@ class _DispyNode(object):
             except:
                 logging.debug('Ignoring file trasnfer request from %s', addr[0])
                 conn.close()
-                return
+                raise StopIteration
             resp = ''
             if xf.compute_id not in self.computations:
                 logging.error('computation "%s" is invalid' % xf.compute_id)
                 conn.close()
-                return
+                raise StopIteration
             tgt = os.path.join(self.computations[xf.compute_id].dest_path,
                                os.path.basename(xf.name))
             if os.path.isfile(tgt):
@@ -588,7 +588,7 @@ class _DispyNode(object):
                 except:
                     logging.debug('Could not send reply for "%s"', xf.name)
                 conn.close()
-            return # xfer_file_task
+            raise StopIteration # xfer_file_task
 
         def terminate_job_task(uid, msg, addr, coro):
             self.lock.acquire()
@@ -599,13 +599,13 @@ class _DispyNode(object):
                 job_info = self.job_infos.pop(uid, None)
             except:
                 logging.debug('Ignoring job request from %s', addr[0])
-                return
+                raise StopIteration
             finally:
                 self.lock.release()
             if job_info is None:
                 logging.debug('Job %s completed; ignoring cancel request from %s',
                               uid, addr[0])
-                return
+                raise StopIteration
             try:
                 logging.debug('Killing job %s', uid)
                 job_info.proc.terminate()
@@ -623,7 +623,6 @@ class _DispyNode(object):
             job_info = _DispyJobInfo(reply, reply_addr, compute)
             reply.status = DispyJob.Terminated
             Coro(self._send_job_reply, job_info, resending=False)
-            return
 
         def retrieve_job_task(conn, uid, msg, addr, coro):
             try:
@@ -1012,10 +1011,8 @@ class _DispyNode(object):
         self.udp_sock.close()
         self.cmd_sock.close()
         self.timer.terminate()
-        self.notifier.join()
         self.notifier.terminate()
         self.coro_scheduler.terminate()
-        self.coro_scheduler.join()
 
 if __name__ == '__main__':
     import argparse

@@ -1072,6 +1072,7 @@ class _Scheduler(object):
             self._sched_cv.acquire()
             # n = sum(len(cluster._jobs) for cluster in self._clusters.itervalues())
             # assert self.unsched_jobs == n, '%s != %s' % (self.unsched_jobs, n)
+            self._sched_cv.wait()
             if self._terminate_scheduler:
                 self._sched_cv.release()
                 break
@@ -1098,7 +1099,6 @@ class _Scheduler(object):
                 self.unsched_jobs -= 1
                 node.busy += 1
                 Coro(self.run_job, _job, cluster)
-            self._sched_cv.wait()
             self._sched_cv.release()
         self._sched_cv.acquire()
         logging.debug('Scheduler quitting (%s / %s)',
