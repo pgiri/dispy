@@ -42,7 +42,7 @@ import shelve
 from dispy import _DispyJob_, _JobReply, DispyJob, \
      _Compute, _XferFile, _xor_string, _node_name_ipaddr, _dispy_version
 
-from dispysocket import _DispySocket, Coro, CoroScheduler, AsyncNotifier, RepeatTimer, MetaSingleton
+from dispysocket import _DispySocket, Coro, AsynCoro, RepeatTimer, MetaSingleton
 
 MaxFileSize = 102400000
 
@@ -147,8 +147,7 @@ class _DispyNode(object):
         self.scheduler_port = scheduler_port
         self.pulse_interval = None
 
-        self.coro_scheduler = CoroScheduler()
-        self.notifier = AsyncNotifier()
+        self.asyncoro = AsynCoro()
 
         self.tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.tcp_sock.bind((ip_addr, 0))
@@ -1011,8 +1010,7 @@ class _DispyNode(object):
         self.udp_sock.close()
         self.cmd_sock.close()
         self.timer.terminate()
-        self.notifier.terminate()
-        self.coro_scheduler.terminate()
+        self.asyncoro.terminate()
 
 if __name__ == '__main__':
     import argparse

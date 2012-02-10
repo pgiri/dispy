@@ -98,7 +98,7 @@ class _DispySocket(object):
             self.read_msg = self.async_read_msg
             self.write_msg = self.async_write_msg
 
-            self.notifier = AsyncNotifier.instance()
+            self.notifier = _AsyncNotifier.instance()
             self.notifier.add_fd(self)
 
     def async_read(self, data_len, coro=None):
@@ -122,7 +122,7 @@ class _DispySocket(object):
         self.coro = coro
         self.timestamp = time.time()
         coro.suspend()
-        self.notifier.modify(self, AsyncNotifier._Readable)
+        self.notifier.modify(self, _AsyncNotifier._Readable)
 
     def sync_read(self, data_len):
         self.result = bytearray()
@@ -154,7 +154,7 @@ class _DispySocket(object):
         self.coro = coro
         self.timestamp = time.time()
         coro.suspend()
-        self.notifier.modify(self, AsyncNotifier._Writable)
+        self.notifier.modify(self, _AsyncNotifier._Writable)
 
     def sync_write(self, data):
         self.result = buffer(data, 0)
@@ -182,7 +182,7 @@ class _DispySocket(object):
         if timeout:
             self.timestamp = time.time()
         coro.suspend()
-        self.notifier.modify(self, AsyncNotifier._Readable)
+        self.notifier.modify(self, _AsyncNotifier._Readable)
 
     def sync_recvfrom(self, data_len):
         self.result = self.sock.recvfrom(data_len)
@@ -209,7 +209,7 @@ class _DispySocket(object):
         self.coro = coro
         self.timestamp = time.time()
         coro.suspend()
-        self.notifier.modify(self, AsyncNotifier._Writable)
+        self.notifier.modify(self, _AsyncNotifier._Writable)
 
     def sync_sendto(self, data, addr):
         self.result = self.sock.sendto(data, addr)
@@ -227,7 +227,7 @@ class _DispySocket(object):
         self.coro = coro
         self.timestamp = None
         coro.suspend()
-        self.notifier.modify(self, AsyncNotifier._Readable)
+        self.notifier.modify(self, _AsyncNotifier._Readable)
 
     def sync_accept(self):
         conn, addr = self.sock.accept()
@@ -248,7 +248,7 @@ class _DispySocket(object):
         self.coro = coro
         self.timestamp = time.time()
         coro.suspend()
-        self.notifier.modify(self, AsyncNotifier._Writable)
+        self.notifier.modify(self, _AsyncNotifier._Writable)
         try:
             self.sock.connect((host, port))
         except socket.error, e:
@@ -308,7 +308,7 @@ class _DispySocket(object):
 
 class Coro(object):
     """'Coroutine' factory to build coroutines to be scheduled with
-    CoroScheduler. Automatically starts executing 'func'.  The
+    AsynCoro. Automatically starts executing 'func'.  The
     function definition should have 'coro' keyword argument set to
     None. When the function is called, that argument will be this
     object.
@@ -333,7 +333,7 @@ class Coro(object):
         self._state = None
         self._value = None
         self._stack = []
-        self._scheduler = CoroScheduler()
+        self._scheduler = AsynCoro()
         self._complete = threading.Event()
         self._scheduler._add(self)
 
@@ -359,18 +359,14 @@ class Coro(object):
         self._complete.wait()
         return self._value
 
-class CoroScheduler(object):
+class AsynCoro(object):
     """'Coroutine' scheduler. The only properties available to users
     are 'terminate' and 'join' methods.
     """
 
     __metaclass__ = MetaSingleton
 
-    @classmethod
-    def instance(cls, *args, **kwargs):
-        if not hasattr(cls, '__instance'):
-            cls.__instance = cls(*args, **kwargs)
-        return cls.__instance
+    __instance = None
 
     _Running = 1
     _Suspended = 2
@@ -382,6 +378,7 @@ class CoroScheduler(object):
 
     def __init__(self):
         if not hasattr(self, '_coros'):
+            AsynCoro.__instance = self
             self._coros = {}
             self._running = set()
             self._resumed = set()
@@ -395,13 +392,18 @@ class CoroScheduler(object):
             self._scheduler.daemon = True
             self._scheduler.start()
 
+            self.notifier = _AsyncNotifier()
+
+    def instance(self):
+        return self.__instance
+
     def _add(self, coro):
-        coro._id = CoroScheduler._coro_id
+        coro._id = AsynCoro._coro_id
         self._sched_cv.acquire()
-        CoroScheduler._coro_id += 1
+        AsynCoro._coro_id += 1
         self._coros[coro._id] = coro
         self._complete.clear()
-        coro._state = CoroScheduler._Suspended
+        coro._state = AsynCoro._Suspended
         self._suspended.add(coro._id)
         self._sched_cv.release()
         self._resume(coro._id, None)
@@ -414,12 +416,12 @@ class CoroScheduler(object):
             logging.warning('invalid coroutine %s to suspend', cid)
             assert False
             return
-        if coro._state != CoroScheduler._Running:
+        if coro._state != AsynCoro._Running:
             logging.warning('invalid coroutine %s/%s to suspend', coro.name, coro._id, coro._state)
             assert False
         self._running.discard(cid)
         assert cid not in self._resumed
-        coro._state = CoroScheduler._Suspended
+        coro._state = AsynCoro._Suspended
         self._suspended.add(cid)
         self._sched_cv.release()
 
@@ -431,7 +433,7 @@ class CoroScheduler(object):
             logging.warning('invalid coroutine %s to resume', cid)
             assert False
             return
-        if coro._state in [CoroScheduler._Suspended, CoroScheduler._Stopped]:
+        if coro._state in [AsynCoro._Suspended, AsynCoro._Stopped]:
             coro._value = value
         else:
             logging.warning('invalid coroutine %s/%s to resume: %s',
@@ -440,7 +442,7 @@ class CoroScheduler(object):
         # assert cid not in self._resumed
         self._suspended.discard(cid)
         self._running.discard(cid)
-        coro._state = CoroScheduler._Resumed
+        coro._state = AsynCoro._Resumed
         self._resumed.add(cid)
         self._sched_cv.notify()
         self._sched_cv.release()
@@ -453,11 +455,11 @@ class CoroScheduler(object):
             logging.warning('invalid coroutine %s to delete', cid)
             assert False
             return
-        if coro._state == CoroScheduler._Running:
+        if coro._state == AsynCoro._Running:
             self._running.discard(cid)
-        elif coro._state == CoroScheduler._Resumed:
+        elif coro._state == AsynCoro._Resumed:
             self._resumed.discard(cid)
-        elif coro._state == CoroScheduler._Suspended or coro._state == CoroScheduler._Stopped:
+        elif coro._state == AsynCoro._Suspended or coro._state == AsynCoro._Stopped:
             self._suspended.discard(cid)
         coro._scheduler = None
         del self._coros[cid]
@@ -468,12 +470,12 @@ class CoroScheduler(object):
     def _throw(self, cid, *args):
         self._sched_cv.acquire()
         coro = self._coros.get(cid, None)
-        if coro is None or coro._state != CoroScheduler._Stopped:
+        if coro is None or coro._state != AsynCoro._Stopped:
             logging.warning('invalid coroutine %s to throw: %s', cid, coro._state)
         else:
             coro._generator.throw(*args)
             self._suspended.discard(coro._id)
-            coro._state = CoroScheduler._Resumed
+            coro._state = AsynCoro._Resumed
             self._running.add(coro._id)
             self._sched_cv.notify()
         self._sched_cv.release()
@@ -488,7 +490,7 @@ class CoroScheduler(object):
                 break
             running = [self._coros.get(cid, None) for cid in self._resumed]
             for coro in running:
-                coro._state = CoroScheduler._Running
+                coro._state = AsynCoro._Running
             self._running.update(self._resumed)
             self._resumed = set()
             running = [self._coros.get(cid, None) for cid in self._running]
@@ -498,7 +500,7 @@ class CoroScheduler(object):
             for coro in running:
                 if coro is None:
                     continue
-                assert coro._state in [CoroScheduler._Running, CoroScheduler._Resumed], \
+                assert coro._state in [AsynCoro._Running, AsynCoro._Resumed], \
                        'coro %s/%s is in invalid state: %s' % (coro.name, coro._id, coro._state)
                 try:
                     retval = coro._generator.send(coro._value)
@@ -510,7 +512,7 @@ class CoroScheduler(object):
                         if isinstance(caller, Coro):
                             assert not coro._stack
                             self._sched_cv.acquire()
-                            caller._state = CoroScheduler._Running
+                            caller._state = AsynCoro._Running
                             self._running.add(caller._id)
                             caller._value = coro._value
                             self._delete(coro._id)
@@ -527,12 +529,12 @@ class CoroScheduler(object):
                     self._delete(coro._id)
                 else:
                     self._sched_cv.acquire()
-                    if coro._state == CoroScheduler._Suspended:
-                        coro._state = CoroScheduler._Stopped
+                    if coro._state == AsynCoro._Suspended:
+                        coro._state = AsynCoro._Stopped
                     # if this coroutine is suspended, don't update the
                     # value; it will be updated with the value with
                     # which it is resumed
-                    if coro._state == CoroScheduler._Running:
+                    if coro._state == AsynCoro._Running:
                         coro._value = retval
                     if isinstance(retval, Coro):
                         # freeze current coroutine and activate new
@@ -542,7 +544,7 @@ class CoroScheduler(object):
                         assert not retval._stack
                         retval._stack.append(coro)
                         retval._value = None
-                        retval._state = CoroScheduler._Running
+                        retval._state = AsynCoro._Running
                         self._running.append(retval)
                     elif inspect.isgenerator(retval):
                         # push current generator onto stack and
@@ -554,12 +556,13 @@ class CoroScheduler(object):
 
             self._sched_cv.acquire()
             for coro in freeze:
-                coro._state = CoroScheduler._Frozen
+                coro._state = AsynCoro._Frozen
                 self._running.discard(coro._id)
             self._sched_cv.release()
         self._complete.set()
 
     def terminate(self):
+        self.notifier.terminate()
         self._sched_cv.acquire()
         self._terminate = True
         self._sched_cv.notify()
@@ -573,7 +576,7 @@ class CoroScheduler(object):
         self._sched_cv.notify()
         self._sched_cv.release()
 
-class AsyncNotifier(object):
+class _AsyncNotifier(object):
     """Asynchronous I/O completion, to be used with _DispySocket (and
     coroutines).
 
@@ -601,24 +604,24 @@ class AsyncNotifier(object):
 
             if hasattr(select, 'epoll'):
                 self._poller = select.epoll()
-                AsyncNotifier._Readable = select.EPOLLIN
-                AsyncNotifier._Writable = select.EPOLLOUT
-                AsyncNotifier._Error = select.EPOLLHUP | select.EPOLLERR
+                _AsyncNotifier._Readable = select.EPOLLIN
+                _AsyncNotifier._Writable = select.EPOLLOUT
+                _AsyncNotifier._Error = select.EPOLLHUP | select.EPOLLERR
             elif hasattr(select, 'kqueue'):
                 self._poller = _KQueueNotifier()
-                AsyncNotifier._Readable = select.KQ_FILTER_READ
-                AsyncNotifier._Writable = select.KQ_FILTER_WRITE
-                AsyncNotifier._Error = select.KQ_EV_ERROR
+                _AsyncNotifier._Readable = select.KQ_FILTER_READ
+                _AsyncNotifier._Writable = select.KQ_FILTER_WRITE
+                _AsyncNotifier._Error = select.KQ_EV_ERROR
             elif hasattr(select, 'poll'):
                 self._poller = select.poll()
-                AsyncNotifier._Readable = select.POLLIN
-                AsyncNotifier._Writable = select.POLLOUT
-                AsyncNotifier._Error = select.POLLHUP | select.POLLERR
+                _AsyncNotifier._Readable = select.POLLIN
+                _AsyncNotifier._Writable = select.POLLOUT
+                _AsyncNotifier._Error = select.POLLHUP | select.POLLERR
             else:
                 self._poller = _SelectNotifier()
-                AsyncNotifier._Readable = 0x01
-                AsyncNotifier._Writable = 0x04
-                AsyncNotifier._Error = 0x10
+                _AsyncNotifier._Readable = 0x01
+                _AsyncNotifier._Writable = 0x04
+                _AsyncNotifier._Error = 0x10
 
             self._poll_interval = poll_interval
             self._fd_timeout = fd_timeout
@@ -639,29 +642,32 @@ class AsyncNotifier(object):
             self._lock.acquire()
             events = [(self._fds.get(fileno, None), event) for fileno, event in events]
             self._lock.release()
-            for fd, evnt in events:
-                if fd is None:
-                    logging.debug('Invalid fd!')
-                    continue
-                if event == AsyncNotifier._Readable:
-                    # logging.debug('fd %s is readable', fd.fileno)
-                    fd.timestamp = now
-                    if fd.task is None:
-                        logging.error('fd %s is not registered?', fd.fileno)
-                    else:
-                        fd.task()
-                elif event == AsyncNotifier._Writable:
-                    # logging.debug('fd %s is writable', fd.fileno)
-                    fd.timestamp = now
-                    if fd.task is None:
-                        logging.error('fd %s is not registered?', fd.fileno)
-                    else:
-                        fd.task()
-                elif event == AsyncNotifier._Error:
-                    # logging.debug('Error on %s', fd.fileno)
-                    # TODO: figure out what to do (e.g., register also for
-                    # HUP and close?)
-                    continue
+            try:
+                for fd, evnt in events:
+                    if fd is None:
+                        logging.debug('Invalid fd!')
+                        continue
+                    if event == _AsyncNotifier._Readable:
+                        # logging.debug('fd %s is readable', fd.fileno)
+                        fd.timestamp = now
+                        if fd.task is None:
+                            logging.error('fd %s is not registered?', fd.fileno)
+                        else:
+                            fd.task()
+                    elif event == _AsyncNotifier._Writable:
+                        # logging.debug('fd %s is writable', fd.fileno)
+                        fd.timestamp = now
+                        if fd.task is None:
+                            logging.error('fd %s is not registered?', fd.fileno)
+                        else:
+                            fd.task()
+                    elif event == _AsyncNotifier._Error:
+                        # logging.debug('Error on %s', fd.fileno)
+                        # TODO: figure out what to do (e.g., register also for
+                        # HUP and close?)
+                        continue
+            except:
+                pass
             if (now - last_timeout) >= self._fd_timeout:
                 last_timeout = now
                 self._lock.acquire()
@@ -676,7 +682,7 @@ class AsyncNotifier(object):
                 except:
                     logging.debug(traceback.format_exc())
                 self._lock.release()
-        logging.debug('AsyncNotifier terminated')
+        logging.debug('_AsyncNotifier terminated')
 
     def add_fd(self, fd):
         self._lock.acquire()
@@ -743,9 +749,9 @@ class _KQueueNotifier(object):
 
     def update(self, fid, event, flags):
         kevents = []
-        if event == AsyncNotifier._Readable:
+        if event == _AsyncNotifier._Readable:
             kevents = [select.kevent(fid, filter=select.KQ_FILTER_READ, flags=flags)]
-        elif event == AsyncNotifier._Writable:
+        elif event == _AsyncNotifier._Writable:
             kevents = [select.kevent(fid, filter=select.KQ_FILTER_WRITE, flags=flags)]
 
         if kevents:
@@ -770,11 +776,11 @@ class _SelectNotifier(object):
             self.xset = set()
 
     def register(self, fid, event):
-        if event == AsyncNotifier._Readable:
+        if event == _AsyncNotifier._Readable:
             self.rset.add(fid)
-        elif event == AsyncNotifier._Writable:
+        elif event == _AsyncNotifier._Writable:
             self.wset.add(fid)
-        elif event == AsyncNotifier._Error:
+        elif event == _AsyncNotifier._Error:
             self.xset.add(fid)
 
     def unregister(self, fid):
@@ -790,11 +796,11 @@ class _SelectNotifier(object):
         rlist, wlist, xlist = self.poller(self.rset, self.wset, self.xset, timeout)
         events = {}
         for fid in rlist:
-            events[fid] = AsyncNotifier._Readable
+            events[fid] = _AsyncNotifier._Readable
         for fid in wlist:
-            events[fid] = AsyncNotifier._Writable
+            events[fid] = _AsyncNotifier._Writable
         for fid in xlist:
-            events[fid] = AsyncNotifier._Error
+            events[fid] = _AsyncNotifier._Error
         return events.iteritems()
 
 class RepeatTimer(threading.Thread):

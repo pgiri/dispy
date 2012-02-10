@@ -42,7 +42,7 @@ import shelve
 import datetime
 import atexit
 
-from dispysocket import _DispySocket, Coro, CoroScheduler, AsyncNotifier, RepeatTimer, MetaSingleton
+from dispysocket import _DispySocket, Coro, AsynCoro, RepeatTimer, MetaSingleton
 
 _dispy_version = '1.3'
 
@@ -350,7 +350,6 @@ class _DispyJob_(object):
                     if not dep.endswith('.py'):
                         logging.warning('Invalid module "%s" - must be python source.' % dep)
                         continue
-                        #raise Exception('Invalid module "%s" - must be python source.' % dep)
                 if dep in depend_ids:
                     continue
                 try:
@@ -359,7 +358,6 @@ class _DispyJob_(object):
                 except:
                     logging.warning('File "%s" is not valid' % dep)
                     continue
-                    # raise Exception('File "%s" is not valid' % dep)
                 sbuf = os.stat(dep)
                 # TODO: Check/limit size
                 fd = open(dep, 'rb')
@@ -418,8 +416,7 @@ class _Cluster(object):
     def __init__(self, ip_addr=None, port=None, node_port=None,
                  secret='', keyfile=None, certfile=None, shared=False, fault_recover_file=None):
         if not hasattr(self, 'ip_addr'):
-            self.coro_scheduler = CoroScheduler()
-            self.notifier = AsyncNotifier()
+            self.asyncoro = AsynCoro()
             atexit.register(self._shutdown)
             if ip_addr:
                 ip_addr = _node_name_ipaddr(ip_addr)[1]
@@ -1234,8 +1231,7 @@ class _Cluster(object):
             self.worker_Q.put((99, None, None))
             self.worker_Q.join()
         self.timer.terminate()
-        self.coro_scheduler.terminate()
-        self.notifier.terminate()
+        self.asyncoro.terminate()
         logging.debug('shutdown complete')
 
     def stats(self, compute, wall_time=None):

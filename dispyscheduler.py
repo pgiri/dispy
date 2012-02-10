@@ -42,7 +42,7 @@ import Queue
 from dispy import _Compute, DispyJob, _DispyJob_, _Node, _JobReply, \
      _xor_string, _parse_nodes, _node_name_ipaddr, _XferFile, _dispy_version
 
-from dispysocket import _DispySocket, Coro, CoroScheduler, AsyncNotifier, RepeatTimer, MetaSingleton
+from dispysocket import _DispySocket, Coro, AsynCoro, RepeatTimer, MetaSingleton
 
 from dispynode import _same_file
 
@@ -159,8 +159,7 @@ class _Scheduler(object):
             worker_thread.daemon = True
             worker_thread.start()
 
-            self.coro_scheduler = CoroScheduler()
-            self.notifier = AsyncNotifier()
+            self.asyncoro = AsynCoro()
 
             self.cmd_sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                          auth_code=self.auth_code, blocking=False)
@@ -1150,10 +1149,7 @@ class _Scheduler(object):
         if select_job_node:
             self.worker_Q.join()
             self.clusters = {}
-        self.notifier.join()
-        self.notifier.terminate()
-        self.coro_scheduler.terminate()
-        self.coro_scheduler.join()
+        self.asyncoro.terminate()
 
     def stats(self):
         print
