@@ -532,12 +532,12 @@ class _Cluster(object):
             self.last_pulse_time = self.last_ping_time = time.time()
             self.timer = RepeatTimer(timeout, self.timer_task)
 
-    def send_ping_cluster(self, cluster):
-        # called with _sched_cv locked
+    def send_ping_cluster(self, cluster, coro=None):
+        # generator
         ping_request = cPickle.dumps({'scheduler_ip_addr':self.ip_addr,
                                       'scheduler_port':self.port, 'version':_dispy_version})
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock = DispySocket(sock, blocking=True, timeout=1)
+        sock = DispySocket(sock, blocking=False)
         for node_spec, node_info in cluster._compute.node_spec.iteritems():
             if node_spec.find('*') >= 0:
                 port = node_info['port']
@@ -545,10 +545,10 @@ class _Cluster(object):
                     port = self.node_port
                 bc_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                bc_sock = DispySocket(bc_sock, blocking=True, timeout=1)
+                bc_sock = DispySocket(bc_sock, blocking=False)
                 logging.debug('broadcasting ...')
                 try:
-                    bc_sock.sendto('PING:%s' % ping_request, ('<broadcast>', port))
+                    yield bc_sock.sendto('PING:%s' % ping_request, ('<broadcast>', port), coro=coro)
                 except:
                     pass
                 bc_sock.close()
@@ -561,7 +561,7 @@ class _Cluster(object):
                     port = self.node_port
                 logging.debug('sending ping to %s:%s', ip_addr, port)
                 try:
-                    sock.sendto('PING:%s' % ping_request, (ip_addr, port))
+                    yield sock.sendto('PING:%s' % ping_request, (ip_addr, port), coro=coro)
                 except:
                     pass
         sock.close()
@@ -601,8 +601,8 @@ class _Cluster(object):
                 logging.warning('Could not update timer intervals')
             sock.close()
 
+        yield self.send_ping_cluster(cluster, coro=coro)
         self._sched_cv.acquire(coro)
-        self.send_ping_cluster(cluster)
         compute_nodes = []
         for node_spec, host in compute.node_spec.iteritems():
             for ip_addr, node in self._nodes.iteritems():
@@ -1020,7 +1020,7 @@ class _Cluster(object):
                 self.last_ping_time = now
                 self._sched_cv.acquire(coro)
                 for cluster in self._clusters.itervalues():
-                    self.send_ping_cluster(cluster)
+                    Coro(self.send_ping_cluster, cluster)
                 self._sched_cv.release(coro)
         Coro(_timer_task, self)
 

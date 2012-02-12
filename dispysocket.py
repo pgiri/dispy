@@ -1,5 +1,25 @@
 #!/usr/bin/env python
 
+# dispysocket: Asynchronous I/O and coroutine support for dispy;
+# see accompanying 'dispy' for more details.
+
+# Copyright (C) 2012 Giridhar Pemmasani (pgiri@yahoo.com)
+
+# This file is part of dispy.
+
+# dispy is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+
+# dispy is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Lesser General Public License for more details.
+
+# You should have received a copy of the GNU Lesser General Public License
+# along with dispy.  If not, see <http://www.gnu.org/licenses/>.
+
 import time
 import threading
 import functools
@@ -531,8 +551,6 @@ class AsynCoro(object):
             for coro in running:
                 if coro is None:
                     continue
-                assert coro._state in [AsynCoro._Running, AsynCoro._Resumed], \
-                       'coro %s/%s is in invalid state: %s' % (coro.name, coro._id, coro._state)
                 try:
                     retval = coro._generator.send(coro._value)
                 except StopIteration:

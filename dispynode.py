@@ -214,26 +214,26 @@ class _DispyNode(object):
         self.last_pulse_time = self.last_zombie_time = time.time()
         self.timer = RepeatTimer(timeout, self.timer_task)
 
-    def send_pong_msg(self, reset_interval=True):
+    def send_pong_msg(self, reset_interval=True, coro=None):
         ping_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         ping_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        ping_sock = DispySocket(ping_sock, blocking=False)
         pong_msg = {'ip_addr':self.ip_addr, 'fqdn':self.fqdn, 'port':self.address[1],
                     'cpus':self.cpus, 'sign':self.signature, 'version':_dispy_version}
         pong_msg = 'PONG:' + cPickle.dumps(pong_msg)
-        ping_sock.sendto(pong_msg, ('<broadcast>', self.scheduler_port))
+        yield ping_sock.sendto(pong_msg, ('<broadcast>', self.scheduler_port), coro=coro)
         ping_sock.close()
         if reset_interval:
             self.pulse_interval = None
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock = DispySocket(sock, blocking=True, timeout=2,
-                               auth_code=self.auth_code)
-            sock.connect((self.ip_addr, self.cmd_sock.getsockname()[1]))
-            sock.write_msg(0, 'reset_interval')
+            sock = DispySocket(sock, blocking=False, auth_code=self.auth_code)
+            yield sock.connect((self.ip_addr, self.cmd_sock.getsockname()[1]), coro=coro)
+            yield sock.write_msg(0, 'reset_interval', coro=coro)
             sock.close()
 
     def udp_server(self, scheduler_ip_addr, coro=None):
         if self.avail_cpus == self.cpus:
-            self.send_pong_msg(reset_interval=False)
+            yield self.send_pong_msg(reset_interval=False, coro=coro)
         pong_msg = {'ip_addr':self.ip_addr, 'fqdn':self.fqdn, 'port':self.address[1],
                     'cpus':self.cpus, 'sign':self.signature, 'version':_dispy_version}
         pong_msg = 'PONG:' + cPickle.dumps(pong_msg)
@@ -772,67 +772,68 @@ class _DispyNode(object):
                 self.timer.set_interval(timeout)
 
     def timer_task(self):
-        now = time.time()
-        # TODO: coroize it
-        return
-        if self.pulse_interval and (now - self.last_pulse_time) >= self.pulse_interval:
-            n = self.cpus - self.avail_cpus
-            assert n >= 0
-            if n > 0 and self.scheduler_ip_addr:
-                self.last_pulse_time = now
-                # logging.debug('Sending PULSE to %s', self.scheduler_ip_addr)
-                msg = 'PULSE:' + cPickle.dumps({'ip_addr':self.ip_addr,
-                                                'port':self.udp_sock.getsockname()[1], 'cpus':n})
-                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                sock.sendto(msg, (self.scheduler_ip_addr, self.scheduler_port))
-                sock.close()
-        if self.zombie_interval and (now - self.last_zombie_time) >= self.zombie_interval:
-            self.last_zombie_time = now
-            self.lock.acquire(coro)
-            for compute in self.computations.itervalues():
-                if (now - compute.last_pulse) > self.zombie_interval:
-                    compute.zombie = True
-            zombies = [compute for compute in self.computations.itervalues() \
-                       if compute.zombie and compute.pending_jobs == 0]
-            for compute in zombies:
-                logging.debug('Deleting zombie computation "%s"', compute.name)
-                self.cleanup_computation(compute)
-            phoenix = [compute for compute in self.computations.itervalues() \
-                       if not compute.zombie and compute.pending_results]
-            for compute in phoenix:
-                files = [f for f in os.listdir(compute.dest_path) \
-                         if f.startswith('_dispy_job_reply_')]
-                # limit number queued so as not to take up too much time
-                files = files[:min(len(files), 128)]
-                for f in files:
-                    result_file = os.path.join(compute.dest_path, f)
-                    try:
-                        fd = open(result_file, 'rb')
-                        job_result = cPickle.load(fd)
-                        fd.close()
-                    except:
-                        logging.debug('Could not load "%s"', result_file)
-                        logging.debug(traceback.format_exc())
-                        continue
-                    try:
-                        os.remove(result_file)
-                    except:
-                        logging.debug('Could not remove "%s"', result_file)
-                    compute.pending_results -= 1
-                    job_info = _DispyJobInfo(job_result, (compute.scheduler_ip_addr,
-                                                          compute.job_result_port), compute)
-                    Coro(self._send_job_reply, job_info, resending=True)
-            self.lock.release(coro)
-            for compute in zombies:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                logging.debug('Sending TERMINATE to %s', compute.scheduler_ip_addr)
-                data = cPickle.dumps({'ip_addr':self.address[0], 'port':self.address[1],
-                                      'sign':self.signature})
-                sock.sendto('TERMINATED:%s' % data, (compute.scheduler_ip_addr,
-                                                     compute.scheduler_port))
-                sock.close()
-            if self.scheduler_ip_addr is None and self.avail_cpus == self.cpus:
-                self.send_pong_msg(reset_interval=False)
+        def _timer_task(self, coro=None):
+            now = time.time()
+            if self.pulse_interval and (now - self.last_pulse_time) >= self.pulse_interval:
+                n = self.cpus - self.avail_cpus
+                assert n >= 0
+                if n > 0 and self.scheduler_ip_addr:
+                    self.last_pulse_time = now
+                    msg = 'PULSE:' + cPickle.dumps({'ip_addr':self.ip_addr,
+                                                    'port':self.udp_sock.getsockname()[1], 'cpus':n})
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    sock = DispySocket(sock, blocking=False)
+                    yield sock.sendto(msg, (self.scheduler_ip_addr, self.scheduler_port), coro=coro)
+                    sock.close()
+            if self.zombie_interval and (now - self.last_zombie_time) >= self.zombie_interval:
+                self.last_zombie_time = now
+                self.lock.acquire(coro)
+                for compute in self.computations.itervalues():
+                    if (now - compute.last_pulse) > self.zombie_interval:
+                        compute.zombie = True
+                zombies = [compute for compute in self.computations.itervalues() \
+                           if compute.zombie and compute.pending_jobs == 0]
+                for compute in zombies:
+                    logging.debug('Deleting zombie computation "%s"', compute.name)
+                    self.cleanup_computation(compute)
+                phoenix = [compute for compute in self.computations.itervalues() \
+                           if not compute.zombie and compute.pending_results]
+                for compute in phoenix:
+                    files = [f for f in os.listdir(compute.dest_path) \
+                             if f.startswith('_dispy_job_reply_')]
+                    # limit number queued so as not to take up too much time
+                    files = files[:min(len(files), 128)]
+                    for f in files:
+                        result_file = os.path.join(compute.dest_path, f)
+                        try:
+                            fd = open(result_file, 'rb')
+                            job_result = cPickle.load(fd)
+                            fd.close()
+                        except:
+                            logging.debug('Could not load "%s"', result_file)
+                            logging.debug(traceback.format_exc())
+                            continue
+                        try:
+                            os.remove(result_file)
+                        except:
+                            logging.debug('Could not remove "%s"', result_file)
+                        compute.pending_results -= 1
+                        job_info = _DispyJobInfo(job_result, (compute.scheduler_ip_addr,
+                                                              compute.job_result_port), compute)
+                        Coro(self._send_job_reply, job_info, resending=True)
+                self.lock.release(coro)
+                for compute in zombies:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    sock = DispySocket(sock, blocking=False)
+                    logging.debug('Sending TERMINATE to %s', compute.scheduler_ip_addr)
+                    data = cPickle.dumps({'ip_addr':self.address[0], 'port':self.address[1],
+                                          'sign':self.signature})
+                    yield sock.sendto('TERMINATED:%s' % data, (compute.scheduler_ip_addr,
+                                                               compute.scheduler_port), coro=coro)
+                    sock.close()
+                if self.scheduler_ip_addr is None and self.avail_cpus == self.cpus:
+                    yield self.send_pong_msg(reset_interval=False, coro=coro)
+        Coro(_timer_task, self)
 
     def __job_program(self, _job, job_info):
         compute = self.computations[_job.compute_id]
@@ -945,7 +946,7 @@ class _DispyNode(object):
             self.pulse_interval = None
 
         if self.scheduler_ip_addr is None and self.avail_cpus == self.cpus:
-            self.send_pong_msg(reset_interval=True)
+            Coro(self.send_pong_msg, reset_interval=True, coro=coro)
         if compute.cleanup is False:
             return
         for xf in compute.xfer_files:

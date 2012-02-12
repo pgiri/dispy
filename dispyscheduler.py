@@ -360,12 +360,12 @@ class _Scheduler(object):
                 logging.debug('Ignoring UDP message %s from: %s',
                               msg[:min(5, len(msg))], addr[0])
 
-    def send_ping_cluster(self, cluster):
-        # non-generator
+    def send_ping_cluster(self, cluster, coro=None):
+        # generator
         ping_request = cPickle.dumps({'scheduler_ip_addr':self.ip_addr,
                                       'scheduler_port':self.port, 'version':_dispy_version})
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock = DispySocket(sock, blocking=True, timeout=1)
+        sock = DispySocket(sock, blocking=False)
         for node_spec, node_info in cluster._compute.node_spec.iteritems():
             if node_spec.find('*') >= 0:
                 port = node_info['port']
@@ -373,9 +373,9 @@ class _Scheduler(object):
                     port = self.node_port
                 bc_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                bc_osck = DispySocket(bc_sock, blocking=True, timeout=1)
+                bc_osck = DispySocket(bc_sock, blocking=False)
                 try:
-                    bc_sock.sendto('PING:%s' % ping_request, ('<broadcast>', port), coro=coro)
+                    yield bc_sock.sendto('PING:%s' % ping_request, ('<broadcast>', port), coro=coro)
                 except:
                     pass
                 bc_sock.close()
@@ -387,7 +387,7 @@ class _Scheduler(object):
                 if not port:
                     port = self.node_port
                 try:
-                    sock.sendto('PING:%s' % ping_request, (ip_addr, port), coro=coro)
+                    yield sock.sendto('PING:%s' % ping_request, (ip_addr, port), coro=coro)
                 except:
                     pass
         sock.close()
@@ -399,7 +399,7 @@ class _Scheduler(object):
         compute.pulse_interval = self.pulse_interval
         # TODO: should we allow clients to add new nodes, or use only
         # the nodes initially created with command-line?
-        self.send_ping_cluster(cluster)
+        yield self.send_ping_cluster(cluster, coro)
         self._sched_cv.acquire(coro)
         compute_nodes = []
         for node_spec, host in compute.node_spec.iteritems():
@@ -854,7 +854,7 @@ class _Scheduler(object):
                 self.last_ping_time = now
                 self._sched_cv.acquire(coro)
                 for cluster in self.clusters.itervalues():
-                    self.send_ping_cluster(cluster)
+                    Coro(self.send_ping_cluster, cluster)
                 self._sched_cv.release(coro)
             if self.zombie_interval and (now - self.last_zombie_time) >= self.zombie_interval:
                 self.last_zombie_time = now
@@ -977,8 +977,7 @@ class _Scheduler(object):
             cluster._pending_jobs -= 1
             if cluster._pending_jobs == 0:
                 cluster.end_time = time.time()
-        Coro(self.send_job_result,
-             _job.uid, compute.id, cluster.client_scheduler_ip_addr,
+        Coro(self.send_job_result, _job.uid, compute.id, cluster.client_scheduler_ip_addr,
              cluster.client_job_result_port, reply)
         self._sched_cv.notify()
         self._sched_cv.release(coro)
@@ -1102,8 +1101,7 @@ class _Scheduler(object):
                 node.close(compute)
             for _job in cluster._jobs:
                 reply = _JobReply(_job, self.ip_addr, status=DispyJob.Terminated)
-                Coro(self.send_job_result,
-                     _job.uid, compute.id, cluster.client_scheduler_ip_addr,
+                Coro(self.send_job_result, _job.uid, compute.id, cluster.client_scheduler_ip_addr,
                      cluster.client_job_result_port, reply)
             cluster._jobs = []
         logging.debug('Scheduler quit')
