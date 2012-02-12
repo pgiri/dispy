@@ -42,7 +42,7 @@ import shelve
 from dispy import _DispyJob_, _JobReply, DispyJob, \
      _Compute, _XferFile, _xor_string, _node_name_ipaddr, _dispy_version
 
-from dispysocket import _DispySocket, Coro, CoroLock, AsynCoro, RepeatTimer, MetaSingleton
+from dispysocket import DispySocket, Coro, CoroLock, AsynCoro, RepeatTimer, MetaSingleton
 
 MaxFileSize = 102400000
 
@@ -62,7 +62,7 @@ def dispy_provisional_result(result):
     __dispy_job_reply.status = DispyJob.ProvisionalResult
     __dispy_job_reply.result = result
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock = _DispySocket(sock, blocking=True, timeout=2,
+    sock = DispySocket(sock, blocking=True, timeout=2,
                         certfile=__dispy_job_certfile, keyfile=__dispy_job_keyfile)
     try:
         sock.connect(__dispy_job_info.reply_addr)
@@ -154,7 +154,7 @@ class _DispyNode(object):
         self.tcp_sock.bind((ip_addr, 0))
         self.address = self.tcp_sock.getsockname()
         self.tcp_sock.listen(30)
-        self.tcp_sock = _DispySocket(self.tcp_sock, blocking=False, timeout=False)
+        self.tcp_sock = DispySocket(self.tcp_sock, blocking=False, timeout=False)
 
         if dest_path_prefix:
             self.dest_path_prefix = dest_path_prefix.strip().rstrip(os.sep)
@@ -182,8 +182,8 @@ class _DispyNode(object):
 
         logging.debug('auth_code for %s: %s', ip_addr, self.auth_code)
         self.cmd_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.cmd_sock = _DispySocket(self.cmd_sock, blocking=False, timeout=False,
-                                     auth_code=self.auth_code)
+        self.cmd_sock = DispySocket(self.cmd_sock, blocking=False, timeout=False,
+                                    auth_code=self.auth_code)
         self.cmd_sock.bind((self.ip_addr, 0))
         self.cmd_sock.listen(2)
         logging.info('Serving %s cpus at %s:%s',
@@ -193,7 +193,7 @@ class _DispyNode(object):
         self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.udp_sock.bind(('', node_port))
         logging.info('node running at %s:%s', self.address[0], node_port)
-        self.udp_sock = _DispySocket(self.udp_sock, blocking=False, timeout=False)
+        self.udp_sock = DispySocket(self.udp_sock, blocking=False, timeout=False)
 
         scheduler_ip_addr = _node_name_ipaddr(scheduler_node)[1]
 
@@ -225,8 +225,8 @@ class _DispyNode(object):
         if reset_interval:
             self.pulse_interval = None
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock = _DispySocket(sock, blocking=True, timeout=2,
-                                auth_code=self.auth_code)
+            sock = DispySocket(sock, blocking=True, timeout=2,
+                               auth_code=self.auth_code)
             sock.connect((self.ip_addr, self.cmd_sock.getsockname()[1]))
             sock.write_msg(0, 'reset_interval')
             sock.close()
@@ -283,7 +283,7 @@ class _DispyNode(object):
                     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                     reply = {'ip_addr':self.address[0], 'port':self.address[1],
                              'sign':self.signature, 'version':_dispy_version}
-                    sock = _DispySocket(sock, blocking=False)
+                    sock = DispySocket(sock, blocking=False)
                     yield sock.sendto(cPickle.dumps(reply), (req['ip_addr'], req['port']),
                                       coro=coro)
                     sock.close()
@@ -297,8 +297,8 @@ class _DispyNode(object):
         while True:
             conn, addr = yield self.tcp_sock.accept(coro)
             logging.debug('new tcp request from %s', str(addr))
-            conn = _DispySocket(conn, blocking=False,
-                                certfile=self.certfile, keyfile=self.keyfile, server=True)
+            conn = DispySocket(conn, blocking=False,
+                               certfile=self.certfile, keyfile=self.keyfile, server=True)
             Coro(self.tcp_serve_task, conn, addr)
 
     def tcp_serve_task(self, conn, addr, coro=None):
@@ -510,7 +510,7 @@ class _DispyNode(object):
                 if xfer_files:
                     resp += ':XFER_FILES:' + cPickle.dumps(xfer_files)
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock = _DispySocket(sock, blocking=False, auth_code=self.auth_code)
+                sock = DispySocket(sock, blocking=False, auth_code=self.auth_code)
                 yield sock.connect((self.ip_addr, self.cmd_sock.getsockname()[1]), coro=coro)
                 yield sock.write_msg(0, 'reset_interval', coro=coro)
                 sock.close()
@@ -751,7 +751,7 @@ class _DispyNode(object):
     def cmd_server(self, coro=None):
         while True:
             conn, addr = yield self.cmd_sock.accept(coro=coro)
-            conn = _DispySocket(conn, blocking=False)
+            conn = DispySocket(conn, blocking=False)
             req = yield conn.read(len(self.auth_code), coro=coro)
             if req != self.auth_code:
                 logging.debug('invalid auth for cmd')
@@ -878,8 +878,8 @@ class _DispyNode(object):
         logging.debug('Sending result for job %s (%s) to %s',
                       job_reply.uid, job_reply.status, job_info.reply_addr[0])
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock = _DispySocket(sock, blocking=False,
-                            certfile=self.certfile, keyfile=self.keyfile)
+        sock = DispySocket(sock, blocking=False,
+                           certfile=self.certfile, keyfile=self.keyfile)
         try:
             yield sock.connect(job_info.reply_addr, coro=coro)
             yield sock.write_msg(job_reply.uid, cPickle.dumps(job_reply), coro=coro)

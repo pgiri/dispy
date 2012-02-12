@@ -45,7 +45,7 @@ import shelve
 import datetime
 import atexit
 
-from dispysocket import _DispySocket, Coro, AsynCoro, CoroLock, CoroCondition, \
+from dispysocket import DispySocket, Coro, AsynCoro, CoroLock, CoroCondition, \
      RepeatTimer, MetaSingleton
 
 _dispy_version = '1.3'
@@ -276,8 +276,8 @@ class _Node(object):
         # generator
         assert coro is not None
         logging.debug('Sending to %s:%s', self.ip_addr, self.port)
-        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), blocking=False,
-                            auth_code=self.auth_code, certfile=self.certfile, keyfile=self.keyfile)
+        sock = DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), blocking=False,
+                           auth_code=self.auth_code, certfile=self.certfile, keyfile=self.keyfile)
         try:
             yield sock.connect((self.ip_addr, self.port), coro=coro)
             yield sock.write_msg(uid, msg, coro=coro)
@@ -300,8 +300,8 @@ class _Node(object):
         # generator
         assert coro is not None
         logging.debug('XferFile: %s to %s', xf.name, self.ip_addr)
-        sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), blocking=False,
-                            auth_code=self.auth_code, certfile=self.certfile, keyfile=self.keyfile)
+        sock = DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), blocking=False,
+                           auth_code=self.auth_code, certfile=self.certfile, keyfile=self.keyfile)
         try:
             yield sock.connect((self.ip_addr, self.port), coro=coro)
             msg = 'FILEXFER:' + cPickle.dumps(xf)
@@ -484,8 +484,8 @@ class _Cluster(object):
             self._sched_cv = CoroCondition()
             self.terminate_scheduler = False
             self.auth_code = os.urandom(20).encode('hex')
-            self.cmd_sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
-                                         auth_code=self.auth_code, blocking=False, timeout=False)
+            self.cmd_sock = DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                                        auth_code=self.auth_code, blocking=False, timeout=False)
             self.cmd_sock.bind((self.ip_addr, 0))
             self.cmd_sock.listen(2)
             self.cmd_coro = Coro(self.cmd_server)
@@ -505,7 +505,7 @@ class _Cluster(object):
             job_result_sock.bind((self.ip_addr, 0))
             job_result_sock.listen(100)
             self.job_result_port = job_result_sock.getsockname()[1]
-            self.job_result_sock = _DispySocket(job_result_sock, blocking=False, timeout=False)
+            self.job_result_sock = DispySocket(job_result_sock, blocking=False, timeout=False)
             logging.debug('job result server at %s:%s', self.ip_addr, self.job_result_port)
             self.job_result_coro = Coro(self.job_result_server)
 
@@ -516,7 +516,7 @@ class _Cluster(object):
                 udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 udp_sock.bind(('', self.port))
                 self.port = udp_sock.getsockname()[1]
-                udp_sock = _DispySocket(udp_sock, blocking=False, timeout=False)
+                udp_sock = DispySocket(udp_sock, blocking=False, timeout=False)
                 logging.info('UDP server running at %s, %s', self.ip_addr, self.port)
                 self.udp_coro = Coro(self.udp_server, udp_sock)
 
@@ -537,7 +537,7 @@ class _Cluster(object):
         ping_request = cPickle.dumps({'scheduler_ip_addr':self.ip_addr,
                                       'scheduler_port':self.port, 'version':_dispy_version})
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock = _DispySocket(sock, blocking=True, timeout=1)
+        sock = DispySocket(sock, blocking=True, timeout=1)
         for node_spec, node_info in cluster._compute.node_spec.iteritems():
             if node_spec.find('*') >= 0:
                 port = node_info['port']
@@ -545,7 +545,7 @@ class _Cluster(object):
                     port = self.node_port
                 bc_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                bc_sock = _DispySocket(bc_sock, blocking=True, timeout=1)
+                bc_sock = DispySocket(bc_sock, blocking=True, timeout=1)
                 logging.debug('broadcasting ...')
                 try:
                     bc_sock.sendto('PING:%s' % ping_request, ('<broadcast>', port))
@@ -565,7 +565,6 @@ class _Cluster(object):
                 except:
                     pass
         sock.close()
-        logging.debug('ping_cluster done')
 
     def add_cluster(self, cluster, coro=None):
         # generator (due to _sched_cv)
@@ -593,8 +592,8 @@ class _Cluster(object):
         if cluster.ping_interval:
             self.ping_interval = max(self.ping_interval, cluster.ping_interval)
         if self.pulse_interval or self.ping_interval:
-            sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
-                                auth_code=self.auth_code, blocking=False)
+            sock = DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                               auth_code=self.auth_code, blocking=False)
             try:
                 yield sock.connect((self.ip_addr, self.cmd_sock.sock.getsockname()[1]), coro=coro)
                 yield sock.write_msg(0, 'reset_interval', coro=coro)
@@ -770,8 +769,8 @@ class _Cluster(object):
                     assert 0 <= info['cpus'] <= node.cpus
                     node.last_pulse = time.time()
                     msg = 'PULSE:' + cPickle.dumps({'ip_addr':self.ip_addr})
-                    sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM),
-                                        blocking=False)
+                    sock = DispySocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM),
+                                       blocking=False)
                     yield sock.sendto(msg, (info['ip_addr'], info['port']), coro=coro)
                     sock.close()
                 except:
@@ -864,8 +863,8 @@ class _Cluster(object):
     def job_result_task(self, sock, addr, coro=None):
         # generator
         assert coro is not None
-        sock = _DispySocket(sock, certfile=self.certfile, keyfile=self.keyfile,
-                            server=True, blocking=False)
+        sock = DispySocket(sock, certfile=self.certfile, keyfile=self.keyfile,
+                           server=True, blocking=False)
         try:
             uid, msg = yield sock.read_msg(coro=coro)
             yield sock.write_msg(uid, 'ACK', coro=coro)
@@ -992,7 +991,7 @@ class _Cluster(object):
                                'client_scheduler_port':self.port,
                                'version':_dispy_version}
                         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                        sock = _DispySocket(sock, blocking=False)
+                        sock = DispySocket(sock, blocking=False)
                         yield sock.sendto('PULSE:' + cPickle.dumps(msg),
                                           (cluster.scheduler_ip_addr,
                                            cluster.scheduler_udp_port), coro=coro)
@@ -1030,7 +1029,7 @@ class _Cluster(object):
         assert coro is not None
         while True:
             conn, addr = yield self.cmd_sock.accept(coro=coro)
-            conn = _DispySocket(conn, blocking=False)
+            conn = DispySocket(conn, blocking=False)
             req = yield conn.read(len(self.auth_code), coro=coro)
             if req != self.auth_code:
                 logging.debug('invalid auth for cmd')
@@ -1776,8 +1775,8 @@ class SharedJobCluster(JobCluster):
                             self.scheduler_ip_addr, self.scheduler_udp_port)
         srv_sock.close()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock = _DispySocket(sock, blocking=True, timeout=5,
-                            auth_code=self.auth_code, certfile=certfile, keyfile=keyfile)
+        sock = DispySocket(sock, blocking=True, timeout=5,
+                           auth_code=self.auth_code, certfile=certfile, keyfile=keyfile)
         try:
             sock.connect((self.scheduler_ip_addr, self.scheduler_port))
             req = 'COMPUTE:' + cPickle.dumps(self._compute)
@@ -1799,8 +1798,8 @@ class SharedJobCluster(JobCluster):
             xf.compute_id = self._compute.id
             logging.debug('Sending file "%s"', xf.name)
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock = _DispySocket(sock, blocking=True, timeout=5,
-                                auth_code=self.auth_code, certfile=certfile, keyfile=keyfile)
+            sock = DispySocket(sock, blocking=True, timeout=5,
+                               auth_code=self.auth_code, certfile=certfile, keyfile=keyfile)
             try:
                 sock.connect((self.scheduler_ip_addr, self.scheduler_port))
                 msg = 'FILEXFER:' + cPickle.dumps(xf)
@@ -1820,8 +1819,8 @@ class SharedJobCluster(JobCluster):
             sock.close()
             
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock = _DispySocket(sock, blocking=True, timeout=5,
-                            auth_code=self.auth_code, certfile=certfile, keyfile=keyfile)
+        sock = DispySocket(sock, blocking=True, timeout=5,
+                           auth_code=self.auth_code, certfile=certfile, keyfile=keyfile)
         sock.connect((self.scheduler_ip_addr, self.scheduler_port))
         req = 'ADD_COMPUTE:' + cPickle.dumps({'ID':self._compute.id})
         sock.write_msg(self._compute.id, req)
@@ -1832,8 +1831,8 @@ class SharedJobCluster(JobCluster):
             logging.debug('Computation %s created with %s', self._compute.name, self._compute.id)
             Coro(self._cluster.add_cluster, self).value()
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock = _DispySocket(sock, blocking=True, timeout=5,
-                                auth_code=self._cluster.auth_code)
+            sock = DispySocket(sock, blocking=True, timeout=5,
+                               auth_code=self._cluster.auth_code)
             sock.connect((self._cluster.ip_addr, self._cluster.cmd_sock.sock.getsockname()[1]))
             sock.write_msg(0, 'reset_interval')
             sock.close()
@@ -1860,8 +1859,8 @@ class SharedJobCluster(JobCluster):
 
         def _submit(self, _job, coro=None):
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock = _DispySocket(sock, blocking=False, auth_code=self.auth_code,
-                                certfile=self.certfile, keyfile=self.keyfile)
+            sock = DispySocket(sock, blocking=False, auth_code=self.auth_code,
+                               certfile=self.certfile, keyfile=self.keyfile)
             yield sock.connect((self.scheduler_ip_addr, self.scheduler_port), coro=coro)
             req = 'JOB:' + cPickle.dumps(_job)
             yield sock.write_msg(self._compute.id, req, coro=coro)
@@ -1919,8 +1918,8 @@ class SharedJobCluster(JobCluster):
             assert self._pending_jobs >= 1
             self._cluster._sched_cv.release(coro)
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock = _DispySocket(sock, blocking=False, auth_code=self.auth_code,
-                                certfile=self.certfile, keyfile=self.keyfile)
+            sock = DispySocket(sock, blocking=False, auth_code=self.auth_code,
+                               certfile=self.certfile, keyfile=self.keyfile)
             try:
                 yield sock.connect((self.scheduler_ip_addr, self.scheduler_port), coro=coro)
                 req = 'TERMINATE_JOB:' + cPickle.dumps(_job)
@@ -1938,8 +1937,8 @@ class SharedJobCluster(JobCluster):
         if hasattr(self, '_compute'):
             self._complete.wait()
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock = _DispySocket(sock, blocking=True, timeout=3, auth_code=self.auth_code,
-                                certfile=self.certfile, keyfile=self.keyfile)
+            sock = DispySocket(sock, blocking=True, timeout=3, auth_code=self.auth_code,
+                               certfile=self.certfile, keyfile=self.keyfile)
             sock.connect((self.scheduler_ip_addr, self.scheduler_port))
             req = 'DEL_COMPUTE:' + cPickle.dumps({'ID':self._compute.id})
             sock.write_msg(self._compute.id, req)
@@ -2044,8 +2043,8 @@ def fault_recover_jobs(fault_recover_file, port=51348,
         if node_info is None:
             continue
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock = _DispySocket(sock, blocking=True, timeout=2, auth_code=node_info['auth_code'],
-                            certfile=certfile, keyfile=keyfile)
+        sock = DispySocket(sock, blocking=True, timeout=2, auth_code=node_info['auth_code'],
+                           certfile=certfile, keyfile=keyfile)
         try:
             sock.connect((job_info['ip_addr'], node_info['port']))
             req = 'RETRIEVE_JOB:' + cPickle.dumps({'uid':int(uid), 'hash':job_info['hash'],
