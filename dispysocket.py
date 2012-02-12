@@ -555,14 +555,15 @@ class AsynCoro(object):
             for coro in running:
                 if coro is None:
                     continue
-                logging.debug('running %s/%s', coro.name, coro._id)
                 try:
                     if coro._is_exc:
                         retval = coro._generator.throw(*coro._value)
                     else:
                         retval = coro._generator.send(coro._value)
                 except:
-                    if sys.exc_type != StopIteration:
+                    if sys.exc_type == StopIteration:
+                        coro._is_exc = False
+                    else:
                         retval = sys.exc_info()
                         coro._is_exc = True
 
