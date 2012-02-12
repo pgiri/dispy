@@ -1093,7 +1093,7 @@ class _Scheduler(object):
                 Coro(self.run_job, _job, cluster)
             yield self._sched_cv.release(coro)
         self._sched_cv.acquire(coro)
-        logging.debug('Scheduler quitting (%s / %s)',
+        logging.debug('scheduler quitting (%s / %s)',
                       len(self._sched_jobs), self.unsched_jobs)
         for cid, cluster in self._clusters.iteritems():
             compute = cluster._compute
@@ -1104,8 +1104,8 @@ class _Scheduler(object):
                 Coro(self.send_job_result, _job.uid, compute.id, cluster.client_scheduler_ip_addr,
                      cluster.client_job_result_port, reply)
             cluster._jobs = []
-        logging.debug('Scheduler quit')
         self._sched_cv.release(coro)
+        logging.debug('scheduler quit')
 
     def shutdown(self):
         def _shutdown(self, coro=None):

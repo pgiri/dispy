@@ -29,6 +29,7 @@ import inspect
 import traceback
 import select
 import sys
+import types
 import struct
 import hashlib
 import logging
@@ -270,9 +271,9 @@ class DispySocket(object):
                 logging.error('Socket disconnected?(%s, %s)', len(msg), msg_len)
                 yield (None, None)
             yield (uid, msg)
-        except:
+        except Exception, ex:
             logging.error('Socket reading error: %s' % traceback.format_exc())
-            yield (None, None)
+            yield ex
 
     def sync_read_msg(self):
         try:
@@ -331,6 +332,7 @@ class Coro(object):
         self._state = None
         self._value = None
         self._stack = []
+        self._is_exc = False
         self._scheduler = AsynCoro.instance()
         self._complete = threading.Event()
         self._scheduler._add(self)
@@ -386,7 +388,7 @@ class CoroCondition(object):
     def __init__(self):
         self._waitlist = []
         self._owner = None
-        # support multiple notifications with _notify as counter?
+        # support multiple notifications?
         self._notify = False
 
     def acquire(self, coro):
@@ -419,6 +421,7 @@ class AsynCoro(object):
     """
 
     __metaclass__ = MetaSingleton
+    __instance = None
 
     _Running = 1
     _Suspended = 2
@@ -429,13 +432,12 @@ class AsynCoro(object):
     _coro_id = 1
 
     @classmethod
-    def instance(cls, *args):
-        if not hasattr(cls, '__instance'):
-            cls.__instance = cls(*args)
+    def instance(cls):
         return cls.__instance
 
     def __init__(self):
         if not hasattr(self, '_coros'):
+            self.__class__.__instance = self
             self._coros = {}
             self._running = set()
             self._resumed = set()
@@ -512,6 +514,7 @@ class AsynCoro(object):
         elif coro._state == AsynCoro._Suspended or coro._state == AsynCoro._Stopped:
             self._suspended.discard(cid)
         coro._scheduler = None
+        coro._stack = []
         del self._coros[cid]
         if not self._coros:
             self._complete.set()
@@ -521,9 +524,11 @@ class AsynCoro(object):
         self._sched_cv.acquire()
         coro = self._coros.get(cid, None)
         if coro is None or coro._state != AsynCoro._Stopped:
-            logging.warning('invalid coroutine %s to throw: %s', cid, coro._state)
+            logging.warning('invalid coroutine %s to throw exception', cid)
         else:
-            coro._generator.throw(*args)
+            logging.debug('throwing exception in %s/%s', coro.name, coro._id)
+            coro._value = args
+            coro._is_exc = True
             self._suspended.discard(coro._id)
             coro._state = AsynCoro._Resumed
             self._running.add(coro._id)
@@ -534,8 +539,7 @@ class AsynCoro(object):
         while True:
             self._sched_cv.acquire()
             while (not self._running) and (not self._resumed) and (not self._terminate):
-                # logging.debug('waiting for coros to run')
-                self._sched_cv.wait(1)
+                self._sched_cv.wait()
             if self._terminate:
                 self._sched_cv.release()
                 break
@@ -551,41 +555,42 @@ class AsynCoro(object):
             for coro in running:
                 if coro is None:
                     continue
+                logging.debug('running %s/%s', coro.name, coro._id)
                 try:
-                    retval = coro._generator.send(coro._value)
-                except StopIteration:
-                    self._sched_cv.acquire()
+                    if coro._is_exc:
+                        retval = coro._generator.throw(*coro._value)
+                    else:
+                        retval = coro._generator.send(coro._value)
+                except:
+                    if sys.exc_type != StopIteration:
+                        retval = sys.exc_info()
+                        coro._is_exc = True
+
                     if coro._stack:
                         # return to caller
                         caller = coro._stack.pop(-1)
                         if isinstance(caller, Coro):
                             assert not coro._stack
-                            self._sched_cv.acquire()
                             caller._state = AsynCoro._Running
                             self._running.add(caller._id)
                             caller._value = coro._value
                             self._delete(coro._id)
-                            self._sched_cv.release()
                         else:
-                            assert inspect.isgenerator(caller)
+                            assert isinstance(caller, types.GeneratorType)
                             coro._generator = caller
                     else:
                         coro._complete.set()
                         self._delete(coro._id)
-                    self._sched_cv.acquire()
-                except:
-                    logging.warning(traceback.format_exc())
-                    coro._generator.throw(*sys.exc_info())
-                    self._delete(coro._id)
                 else:
                     self._sched_cv.acquire()
                     if coro._state == AsynCoro._Suspended:
                         coro._state = AsynCoro._Stopped
-                    # if this coroutine is suspended, don't update the
-                    # value; it will be updated with the value with
-                    # which it is resumed
-                    if coro._state == AsynCoro._Running:
+                    elif coro._state == AsynCoro._Running:
+                        # if this coroutine is suspended, don't update
+                        # the value; it will be updated with the value
+                        # with which it is resumed
                         coro._value = retval
+
                     if isinstance(retval, Coro):
                         # freeze current coroutine and activate new
                         # coroutine; control is returned to the caller
@@ -593,10 +598,7 @@ class AsynCoro(object):
                         freeze.append(coro)
                         assert not retval._stack
                         retval._stack.append(coro)
-                        retval._value = None
-                        retval._state = AsynCoro._Running
-                        self._running.add(retval)
-                    elif inspect.isgenerator(retval):
+                    elif isinstance(retval, types.GeneratorType):
                         # push current generator onto stack and
                         # activate new generator
                         # logging.debug('%s/%s started %s', coro.name, coro._id,
@@ -643,20 +645,20 @@ class AsyncNotifier(object):
     """
 
     __metaclass__ = MetaSingleton
+    __instance = None
 
     _Readable = None
     _Writable = None
     _Error = None
 
     @classmethod
-    def instance(cls, *args, **kwargs):
-        if not hasattr(cls, '__instance'):
-            cls.__instance = cls(*args, **kwargs)
+    def instance(cls):
         return cls.__instance
 
     def __init__(self, poll_interval=1, fd_timeout=10):
         if not hasattr(self, '_poller'):
             assert fd_timeout >= 5 * poll_interval
+            self.__class__.__instance = self
 
             if hasattr(select, 'epoll'):
                 self._poller = select.epoll()
@@ -697,6 +699,7 @@ class AsyncNotifier(object):
             now = time.time()
             self._lock.acquire()
             events = [(self._fds.get(fileno, None), event) for fileno, event in events]
+            logging.debug('events: %s', len(events))
             self._lock.release()
             try:
                 for fd, evnt in events:

@@ -250,6 +250,8 @@ class _DispyNode(object):
 
         while True:
             msg, addr = yield self.udp_sock.recvfrom(1024, coro=coro)
+            # TODO: process each message as separate Coro, so
+            # exceptions are contained?
             if msg.startswith('PING:'):
                 if self.cpus != self.avail_cpus:
                     logging.debug('Busy (%s/%s); ignoring ping message from %s',
@@ -946,7 +948,7 @@ class _DispyNode(object):
             self.pulse_interval = None
 
         if self.scheduler_ip_addr is None and self.avail_cpus == self.cpus:
-            Coro(self.send_pong_msg, reset_interval=True, coro=coro)
+            Coro(self.send_pong_msg, reset_interval=True)
         if compute.cleanup is False:
             return
         for xf in compute.xfer_files:

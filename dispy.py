@@ -503,7 +503,7 @@ class _Cluster(object):
 
             job_result_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             job_result_sock.bind((self.ip_addr, 0))
-            job_result_sock.listen(100)
+            job_result_sock.listen(32)
             self.job_result_port = job_result_sock.getsockname()[1]
             self.job_result_sock = DispySocket(job_result_sock, blocking=False, timeout=False)
             logging.debug('job result server at %s:%s', self.ip_addr, self.job_result_port)
@@ -613,7 +613,6 @@ class _Cluster(object):
                     break
         self._sched_cv.notify()
         self._sched_cv.release(coro)
-        logging.debug('add_cluster 1')
 
         for node in compute_nodes:
             r = yield node.setup(compute, coro=coro)
@@ -630,7 +629,7 @@ class _Cluster(object):
         yield None
 
     def worker(self):
-        # used to call user callbacks only
+        # used for user callbacks only
         while True:
             item = self.worker_Q.get(block=True)
             priority, func, args = item
@@ -696,7 +695,6 @@ class _Cluster(object):
                 cluster._pending_jobs -= 1
                 if cluster._pending_jobs == 0:
                     cluster.end_time = time.time()
-                    logging.debug('end_time is %s', cluster.end_time)
                     cluster._complete.set()
                 self._sched_cv.release(coro)
                 yield None
@@ -1080,7 +1078,6 @@ class _Cluster(object):
         self._sched_jobs = {}
         self._sched_cv.notify()
         self._sched_cv.release(coro)
-        logging.debug('listener is terminated')
         self.cmd_sock.close()
         self.cmd_sock = None
 
@@ -1156,7 +1153,7 @@ class _Cluster(object):
                 Coro(self.run_job, _job, cluster)
             yield self._sched_cv.release(coro)
         self._sched_cv.acquire(coro)
-        logging.debug('Scheduler quitting (%s / %s)',
+        logging.debug('scheduler quitting (%s / %s)',
                       len(self._sched_jobs), self.unsched_jobs)
         for cid, cluster in self._clusters.iteritems():
             if not hasattr(cluster, '_compute'):
@@ -1179,8 +1176,8 @@ class _Cluster(object):
         self._nodes = {}
         self.unsched_jobs = 0
         self._sched_jobs = {}
-        logging.debug('Scheduler quit')
         self._sched_cv.release(coro)
+        logging.debug('scheduler quit')
 
     def store_job_info(self, _job, cluster):
         # non-generator
@@ -1610,7 +1607,7 @@ class JobCluster(object):
             if not cleanup:
                 logging.warning('"cleanup" argument is ignored if dest_path is not given')
             compute.cleanup = True
-        time.sleep(1)
+
         compute.job_result_port = self._cluster.job_result_port
         compute.scheduler_ip_addr = self._cluster.ip_addr
         compute.scheduler_port = self._cluster.port
@@ -1656,7 +1653,7 @@ class JobCluster(object):
                             str(args), str(kwargs), traceback.format_exc())
             return None
         v = Coro(self._cluster.submit_job, _job).value()
-        assert v == True
+        assert v is True
         return _job.job
 
     def cancel(self, job):
