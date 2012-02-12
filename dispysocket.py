@@ -1,25 +1,5 @@
 #!/usr/bin/env python
 
-# dispysocket: Asynchronous I/O and coroutine support for dispy;
-# see accompanying 'dispy' for more details.
-
-# Copyright (C) 2012 Giridhar Pemmasani (pgiri@yahoo.com)
-
-# This file is part of dispy.
-
-# dispy is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Lesser General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-
-# dispy is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Lesser General Public License for more details.
-
-# You should have received a copy of the GNU Lesser General Public License
-# along with dispy.  If not, see <http://www.gnu.org/licenses/>.
-
 import time
 import threading
 import functools
@@ -43,52 +23,115 @@ else:
 
 class MetaSingleton(type):
     __instance = None
-
     def __call__(cls, *args, **kwargs):
         if cls.__instance is None:
             cls.__instance = super(MetaSingleton, cls).__call__(*args, **kwargs)
         return cls.__instance
+
+class CoroLock(object):
+    def __init__(self):
+        self._owner = None
+
+    def acquire(self, coro):
+        assert coro is not None
+        assert self._owner == None, 'invalid lock acquire: %s, %s' % (self._owner, coro._id)
+        self._owner = coro._id
+        coro._atomic = True
+
+    def release(self, coro):
+        assert coro is not None
+        coro._atomic = False
+        assert self._owner == coro._id, 'invalid lock release %s != %s' % (self._owner, coro._id)
+        self._owner = None
+
+class CoroCondition(object):
+    def __init__(self):
+        self._waitlist = []
+        self._owner = None
+        # support multiple notifications with _notify as counter?
+        self._notify = False
+
+    def acquire(self, coro):
+        assert coro is not None
+        logging.debug('%s/%s getting cv', coro.name, coro._id)
+        assert self._owner == None, 'invalid cv acquire: %s, %s' % (self._owner, coro._id)
+        self._owner = coro._id
+        coro._atomic = True
+
+    def release(self, coro):
+        assert coro is not None
+        coro._atomic = False
+        assert self._owner == coro._id, 'invalid cv release %s != %s' % (self._owner, coro._id)
+        self._owner = None
+        logging.debug('%s/%s released cv', coro.name, coro._id)
+
+    def notify(self):
+        self._notify = True
+        if len(self._waitlist):
+            wake = self._waitlist.pop(0)
+            logging.debug('notifying %s', wake._id)
+            wake.resume(None)
+        else:
+            logging.debug('noone to notify')
+
+    def wait(self, coro):
+        if not self._notify:
+            # assert self._owner == coro._id, 'invalid wait: %s != %s' % (self._owner, coro._id)
+            self._owner = None
+            self._waitlist.append(coro)
+            logging.debug('%s/%s wait released cv', coro.name, coro._id)
+            coro.suspend()
+            coro._atomic = False
+            return True
+        self._notify = False
+        self._owner = coro._id
+        coro._atomic = True
+        logging.debug('cv wait over for %s/%s', coro.name, coro._id)
+        return False
 
 class _DispySocket(object):
     """Internal use only.
     """
 
     def __init__(self, sock, auth_code=None, certfile=None, keyfile=None, server=False,
-                 blocking=True, timeout=None):
+                 blocking=False, timeout=True):
         if certfile:
             self.sock = ssl.wrap_socket(sock, server_side=server, keyfile=keyfile,
                                         certfile=certfile, ssl_version=ssl.PROTOCOL_TLSv1)
         else:
             self.sock = sock
+        self.blocking = blocking == True
+        if self.blocking:
+            self.timestamp = None
+            if isinstance(timeout, float):
+                self.sock.settimeout(timeout)
+        else:
+            self.sock.setblocking(0)
+            if timeout:
+                self.timestamp = 0
+            else:
+                self.timestamp = None
+        self.auth_code = auth_code
+        self.result = None
+        self.fileno = sock.fileno()
+        self.coro = None
         for method in ['bind', 'listen', 'getsockname', 'setsockopt', 'getsockopt']:
             setattr(self, method, getattr(self.sock, method))
 
-        self.read_op = sock.recv
-        self.write_op = sock.send
-        self.close = sock.close
-        self.fileno = sock.fileno()
-        self.task = None
-        self.timestamp = None
-        self.auth_code = auth_code
-        self.blocking = blocking == True
-
         if self.blocking:
-            self.read = self.sync_read
-            self.write = self.sync_write
-            if timeout:
-                self.sock.settimeout(timeout)
             for method in ['settimeout', 'gettimeout']:
                 setattr(self, method, getattr(self.sock, method))
+            self.read = self.sync_read
+            self.write = self.sync_write
             self.recvfrom = self.sync_recvfrom
             self.accept = self.sync_accept
             self.sendto = self.sync_sendto
             self.connect = self.sync_connect
             self.read_msg = self.sync_read_msg
             self.write_msg = self.sync_write_msg
-
             self.notifier = None
         else:
-            self.sock.setblocking(0)
+            self.task = None
             self.read = self.async_read
             self.write = self.async_write
             self.recvfrom = self.async_recvfrom
@@ -97,89 +140,47 @@ class _DispySocket(object):
             self.connect = self.async_connect
             self.read_msg = self.async_read_msg
             self.write_msg = self.async_write_msg
-
             self.notifier = _AsyncNotifier.instance()
-            self.notifier.add_fd(self)
+            self.notifier.add_socket(self)
 
     def async_read(self, data_len, coro=None):
         self.result = bytearray()
         def _read(self, coro, data_len):
             plen = len(self.result)
-            self.result[len(self.result):] = self.read_op(data_len - len(self.result))
-            if len(self.result) == data_len:
+            self.result[len(self.result):] = self.sock.recv(data_len - len(self.result))
+            if len(self.result) == data_len or self.sock.type == socket.SOCK_DGRAM:
+                self.result = str(self.result)
                 self.notifier.modify(self, 0)
-                self.task = None
-                coro.resume(str(self.result))
+                coro.resume(self.result)
             elif len(self.result) == plen:
                 # TODO: check for error and delete?
-                logging.warning('socket %s is dead? %s/%s', self.fileno, data_len, len(self.result))
                 self.result = None
                 self.notifier.modify(self, 0)
-                self.task = None
                 coro.resume(None)
 
         self.task = functools.partial(_read, self, coro, data_len)
         self.coro = coro
-        self.timestamp = time.time()
+        if self.timestamp is not None:
+            self.timestamp = time.time()
         coro.suspend()
         self.notifier.modify(self, _AsyncNotifier._Readable)
 
     def sync_read(self, data_len):
         self.result = bytearray()
         while len(self.result) < data_len:
-            self.result[len(self.result):] = self.read_op(data_len - len(self.result))
+            self.result[len(self.result):] = self.sock.recv(data_len - len(self.result))
         return str(self.result)
 
-    def async_write(self, data, coro=None):
-        self.result = buffer(data, 0)
-        def _write(self, coro):
-            try:
-                n = self.write_op(self.result)
-            except:
-                logging.error('writing failed %s: %s', self.fileno, traceback.format_exc())
-                # TODO: close fd, inform coro
-                self.result = None
-                self.notifier.unregister(self)
-                self.task = None
-                coro.throw(*sys.exc_info())
-            else:
-                if n > 0:
-                    self.result = buffer(self.result, n)
-                    if len(self.result) == 0:
-                        self.notifier.modify(self, 0)
-                        self.task = None
-                        coro.resume(0)
-
-        self.task = functools.partial(_write, self, coro)
-        self.coro = coro
-        self.timestamp = time.time()
-        coro.suspend()
-        self.notifier.modify(self, _AsyncNotifier._Writable)
-
-    def sync_write(self, data):
-        self.result = buffer(data, 0)
-        while len(self.result) > 0:
-            n = self.write_op(self.result)
-            if n > 0:
-                self.result = buffer(self.result, n)
-        return 0
-
-    def close(self):
-        if self.notifier:
-            self.notifier.del_fd(self)
-        self.sock.close()
-
-    def async_recvfrom(self, data_len, coro=None, timeout=True):
+    def async_recvfrom(self, data_len, coro=None):
         def _read(self, coro, data_len):
             self.result, addr = self.sock.recvfrom(data_len)
             self.result = (str(self.result), addr)
             self.notifier.modify(self, 0)
-            self.task = None
             coro.resume(self.result)
 
         self.task = functools.partial(_read, self, coro, data_len)
         self.coro = coro
-        if timeout:
+        if self.timestamp is not None:
             self.timestamp = time.time()
         coro.suspend()
         self.notifier.modify(self, _AsyncNotifier._Readable)
@@ -198,16 +199,15 @@ class _DispySocket(object):
                 # TODO: close socket, inform coro
                 logging.debug('write error', self.fileno)
                 self.notifier.unregister(self)
-                self.task = None
                 coro.throw(*sys.exc_info())
             else:
                 self.notifier.modify(self, 0)
-                self.task = None
                 coro.resume(self.result)
 
         self.task = functools.partial(_sendto, self, data, addr, coro)
         self.coro = coro
-        self.timestamp = time.time()
+        if self.timestamp is not None:
+            self.timestamp = time.time()
         coro.suspend()
         self.notifier.modify(self, _AsyncNotifier._Writable)
 
@@ -215,12 +215,49 @@ class _DispySocket(object):
         self.result = self.sock.sendto(data, addr)
         return self.result
 
+    def async_write(self, data, coro=None):
+        self.result = buffer(data, 0)
+        def _write(self, coro):
+            try:
+                n = self.sock.send(self.result)
+            except:
+                logging.error('writing failed %s: %s', self.fileno, traceback.format_exc())
+                # TODO: close socket, inform coro
+                self.result = None
+                self.notifier.unregister(self)
+                coro.throw(*sys.exc_info())
+            else:
+                if n > 0:
+                    self.result = buffer(self.result, n)
+                    if len(self.result) == 0:
+                        self.notifier.modify(self, 0)
+                        coro.resume(0)
+
+        self.task = functools.partial(_write, self, coro)
+        self.coro = coro
+        if self.timestamp is not None:
+            self.timestamp = time.time()
+        coro.suspend()
+        self.notifier.modify(self, _AsyncNotifier._Writable)
+
+    def sync_write(self, data):
+        self.result = buffer(data, 0)
+        while len(self.result) > 0:
+            n = self.sock.send(self.result)
+            if n > 0:
+                self.result = buffer(self.result, n)
+        return 0
+
+    def close(self):
+        if self.notifier:
+            self.notifier.del_socket(self)
+        self.sock.close()
+
     def async_accept(self, coro=None):
         def _accept(self, coro):
             conn, addr = self.sock.accept()
             self.result = (conn, addr)
             self.notifier.modify(self, 0)
-            self.task = None
             coro.resume(self.result)
 
         self.task = functools.partial(_accept, self, coro)
@@ -231,6 +268,7 @@ class _DispySocket(object):
 
     def sync_accept(self):
         conn, addr = self.sock.accept()
+        sock = _DispySocket(conn, blocking=True)
         return conn, addr
 
     def async_connect(self, (host, port), coro=None):
@@ -239,14 +277,14 @@ class _DispySocket(object):
             err = self.sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
             if not err:
                 self.notifier.modify(self, 0)
-                self.task = None
                 coro.resume(0)
             else:
                 logging.debug('connect error: %s', err)
 
         self.task = functools.partial(_connect, self, coro, host, port)
         self.coro = coro
-        self.timestamp = time.time()
+        if self.timestamp is not None:
+            self.timestamp = time.time()
         coro.suspend()
         self.notifier.modify(self, _AsyncNotifier._Writable)
         try:
@@ -261,13 +299,13 @@ class _DispySocket(object):
     def async_read_msg(self, coro):
         try:
             info_len = struct.calcsize('>LL')
-            info = yield self.async_read(info_len, coro=coro)
+            info = yield self.read(info_len, coro=coro)
             if len(info) < info_len:
                 logging.error('Socket disconnected?(%s, %s)', len(info), info_len)
                 yield (None, None)
             (uid, msg_len) = struct.unpack('>LL', info)
             assert msg_len > 0
-            msg = yield self.async_read(msg_len, coro=coro)
+            msg = yield self.read(msg_len, coro=coro)
             if len(msg) < msg_len:
                 logging.error('Socket disconnected?(%s, %s)', len(msg), msg_len)
                 yield (None, None)
@@ -297,8 +335,8 @@ class _DispySocket(object):
     def async_write_msg(self, uid, data, auth=True, coro=None):
         assert coro is not None
         if auth and self.auth_code:
-            yield self.async_write(self.auth_code, coro=coro)
-        yield self.async_write(struct.pack('>LL', uid, len(data)) + data, coro=coro)
+            yield self.write(self.auth_code, coro=coro)
+        yield self.write(struct.pack('>LL', uid, len(data)) + data, coro=coro)
 
     def sync_write_msg(self, uid, data, auth=True):
         if auth and self.auth_code:
@@ -332,8 +370,9 @@ class Coro(object):
         self._id = None
         self._state = None
         self._value = None
+        self._atomic = False
         self._stack = []
-        self._scheduler = AsynCoro()
+        self._scheduler = AsynCoro.instance()
         self._complete = threading.Event()
         self._scheduler._add(self)
 
@@ -341,19 +380,19 @@ class Coro(object):
         if self._scheduler:
             self._scheduler._suspend(self._id)
         else:
-            logging.warning('Coroutine %s/%s removed?', self.name, self._id)
+            logging.warning('Coroutine %s removed?', self.name)
 
     def resume(self, value):
         if self._scheduler:
             self._scheduler._resume(self._id, value)
         else:
-            logging.warning('Coroutine %s/%s removed?', self.name, self._id)
+            logging.warning('Coroutine %s removed?', self.name)
       
     def throw(self, *args):
         if self._scheduler:
             self._scheduler._throw(self._id, *args)
         else:
-            logging.warning('Coroutine %s/%s removed?', self.name, self._id)
+            logging.warning('Coroutine %s removed?', self.name)
 
     def value(self):
         self._complete.wait()
@@ -366,8 +405,6 @@ class AsynCoro(object):
 
     __metaclass__ = MetaSingleton
 
-    __instance = None
-
     _Running = 1
     _Suspended = 2
     _Resumed = 3
@@ -376,14 +413,18 @@ class AsynCoro(object):
 
     _coro_id = 1
 
+    @classmethod
+    def instance(cls, *args):
+        if not hasattr(cls, '__instance'):
+            cls.__instance = cls(*args)
+        return cls.__instance
+
     def __init__(self):
         if not hasattr(self, '_coros'):
-            AsynCoro.__instance = self
             self._coros = {}
             self._running = set()
             self._resumed = set()
             self._suspended = set()
-            self._frozen = set()
             self._sched_cv = threading.Condition()
             self._terminate = False
             self._lock = threading.RLock()
@@ -394,9 +435,6 @@ class AsynCoro(object):
 
             self.notifier = _AsyncNotifier()
 
-    def instance(self):
-        return self.__instance
-
     def _add(self, coro):
         coro._id = AsynCoro._coro_id
         self._sched_cv.acquire()
@@ -406,6 +444,7 @@ class AsynCoro(object):
         coro._state = AsynCoro._Suspended
         self._suspended.add(coro._id)
         self._sched_cv.release()
+        logging.debug('added coro %s with %s', coro.name, coro._id)
         self._resume(coro._id, None)
 
     def _suspend(self, cid):
@@ -413,12 +452,13 @@ class AsynCoro(object):
         coro = self._coros.get(cid, None)
         if coro is None:
             self._sched_cv.release()
-            logging.warning('invalid coroutine %s to suspend', cid)
+            logging.warning('          invalid coroutine %s to suspend', cid)
             assert False
             return
         if coro._state != AsynCoro._Running:
-            logging.warning('invalid coroutine %s/%s to suspend', coro.name, coro._id, coro._state)
-            assert False
+            logging.warning('           invalid coroutine %s/%s to suspend: %s',
+                            coro.name, coro._id, coro._state)
+            # assert False
         self._running.discard(cid)
         assert cid not in self._resumed
         coro._state = AsynCoro._Suspended
@@ -430,13 +470,13 @@ class AsynCoro(object):
         coro = self._coros.get(cid, None)
         if coro is None:
             self._sched_cv.release()
-            logging.warning('invalid coroutine %s to resume', cid)
+            logging.warning('         invalid coroutine %s to resume', cid)
             assert False
             return
         if coro._state in [AsynCoro._Suspended, AsynCoro._Stopped]:
             coro._value = value
         else:
-            logging.warning('invalid coroutine %s/%s to resume: %s',
+            logging.warning('          invalid coroutine %s/%s to resume: %s',
                             coro.name, cid, coro._state)
             # assert False
         # assert cid not in self._resumed
@@ -452,7 +492,7 @@ class AsynCoro(object):
         coro = self._coros.get(cid, None)
         if coro is None:
             self._sched_cv.release()
-            logging.warning('invalid coroutine %s to delete', cid)
+            logging.warning('           invalid coroutine %s to delete', cid)
             assert False
             return
         if coro._state == AsynCoro._Running:
@@ -483,10 +523,12 @@ class AsynCoro(object):
     def _run(self):
         while True:
             self._sched_cv.acquire()
-            while not self._running and not self._resumed and not self._terminate:
-                self._sched_cv.wait()
+            while (not self._running) and (not self._resumed) and (not self._terminate):
+                # logging.debug('waiting for coros to run')
+                self._sched_cv.wait(1)
             if self._terminate:
                 self._sched_cv.release()
+                logging.debug('_run quitting')
                 break
             running = [self._coros.get(cid, None) for cid in self._resumed]
             for coro in running:
@@ -503,8 +545,15 @@ class AsynCoro(object):
                 assert coro._state in [AsynCoro._Running, AsynCoro._Resumed], \
                        'coro %s/%s is in invalid state: %s' % (coro.name, coro._id, coro._state)
                 try:
+                    # logging.debug('advancing %s/%s: %s, %s', coro.name, coro._id,
+                    #               coro._generator.__name__, type(coro._value))
                     retval = coro._generator.send(coro._value)
+                    assert coro._atomic is False
+                    # logging.debug('advanced %s/%s: %s, %s', coro.name, coro._id,
+                    #               coro._generator.__name__, type(retval))
                 except StopIteration:
+                    # logging.debug('%s/%s / %s is done', coro.name, coro._id,
+                    #               coro._generator.__name__)
                     self._sched_cv.acquire()
                     if coro._stack:
                         # return to caller
@@ -517,7 +566,8 @@ class AsynCoro(object):
                             caller._value = coro._value
                             self._delete(coro._id)
                             self._sched_cv.release()
-                        elif inspect.isgenerator(caller):
+                        else:
+                            assert inspect.isgenerator(caller)
                             coro._generator = caller
                     else:
                         coro._complete.set()
@@ -545,10 +595,12 @@ class AsynCoro(object):
                         retval._stack.append(coro)
                         retval._value = None
                         retval._state = AsynCoro._Running
-                        self._running.append(retval)
+                        self._running.add(retval)
                     elif inspect.isgenerator(retval):
                         # push current generator onto stack and
                         # activate new generator
+                        # logging.debug('%s/%s started %s', coro.name, coro._id,
+                        #               coro._generator.__name__)
                         coro._stack.append(coro._generator)
                         coro._generator = retval
                         coro._value = None
@@ -564,9 +616,18 @@ class AsynCoro(object):
     def terminate(self):
         self.notifier.terminate()
         self._sched_cv.acquire()
+        for cid in self._running.union(self._suspended, self._resumed):
+            coro = self._coros.get(cid, None)
+            if coro is None:
+                continue
+            coro._scheduler = None
+            del coro
+        self._running = self._suspended = self._resumed = set()
         self._terminate = True
         self._sched_cv.notify()
         self._sched_cv.release()
+        self._complete.wait()
+        logging.debug('AsynCoro terminated')
 
     def join(self):
         self._complete.wait()
@@ -588,9 +649,11 @@ class _AsyncNotifier(object):
 
     __metaclass__ = MetaSingleton
 
-    _Readable = None
-    _Writable = None
-    _Error = None
+    # TODO: handle other pollers (select / kqueue)
+
+    _Readable = select.EPOLLIN
+    _Writable = select.EPOLLOUT
+    _Error = select.EPOLLHUP
 
     @classmethod
     def instance(cls, *args, **kwargs):
@@ -598,210 +661,126 @@ class _AsyncNotifier(object):
             cls.__instance = cls(*args, **kwargs)
         return cls.__instance
 
-    def __init__(self, poll_interval=1, fd_timeout=10):
-        if not hasattr(self, '_poller'):
-            assert fd_timeout >= 5 * poll_interval
-
-            if hasattr(select, 'epoll'):
-                self._poller = select.epoll()
-                _AsyncNotifier._Readable = select.EPOLLIN
-                _AsyncNotifier._Writable = select.EPOLLOUT
-                _AsyncNotifier._Error = select.EPOLLHUP | select.EPOLLERR
-            elif hasattr(select, 'kqueue'):
-                self._poller = _KQueueNotifier()
-                _AsyncNotifier._Readable = select.KQ_FILTER_READ
-                _AsyncNotifier._Writable = select.KQ_FILTER_WRITE
-                _AsyncNotifier._Error = select.KQ_EV_ERROR
-            elif hasattr(select, 'poll'):
-                self._poller = select.poll()
-                _AsyncNotifier._Readable = select.POLLIN
-                _AsyncNotifier._Writable = select.POLLOUT
-                _AsyncNotifier._Error = select.POLLHUP | select.POLLERR
-            else:
-                self._poller = _SelectNotifier()
-                _AsyncNotifier._Readable = 0x01
-                _AsyncNotifier._Writable = 0x04
-                _AsyncNotifier._Error = 0x10
-
+    def __init__(self, poll_interval=1, socket_timeout=10):
+        if not hasattr(self, 'poll_interval'):
+            assert socket_timeout >= 5 * poll_interval
             self._poll_interval = poll_interval
-            self._fd_timeout = fd_timeout
-            self._fds = {}
+            self._socket_timeout = socket_timeout
+            self._poller = select.epoll()
+            self._socks = {}
             self._terminate = False
             self._lock = threading.Lock()
-            self._notifier_thread = threading.Thread(target=self._notifier)
+            self._notifier_thread = threading.Thread(target=self.notifier)
             self._notifier_thread.daemon = True
             self._notifier_thread.start()
-            # TODO: add controlling fd to wake up poller (for
-            # termination)
 
-    def _notifier(self):
+    def notifier(self):
         last_timeout = time.time()
         while not self._terminate:
             events = self._poller.poll(self._poll_interval)
             now = time.time()
             self._lock.acquire()
-            events = [(self._fds.get(fileno, None), event) for fileno, event in events]
+            events = [(self._socks.get(fileno, None), event) for fileno, event in events]
             self._lock.release()
+            # logging.debug('poll events: %s', len(events))
             try:
-                for fd, evnt in events:
-                    if fd is None:
-                        logging.debug('Invalid fd!')
+                for sock, event in events:
+                    if sock is None:
+                        logging.debug('Invalid socket!')
                         continue
-                    if event == _AsyncNotifier._Readable:
-                        # logging.debug('fd %s is readable', fd.fileno)
-                        fd.timestamp = now
-                        if fd.task is None:
-                            logging.error('fd %s is not registered?', fd.fileno)
-                        else:
-                            fd.task()
-                    elif event == _AsyncNotifier._Writable:
-                        # logging.debug('fd %s is writable', fd.fileno)
-                        fd.timestamp = now
-                        if fd.task is None:
-                            logging.error('fd %s is not registered?', fd.fileno)
-                        else:
-                            fd.task()
-                    elif event == _AsyncNotifier._Error:
-                        # logging.debug('Error on %s', fd.fileno)
-                        # TODO: figure out what to do (e.g., register also for
-                        # HUP and close?)
+                    if event & _AsyncNotifier._Readable:
+                        # logging.debug('sock %s is readable', sock.fileno)
+                        if sock.timestamp is not None:
+                            sock.timestamp = now
+                        if sock.task is not None:
+                            sock.task()
+                    elif event & _AsyncNotifier._Writable:
+                        # logging.debug('sock %s is writable', sock.fileno)
+                        if sock.timestamp is not None:
+                            sock.timestamp = now
+                        if sock.task is not None:
+                            sock.task()
+                    elif event & AsyncNotifier._Error:
+                        # logging.debug('Error on %s', sock.fileno)
                         continue
+                        self._lock.acquire()
+                        sock = self._socks.pop(sock.fileno, None)
+                        self._lock.release()
+                        if sock is not None:
+                            try:
+                                self._poller.unregister(sock.fileno)
+                                sock._sock.shutdown(socket.SHUT_RDWD)
+                            except:
+                                pass
             except:
                 pass
-            if (now - last_timeout) >= self._fd_timeout:
+            if (now - last_timeout) >= self._socket_timeout:
                 last_timeout = now
-                self._lock.acquire()
-                timeouts = [fd for fd in self._fds.itervalues() \
-                            if fd.timestamp and (now - fd.timestamp) >= self._fd_timeout]
+                timeouts = [sock for sock in self._socks.itervalues() \
+                            if sock.timestamp and (now - sock.timestamp) >= self._socket_timeout]
                 try:
-                    for fd in timeouts:
-                        if fd.coro:
-                            e = 'timeout %s' % (now - fd.timestamp)
-                            fd.timestamp = None
-                            fd.coro.throw(Exception, Exception(e))
+                    for sock in timeouts:
+                        if sock.coro:
+                            e = 'timeout %s' % (now - sock.timestamp)
+                            sock.timestamp = None
+                            sock.coro.throw(socket.timeout, socket.timeout(e))
                 except:
                     logging.debug(traceback.format_exc())
-                self._lock.release()
         logging.debug('_AsyncNotifier terminated')
 
-    def add_fd(self, fd):
+    def add_socket(self, sock):
         self._lock.acquire()
-        self._fds[fd.fileno] = fd
+        self._socks[sock.fileno] = sock
         self._lock.release()
-        self.register(fd, 0)
+        self.register(sock, 0)
 
-    def del_fd(self, fd):
+    def del_socket(self, sock):
+        self.unregister(sock)
         self._lock.acquire()
-        fd = self._fds.pop(fd.fileno, None)
+        self._socks.pop(sock.fileno, None)
         self._lock.release()
-        if fd is not None:
-            self.unregister(fd)
 
-    def register(self, fd, event):
-        try:
-            self._poller.register(fd.fileno, event)
-        except:
-            logging.warning('register of %s for %s failed with %s',
-                            fd.fileno, event, traceback.format_exc())
+    def register(self, sock, flags):
+        if flags & _AsyncNotifier._Readable:
+            event = select.EPOLLIN
+        elif flags & _AsyncNotifier._Writable:
+            event = select.EPOLLOUT
+        elif flags & _AsyncNotifier._Error:
+            event = select.EPOLLHUP
+        else:
+            event = 0
 
-    def modify(self, fd, event):
-        if not event:
-            fd.timestamp = None
         try:
-            self._poller.modify(fd.fileno, event)
+            self._poller.register(sock.fileno, event)
         except:
-            logging.warning('modify of %s for %s failed with %s',
-                            fd.fileno, event, traceback.format_exc())
+            logging.warning('register of %s failed with %s', sock.fileno, traceback.format_exc())
 
-    def unregister(self, fd):
+    def modify(self, sock, flags):
+        if not flags:
+            event = 0
+            if sock.timestamp is not None:
+                sock.timestamp = 0
+        elif flags & _AsyncNotifier._Readable:
+            event = select.EPOLLIN
+        elif flags & _AsyncNotifier._Writable:
+            event = select.EPOLLOUT
+        elif flags & _AsyncNotifier._Error:
+            event = select.EPOLLHUP
+
         try:
-            self._poller.unregister(fd.fileno)
-            fd.timestamp = None
+            self._poller.modify(sock.fileno, event)
         except:
-            logging.warning('unregister of %s failed with %s', fd.fileno, traceback.format_exc())
+            logging.warning('modify of %s failed with %s', sock.fileno, traceback.format_exc())
+
+    def unregister(self, sock):
+        try:
+            self._poller.unregister(sock.fileno)
+            sock.timestamp = None
+        except:
+            logging.warning('unregister of %s failed with %s', sock.fileno, traceback.format_exc())
 
     def terminate(self):
         self._terminate = True
-
-class _KQueueNotifier(object):
-    """Internal use only.
-    """
-
-    __metaclass__ = MetaSingleton
-
-    def __init__(self):
-        if not hasattr(self, 'poller'):
-            self.poller = select.kqueue()
-            self.fids = {}
-
-    def register(self, fid, event):
-        self.fids[fid] = event
-        self.update(fid, event, select.KQ_EV_ADD)
-
-    def unregister(self, fid):
-        event = self.fids.pop(fid, None)
-        if event is not None:
-            self.update(fid, event, select.KQ_EV_DELETE)
-
-    def modify(self, fid, event):
-        self.unregister(fid)
-        self.register(fid, event)
-
-    def update(self, fid, event, flags):
-        kevents = []
-        if event == _AsyncNotifier._Readable:
-            kevents = [select.kevent(fid, filter=select.KQ_FILTER_READ, flags=flags)]
-        elif event == _AsyncNotifier._Writable:
-            kevents = [select.kevent(fid, filter=select.KQ_FILTER_WRITE, flags=flags)]
-
-        if kevents:
-            self.poller.control(kevents, 0)
-
-    def poll(self, timeout):
-        kevents = self.poller.control(None, 500, timeout)
-        events = [(kevent.ident, kevent.filter) for kevent in kevents]
-        return events
-
-class _SelectNotifier(object):
-    """Internal use only.
-    """
-
-    __metaclass__ = MetaSingleton
-
-    def __init__(self):
-        if not hasattr(self, 'poller'):
-            self.poller = select.select
-            self.rset = set()
-            self.wset = set()
-            self.xset = set()
-
-    def register(self, fid, event):
-        if event == _AsyncNotifier._Readable:
-            self.rset.add(fid)
-        elif event == _AsyncNotifier._Writable:
-            self.wset.add(fid)
-        elif event == _AsyncNotifier._Error:
-            self.xset.add(fid)
-
-    def unregister(self, fid):
-        self.rset.discard(fid)
-        self.wset.discard(fid)
-        self.xset.discard(fid)
-
-    def modify(self, fid, event):
-        self.unregister(fid)
-        self.register(fid, event)
-
-    def poll(self, timeout):
-        rlist, wlist, xlist = self.poller(self.rset, self.wset, self.xset, timeout)
-        events = {}
-        for fid in rlist:
-            events[fid] = _AsyncNotifier._Readable
-        for fid in wlist:
-            events[fid] = _AsyncNotifier._Writable
-        for fid in xlist:
-            events[fid] = _AsyncNotifier._Error
-        return events.iteritems()
 
 class RepeatTimer(threading.Thread):
     """Timer that calls given function every 'interval' seconds. The
@@ -809,10 +788,10 @@ class RepeatTimer(threading.Thread):
     etc. until terminated.
     """
     def __init__(self, interval, function, args=(), kwargs={}):
+        threading.Thread.__init__(self)
         if interval is not None:
             interval = float(interval)
             assert interval > 0
-        threading.Thread.__init__(self)
         self._interval = None
         self._func = function
         self._args = args
