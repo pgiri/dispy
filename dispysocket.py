@@ -117,7 +117,7 @@ class DispySocket(object):
                 # TODO: check for error and delete?
                 self.result = None
                 self.notifier.modify(self, 0)
-                coro.resume(None)
+                coro.throw(Exception, Exception('socket reading error'), None)
 
         self.task = functools.partial(_read, self, coro, data_len)
         self.coro = coro
@@ -271,9 +271,9 @@ class DispySocket(object):
                 logging.error('Socket disconnected?(%s, %s)', len(msg), msg_len)
                 yield (None, None)
             yield (uid, msg)
-        except Exception, ex:
+        except:
             logging.error('Socket reading error: %s' % traceback.format_exc())
-            yield ex
+            raise
 
     def sync_read_msg(self):
         try:
@@ -423,10 +423,15 @@ class AsynCoro(object):
     __metaclass__ = MetaSingleton
     __instance = None
 
-    _Running = 1
-    _Suspended = 2
-    _Resumed = 3
+    # in _running set, waiting for turn to execute
+    _Scheduled = 1
+    # in _running, currently executing
+    _Running = 2
+    # in _suspended, but executing
+    _Suspended = 3
+    # in _suspended, not executing
     _Stopped = 4
+    # called another generator or coro, not in _running or _suspended
     _Frozen = 5
 
     _coro_id = 1
@@ -440,7 +445,6 @@ class AsynCoro(object):
             self.__class__.__instance = self
             self._coros = {}
             self._running = set()
-            self._resumed = set()
             self._suspended = set()
             self._sched_cv = threading.Condition()
             self._terminate = False
@@ -458,27 +462,30 @@ class AsynCoro(object):
         AsynCoro._coro_id += 1
         self._coros[coro._id] = coro
         self._complete.clear()
-        coro._state = AsynCoro._Suspended
-        self._suspended.add(coro._id)
+        coro._state = AsynCoro._Scheduled
+        self._running.add(coro._id)
+        self._sched_cv.notify()
         self._sched_cv.release()
         # logging.debug('added coro %s with %s', coro.name, coro._id)
-        self._resume(coro._id, None)
 
     def _suspend(self, cid):
-        self._sched_cv.acquire()
+        # for now only executing coro can call suspend (itself).
+        # TODO: does it make sense to have (co-operating) coros
+        # suspend others (will make things even more interesting!)?
+        self._lock.acquire()
         coro = self._coros.get(cid, None)
         if coro is None:
-            self._sched_cv.release()
+            self._lock.release()
             logging.warning('invalid coroutine %s to suspend', cid)
             return
-        if coro._state != AsynCoro._Running:
+        if coro._state == AsynCoro._Running:
+            self._running.discard(cid)
+            coro._state = AsynCoro._Suspended
+            self._suspended.add(cid)
+        else:
             logging.warning('invalid coroutine %s/%s to suspend: %s',
                             coro.name, coro._id, coro._state)
-        self._running.discard(cid)
-        assert cid not in self._resumed
-        coro._state = AsynCoro._Suspended
-        self._suspended.add(cid)
-        self._sched_cv.release()
+        self._lock.release()
 
     def _resume(self, cid, value):
         self._sched_cv.acquire()
@@ -487,80 +494,70 @@ class AsynCoro(object):
             self._sched_cv.release()
             logging.warning('invalid coroutine %s to resume', cid)
             return
-        if coro._state in [AsynCoro._Suspended, AsynCoro._Stopped]:
+        if coro._state in [AsynCoro._Stopped, AsynCoro._Suspended]:
             coro._value = value
+            self._suspended.discard(cid)
+            self._running.add(cid)
+            coro._state = AsynCoro._Scheduled
+            self._sched_cv.notify()
         else:
             logging.warning('invalid coroutine %s/%s to resume: %s',
                             coro.name, cid, coro._state)
-        # assert cid not in self._resumed
-        self._suspended.discard(cid)
-        self._running.discard(cid)
-        coro._state = AsynCoro._Resumed
-        self._resumed.add(cid)
-        self._sched_cv.notify()
         self._sched_cv.release()
 
-    def _delete(self, cid):
-        self._sched_cv.acquire()
-        coro = self._coros.get(cid, None)
-        if coro is None:
-            self._sched_cv.release()
-            logging.warning('invalid coroutine %s to delete', cid)
-            return
-        if coro._state == AsynCoro._Running:
-            self._running.discard(cid)
-        elif coro._state == AsynCoro._Resumed:
-            self._resumed.discard(cid)
-        elif coro._state == AsynCoro._Suspended or coro._state == AsynCoro._Stopped:
-            self._suspended.discard(cid)
+    def _delete(self, coro):
+        # called with _sched_cv locked
+        self._running.discard(coro._id)
+        self._suspended.discard(coro._id)
         coro._scheduler = None
-        coro._stack = []
-        del self._coros[cid]
+        assert not coro._stack
+        del self._coros[coro._id]
         if not self._coros:
             self._complete.set()
-        self._sched_cv.release()
 
     def _throw(self, cid, *args):
         self._sched_cv.acquire()
         coro = self._coros.get(cid, None)
-        if coro is None or coro._state != AsynCoro._Stopped:
+        if coro is None:
             logging.warning('invalid coroutine %s to throw exception', cid)
-        else:
+        elif coro._state in [AsynCoro._Scheduled, AsynCoro._Stopped]:
+            # prevent throwing more than once?
             logging.debug('throwing exception in %s/%s', coro.name, coro._id)
             coro._value = args
             coro._is_exc = True
             self._suspended.discard(coro._id)
-            coro._state = AsynCoro._Resumed
             self._running.add(coro._id)
+            coro._state = AsynCoro._Scheduled
             self._sched_cv.notify()
+        else:
+            logging.warning('invalid coroutine %s/%s to throw exception: %s',
+                            coro.name, coro._id, coro._state)
         self._sched_cv.release()
 
     def _scheduler(self):
         while True:
             self._sched_cv.acquire()
-            while (not self._running) and (not self._resumed) and (not self._terminate):
+            while (not self._running) and (not self._terminate):
                 self._sched_cv.wait()
             if self._terminate:
                 self._sched_cv.release()
                 break
-            running = [self._coros.get(cid, None) for cid in self._resumed]
-            for coro in running:
-                coro._state = AsynCoro._Running
-            self._running.update(self._resumed)
-            self._resumed = set()
             running = [self._coros.get(cid, None) for cid in self._running]
             self._sched_cv.release()
 
-            freeze = []
             for coro in running:
                 if coro is None:
                     continue
+                self._sched_cv.acquire()
+                coro._state = AsynCoro._Running
+                self._sched_cv.release()
                 try:
                     if coro._is_exc:
                         retval = coro._generator.throw(*coro._value)
                     else:
                         retval = coro._generator.send(coro._value)
                 except:
+                    self._sched_cv.acquire()
                     if sys.exc_type == StopIteration:
                         coro._is_exc = False
                     else:
@@ -572,31 +569,36 @@ class AsynCoro(object):
                         caller = coro._stack.pop(-1)
                         if isinstance(caller, Coro):
                             assert not coro._stack
+                            assert caller._state == AsynCoro._Frozen
                             caller._state = AsynCoro._Running
                             self._running.add(caller._id)
                             caller._value = coro._value
-                            self._delete(coro._id)
+                            self._delete(coro)
                         else:
                             assert isinstance(caller, types.GeneratorType)
                             coro._generator = caller
+                            coro._state = AsynCoro._Scheduled
                     else:
                         coro._complete.set()
-                        self._delete(coro._id)
+                        self._delete(coro)
+                    self._sched_cv.release()
                 else:
                     self._sched_cv.acquire()
                     if coro._state == AsynCoro._Suspended:
-                        coro._state = AsynCoro._Stopped
-                    elif coro._state == AsynCoro._Running:
                         # if this coroutine is suspended, don't update
                         # the value; it will be updated with the value
                         # with which it is resumed
+                        coro._state = AsynCoro._Stopped
+                    elif coro._state == AsynCoro._Running:
                         coro._value = retval
+                        coro._state = AsynCoro._Scheduled
 
                     if isinstance(retval, Coro):
                         # freeze current coroutine and activate new
                         # coroutine; control is returned to the caller
                         # when new coroutine is done
-                        freeze.append(coro)
+                        coro._state = AsyncCoro._Frozen
+                        self._running.discard(coro._id)
                         assert not retval._stack
                         retval._stack.append(coro)
                     elif isinstance(retval, types.GeneratorType):
@@ -609,23 +611,18 @@ class AsynCoro(object):
                         coro._value = None
                     self._sched_cv.release()
 
-            self._sched_cv.acquire()
-            for coro in freeze:
-                coro._state = AsynCoro._Frozen
-                self._running.discard(coro._id)
-            self._sched_cv.release()
         self._complete.set()
 
     def terminate(self):
         self.notifier.terminate()
         self._sched_cv.acquire()
-        for cid in self._running.union(self._suspended, self._resumed):
+        for cid in self._running.union(self._suspended):
             coro = self._coros.get(cid, None)
             if coro is None:
                 continue
             coro._scheduler = None
             del coro
-        self._running = self._suspended = self._resumed = set()
+        self._running = self._suspended = set()
         self._terminate = True
         self._sched_cv.notify()
         self._sched_cv.release()
@@ -700,7 +697,7 @@ class AsyncNotifier(object):
             now = time.time()
             self._lock.acquire()
             events = [(self._fds.get(fileno, None), event) for fileno, event in events]
-            logging.debug('events: %s', len(events))
+            # logging.debug('events: %s', len(events))
             self._lock.release()
             try:
                 for fd, evnt in events:
