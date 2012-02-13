@@ -1003,7 +1003,8 @@ class _DispyNode(object):
                 logging.debug('Sending TERMINATE to %s', compute.scheduler_ip_addr)
                 data = cPickle.dumps({'ip_addr':self.address[0], 'port':self.address[1],
                                       'sign':self.signature})
-                sock.sendto('TERMINATED:' + data, (compute.scheduler_ip_addr, compute.scheduler_port))
+                sock.sendto('TERMINATED:' + data, (compute.scheduler_ip_addr,
+                                                   compute.scheduler_port))
                 sock.close()
 
             self.tcp_sock.close()

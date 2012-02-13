@@ -442,8 +442,8 @@ class _Cluster(object):
     """
     __metaclass__ = MetaSingleton
 
-    def __init__(self, ip_addr=None, port=None, node_port=None, num_tasks=8,
-                 secret='', keyfile=None, certfile=None, shared=False, fault_recover_file=None):
+    def __init__(self, ip_addr=None, port=None, node_port=None, secret='',
+                 keyfile=None, certfile=None, shared=False, fault_recover_file=None):
         if not hasattr(self, 'ip_addr'):
             self.asyncoro = AsynCoro()
             atexit.register(self.shutdown)

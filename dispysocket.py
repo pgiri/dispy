@@ -331,8 +331,8 @@ class Coro(object):
         self._id = None
         self._state = None
         self._value = None
+        self._value_is_exc = False
         self._stack = []
-        self._is_exc = False
         self._scheduler = AsynCoro.instance()
         self._complete = threading.Event()
         self._scheduler._add(self)
@@ -441,7 +441,7 @@ class AsynCoro(object):
         return cls.__instance
 
     def __init__(self):
-        if not hasattr(self, '_coros'):
+        if self.__class__.__instance is None:
             self.__class__.__instance = self
             self._coros = {}
             self._running = set()
@@ -524,7 +524,7 @@ class AsynCoro(object):
             # prevent throwing more than once?
             logging.debug('throwing exception in %s/%s', coro.name, coro._id)
             coro._value = args
-            coro._is_exc = True
+            coro._value_is_exc = True
             self._suspended.discard(coro._id)
             self._running.add(coro._id)
             coro._state = AsynCoro._Scheduled
@@ -540,9 +540,19 @@ class AsynCoro(object):
             while (not self._running) and (not self._terminate):
                 self._sched_cv.wait()
             if self._terminate:
+                for cid in self._running.union(self._suspended):
+                    coro = self._coros.get(cid, None)
+                    if coro is None:
+                        continue
+                    coro._stack = []
+                    coro._scheduler = None
+                    del coro
+                self._running = self._suspended = set()
+                self._coros = {}
                 self._sched_cv.release()
                 break
             running = [self._coros.get(cid, None) for cid in self._running]
+            random.shuffle(running)
             self._sched_cv.release()
 
             for coro in running:
@@ -552,17 +562,17 @@ class AsynCoro(object):
                 coro._state = AsynCoro._Running
                 self._sched_cv.release()
                 try:
-                    if coro._is_exc:
+                    if coro._value_is_exc:
                         retval = coro._generator.throw(*coro._value)
                     else:
                         retval = coro._generator.send(coro._value)
                 except:
                     self._sched_cv.acquire()
                     if sys.exc_type == StopIteration:
-                        coro._is_exc = False
+                        coro._value_is_exc = False
                     else:
                         retval = sys.exc_info()
-                        coro._is_exc = True
+                        coro._value_is_exc = True
 
                     if coro._stack:
                         # return to caller
@@ -604,8 +614,6 @@ class AsynCoro(object):
                     elif isinstance(retval, types.GeneratorType):
                         # push current generator onto stack and
                         # activate new generator
-                        # logging.debug('%s/%s started %s', coro.name, coro._id,
-                        #               coro._generator.__name__)
                         coro._stack.append(coro._generator)
                         coro._generator = retval
                         coro._value = None
@@ -616,13 +624,6 @@ class AsynCoro(object):
     def terminate(self):
         self.notifier.terminate()
         self._sched_cv.acquire()
-        for cid in self._running.union(self._suspended):
-            coro = self._coros.get(cid, None)
-            if coro is None:
-                continue
-            coro._scheduler = None
-            del coro
-        self._running = self._suspended = set()
         self._terminate = True
         self._sched_cv.notify()
         self._sched_cv.release()
@@ -639,7 +640,7 @@ class AsyncNotifier(object):
     Timeouts for socket operations are handled in a rather simplisitc
     way for efficiency: Instead of timeout for each socket, we provide
     only a global timeout value and check if any socket I/O operation
-    has timedout every 'socket_timeout' seconds.
+    has timedout every 'fd_timeout' seconds.
     """
 
     __metaclass__ = MetaSingleton
@@ -654,7 +655,7 @@ class AsyncNotifier(object):
         return cls.__instance
 
     def __init__(self, poll_interval=1, fd_timeout=10):
-        if not hasattr(self, '_poller'):
+        if self.__class__.__instance is None:
             assert fd_timeout >= 5 * poll_interval
             self.__class__.__instance = self
 
@@ -922,4 +923,7 @@ class RepeatTimer(threading.Thread):
             if not self._active.is_set():
                 self._active.wait()
                 continue
-            self._func(*self._args, **self._kwargs)
+            try:
+                self._func(*self._args, **self._kwargs)
+            except:
+                pass

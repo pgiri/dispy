@@ -80,6 +80,13 @@ are:
     (with <tt>ShareJobCluster</tt>
     and <a href="dispyscheduler.html">dispyscheduler</a>).</li>
 
+<li>Although not exactly a feature, there is now an implementation of
+dispy with asynchronous I/O and coroutines (without threads). This
+version is released as 'discopy' to avoid confusion with dispy
+releases. Usage of discopy is same as that of dispy. discopy has not
+yet been well tested and not known if it works with Windows. The hope
+is that discopy scales better than dispy for large number of
+connections, but currently this is more of an academic point.</li>
   </ul>
 <p>
 dispy consists of 4 components:
