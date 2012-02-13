@@ -654,7 +654,7 @@ class AsyncNotifier(object):
     def instance(cls):
         return cls.__instance
 
-    def __init__(self, poll_interval=1, fd_timeout=10):
+    def __init__(self, poll_interval=2, fd_timeout=10):
         if self.__class__.__instance is None:
             assert fd_timeout >= 5 * poll_interval
             self.__class__.__instance = self
@@ -782,6 +782,8 @@ class AsyncNotifier(object):
             logging.warning('unregister of %s failed with %s', fd.fileno, traceback.format_exc())
 
     def terminate(self):
+        if hasattr(self._poller, 'terminate'):
+            self._poller.terminate()
         self._terminate = True
 
 class _KQueueNotifier(object):
@@ -836,6 +838,14 @@ class _SelectNotifier(object):
             self.wset = set()
             self.xset = set()
 
+            self.cmd_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.cmd_sock.setblocking(0)
+            self.cmd_sock.bind(('', 0))
+            self.cmd_addr = self.cmd_sock.getsockname()
+            self.cmd_fd = self.cmd_sock.fileno()
+            self.update_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.rset.add(self.cmd_fd)
+
     def register(self, fid, event):
         if event == AsyncNotifier._Readable:
             self.rset.add(fid)
@@ -843,15 +853,21 @@ class _SelectNotifier(object):
             self.wset.add(fid)
         elif event == AsyncNotifier._Error:
             self.xset.add(fid)
+        self.update()
 
     def unregister(self, fid):
         self.rset.discard(fid)
         self.wset.discard(fid)
         self.xset.discard(fid)
+        self.update()
 
     def modify(self, fid, event):
         self.unregister(fid)
         self.register(fid, event)
+        self.update()
+
+    def update(self):
+        self.update_sock.sendto('update', self.cmd_addr)
 
     def poll(self, timeout):
         rlist, wlist, xlist = self.poller(self.rset, self.wset, self.xset, timeout)
@@ -862,7 +878,16 @@ class _SelectNotifier(object):
             events[fid] = AsyncNotifier._Writable
         for fid in xlist:
             events[fid] = AsyncNotifier._Error
+
+        if events.pop(self.cmd_fd, None) == self.cmd_fd:
+            cmd, addr = self.cmd_sock.recvfrom(128)
+            # assert addr[1] == self.update_sock.getsockname()[1]
         return events.iteritems()
+
+    def terminate(self):
+        self.update_sock.close()
+        self.cmd_sock.close()
+        self.rset = self.wset = self.xset = None
 
 class RepeatTimer(threading.Thread):
     """Timer that calls given function every 'interval' seconds. The

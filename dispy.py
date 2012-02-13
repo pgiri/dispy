@@ -548,7 +548,6 @@ class _Cluster(object):
                 bc_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
                 bc_sock = DispySocket(bc_sock, blocking=False)
-                logging.debug('broadcasting ...')
                 try:
                     yield bc_sock.sendto('PING:%s' % ping_request, ('<broadcast>', port), coro=coro)
                 except:
@@ -561,7 +560,6 @@ class _Cluster(object):
                 port = node_info['port']
                 if not port:
                     port = self.node_port
-                logging.debug('sending ping to %s:%s', ip_addr, port)
                 try:
                     yield sock.sendto('PING:%s' % ping_request, (ip_addr, port), coro=coro)
                 except:

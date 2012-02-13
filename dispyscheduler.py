@@ -1262,7 +1262,7 @@ if __name__ == '__main__':
             scheduler.asyncoro.join()
         except KeyboardInterrupt:
             logging.info('Interrupted; terminating')
-            next(scheduler.shutdown(), None)
+            scheduler.shutdown()
             break
         except:
             logging.warning(traceback.format_exc())
