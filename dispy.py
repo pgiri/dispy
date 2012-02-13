@@ -276,8 +276,9 @@ class _Node(object):
         # generator
         assert coro is not None
         logging.debug('Sending to %s:%s', self.ip_addr, self.port)
-        sock = DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), blocking=False,
-                           auth_code=self.auth_code, certfile=self.certfile, keyfile=self.keyfile)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock = DispySocket(sock, blocking=False, auth_code=self.auth_code,
+                           certfile=self.certfile, keyfile=self.keyfile)
         try:
             yield sock.connect((self.ip_addr, self.port), coro=coro)
             yield sock.write_msg(uid, msg, coro=coro)
@@ -300,8 +301,9 @@ class _Node(object):
         # generator
         assert coro is not None
         logging.debug('XferFile: %s to %s', xf.name, self.ip_addr)
-        sock = DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), blocking=False,
-                           auth_code=self.auth_code, certfile=self.certfile, keyfile=self.keyfile)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock = DispySocket(sock, blocking=False, auth_code=self.auth_code,
+                           certfile=self.certfile, keyfile=self.keyfile)
         try:
             yield sock.connect((self.ip_addr, self.port), coro=coro)
             msg = 'FILEXFER:' + cPickle.dumps(xf)
@@ -331,7 +333,7 @@ class _Node(object):
                       compute.cleanup)
         msg = 'DEL_COMPUTE:' + cPickle.dumps({'ID':compute.id})
         try:
-            yield self.send(0, msg, reply=False, coro=coro)
+            v = yield self.send(0, msg, reply=False, coro=coro)
         except:
             logging.debug('Deleting computation %s/%s from %s failed',
                           compute.id, compute.name, self.ip_addr)
@@ -1155,13 +1157,14 @@ class _Cluster(object):
         self._sched_cv.acquire(coro)
         logging.debug('scheduler quitting (%s / %s)',
                       len(self._sched_jobs), self.unsched_jobs)
+        coros = []
         for cid, cluster in self._clusters.iteritems():
             if not hasattr(cluster, '_compute'):
                 # cluster is closed
                 continue
             compute = cluster._compute
             for node in compute.nodes.itervalues():
-                Coro(node.close, compute)
+                coros.append(Coro(node.close, compute))
             for _job in cluster._jobs:
                 logging.debug('Finishing job %s', _job.uid)
                 # TODO: handle shared scheduler jobs appropriately
@@ -1177,6 +1180,8 @@ class _Cluster(object):
         self.unsched_jobs = 0
         self._sched_jobs = {}
         self._sched_cv.release(coro)
+        for coro in coros:
+            coro.value()
         logging.debug('scheduler quit')
 
     def store_job_info(self, _job, cluster):
@@ -1277,7 +1282,7 @@ class _Cluster(object):
             compute.nodes = {}
             self._sched_cv.release(coro)
             for node in nodes:
-                node.close(compute, coro=coro).next()
+                yield node.close(compute, coro=coro)
         if cluster.fault_recover_file:
             self.fault_recover_lock.acquire()
             shelf = shelve.open(cluster.fault_recover_file, flag='r')

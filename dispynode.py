@@ -299,8 +299,8 @@ class _DispyNode(object):
         while True:
             conn, addr = yield self.tcp_sock.accept(coro)
             logging.debug('new tcp request from %s', str(addr))
-            conn = DispySocket(conn, blocking=False,
-                               certfile=self.certfile, keyfile=self.keyfile, server=True)
+            conn = DispySocket(conn, blocking=False, server=True,
+                               certfile=self.certfile, keyfile=self.keyfile)
             Coro(self.tcp_serve_task, conn, addr)
 
     def tcp_serve_task(self, conn, addr, coro=None):
