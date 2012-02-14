@@ -42,7 +42,7 @@ import Queue
 from dispy import _Compute, DispyJob, _DispyJob_, _Node, _JobReply, \
      _xor_string, _parse_nodes, _node_name_ipaddr, _XferFile, _dispy_version
 
-from dispysocket import DispySocket, Coro, AsynCoro, CoroCondition, RepeatTimer, MetaSingleton
+from asyncoro import Coro, AsynCoro, CoroCondition, AsynCoroSocket, MetaSingleton
 
 from dispynode import _same_file
 
@@ -156,22 +156,17 @@ class _Scheduler(object):
             self.select_job_node = self.load_balance_schedule
             self.start_time = time.time()
 
-            self.cmd_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.cmd_sock = DispySocket(self.cmd_sock, blocking=False, timeout=False,
-                                        auth_code=self.auth_code)
-            self.cmd_sock.bind((self.ip_addr, 0))
-            self.cmd_sock.listen(2)
-            self.cmd_coro = Coro(self.cmd_server)
+            self.timer = Coro(self.timer_task)
 
             self.request_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.request_sock.bind((self.ip_addr, self.scheduler_port))
             self.scheduler_port = self.request_sock.getsockname()[1]
             self.request_sock.listen(32)
-            self.request_sock = DispySocket(self.request_sock, blocking=False, timeout=False)
+            self.request_sock = AsynCoroSocket(self.request_sock, blocking=False, timeout=False)
             self.request_coro = Coro(self.request_server)
 
             self.job_result_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.job_result_sock = DispySocket(self.job_result_sock, blocking=False, timeout=False)
+            self.job_result_sock = AsynCoroSocket(self.job_result_sock, blocking=False, timeout=False)
             self.job_result_sock.bind((self.ip_addr, 0))
             self.job_result_sock.listen(50)
             self.job_result_coro = Coro(self.job_result_server)
@@ -179,7 +174,7 @@ class _Scheduler(object):
             self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.udp_sock.bind(('', self.port))
-            self.udp_sock = DispySocket(self.udp_sock, blocking=False, timeout=False)
+            self.udp_sock = AsynCoroSocket(self.udp_sock, blocking=False, timeout=False)
             logging.debug('UDP server at %s:%s' % (self.udp_sock.getsockname()))
             self.udp_coro = Coro(self.udp_server)
 
@@ -215,25 +210,6 @@ class _Scheduler(object):
             bc_sock.close()
             sock.close()
 
-            if self.pulse_interval:
-                self.pulse_timeout = 5.0 * self.pulse_interval
-            else:
-                self.pulse_timeout = None
-
-            if self.pulse_timeout and self.ping_interval:
-                timeout = min(self.pulse_timeout, self.ping_interval)
-            else:
-                timeout = max(self.pulse_timeout, self.ping_interval)
-
-            if timeout and self.zombie_interval:
-                timeout = min(timeout, self.zombie_interval)
-                self.zombie_interval = max(5 * timeout, self.zombie_interval)
-            else:
-                timeout = max(timeout, self.zombie_interval)
-
-            self.last_ping_time = self.last_pulse_time = self.last_zombie_time = time.time()
-            self.timer = RepeatTimer(timeout, self.timer_task)
-
     def udp_server(self, coro=None):
         # generator
         assert coro is not None
@@ -260,7 +236,7 @@ class _Scheduler(object):
                         node.last_pulse = time.time()
                         msg = 'PULSE:' + cPickle.dumps({'ip_addr':self.ip_addr})
                         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                        sock = DispySocket(sock, blocking=False)
+                        sock = AsynCoroSocket(sock, blocking=False)
                         yield sock.sendto(msg, (info['ip_addr'], info['port']), coro=coro)
                         sock.close()
             elif msg.startswith('PONG:'):
@@ -347,7 +323,7 @@ class _Scheduler(object):
                                   self.ip_addr, self.scheduler_port,
                                   req['ip_addr'], req['port'])
                     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                    sock = DispySocket(sock, blocking=False)
+                    sock = AsynCoroSocket(sock, blocking=False)
                     reply = {'ip_addr':self.ip_addr, 'port':self.scheduler_port,
                              'sign':self.sign, 'version':_dispy_version}
                     yield sock.sendto(cPickle.dumps(reply), (req['ip_addr'], req['port']),
@@ -365,7 +341,7 @@ class _Scheduler(object):
         ping_request = cPickle.dumps({'scheduler_ip_addr':self.ip_addr,
                                       'scheduler_port':self.port, 'version':_dispy_version})
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock = DispySocket(sock, blocking=False)
+        sock = AsynCoroSocket(sock, blocking=False)
         for node_spec, node_info in cluster._compute.node_spec.iteritems():
             if node_spec.find('*') >= 0:
                 port = node_info['port']
@@ -373,7 +349,7 @@ class _Scheduler(object):
                     port = self.node_port
                 bc_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                bc_osck = DispySocket(bc_sock, blocking=False)
+                bc_osck = AsynCoroSocket(bc_sock, blocking=False)
                 try:
                     yield bc_sock.sendto('PING:%s' % ping_request, ('<broadcast>', port), coro=coro)
                 except:
@@ -446,7 +422,7 @@ class _Scheduler(object):
         assert coro is not None
         logging.debug('Sending results for %s to %s, %s', uid, ip, port)
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock = DispySocket(sock, blocking=False)
+        sock = AsynCoroSocket(sock, blocking=False)
         try:
             yield sock.connect((ip, port), coro=coro)
             yield sock.write_msg(uid, cPickle.dumps(result), coro=coro)
@@ -790,49 +766,36 @@ class _Scheduler(object):
         logging.info('Scheduler running at %s:%s', self.ip_addr, self.port)
         while True:
             conn, addr = yield self.request_sock.accept(coro=coro)
-            conn = DispySocket(conn, blocking=False, certfile=self.cluster_certfile,
-                               keyfile=self.cluster_keyfile, server=True)
+            conn = AsynCoroSocket(conn, blocking=False, certfile=self.cluster_certfile,
+                                  keyfile=self.cluster_keyfile, server=True)
             Coro(request_task, self, conn, addr)
 
-    def cmd_server(self, coro=None):
-        # generator
-        assert coro is not None
+    def timer_task(self, coro=None):
+        reset = True
+        last_ping_time = last_pulse_time = last_zombie_time = time.time()
         while True:
-            conn, addr = yield self.cmd_sock.accept(coro=coro)
-            conn = DispySocket(conn, blocking=False)
-            req = yield conn.read(len(self.auth_code))
-            if req != self.auth_code:
-                logging.debug('invalid auth for cmd')
-                conn.close()
-                continue
-            uid, msg = yield conn.read_msg(coro=coro)
-            conn.close()
-            if msg == 'terminate':
-                logging.debug('Terminating all running jobs')
-                self._sched_cv.acquire(coro)
-                self._terminate_scheduler = True
-                for uid, _job in self._sched_jobs.iteritems():
-                    reply = _JobReply(_job, self.ip_addr, status=DispyJob.Terminated)
-                    cluster = self._clusters[_job.compute_id]
-                    compute = cluster._compute
-                    Coro(self.send_job_result,
-                         _job.uid, compute.id, cluster.client_scheduler_ip_addr,
-                         cluster.client_job_result_port, reply)
-                self._sched_jobs = {}
-                self._sched_cv.notify()
-                self._sched_cv.release(coro)
-                logging.debug('Listener is terminated')
-                self.cmd_sock.close()
-                self.cmd_sock = None
-                break
-            else:
-                logging.warning('Ignoring invalid command "%s" to cmd_sock', msg)
+            if reset:
+                if self.pulse_interval:
+                    self.pulse_timeout = 5.0 * self.pulse_interval
+                else:
+                    self.pulse_timeout = None
 
-    def timer_task(self):
-        def _timer_task(self, coro=None):
+                if self.pulse_timeout and self.ping_interval:
+                    timeout = min(self.pulse_timeout, self.ping_interval)
+                else:
+                    timeout = max(self.pulse_timeout, self.ping_interval)
+
+                if timeout and self.zombie_interval:
+                    timeout = min(timeout, self.zombie_interval)
+                    self.zombie_interval = max(5 * timeout, self.zombie_interval)
+                else:
+                    timeout = max(timeout, self.zombie_interval)
+
+            reset = yield coro.suspend(timeout)
+
             now = time.time()
-            if self.pulse_timeout and (now - self.last_pulse_time) >= self.pulse_timeout:
-                self.last_pulse_time = now
+            if self.pulse_timeout and (now - last_pulse_time) >= self.pulse_timeout:
+                last_pulse_time = now
                 self._sched_cv.acquire(coro)
                 dead_nodes = {}
                 for node in self._nodes.itervalues():
@@ -850,14 +813,14 @@ class _Scheduler(object):
                 if dead_nodes or dead_jobs:
                     self._sched_cv.notify()
                 self._sched_cv.release(coro)
-            if self.ping_interval and (now - self.last_ping_time) >= self.ping_interval:
-                self.last_ping_time = now
+            if self.ping_interval and (now - last_ping_time) >= self.ping_interval:
+                last_ping_time = now
                 self._sched_cv.acquire(coro)
                 for cluster in self.clusters.itervalues():
                     Coro(self.send_ping_cluster, cluster)
                 self._sched_cv.release(coro)
-            if self.zombie_interval and (now - self.last_zombie_time) >= self.zombie_interval:
-                self.last_zombie_time = now
+            if self.zombie_interval and (now - last_zombie_time) >= self.zombie_interval:
+                last_zombie_time = now
                 self._sched_cv.acquire(coro)
                 for cluster in self._clusters.itervalues():
                     if (now - cluster.last_pulse) > zombie_interval:
@@ -895,8 +858,6 @@ class _Scheduler(object):
                         except:
                             logging.debug('Could not remove "%s"', result_file)
                 self._sched_cv.release(coro)
-            yield None
-        Coro(_timer_task, self)
 
     def load_balance_schedule(self):
         node = None
@@ -993,8 +954,8 @@ class _Scheduler(object):
                 logging.warning('Ignoring results from %s', addr[0])
                 conn.close()
                 continue
-            conn = DispySocket(conn, blocking=False, certfile=self.node_certfile,
-                               keyfile=self.node_keyfile, server=True)
+            conn = AsynCoroSocket(conn, blocking=False, certfile=self.node_certfile,
+                                  keyfile=self.node_keyfile, server=True)
             Coro(self.job_result_task, conn, addr)
 
     def fast_node_schedule(self):
@@ -1113,30 +1074,31 @@ class _Scheduler(object):
             assert coro is not None
             # TODO: send shutdown notification to clients? Or wait for all
             # pending tasks to complete?
-            for cid, cluster in self._clusters.iteritems():
-                compute = cluster._compute
-                for node in compute.nodes.itervalues():
-                    node.close(compute)
-
-            if self._scheduler:
-                logging.debug('Shutting down scheduler ...')
-                self._sched_cv.acquire(coro)
-                self._terminate_scheduler = True
-                self._sched_cv.notify()
-                self._sched_cv.release(coro)
-                self._scheduler.join()
-                self._scheduler = None
-            if self.cmd_sock:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock = DispySocket(sock, blocking=True, timeout=2, auth_code=self.auth_code)
-                sock.connect((self.ip_addr, self.cmd_sock.sock.getsockname()[1]))
-                sock.write_msg(0, 'terminate')
-                sock.close()
             self._sched_cv.acquire(coro)
             select_job_node = self.select_job_node
             self.select_job_node = None
-            self._sched_cv.release(coro)
-            yield None
+            if select_job_node:
+                logging.debug('shutting down scheduler ...')
+                # NB: coroutines are not supposed to wait, but nothing
+                # else needs to run now
+
+                for uid, _job in self._sched_jobs.iteritems():
+                    reply = _JobReply(_job, self.ip_addr, status=DispyJob.Terminated)
+                    cluster = self._clusters[_job.compute_id]
+                    compute = cluster._compute
+                    yield self.send_job_result(_job.uid, compute.id,
+                                               cluster.client_scheduler_ip_addr,
+                                               cluster.client_job_result_port, reply, coro=coro)
+                for cid, cluster in self._clusters.iteritems():
+                    compute = cluster._compute
+                    for node in compute.nodes.itervalues():
+                        yield node.close(compute, coro=coro)
+
+                self._clusters = {}
+                self._sched_jobs = {}
+                self._terminate_scheduler = True
+                self._sched_cv.notify()
+                self._sched_cv.release(coro)
         Coro(_shutdown, self).value()
         self.asyncoro.terminate()
 

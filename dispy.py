@@ -45,8 +45,7 @@ import shelve
 import datetime
 import atexit
 
-from dispysocket import DispySocket, Coro, AsynCoro, CoroLock, CoroCondition, \
-     RepeatTimer, MetaSingleton
+from asyncoro import Coro, AsynCoro, CoroLock, CoroCondition, AsynCoroSocket, MetaSingleton
 
 _dispy_version = '1.3'
 
@@ -277,8 +276,8 @@ class _Node(object):
         assert coro is not None
         logging.debug('Sending to %s:%s', self.ip_addr, self.port)
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock = DispySocket(sock, blocking=False, auth_code=self.auth_code,
-                           certfile=self.certfile, keyfile=self.keyfile)
+        sock = AsynCoroSocket(sock, blocking=False, auth_code=self.auth_code,
+                              certfile=self.certfile, keyfile=self.keyfile)
         try:
             yield sock.connect((self.ip_addr, self.port), coro=coro)
             yield sock.write_msg(uid, msg, coro=coro)
@@ -302,8 +301,8 @@ class _Node(object):
         assert coro is not None
         logging.debug('XferFile: %s to %s', xf.name, self.ip_addr)
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock = DispySocket(sock, blocking=False, auth_code=self.auth_code,
-                           certfile=self.certfile, keyfile=self.keyfile)
+        sock = AsynCoroSocket(sock, blocking=False, auth_code=self.auth_code,
+                              certfile=self.certfile, keyfile=self.keyfile)
         try:
             yield sock.connect((self.ip_addr, self.port), coro=coro)
             msg = 'FILEXFER:' + cPickle.dumps(xf)
@@ -486,16 +485,8 @@ class _Cluster(object):
             self._sched_cv = CoroCondition()
             self.terminate_scheduler = False
             self.auth_code = os.urandom(20).encode('hex')
-            self.cmd_sock = DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
-                                        auth_code=self.auth_code, blocking=False, timeout=False)
-            self.cmd_sock.bind((self.ip_addr, 0))
-            self.cmd_sock.listen(2)
-            self.cmd_coro = Coro(self.cmd_server)
 
-            self.worker_Q = Queue.PriorityQueue()
-            self.worker_thread = threading.Thread(target=self.worker)
-            self.worker_thread.daemon = True
-            self.worker_thread.start()
+            self.timer_coro = Coro(self.timer_task)
 
             # self.select_job_node = self.fast_node_schedule
             self.select_job_node = self.load_balance_schedule
@@ -507,9 +498,14 @@ class _Cluster(object):
             job_result_sock.bind((self.ip_addr, 0))
             job_result_sock.listen(32)
             self.job_result_port = job_result_sock.getsockname()[1]
-            self.job_result_sock = DispySocket(job_result_sock, blocking=False, timeout=False)
+            self.job_result_sock = AsynCoroSocket(job_result_sock, blocking=False, timeout=False)
             logging.debug('job result server at %s:%s', self.ip_addr, self.job_result_port)
             self.job_result_coro = Coro(self.job_result_server)
+
+            self.worker_Q = Queue.PriorityQueue()
+            self.worker_thread = threading.Thread(target=self.worker)
+            self.worker_thread.daemon = True
+            self.worker_thread.start()
 
             if self.shared:
                 self.udp_coro = None
@@ -518,28 +514,16 @@ class _Cluster(object):
                 udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 udp_sock.bind(('', self.port))
                 self.port = udp_sock.getsockname()[1]
-                udp_sock = DispySocket(udp_sock, blocking=False, timeout=False)
+                udp_sock = AsynCoroSocket(udp_sock, blocking=False, timeout=False)
                 logging.info('UDP server running at %s, %s', self.ip_addr, self.port)
                 self.udp_coro = Coro(self.udp_server, udp_sock)
-
-            if self.pulse_interval:
-                self.pulse_timeout = 5.0 * self.pulse_interval
-            else:
-                self.pulse_timeout = None
-            if self.pulse_timeout and self.ping_interval:
-                timeout = min(self.pulse_timeout, self.ping_interval)
-            else:
-                timeout = max(self.pulse_timeout, self.ping_interval)
-
-            self.last_pulse_time = self.last_ping_time = time.time()
-            self.timer = RepeatTimer(timeout, self.timer_task)
 
     def send_ping_cluster(self, cluster, coro=None):
         # generator
         ping_request = cPickle.dumps({'scheduler_ip_addr':self.ip_addr,
                                       'scheduler_port':self.port, 'version':_dispy_version})
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock = DispySocket(sock, blocking=False)
+        sock = AsynCoroSocket(sock, blocking=False)
         for node_spec, node_info in cluster._compute.node_spec.iteritems():
             if node_spec.find('*') >= 0:
                 port = node_info['port']
@@ -547,7 +531,7 @@ class _Cluster(object):
                     port = self.node_port
                 bc_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                bc_sock = DispySocket(bc_sock, blocking=False)
+                bc_sock = AsynCoroSocket(bc_sock, blocking=False)
                 try:
                     yield bc_sock.sendto('PING:%s' % ping_request, ('<broadcast>', port), coro=coro)
                 except:
@@ -577,6 +561,7 @@ class _Cluster(object):
             for xf in compute.xfer_files:
                 xf.compute_id = compute.id
             self._sched_cv.release(coro)
+            # self._cluster.timer_coro.resume(True)
             raise StopIteration
         else:
             self._clusters[self.cluster_id] = cluster
@@ -592,14 +577,7 @@ class _Cluster(object):
         if cluster.ping_interval:
             self.ping_interval = max(self.ping_interval, cluster.ping_interval)
         if self.pulse_interval or self.ping_interval:
-            sock = DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
-                               auth_code=self.auth_code, blocking=False)
-            try:
-                yield sock.connect((self.ip_addr, self.cmd_sock.sock.getsockname()[1]), coro=coro)
-                yield sock.write_msg(0, 'reset_interval', coro=coro)
-            except:
-                logging.warning('Could not update timer intervals')
-            sock.close()
+            self.timer_coro.resume(True)
 
         yield self.send_ping_cluster(cluster, coro=coro)
         self._sched_cv.acquire(coro)
@@ -626,7 +604,62 @@ class _Cluster(object):
                     node.clusters.append(compute.id)
                     self._sched_cv.notify()
                 self._sched_cv.release(coro)
-        yield None
+
+    def del_cluster(self, cluster, coro=None):
+        # generator
+        self._sched_cv.acquire(coro)
+        if self._clusters.pop(cluster._compute.id, None) != cluster._compute.id:
+            logging.warning('cluster %s already closed?', cluster._compute.name)
+            self._sched_cv.release(coro)
+            raise StopIteration
+        self._cluster._sched_cv.release()
+
+        if self.shared:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock = AsynCoroSocket(sock, blocking=False, auth_code=cluster.auth_code,
+                                  certfile=cluster.certfile, keyfile=cluster.keyfile)
+            yield sock.connect((cluster.scheduler_ip_addr, cluster.scheduler_port), coro=coro)
+            req = 'DEL_COMPUTE:' + cPickle.dumps({'ID':cluster._compute.id})
+            yield sock.write_msg(self._compute.id, req, coro=coro)
+            sock.close()
+        else:
+            self._cluster._sched_cv.release()
+            if cluster._jobs or cluster._pending_jobs:
+                logging.warning('cluster %s has pending jobs', compute.name)
+                self._sched_cv.release(coro)
+                raise StopIteration
+
+            nodes = compute.nodes.values()
+            for node in nodes:
+                logging.debug('node %s is being removed', node.ip_addr)
+                node.clusters.remove(compute.id)
+            compute.nodes = {}
+            self._sched_cv.release(coro)
+            for node in nodes:
+                yield node.close(compute, coro=coro)
+            if cluster.fault_recover_file:
+                self.fault_recover_lock.acquire()
+                shelf = shelve.open(cluster.fault_recover_file, flag='r')
+                n = len(shelf)
+                shelf.close()
+                if n == 0:
+                    try:
+                        os.remove(cluster.fault_recover_file)
+                    except:
+                        pass
+                self.fault_recover_lock.release()
+
+        if cluster.fault_recover_file:
+            self.fault_recover_lock.acquire()
+            shelf = shelve.open(cluster.fault_recover_file, flag='r')
+            n = len(shelf)
+            shelf.close()
+            if n == 0:
+                try:
+                    os.remove(cluster.fault_recover_file)
+                except:
+                    pass
+            self.fault_recover_lock.release()
 
     def worker(self):
         # used for user callbacks only
@@ -767,8 +800,8 @@ class _Cluster(object):
                     assert 0 <= info['cpus'] <= node.cpus
                     node.last_pulse = time.time()
                     msg = 'PULSE:' + cPickle.dumps({'ip_addr':self.ip_addr})
-                    sock = DispySocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM),
-                                       blocking=False)
+                    sock = AsynCoroSocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM),
+                                          blocking=False)
                     yield sock.sendto(msg, (info['ip_addr'], info['port']), coro=coro)
                     sock.close()
                 except:
@@ -837,7 +870,7 @@ class _Cluster(object):
                     dead_jobs = [_job for _job in self._sched_jobs.itervalues() \
                                  if _job.node is not None and \
                                  _job.node.ip_addr == node.ip_addr]
-                    self.reschedule_jobs(dead_jobs, coro)
+                    self.reschedule_jobs(dead_jobs)
                     for cid, cluster in self._clusters.iteritems():
                         if cluster._compute.nodes.pop(node.ip_addr, None) is not None:
                             node.clusters.remove(cid)
@@ -861,8 +894,8 @@ class _Cluster(object):
     def job_result_task(self, sock, addr, coro=None):
         # generator
         assert coro is not None
-        sock = DispySocket(sock, certfile=self.certfile, keyfile=self.keyfile,
-                           server=True, blocking=False)
+        sock = AsynCoroSocket(sock, certfile=self.certfile, keyfile=self.keyfile,
+                              server=True, blocking=False)
         try:
             uid, msg = yield sock.read_msg(coro=coro)
             yield sock.write_msg(uid, 'ACK', coro=coro)
@@ -974,12 +1007,24 @@ class _Cluster(object):
                     status = DispyJob.Cancelled
                 self.finish_job(_job, status, cluster)
 
-    def timer_task(self):
-        def _timer_task(self, coro=None):
-            # assert coro is not None
+    def timer_task(self, coro=None):
+        reset = True
+        last_pulse_time = last_ping_time = time.time()
+        while True:
+            if reset:
+                if self.pulse_interval:
+                    self.pulse_timeout = 5.0 * self.pulse_interval
+                else:
+                    self.pulse_timeout = None
+                if self.pulse_timeout and self.ping_interval:
+                    timeout = min(self.pulse_timeout, self.ping_interval)
+                else:
+                    timeout = max(self.pulse_timeout, self.ping_interval)
+
+            reset = yield coro.suspend(timeout)
             now = time.time()
-            if self.pulse_timeout and (now - self.last_pulse_time) >= self.pulse_timeout:
-                self.last_pulse_time = now
+            if self.pulse_timeout and (now - last_pulse_time) >= self.pulse_timeout:
+                last_pulse_time = now
                 if self.shared:
                     self._sched_cv.acquire(coro)
                     clusters = self._clusters.values()
@@ -989,7 +1034,7 @@ class _Cluster(object):
                                'client_scheduler_port':self.port,
                                'version':_dispy_version}
                         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                        sock = DispySocket(sock, blocking=False)
+                        sock = AsynCoroSocket(sock, blocking=False)
                         yield sock.sendto('PULSE:' + cPickle.dumps(msg),
                                           (cluster.scheduler_ip_addr,
                                            cluster.scheduler_udp_port), coro=coro)
@@ -1014,72 +1059,12 @@ class _Cluster(object):
                     self.reschedule_jobs(dead_jobs)
                     self._sched_cv.release(coro)
 
-            if self.ping_interval and (now - self.last_ping_time) >= self.ping_interval:
-                self.last_ping_time = now
+            if self.ping_interval and (now - last_ping_time) >= self.ping_interval:
+                last_ping_time = now
                 self._sched_cv.acquire(coro)
                 for cluster in self._clusters.itervalues():
                     Coro(self.send_ping_cluster, cluster)
                 self._sched_cv.release(coro)
-        Coro(_timer_task, self)
-
-    def cmd_server(self, coro=None):
-        # generator
-        assert coro is not None
-        while True:
-            conn, addr = yield self.cmd_sock.accept(coro=coro)
-            conn = DispySocket(conn, blocking=False)
-            req = yield conn.read(len(self.auth_code), coro=coro)
-            if req != self.auth_code:
-                logging.debug('invalid auth for cmd')
-                conn.close()
-                continue
-            ret = yield conn.read_msg(coro=coro)
-            conn.close()
-            try:
-                uid, msg = ret
-            except:
-                logging.warning('invalid message: %s', ret)
-                continue
-            if msg == 'terminate':
-                self.job_result_sock.close()
-                self.job_result_coro.terminate_coro()
-                self.udp_sock.close()
-                self.udp_coro.terminate_coro()
-                self.cmd_sock.close()
-                self.cmd_sock = None
-                self.timer.terminate()
-                self.shutdown()
-                break
-            elif msg == 'reset_interval':
-                if self.pulse_interval:
-                    self.pulse_timeout = 5.0 * self.pulse_interval
-                else:
-                    self.pulse_timeout = None
-                if self.pulse_timeout and self.ping_interval:
-                    timeout = min(self.pulse_timeout, self.ping_interval)
-                else:
-                    timeout = max(self.pulse_timeout, self.ping_interval)
-                self.timer.set_interval(timeout)
-            else:
-                logging.warning('Ignoring invalid command')
-
-    def terminate(self, coro=None):
-        # generator
-        self._sched_cv.acquire(coro)
-        self.terminate_scheduler = True
-        for uid, _job in self._sched_jobs.iteritems():
-            # TODO: handle shared scheduler jobs appropriately
-            if _job.job.status == DispyJob.Running:
-                # TODO: send terminate request to nodes?
-                status = DispyJob.Terminated
-            else:
-                status = DispyJob.Cancelled
-                self.finish_job(_job, status, self._clusters[_job.compute_id])
-        self._sched_jobs = {}
-        self._sched_cv.notify()
-        self._sched_cv.release(coro)
-        self.cmd_sock.close()
-        self.cmd_sock = None
 
     def load_balance_schedule(self):
         host = None
@@ -1258,42 +1243,6 @@ class _Cluster(object):
                 raise StopIteration(-1)
         raise StopIteration(0)
 
-    def _close(self, cluster, coro=None):
-        # generator
-        assert coro is not None
-        # called for JobCluster only
-        self._sched_cv.acquire(coro)
-        compute = cluster._compute
-        if self._clusters.pop(compute.id, None) != cluster:
-            logging.warning('Cluster %s is invalid', compute.name)
-            self._sched_cv.release(coro)
-            raise StopIteration
-        elif cluster._jobs or cluster._pending_jobs:
-            logging.warning('Cluster %s has pending jobs', compute.name)
-            self._sched_cv.release(coro)
-            raise StopIteration
-        else:
-            nodes = compute.nodes.values()
-            for node in nodes:
-                logging.debug('node %s is being removed', node.ip_addr)
-                node.clusters.remove(compute.id)
-            compute.nodes = {}
-            self._sched_cv.release(coro)
-            for node in nodes:
-                yield node.close(compute, coro=coro)
-        if cluster.fault_recover_file:
-            self.fault_recover_lock.acquire()
-            shelf = shelve.open(cluster.fault_recover_file, flag='r')
-            n = len(shelf)
-            shelf.close()
-            if n == 0:
-                try:
-                    os.remove(cluster.fault_recover_file)
-                except:
-                    pass
-            self.fault_recover_lock.release()
-        yield None
-
     def shutdown(self):
         # non-generator
         def _shutdown(self, coro=None):
@@ -1301,21 +1250,37 @@ class _Cluster(object):
             # TODO: make sure JobCluster instances are done
             if not hasattr(self, '_scheduler'):
                 raise StopIteration
-            if self._scheduler:
-                logging.debug('Shutting down scheduler ...')
-                self._sched_cv.acquire(coro)
-                self.terminate_scheduler = True
-                self._sched_cv.notify()
-                self._sched_cv.release(coro)
-                self.terminate(coro=coro)
-
             self._sched_cv.acquire(coro)
             select_job_node = self.select_job_node
             self.select_job_node = None
-            self._sched_cv.release(coro)
             if select_job_node:
+                logging.debug('shutting down scheduler ...')
+                # NB: coroutines are not supposed to wait, but nothing
+                # else needs to run now
+                if not self.shared:
+                    for cid, cluster in self._clusters.iteritems():
+                        compute = cluster._compute
+                        for node in compute.nodes.itervalues():
+                            yield node.close(compute, coro=coro)
+
+                for uid, _job in self._sched_jobs.iteritems():
+                    # TODO: handle shared scheduler jobs appropriately
+                    if _job.job.status == DispyJob.Running:
+                        # TODO: send terminate request to nodes?
+                        status = DispyJob.Terminated
+                    else:
+                        status = DispyJob.Cancelled
+                    self.finish_job(_job, status, self._clusters[_job.compute_id])
+
+                self._clusters = {}
+                self._sched_jobs = {}
+                self.terminate_scheduler = True
+                self._sched_cv.notify()
+                self._sched_cv.release(coro)
                 self.worker_Q.put((99, None, None))
                 self.worker_Q.join()
+            else:
+                self._sched_cv.release(coro)
             yield None
         Coro(_shutdown, self).value()
         self.asyncoro.terminate()
@@ -1695,7 +1660,7 @@ class JobCluster(object):
         logging.debug('Closing computation "%s"', self._compute.name)
         if hasattr(self, '_compute'):
             self._complete.wait()
-            Coro(self._cluster._close, self).value()
+            Coro(self._cluster.del_cluster, self).value()
             logging.debug('Computation "%s" deleted', self._compute.name)
             del self._compute
 
@@ -1775,8 +1740,8 @@ class SharedJobCluster(JobCluster):
                             self.scheduler_ip_addr, self.scheduler_udp_port)
         srv_sock.close()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock = DispySocket(sock, blocking=True, timeout=5,
-                           auth_code=self.auth_code, certfile=certfile, keyfile=keyfile)
+        sock = AsynCoroSocket(sock, blocking=True, timeout=5,
+                              auth_code=self.auth_code, certfile=certfile, keyfile=keyfile)
         try:
             sock.connect((self.scheduler_ip_addr, self.scheduler_port))
             req = 'COMPUTE:' + cPickle.dumps(self._compute)
@@ -1798,8 +1763,8 @@ class SharedJobCluster(JobCluster):
             xf.compute_id = self._compute.id
             logging.debug('Sending file "%s"', xf.name)
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock = DispySocket(sock, blocking=True, timeout=5,
-                               auth_code=self.auth_code, certfile=certfile, keyfile=keyfile)
+            sock = AsynCoroSocket(sock, blocking=True, timeout=5,
+                                  auth_code=self.auth_code, certfile=certfile, keyfile=keyfile)
             try:
                 sock.connect((self.scheduler_ip_addr, self.scheduler_port))
                 msg = 'FILEXFER:' + cPickle.dumps(xf)
@@ -1819,8 +1784,8 @@ class SharedJobCluster(JobCluster):
             sock.close()
             
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock = DispySocket(sock, blocking=True, timeout=5,
-                           auth_code=self.auth_code, certfile=certfile, keyfile=keyfile)
+        sock = AsynCoroSocket(sock, blocking=True, timeout=5,
+                              auth_code=self.auth_code, certfile=certfile, keyfile=keyfile)
         sock.connect((self.scheduler_ip_addr, self.scheduler_port))
         req = 'ADD_COMPUTE:' + cPickle.dumps({'ID':self._compute.id})
         sock.write_msg(self._compute.id, req)
@@ -1830,12 +1795,6 @@ class SharedJobCluster(JobCluster):
         if resp == self._compute.id:
             logging.debug('Computation %s created with %s', self._compute.name, self._compute.id)
             Coro(self._cluster.add_cluster, self).value()
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock = DispySocket(sock, blocking=True, timeout=5,
-                               auth_code=self._cluster.auth_code)
-            sock.connect((self._cluster.ip_addr, self._cluster.cmd_sock.sock.getsockname()[1]))
-            sock.write_msg(0, 'reset_interval')
-            sock.close()
         else:
             raise Exception('Computation "%s" could not be sent to scheduler' % self._compute.name)
 
@@ -1859,8 +1818,8 @@ class SharedJobCluster(JobCluster):
 
         def _submit(self, _job, coro=None):
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock = DispySocket(sock, blocking=False, auth_code=self.auth_code,
-                               certfile=self.certfile, keyfile=self.keyfile)
+            sock = AsynCoroSocket(sock, blocking=False, auth_code=self.auth_code,
+                                  certfile=self.certfile, keyfile=self.keyfile)
             yield sock.connect((self.scheduler_ip_addr, self.scheduler_port), coro=coro)
             req = 'JOB:' + cPickle.dumps(_job)
             yield sock.write_msg(self._compute.id, req, coro=coro)
@@ -1918,8 +1877,8 @@ class SharedJobCluster(JobCluster):
             assert self._pending_jobs >= 1
             self._cluster._sched_cv.release(coro)
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock = DispySocket(sock, blocking=False, auth_code=self.auth_code,
-                               certfile=self.certfile, keyfile=self.keyfile)
+            sock = AsynCoroSocket(sock, blocking=False, auth_code=self.auth_code,
+                                  certfile=self.certfile, keyfile=self.keyfile)
             try:
                 yield sock.connect((self.scheduler_ip_addr, self.scheduler_port), coro=coro)
                 req = 'TERMINATE_JOB:' + cPickle.dumps(_job)
@@ -1936,25 +1895,7 @@ class SharedJobCluster(JobCluster):
     def close(self):
         if hasattr(self, '_compute'):
             self._complete.wait()
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock = DispySocket(sock, blocking=True, timeout=3, auth_code=self.auth_code,
-                               certfile=self.certfile, keyfile=self.keyfile)
-            sock.connect((self.scheduler_ip_addr, self.scheduler_port))
-            req = 'DEL_COMPUTE:' + cPickle.dumps({'ID':self._compute.id})
-            sock.write_msg(self._compute.id, req)
-            sock.close()
-
-            if self.fault_recover_file:
-                self._cluster.fault_recover_lock.acquire()
-                shelf = shelve.open(self.fault_recover_file, flag='r')
-                n = len(shelf)
-                shelf.close()
-                if n == 0:
-                    try:
-                        os.remove(self.fault_recover_file)
-                    except:
-                        pass
-                self._cluster.fault_recover_lock.release()
+            Coro(self._cluster.del_cluster, self).value()
             del self._compute
 
 def fault_recover_jobs(fault_recover_file, port=51348,
@@ -2043,8 +1984,8 @@ def fault_recover_jobs(fault_recover_file, port=51348,
         if node_info is None:
             continue
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock = DispySocket(sock, blocking=True, timeout=2, auth_code=node_info['auth_code'],
-                           certfile=certfile, keyfile=keyfile)
+        sock = AsynCoroSocket(sock, blocking=True, timeout=2, auth_code=node_info['auth_code'],
+                              certfile=certfile, keyfile=keyfile)
         try:
             sock.connect((job_info['ip_addr'], node_info['port']))
             req = 'RETRIEVE_JOB:' + cPickle.dumps({'uid':int(uid), 'hash':job_info['hash'],

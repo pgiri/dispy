@@ -42,7 +42,7 @@ import shelve
 from dispy import _DispyJob_, _JobReply, DispyJob, \
      _Compute, _XferFile, _xor_string, _node_name_ipaddr, _dispy_version
 
-from dispysocket import DispySocket, Coro, CoroLock, AsynCoro, RepeatTimer, MetaSingleton
+from asyncoro import Coro, CoroLock, AsynCoro, AsynCoroSocket, RepeatTimer, MetaSingleton
 
 MaxFileSize = 102400000
 
@@ -62,8 +62,8 @@ def dispy_provisional_result(result):
     __dispy_job_reply.status = DispyJob.ProvisionalResult
     __dispy_job_reply.result = result
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock = DispySocket(sock, blocking=True, timeout=2,
-                        certfile=__dispy_job_certfile, keyfile=__dispy_job_keyfile)
+    sock = AsynCoroSocket(sock, blocking=True, timeout=2,
+                          certfile=__dispy_job_certfile, keyfile=__dispy_job_keyfile)
     try:
         sock.connect(__dispy_job_info.reply_addr)
         sock.write_msg(__dispy_job_reply.uid, cPickle.dumps(__dispy_job_reply))
@@ -154,7 +154,7 @@ class _DispyNode(object):
         self.tcp_sock.bind((ip_addr, 0))
         self.address = self.tcp_sock.getsockname()
         self.tcp_sock.listen(30)
-        self.tcp_sock = DispySocket(self.tcp_sock, blocking=False, timeout=False)
+        self.tcp_sock = AsynCoroSocket(self.tcp_sock, blocking=False, timeout=False)
 
         if dest_path_prefix:
             self.dest_path_prefix = dest_path_prefix.strip().rstrip(os.sep)
@@ -181,11 +181,6 @@ class _DispyNode(object):
         self.zombie_interval = 60 * zombie_interval
 
         logging.debug('auth_code for %s: %s', ip_addr, self.auth_code)
-        self.cmd_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.cmd_sock = DispySocket(self.cmd_sock, blocking=False, timeout=False,
-                                    auth_code=self.auth_code)
-        self.cmd_sock.bind((self.ip_addr, 0))
-        self.cmd_sock.listen(2)
         logging.info('Serving %s cpus at %s:%s',
                      self.cpus, self.address[0], self.address[1])
 
@@ -193,7 +188,7 @@ class _DispyNode(object):
         self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.udp_sock.bind(('', node_port))
         logging.info('node running at %s:%s', self.address[0], node_port)
-        self.udp_sock = DispySocket(self.udp_sock, blocking=False, timeout=False)
+        self.udp_sock = AsynCoroSocket(self.udp_sock, blocking=False, timeout=False)
 
         scheduler_ip_addr = _node_name_ipaddr(scheduler_node)[1]
 
@@ -201,39 +196,23 @@ class _DispyNode(object):
         self.reply_Q_thread = threading.Thread(target=self.__reply_Q)
         self.reply_Q_thread.start()
 
+        self.timer_coro = Coro(self.timer_task)
         self.tcp_coro = Coro(self.tcp_server)
-        self.cmd_coro = Coro(self.cmd_server)
         self.udp_coro = Coro(self.udp_server, scheduler_ip_addr)
 
-        if self.pulse_interval and self.zombie_interval:
-            timeout = min(self.pulse_interval, self.zombie_interval)
-            self.zombie_interval = max(5 * self.pulse_interval, self.zombie_interval)
-        else:
-            timeout = max(self.pulse_interval, self.zombie_interval)
-            self.zombie_interval = self.zombie_interval
-        self.last_pulse_time = self.last_zombie_time = time.time()
-        self.timer = RepeatTimer(timeout, self.timer_task)
-
-    def send_pong_msg(self, reset_interval=True, coro=None):
+    def send_pong_msg(self, coro=None):
         ping_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         ping_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        ping_sock = DispySocket(ping_sock, blocking=False)
+        ping_sock = AsynCoroSocket(ping_sock, blocking=False)
         pong_msg = {'ip_addr':self.ip_addr, 'fqdn':self.fqdn, 'port':self.address[1],
                     'cpus':self.cpus, 'sign':self.signature, 'version':_dispy_version}
         pong_msg = 'PONG:' + cPickle.dumps(pong_msg)
         yield ping_sock.sendto(pong_msg, ('<broadcast>', self.scheduler_port), coro=coro)
         ping_sock.close()
-        if reset_interval:
-            self.pulse_interval = None
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock = DispySocket(sock, blocking=False, auth_code=self.auth_code)
-            yield sock.connect((self.ip_addr, self.cmd_sock.getsockname()[1]), coro=coro)
-            yield sock.write_msg(0, 'reset_interval', coro=coro)
-            sock.close()
 
     def udp_server(self, scheduler_ip_addr, coro=None):
         if self.avail_cpus == self.cpus:
-            yield self.send_pong_msg(reset_interval=False, coro=coro)
+            yield self.send_pong_msg(coro=coro)
         pong_msg = {'ip_addr':self.ip_addr, 'fqdn':self.fqdn, 'port':self.address[1],
                     'cpus':self.cpus, 'sign':self.signature, 'version':_dispy_version}
         pong_msg = 'PONG:' + cPickle.dumps(pong_msg)
@@ -285,7 +264,7 @@ class _DispyNode(object):
                     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                     reply = {'ip_addr':self.address[0], 'port':self.address[1],
                              'sign':self.signature, 'version':_dispy_version}
-                    sock = DispySocket(sock, blocking=False)
+                    sock = AsynCoroSocket(sock, blocking=False)
                     yield sock.sendto(cPickle.dumps(reply), (req['ip_addr'], req['port']),
                                       coro=coro)
                     sock.close()
@@ -299,8 +278,8 @@ class _DispyNode(object):
         while True:
             conn, addr = yield self.tcp_sock.accept(coro)
             logging.debug('new tcp request from %s', str(addr))
-            conn = DispySocket(conn, blocking=False, server=True,
-                               certfile=self.certfile, keyfile=self.keyfile)
+            conn = AsynCoroSocket(conn, blocking=False, server=True,
+                                  certfile=self.certfile, keyfile=self.keyfile)
             Coro(self.tcp_serve_task, conn, addr)
 
     def tcp_serve_task(self, conn, addr, coro=None):
@@ -511,11 +490,7 @@ class _DispyNode(object):
                 resp = 'ACK'
                 if xfer_files:
                     resp += ':XFER_FILES:' + cPickle.dumps(xfer_files)
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock = DispySocket(sock, blocking=False, auth_code=self.auth_code)
-                yield sock.connect((self.ip_addr, self.cmd_sock.getsockname()[1]), coro=coro)
-                yield sock.write_msg(0, 'reset_interval', coro=coro)
-                sock.close()
+                self.timer_coro.resume(True)
             else:
                 resp = 'Busy'
                 if os.path.isdir(compute.dest_path):
@@ -750,45 +725,34 @@ class _DispyNode(object):
                 logging.warning('Failed to send reply to %s', str(addr))
             conn.close()
 
-    def cmd_server(self, coro=None):
+    def timer_task(self, coro=None):
+        reset = True
+        last_pulse_time = last_zombie_time = time.time()
         while True:
-            conn, addr = yield self.cmd_sock.accept(coro=coro)
-            conn = DispySocket(conn, blocking=False)
-            req = yield conn.read(len(self.auth_code), coro=coro)
-            if req != self.auth_code:
-                logging.debug('invalid auth for cmd')
-                conn.close()
-                continue
-            uid, msg = yield conn.read_msg(coro=coro)
-            conn.close()
-            if msg == 'terminate':
-                self.shutdown()
-                break
-            elif msg == 'reset_interval':
+            if reset:
                 if self.pulse_interval and self.zombie_interval:
                     timeout = min(self.pulse_interval, self.zombie_interval)
                     self.zombie_interval = max(5 * self.pulse_interval, self.zombie_interval)
                 else:
                     timeout = max(self.pulse_interval, self.zombie_interval)
                     self.zombie_interval = self.zombie_interval
-                self.timer.set_interval(timeout)
 
-    def timer_task(self):
-        def _timer_task(self, coro=None):
+            reset = yield coro.suspend(timeout)
+
             now = time.time()
-            if self.pulse_interval and (now - self.last_pulse_time) >= self.pulse_interval:
+            if self.pulse_interval and (now - last_pulse_time) >= self.pulse_interval:
                 n = self.cpus - self.avail_cpus
                 assert n >= 0
                 if n > 0 and self.scheduler_ip_addr:
-                    self.last_pulse_time = now
+                    last_pulse_time = now
                     msg = 'PULSE:' + cPickle.dumps({'ip_addr':self.ip_addr,
                                                     'port':self.udp_sock.getsockname()[1], 'cpus':n})
                     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                    sock = DispySocket(sock, blocking=False)
+                    sock = AsynCoroSocket(sock, blocking=False)
                     yield sock.sendto(msg, (self.scheduler_ip_addr, self.scheduler_port), coro=coro)
                     sock.close()
-            if self.zombie_interval and (now - self.last_zombie_time) >= self.zombie_interval:
-                self.last_zombie_time = now
+            if self.zombie_interval and (now - last_zombie_time) >= self.zombie_interval:
+                last_zombie_time = now
                 self.lock.acquire(coro)
                 for compute in self.computations.itervalues():
                     if (now - compute.last_pulse) > self.zombie_interval:
@@ -826,7 +790,7 @@ class _DispyNode(object):
                 self.lock.release(coro)
                 for compute in zombies:
                     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                    sock = DispySocket(sock, blocking=False)
+                    sock = AsynCoroSocket(sock, blocking=False)
                     logging.debug('Sending TERMINATE to %s', compute.scheduler_ip_addr)
                     data = cPickle.dumps({'ip_addr':self.address[0], 'port':self.address[1],
                                           'sign':self.signature})
@@ -834,8 +798,9 @@ class _DispyNode(object):
                                                                compute.scheduler_port), coro=coro)
                     sock.close()
                 if self.scheduler_ip_addr is None and self.avail_cpus == self.cpus:
-                    yield self.send_pong_msg(reset_interval=False, coro=coro)
-        Coro(_timer_task, self)
+                    self.pulse_interval = None
+                    reset = True
+                    yield self.send_pong_msg(coro=coro)
 
     def __job_program(self, _job, job_info):
         compute = self.computations[_job.compute_id]
@@ -881,8 +846,8 @@ class _DispyNode(object):
         logging.debug('Sending result for job %s (%s) to %s',
                       job_reply.uid, job_reply.status, job_info.reply_addr[0])
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock = DispySocket(sock, blocking=False,
-                           certfile=self.certfile, keyfile=self.keyfile)
+        sock = AsynCoroSocket(sock, blocking=False,
+                              certfile=self.certfile, keyfile=self.keyfile)
         try:
             yield sock.connect(job_info.reply_addr, coro=coro)
             yield sock.write_msg(job_reply.uid, cPickle.dumps(job_reply), coro=coro)
@@ -948,7 +913,8 @@ class _DispyNode(object):
             self.pulse_interval = None
 
         if self.scheduler_ip_addr is None and self.avail_cpus == self.cpus:
-            Coro(self.send_pong_msg, reset_interval=True)
+            self.timer_coro.resume(True)
+            Coro(self.send_pong_msg)
         if compute.cleanup is False:
             return
         for xf in compute.xfer_files:
@@ -1009,7 +975,6 @@ class _DispyNode(object):
 
             self.tcp_sock.close()
             self.udp_sock.close()
-            self.cmd_sock.close()
             self.timer.terminate()
         Coro(_shutdown, self).value()
         self.asyncoro.terminate()
