@@ -42,7 +42,7 @@ import shelve
 from dispy import _DispyJob_, _JobReply, DispyJob, \
      _Compute, _XferFile, _xor_string, _node_name_ipaddr, _dispy_version
 
-from asyncoro import Coro, CoroLock, AsynCoro, AsynCoroSocket, RepeatTimer, MetaSingleton
+from asyncoro import Coro, CoroLock, AsynCoro, AsynCoroSocket, MetaSingleton
 
 MaxFileSize = 102400000
 

@@ -1113,7 +1113,7 @@ class _Cluster(object):
             while self._sched_cv.wait(coro):
                 yield None
             if self.terminate_scheduler:
-                self._sched_cv.release(coro)
+                yield self._sched_cv.release(coro)
                 break
             while self.unsched_jobs:
                 logging.debug('Pending jobs: %s', self.unsched_jobs)

@@ -51,8 +51,8 @@ class MetaSingleton(type):
         return cls.__instance
 
 class AsynCoroSocket(object):
-    """Socket for dispy implementation. This makes use of asynchronous
-    notification and coroutines.
+    """Socket to be used with AsynCoro. This makes use of asynchronous
+    I/O completion and coroutines.
     """
 
     def __init__(self, sock, auth_code=None, certfile=None, keyfile=None, server=False,
@@ -127,8 +127,8 @@ class AsynCoroSocket(object):
             plen = len(self.result)
             self.result[len(self.result):] = self.sock.recv(bufsize - len(self.result), flags)
             if len(self.result) == bufsize or self.sock.type == socket.SOCK_DGRAM:
-                self.result = str(self.result)
                 self.notifier.modify(self, 0)
+                self.result = str(self.result)
                 coro.resume(self.result)
             elif len(self.result) == plen:
                 # TODO: check for error and delete?
@@ -152,8 +152,8 @@ class AsynCoroSocket(object):
     def async_recvfrom(self, bufsize, flags=0, coro=None):
         def _recvfrom(self, bufsize, flags, coro):
             self.result, addr = self.sock.recvfrom(bufsize, flags)
-            self.result = (str(self.result), addr)
             self.notifier.modify(self, 0)
+            self.result = (self.result, addr)
             coro.resume(self.result)
 
         self.task = functools.partial(_recvfrom, self, bufsize, flags, coro)
@@ -178,7 +178,7 @@ class AsynCoroSocket(object):
                 self.notifier.modify(self, 0)
                 coro.resume(self.result)
 
-        self.task = functools.partial(_sendto, self, data, flags, coro)
+        self.task = functools.partial(_send, self, data, flags, coro)
         self.coro = coro
         if self.timestamp is not None:
             self.timestamp = time.time()
@@ -200,6 +200,8 @@ class AsynCoroSocket(object):
                 self.notifier.modify(self, 0)
                 coro.resume(self.result)
 
+        # because flags is optional and comes before address
+        # (mandatory), we need to parse arguments
         if len(args) == 1:
             kwargs['address'] = args[0]
         elif len(args) == 2:
@@ -519,8 +521,8 @@ class AsynCoro(object):
             self.notifier = _AsyncNotifier()
 
     def _add(self, coro):
-        coro._id = AsynCoro._coro_id
         self._sched_cv.acquire()
+        coro._id = AsynCoro._coro_id
         AsynCoro._coro_id += 1
         self._coros[coro._id] = coro
         self._complete.clear()
@@ -625,7 +627,6 @@ class AsynCoro(object):
                         continue
                     coro._stack = []
                     coro._scheduler = None
-                    del coro
                 self._running = self._suspended = set()
                 self._coros = {}
                 self._sched_cv.release()
@@ -946,20 +947,17 @@ class _SelectNotifier(object):
             self.wset.add(fid)
         elif event == _AsyncNotifier._Error:
             self.xset.add(fid)
-        self.update()
+        self.update_sock.sendto('update', self.cmd_addr)
 
     def unregister(self, fid):
         self.rset.discard(fid)
         self.wset.discard(fid)
         self.xset.discard(fid)
-        self.update()
+        self.update_sock.sendto('update', self.cmd_addr)
 
     def modify(self, fid, event):
         self.unregister(fid)
         self.register(fid, event)
-        self.update()
-
-    def update(self):
         self.update_sock.sendto('update', self.cmd_addr)
 
     def poll(self, timeout):
