@@ -55,32 +55,34 @@ class AsynCoroSocket(object):
     I/O completion and coroutines.
     """
 
-    def __init__(self, sock, auth_code=None, certfile=None, keyfile=None, server=False,
-                 blocking=False, timeout=True):
+    def __init__(self, sock, coro=None, blocking=False, timeout=True,
+                 auth_code=None, certfile=None, keyfile=None, server=False):
+        """coro argument must be coroutine where this socket is
+        used. With asynchronous I/O (blocking=False), that core is
+        suspended and resumed. This means that if a coroutine passes
+        an asynchronous socket to (or returned from) another
+        coroutine, care must be taken to set the coro appropriately
+        with 'set_coro' method in both the callee (when it is sent
+        there) and caller (when callee returns).
+        """
+
         if certfile:
             self.sock = ssl.wrap_socket(sock, server_side=server, keyfile=keyfile,
                                         certfile=certfile, ssl_version=ssl.PROTOCOL_TLSv1)
         else:
             self.sock = sock
+        self.coro = coro
         self.blocking = blocking == True
-        if self.blocking:
-            self.timestamp = None
-            if isinstance(timeout, float):
-                self.sock.settimeout(timeout)
-        else:
-            self.sock.setblocking(0)
-            if timeout:
-                self.timestamp = 0
-            else:
-                self.timestamp = None
         self.auth_code = auth_code
         self.result = None
         self.fileno = sock.fileno()
-        self.coro = None
         for method in ['bind', 'listen', 'getsockname', 'setsockopt', 'getsockopt']:
             setattr(self, method, getattr(self.sock, method))
 
         if self.blocking:
+            self.timestamp = None
+            if isinstance(timeout, float):
+                self.sock.settimeout(timeout)
             for method in ['recv', 'send', 'recvfrom', 'sendto', 'accept', 'connect',
                            'settimeout', 'gettimeout']:
                 setattr(self, method, getattr(self.sock, method))
@@ -88,8 +90,15 @@ class AsynCoroSocket(object):
             self.write = self.sync_write
             self.read_msg = self.sync_read_msg
             self.write_msg = self.sync_write_msg
-            self.notifier = None
+            self._notifier = None
+            self.coro = None
         else:
+            self.sock.setblocking(0)
+            if timeout:
+                self.timestamp = 0
+            else:
+                self.timestamp = None
+
             self.task = None
             self.recv = self.async_recv
             self.send = self.async_send
@@ -101,168 +110,149 @@ class AsynCoroSocket(object):
             self.connect = self.async_connect
             self.read_msg = self.async_read_msg
             self.write_msg = self.async_write_msg
-            self.notifier = _AsyncNotifier.instance()
-            self.notifier.add_fd(self)
 
-    def async_recv(self, bufsize, flags=0, coro=None):
+            self._notifier = _AsyncNotifier.instance()
+            self._notifier.add_fd(self)
+
+    def set_coro(self, coro):
+        self.coro = coro
+
+    def async_recv(self, *args):
         """Asynchronous version of socket recv method.
         """
-        def _recv(self, bufsize, flags, coro):
-            self.result = self.sock.recv(bufsize, flags)
+        def _recv(self, *args):
+            self.result = self.sock.recv(*args)
             if self.result >= 0:
-                self.notifier.modify(self, 0)
-                coro.resume(self.result)
+                self._notifier.modify(self, 0)
+                self.coro.resume(self.result)
             else:
-                self.notifier.modify(self, 0)
-                coro.throw(Exception, Exception('socket recv error'), None)
+                self._notifier.modify(self, 0)
+                self.coro.throw(Exception, Exception('socket recv error'), None)
 
-        self.task = functools.partial(_recv, self, bufsize, flags, coro)
-        self.coro = coro
+        self.task = functools.partial(_recv, self, *args)
         if self.timestamp is not None:
             self.timestamp = time.time()
-        coro.suspend()
-        self.notifier.modify(self, _AsyncNotifier._Readable)
+        self.coro.suspend()
+        self._notifier.modify(self, _AsyncNotifier._Readable)
 
-    def async_read(self, bufsize, flags=0, coro=None):
+    def async_read(self, bufsize, *args):
         """Read exactly bufsize bytes.
         """
         self.result = bytearray()
-        def _read(self, bufsize, flags, coro):
+        def _read(self, bufsize, *args):
             plen = len(self.result)
-            self.result[len(self.result):] = self.sock.recv(bufsize - len(self.result), flags)
+            self.result[len(self.result):] = self.sock.recv(bufsize - len(self.result), *args)
             if len(self.result) == bufsize or self.sock.type == socket.SOCK_DGRAM:
-                self.notifier.modify(self, 0)
+                self._notifier.modify(self, 0)
                 self.result = str(self.result)
-                coro.resume(self.result)
+                self.coro.resume(self.result)
             elif len(self.result) == plen:
                 # TODO: check for error and delete?
                 self.result = None
-                self.notifier.modify(self, 0)
-                coro.throw(Exception, Exception('socket reading error'), None)
+                self._notifier.modify(self, 0)
+                self.coro.throw(Exception, Exception('socket reading error'), None)
 
-        self.task = functools.partial(_read, self, bufsize, flags, coro)
-        self.coro = coro
+        self.task = functools.partial(_read, self, bufsize, *args)
         if self.timestamp is not None:
             self.timestamp = time.time()
-        coro.suspend()
-        self.notifier.modify(self, _AsyncNotifier._Readable)
+        self.coro.suspend()
+        self._notifier.modify(self, _AsyncNotifier._Readable)
 
-    def sync_read(self, bufsize, flags=0):
+    def sync_read(self, bufsize, *args):
         """Synchronous version of async_read.
         """
         self.result = bytearray()
         while len(self.result) < bufsize:
-            self.result[len(self.result):] = self.sock.recv(bufsize - len(self.result), flags)
+            self.result[len(self.result):] = self.sock.recv(bufsize - len(self.result), *args)
         return str(self.result)
 
-    def async_recvfrom(self, bufsize, flags=0, coro=None):
+    def async_recvfrom(self, *args):
         """Asynchronous version of socket recvfrom method.
         """
-        def _recvfrom(self, bufsize, flags, coro):
-            self.result, addr = self.sock.recvfrom(bufsize, flags)
-            self.notifier.modify(self, 0)
+        def _recvfrom(self, *args):
+            self.result, addr = self.sock.recvfrom(*args)
+            self._notifier.modify(self, 0)
             self.result = (self.result, addr)
-            coro.resume(self.result)
+            self.coro.resume(self.result)
 
-        self.task = functools.partial(_recvfrom, self, bufsize, flags, coro)
-        self.coro = coro
+        self.task = functools.partial(_recvfrom, self, *args)
         if self.timestamp is not None:
             self.timestamp = time.time()
-        coro.suspend()
-        self.notifier.modify(self, _AsyncNotifier._Readable)
+        self.coro.suspend()
+        self._notifier.modify(self, _AsyncNotifier._Readable)
 
-    def async_send(self, data, flags=0, coro=None):
+    def async_send(self, *args):
         """Asynchronous version of socket send method.
         """
         # NB: send only what can be sent in one operation, instead of
         # sending all the data, as done in write/write_msg
-        def _send(self, data, flags, coro):
+        def _send(self, *args):
             try:
-                self.result = self.sock.send(data, flags)
+                self.result = self.sock.send(*args)
             except:
                 # TODO: close socket, inform coro
                 logging.debug('write error', self.fileno)
-                self.notifier.unregister(self)
-                coro.throw(*sys.exc_info())
+                self._notifier.unregister(self)
+                self.coro.throw(*sys.exc_info())
             else:
-                self.notifier.modify(self, 0)
-                coro.resume(self.result)
+                self._notifier.modify(self, 0)
+                self.coro.resume(self.result)
 
-        self.task = functools.partial(_send, self, data, flags, coro)
-        self.coro = coro
+        self.task = functools.partial(_send, self, *args)
         if self.timestamp is not None:
             self.timestamp = time.time()
-        coro.suspend()
-        self.notifier.modify(self, _AsyncNotifier._Writable)
+        self.coro.suspend()
+        self._notifier.modify(self, _AsyncNotifier._Writable)
 
-    def async_sendto(self, data, *args, **kwargs):
+    def async_sendto(self, *args):
         """Asynchronous version of socket sendto method.
         """
 
         # NB: send only what can be sent in one operation, instead of
         # sending all the data, as done in write/write_msg
-        def _sendto(self, data, flags, addr, coro):
+        def _sendto(self, *args):
             try:
-                self.result = self.sock.sendto(data, flags, addr)
+                self.result = self.sock.sendto(*args)
             except:
                 # TODO: close socket, inform coro
                 logging.debug('write error: %s', traceback.format_exc())
-                self.notifier.unregister(self)
-                coro.throw(*sys.exc_info())
+                self._notifier.unregister(self)
+                self.coro.throw(*sys.exc_info())
             else:
-                self.notifier.modify(self, 0)
-                coro.resume(self.result)
+                self._notifier.modify(self, 0)
+                self.coro.resume(self.result)
 
-        # because flags is optional and comes before address
-        # (mandatory), we need to parse arguments
-        if len(args) == 1:
-            kwargs['address'] = args[0]
-        elif len(args) == 2:
-            if 'coro' in kwargs:
-                kwargs['flags'] = args[0]
-                kwargs['address'] = args[1]
-            else:
-                kwargs['address'] = args[0]
-                kwargs['coro'] = args[1]
-        elif len(args) == 3:
-            kwargs['flags'] = args[0]
-            kwargs['address'] = args[1]
-            kwargs['coro'] = args[2]
-
-        self.task = functools.partial(_sendto, self, data, kwargs.get('flags', 0),
-                                      kwargs['address'], kwargs['coro'])
-        self.coro = kwargs['coro']
+        self.task = functools.partial(_sendto, self, *args)
         if self.timestamp is not None:
             self.timestamp = time.time()
         self.coro.suspend()
-        self.notifier.modify(self, _AsyncNotifier._Writable)
+        self._notifier.modify(self, _AsyncNotifier._Writable)
 
-    def async_write(self, data, coro=None):
+    def async_write(self, data):
         """Send all the data (similar to sendall).
         """
         self.result = buffer(data, 0)
-        def _write(self, coro):
+        def _write(self):
             try:
                 n = self.sock.send(self.result)
             except:
                 logging.error('writing failed %s: %s', self.fileno, traceback.format_exc())
                 # TODO: close socket, inform coro
                 self.result = None
-                self.notifier.unregister(self)
-                coro.throw(*sys.exc_info())
+                self._notifier.unregister(self)
+                self.coro.throw(*sys.exc_info())
             else:
                 if n > 0:
                     self.result = buffer(self.result, n)
                     if len(self.result) == 0:
-                        self.notifier.modify(self, 0)
-                        coro.resume(0)
+                        self._notifier.modify(self, 0)
+                        self.coro.resume(0)
 
-        self.task = functools.partial(_write, self, coro)
-        self.coro = coro
+        self.task = functools.partial(_write, self)
         if self.timestamp is not None:
             self.timestamp = time.time()
-        coro.suspend()
-        self.notifier.modify(self, _AsyncNotifier._Writable)
+        self.coro.suspend()
+        self._notifier.modify(self, _AsyncNotifier._Writable)
 
     def sync_write(self, data):
         """Synchronous version of async_write.
@@ -278,63 +268,61 @@ class AsynCoroSocket(object):
     def close(self):
         """Close AsynCoroSocket.
         """
-        if self.notifier:
-            self.notifier.del_fd(self)
+        if self._notifier:
+            self._notifier.del_fd(self)
         self.sock.close()
 
-    def async_accept(self, coro=None):
+    def async_accept(self):
         """Asynchronous version of socket accept method.
         """
-        def _accept(self, coro):
+        def _accept(self):
             conn, addr = self.sock.accept()
             self.result = (conn, addr)
-            self.notifier.modify(self, 0)
-            coro.resume(self.result)
+            self._notifier.modify(self, 0)
+            self.coro.resume(self.result)
 
-        self.task = functools.partial(_accept, self, coro)
-        self.coro = coro
+        self.task = functools.partial(_accept, self)
         self.timestamp = None
-        coro.suspend()
-        self.notifier.modify(self, _AsyncNotifier._Readable)
+        self.coro.suspend()
+        self._notifier.modify(self, _AsyncNotifier._Readable)
 
-    def async_connect(self, (host, port), coro=None):
+    def async_connect(self, *args):
         """Asynchronous version of socket connect method.
         """
-        def _connect(self, host, port, coro):
+        def _connect(self, *args):
             # TODO: check with getsockopt
             err = self.sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
             if not err:
-                self.notifier.modify(self, 0)
-                coro.resume(0)
+                self._notifier.modify(self, 0)
+                self.coro.resume(0)
             else:
                 logging.debug('connect error: %s', err)
 
-        self.task = functools.partial(_connect, self, host, port, coro)
-        self.coro = coro
+        self.task = functools.partial(_connect, self, *args)
         if self.timestamp is not None:
             self.timestamp = time.time()
-        coro.suspend()
-        self.notifier.modify(self, _AsyncNotifier._Writable)
+        self.coro.suspend()
+        self._notifier.modify(self, _AsyncNotifier._Writable)
         try:
-            self.sock.connect((host, port))
+            self.sock.connect(*args)
         except socket.error, e:
             if e.args[0] != EINPROGRESS:
                 logging.debug('connect error: %s', e.args[0])
 
-    def async_read_msg(self, coro):
+    def async_read_msg(self):
         """Message is tagged with unique identifier (integer) and
         length of the payload (data). This method reads entire message and
         reads uid and the message as tuple.
         """
         try:
             info_len = struct.calcsize('>LL')
-            info = yield self.read(info_len, coro=coro)
+            info = yield self.read(info_len)
             if len(info) < info_len:
                 logging.error('Socket disconnected?(%s, %s)', len(info), info_len)
                 yield (None, None)
             (uid, msg_len) = struct.unpack('>LL', info)
             assert msg_len > 0
-            msg = yield self.read(msg_len, coro=coro)
+            msg = yield self.read(msg_len)
             if len(msg) < msg_len:
                 logging.error('Socket disconnected?(%s, %s)', len(msg), msg_len)
                 yield (None, None)
@@ -363,7 +351,7 @@ class AsynCoroSocket(object):
             logging.error('Socket disconnected(timeout)?')
             return (None, None)
 
-    def async_write_msg(self, uid, data, auth=True, coro=None):
+    def async_write_msg(self, uid, data, auth=True):
         """Messages are tagged with a unique identifier (integer) and
         length of the payload (data). If socket has authentication
         data and argument 'auth' is True, then the message is prefixed
@@ -372,8 +360,8 @@ class AsynCoroSocket(object):
         length.
         """
         if auth and self.auth_code:
-            yield self.write(self.auth_code, coro=coro)
-        yield self.write(struct.pack('>LL', uid, len(data)) + data, coro=coro)
+            yield self.write(self.auth_code)
+        yield self.write(struct.pack('>LL', uid, len(data)) + data)
 
     def sync_write_msg(self, uid, data, auth=True):
         """Synchronous version of async_write_msg.
@@ -409,8 +397,8 @@ class Coro(object):
         self._id = None
         self._state = None
         self._value = None
-        self._value_is_exc = False
-        self._stack = []
+        self._exception = False
+        self._callers = []
         self._scheduler = AsynCoro.instance()
         self._complete = threading.Event()
         self._scheduler._add(self)
@@ -557,6 +545,9 @@ class AsynCoro(object):
             # inserted into _timeout_cids at the same index
             self._timeouts = []
             self._timeout_cids = []
+            # because AsyncNotifier runs in a separate thread and
+            # calls coro functions (resume, throw etc.), we need to
+            # lock
             self._sched_cv = threading.Condition()
             self._terminate = False
             self._lock = threading.RLock()
@@ -584,7 +575,7 @@ class AsynCoro(object):
         """Internal use only. See sleep/suspend in Coro.
         """
         if timeout is not None:
-            if not isinstance(timeout, float) or timeout <= 0:
+            if not isinstance(timeout, (float, int)) or timeout <= 0:
                 logging.warning('invalid timeout %s', timeout)
                 return
         self._sched_cv.acquire()
@@ -635,9 +626,10 @@ class AsynCoro(object):
         self._running.discard(coro._id)
         self._suspended.discard(coro._id)
         coro._scheduler = None
-        assert not coro._stack
+        assert not coro._callers
         coro._complete.set()
         del self._coros[coro._id]
+        # coro._generator.close()
         if not self._coros:
             self._complete.set()
 
@@ -650,8 +642,8 @@ class AsynCoro(object):
             logging.warning('invalid coroutine %s to throw exception', cid)
         elif coro._state in [AsynCoro._Scheduled, AsynCoro._Stopped]:
             # prevent throwing more than once?
-            coro._value = args
-            coro._value_is_exc = True
+            #logging.debug('throwing %s, %s to %s/%s', args[0], args[1], coro.name, coro._id)
+            coro._exception = args
             self._suspended.discard(coro._id)
             self._running.add(coro._id)
             coro._state = AsynCoro._Scheduled
@@ -680,11 +672,26 @@ class AsynCoro(object):
                 if timeout is not None:
                     break
             if self._terminate:
+                # probably not needed?
+                def close_coro(coro):
+                    if coro._id not in self._coros:
+                        return
+                    coro._generator.close()
+                    self._coros.pop(coro._id, None)
+                    while coro._callers:
+                        caller = coro._callers.pop(-1)
+                        if isinstance(caller, types.GeneratorType):
+                            caller.close()
+                        else:
+                            assert isinstance(caller, Coro)
+                            assert not coro._callers
+                            close_coro(caller)
                 for cid in self._running.union(self._suspended):
                     coro = self._coros.get(cid, None)
                     if coro is None:
                         continue
-                    coro._stack = []
+                    logging.debug('terminating %s/%s', coro.name, coro._id)
+                    close_coro(coro)
                     coro._scheduler = None
                 self._running = self._suspended = set()
                 self._coros = {}
@@ -713,36 +720,35 @@ class AsynCoro(object):
                 coro._state = AsynCoro._Running
                 self._sched_cv.release()
                 try:
-                    if coro._value_is_exc:
-                        retval = coro._generator.throw(*coro._value)
+                    if coro._exception:
+                        retval = coro._generator.throw(*coro._exception)
                     else:
                         retval = coro._generator.send(coro._value)
                 except:
                     self._sched_cv.acquire()
                     if sys.exc_type == StopIteration:
-                        coro._value_is_exc = False
+                        coro._exception = None
                     else:
-                        coro._value = sys.exc_info()
-                        coro._value_is_exc = True
+                        coro._exception = sys.exc_info()
 
-                    if coro._stack:
+                    if coro._callers:
                         # return to caller
-                        caller = coro._stack.pop(-1)
-                        if isinstance(caller, Coro):
-                            assert not coro._stack
+                        caller = coro._callers.pop(-1)
+                        if isinstance(caller, types.GeneratorType):
+                            coro._generator = caller
+                            coro._state = AsynCoro._Scheduled
+                        else:
+                            assert isinstance(caller, Coro)
+                            assert not coro._callers
                             assert caller._state == AsynCoro._Frozen
-                            caller._state = AsynCoro._Running
+                            caller._state = AsynCoro._Scheduled
                             self._running.add(caller._id)
                             caller._value = coro._value
                             self._delete(coro)
-                        else:
-                            assert isinstance(caller, types.GeneratorType)
-                            coro._generator = caller
-                            coro._state = AsynCoro._Scheduled
                     else:
                         if sys.exc_type != StopIteration:
                             logging.warning('uncaught exception in %s:\n%s', coro.name,
-                                            ''.join(traceback.format_exception(*coro._value)))
+                                            ''.join(traceback.format_exception(*coro._exception)))
                         self._delete(coro)
                     self._sched_cv.release()
                 else:
@@ -762,12 +768,12 @@ class AsynCoro(object):
                         # when new coroutine is done
                         coro._state = AsyncCoro._Frozen
                         self._running.discard(coro._id)
-                        assert not retval._stack
-                        retval._stack.append(coro)
+                        assert not retval._callers
+                        retval._callers.append(coro)
                     elif isinstance(retval, types.GeneratorType):
                         # push current generator onto stack and
                         # activate new generator
-                        coro._stack.append(coro._generator)
+                        coro._callers.append(coro._generator)
                         coro._generator = retval
                         coro._value = None
                     self._sched_cv.release()
@@ -796,6 +802,10 @@ class _AsyncNotifier(object):
     """Asynchronous I/O notifier, to be used with AsynCoroSocket (and
     coroutines) and AsynCoro.
 
+    We use separate thread for _AsyncNotifier so AsynCoro users don't
+    prevent (by taking too much time before yielding) notifier from
+    processing events.
+
     Timeouts for socket operations are handled in a rather simplisitc
     way for efficiency: Instead of timeout for each socket, we provide
     only a global timeout value and check if any socket I/O operation
@@ -816,7 +826,7 @@ class _AsyncNotifier(object):
         """
         return cls.__instance
 
-    def __init__(self, poll_interval=2, fd_timeout=10):
+    def __init__(self, poll_interval=1, fd_timeout=5):
         if self.__class__.__instance is None:
             assert fd_timeout >= 5 * poll_interval
             self.__class__.__instance = self
@@ -861,7 +871,14 @@ class _AsyncNotifier(object):
         _time = time.time
         last_timeout = _time()
         while not self._terminate:
-            events = self._poller.poll(self._poll_interval)
+            try:
+                events = self._poller.poll(self._poll_interval)
+            except:
+                logging.debug('poller failed?')
+                logging.debug(traceback.format_exc())
+                # wait a bit to prevent tight loops
+                time.sleep(self._poll_interval)
+                continue
             now = _time()
             self._lock.acquire()
             events = [(self._fds.get(fileno, None), event) for fileno, event in events]

@@ -62,7 +62,7 @@ def dispy_provisional_result(result):
     __dispy_job_reply.status = DispyJob.ProvisionalResult
     __dispy_job_reply.result = result
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock = AsynCoroSocket(sock, blocking=True, timeout=2,
+    sock = AsynCoroSocket(sock, coro=None, blocking=True, timeout=2,
                           certfile=__dispy_job_certfile, keyfile=__dispy_job_keyfile)
     try:
         sock.connect(__dispy_job_info.reply_addr)
@@ -154,7 +154,7 @@ class _DispyNode(object):
         self.tcp_sock.bind((ip_addr, 0))
         self.address = self.tcp_sock.getsockname()
         self.tcp_sock.listen(30)
-        self.tcp_sock = AsynCoroSocket(self.tcp_sock, blocking=False, timeout=False)
+        self.tcp_sock = AsynCoroSocket(self.tcp_sock, coro=None, blocking=False, timeout=False)
 
         if dest_path_prefix:
             self.dest_path_prefix = dest_path_prefix.strip().rstrip(os.sep)
@@ -188,7 +188,7 @@ class _DispyNode(object):
         self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.udp_sock.bind(('', node_port))
         logging.info('node running at %s:%s', self.address[0], node_port)
-        self.udp_sock = AsynCoroSocket(self.udp_sock, blocking=False, timeout=False)
+        self.udp_sock = AsynCoroSocket(self.udp_sock, coro=None, blocking=False, timeout=False)
 
         scheduler_ip_addr = _node_name_ipaddr(scheduler_node)[1]
 
@@ -203,14 +203,17 @@ class _DispyNode(object):
     def send_pong_msg(self, coro=None):
         ping_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         ping_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        ping_sock = AsynCoroSocket(ping_sock, blocking=False)
+        ping_sock = AsynCoroSocket(ping_sock, coro=coro, blocking=False)
         pong_msg = {'ip_addr':self.ip_addr, 'fqdn':self.fqdn, 'port':self.address[1],
                     'cpus':self.cpus, 'sign':self.signature, 'version':_dispy_version}
         pong_msg = 'PONG:' + cPickle.dumps(pong_msg)
-        yield ping_sock.sendto(pong_msg, ('<broadcast>', self.scheduler_port), coro=coro)
+        yield ping_sock.sendto(pong_msg, ('<broadcast>', self.scheduler_port))
         ping_sock.close()
 
     def udp_server(self, scheduler_ip_addr, coro=None):
+        assert coro is not None
+        self.udp_sock.set_coro(coro)
+        
         if self.avail_cpus == self.cpus:
             yield self.send_pong_msg(coro=coro)
         pong_msg = {'ip_addr':self.ip_addr, 'fqdn':self.fqdn, 'port':self.address[1],
@@ -228,7 +231,7 @@ class _DispyNode(object):
                 sock.close()
 
         while True:
-            msg, addr = yield self.udp_sock.recvfrom(1024, coro=coro)
+            msg, addr = yield self.udp_sock.recvfrom(1024)
             # TODO: process each message as separate Coro, so
             # exceptions are contained?
             if msg.startswith('PING:'):
@@ -247,7 +250,7 @@ class _DispyNode(object):
                     logging.debug('Ignoring ping message from %s (%s)',
                                   addr[0], addr[1])
                     continue
-                yield self.udp_sock.sendto(pong_msg, addr, coro=coro)
+                yield self.udp_sock.sendto(pong_msg, addr)
             elif msg.startswith('PULSE:'):
                 try:
                     info = cPickle.loads(msg[len('PULSE:'):])
@@ -264,9 +267,8 @@ class _DispyNode(object):
                     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                     reply = {'ip_addr':self.address[0], 'port':self.address[1],
                              'sign':self.signature, 'version':_dispy_version}
-                    sock = AsynCoroSocket(sock, blocking=False)
-                    yield sock.sendto(cPickle.dumps(reply), (req['ip_addr'], req['port']),
-                                      coro=coro)
+                    sock = AsynCoroSocket(sock, coro=coro, blocking=False)
+                    yield sock.sendto(cPickle.dumps(reply), (req['ip_addr'], req['port']))
                     sock.close()
                 except:
                     logging.debug(traceback.format_exc())
@@ -275,11 +277,10 @@ class _DispyNode(object):
                 logging.warning('Ignoring ping message from %s', addr[0])
 
     def tcp_server(self, coro=None):
+        self.tcp_sock.set_coro(coro)
         while True:
-            conn, addr = yield self.tcp_sock.accept(coro)
+            conn, addr = yield self.tcp_sock.accept()
             logging.debug('new tcp request from %s', str(addr))
-            conn = AsynCoroSocket(conn, blocking=False, server=True,
-                                  certfile=self.certfile, keyfile=self.keyfile)
             Coro(self.tcp_serve_task, conn, addr)
 
     def tcp_serve_task(self, conn, addr, coro=None):
@@ -303,7 +304,7 @@ class _DispyNode(object):
                 logging.warning('All cpus busy')
                 resp = 'NAK (all cpus busy)'
                 try:
-                    yield conn.write_msg(_job.uid, cPickle.dumps(resp), coro=coro)
+                    yield conn.write_msg(_job.uid, cPickle.dumps(resp))
                 except:
                     pass
                 raise StopIteration
@@ -311,7 +312,7 @@ class _DispyNode(object):
                 logging.warning('Invalid computation %s', _job.compute_id)
                 resp = 'NAK (invalid computation %s)' % _job.compute_id
                 try:
-                    yield conn.write_msg(_job.uid, cPickle.dumps(resp), coro=coro)
+                    yield conn.write_msg(_job.uid, cPickle.dumps(resp))
                 except:
                     pass
                 raise StopIteration
@@ -344,7 +345,7 @@ class _DispyNode(object):
                         _job.args, _job.kwargs, self.reply_Q,
                         compute.env, compute.name, compute.code, compute.dest_path, _job.files)
                 try:
-                    yield conn.write_msg(_job.uid, cPickle.dumps(_job.uid), coro=coro)
+                    yield conn.write_msg(_job.uid, cPickle.dumps(_job.uid))
                 except:
                     logging.warning('Failed to send response for new job to %s',
                                     str(addr))
@@ -360,7 +361,7 @@ class _DispyNode(object):
                 raise StopIteration
             elif compute.type == _Compute.prog_type:
                 try:
-                    yield conn.write_msg(_job.uid, cPickle.dumps(_job.uid), coro=coro)
+                    yield conn.write_msg(_job.uid, cPickle.dumps(_job.uid))
                 except:
                     logging.warning('Failed to send response for new job to %s',
                                     str(addr))
@@ -379,7 +380,7 @@ class _DispyNode(object):
             else:
                 resp = 'NAK (invalid computation type "%s")' % compute.type
                 try:
-                    yield conn.write_msg(_job.uid, cPickle.dumps(resp), coro=coro)
+                    yield conn.write_msg(_job.uid, cPickle.dumps(resp))
                 except:
                     logging.warning('Failed to send response for new job to %s',
                                     str(addr))
@@ -392,7 +393,7 @@ class _DispyNode(object):
                 logging.debug('Ignoring computation request from %s', addr[0])
                 resp = 'Invalid computation request'
                 try:
-                    yield conn.write_msg(uid, resp, coro=coro)
+                    yield conn.write_msg(uid, resp)
                 except:
                     logging.warning('Failed to send reply to %s', str(addr))
                 raise StopIteration
@@ -406,7 +407,7 @@ class _DispyNode(object):
                 self.lock.release(coro)
                 resp = 'Busy'
                 try:
-                    yield conn.write_msg(uid, resp, coro=coro)
+                    yield conn.write_msg(uid, resp)
                 except:
                     pass
                 raise StopIteration
@@ -435,7 +436,7 @@ class _DispyNode(object):
                     os.rmdir(compute.dest_path)
                 self.lock.release(coro)
                 try:
-                    yield conn.write_msg(uid, resp, coro=coro)
+                    yield conn.write_msg(uid, resp)
                 except:
                     logging.warning('Failed to send reply to %s', str(addr))
                 raise StopIteration
@@ -460,7 +461,7 @@ class _DispyNode(object):
                         os.rmdir(compute.dest_path)
                     self.lock.release(coro)
                     try:
-                        yield conn.write_msg(uid, resp, coro=coro)
+                        yield conn.write_msg(uid, resp)
                     except:
                         logging.warning('Failed to send reply to %s', str(addr))
                     raise StopIteration
@@ -497,7 +498,7 @@ class _DispyNode(object):
                     os.rmdir(compute.dest_path)
             if resp:
                 try:
-                    yield conn.write_msg(uid, resp, coro=coro)
+                    yield conn.write_msg(uid, resp)
                 except:
                     pass
 
@@ -533,7 +534,7 @@ class _DispyNode(object):
                     fd = open(tgt, 'wb')
                     n = 0
                     while n < xf.stat_buf.st_size:
-                        data = yield conn.read(min(xf.stat_buf.st_size-n, 10240000), coro=coro)
+                        data = yield conn.read(min(xf.stat_buf.st_size-n, 10240000))
                         if not data:
                             break
                         fd.write(data)
@@ -556,7 +557,7 @@ class _DispyNode(object):
                                     xf.name, traceback.format_exc())
                     resp = 'NACK'
                 try:
-                    yield conn.write_msg(0, resp, coro=coro)
+                    yield conn.write_msg(0, resp)
                 except:
                     logging.debug('Could not send reply for "%s"', xf.name)
             raise StopIteration # xfer_file_task
@@ -606,7 +607,7 @@ class _DispyNode(object):
             except:
                 resp = cPickle.dumps('Invalid job')
                 try:
-                    yield conn.write_msg(0, resp, coro=coro)
+                    yield conn.write_msg(0, resp)
                 except:
                     pass
                 raise StopIteration
@@ -615,8 +616,8 @@ class _DispyNode(object):
             resp = None
             if job_info is not None:
                 try:
-                    yield conn.write_msg(req['uid'], cPickle.dumps(job_info.job_reply), coro=coro)
-                    ruid, ack = yield conn.read_msg(coro=coro)
+                    yield conn.write_msg(req['uid'], cPickle.dumps(job_info.job_reply))
+                    ruid, ack = yield conn.read_msg()
                     # no need to check ack
                 except:
                     logging.debug('Could not send reply for job %s', req['uid'])
@@ -634,8 +635,8 @@ class _DispyNode(object):
                         job_reply = None
                     if hasattr(job_reply, 'hash') and job_reply.hash == req['hash']:
                         try:
-                            yield conn.write_msg(req['uid'], cPickle.dumps(job_reply), coro=coro)
-                            ruid, ack = yield conn.read_msg(coro=coro)
+                            yield conn.write_msg(req['uid'], cPickle.dumps(job_reply))
+                            ruid, ack = yield conn.read_msg()
                             assert ack == 'ACK'
                             assert ruid == req['uid']
                         except:
@@ -662,19 +663,21 @@ class _DispyNode(object):
 
             if resp:
                 try:
-                    yield conn.write_msg(0, resp, coro=coro)
+                    yield conn.write_msg(0, resp)
                 except:
                     pass
 
         # tcp_serve_task starts
+        conn = AsynCoroSocket(conn, coro=coro, blocking=False, server=True,
+                              certfile=self.certfile, keyfile=self.keyfile)
         try:
-            req = yield conn.read(len(self.auth_code), coro=coro)
+            req = yield conn.read(len(self.auth_code))
             assert req == self.auth_code
         except:
             logging.warning('Invalid client authentication? %s', req)
             conn.close()
             raise StopIteration
-        uid, msg = yield conn.read_msg(coro=coro)
+        uid, msg = yield conn.read_msg()
         if not msg:
             conn.close()
             raise StopIteration
@@ -720,7 +723,7 @@ class _DispyNode(object):
                             msg[:min(10, len(msg))], addr[0])
             resp = 'NAK (invalid command: %s)' % (msg[:min(10, len(msg))])
             try:
-                yield conn.write_msg(uid, resp, coro=coro)
+                yield conn.write_msg(uid, resp)
             except:
                 logging.warning('Failed to send reply to %s', str(addr))
             conn.close()
@@ -748,8 +751,8 @@ class _DispyNode(object):
                     msg = 'PULSE:' + cPickle.dumps({'ip_addr':self.ip_addr,
                                                     'port':self.udp_sock.getsockname()[1], 'cpus':n})
                     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                    sock = AsynCoroSocket(sock, blocking=False)
-                    yield sock.sendto(msg, (self.scheduler_ip_addr, self.scheduler_port), coro=coro)
+                    sock = AsynCoroSocket(sock, coro=coro, blocking=False)
+                    yield sock.sendto(msg, (self.scheduler_ip_addr, self.scheduler_port))
                     sock.close()
             if self.zombie_interval and (now - last_zombie_time) >= self.zombie_interval:
                 last_zombie_time = now
@@ -790,12 +793,12 @@ class _DispyNode(object):
                 self.lock.release(coro)
                 for compute in zombies:
                     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                    sock = AsynCoroSocket(sock, blocking=False)
+                    sock = AsynCoroSocket(sock, coro=coro, blocking=False)
                     logging.debug('Sending TERMINATE to %s', compute.scheduler_ip_addr)
                     data = cPickle.dumps({'ip_addr':self.address[0], 'port':self.address[1],
                                           'sign':self.signature})
                     yield sock.sendto('TERMINATED:%s' % data, (compute.scheduler_ip_addr,
-                                                               compute.scheduler_port), coro=coro)
+                                                               compute.scheduler_port))
                     sock.close()
                 if self.scheduler_ip_addr is None and self.avail_cpus == self.cpus:
                     self.pulse_interval = None
@@ -846,12 +849,12 @@ class _DispyNode(object):
         logging.debug('Sending result for job %s (%s) to %s',
                       job_reply.uid, job_reply.status, job_info.reply_addr[0])
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock = AsynCoroSocket(sock, blocking=False,
+        sock = AsynCoroSocket(sock, coro=coro, blocking=False,
                               certfile=self.certfile, keyfile=self.keyfile)
         try:
-            yield sock.connect(job_info.reply_addr, coro=coro)
-            yield sock.write_msg(job_reply.uid, cPickle.dumps(job_reply), coro=coro)
-            uid, ack = yield sock.read_msg(coro=coro)
+            yield sock.connect(job_info.reply_addr)
+            yield sock.write_msg(job_reply.uid, cPickle.dumps(job_reply))
+            uid, ack = yield sock.read_msg()
             assert ack == 'ACK'
             assert uid == job_reply.uid
         except:
@@ -892,7 +895,6 @@ class _DispyNode(object):
                     if compute.pending_jobs == 0 and compute.zombie:
                         self.cleanup_computation(compute)
                 self.lock.release(coro)
-        yield None
 
     def cleanup_computation(self, compute):
         # called with lock held

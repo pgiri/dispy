@@ -276,13 +276,13 @@ class _Node(object):
         assert coro is not None
         logging.debug('Sending to %s:%s', self.ip_addr, self.port)
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock = AsynCoroSocket(sock, blocking=False, auth_code=self.auth_code,
+        sock = AsynCoroSocket(sock, coro=coro, blocking=False, auth_code=self.auth_code,
                               certfile=self.certfile, keyfile=self.keyfile)
         try:
-            yield sock.connect((self.ip_addr, self.port), coro=coro)
-            yield sock.write_msg(uid, msg, coro=coro)
+            yield sock.connect((self.ip_addr, self.port))
+            yield sock.write_msg(uid, msg)
             if reply:
-                ruid, resp = yield sock.read_msg(coro=coro)
+                ruid, resp = yield sock.read_msg()
                 # assert ruid == uid
             else:
                 resp = None
@@ -301,20 +301,20 @@ class _Node(object):
         assert coro is not None
         logging.debug('XferFile: %s to %s', xf.name, self.ip_addr)
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock = AsynCoroSocket(sock, blocking=False, auth_code=self.auth_code,
+        sock = AsynCoroSocket(sock, coro=coro, blocking=False, auth_code=self.auth_code,
                               certfile=self.certfile, keyfile=self.keyfile)
         try:
-            yield sock.connect((self.ip_addr, self.port), coro=coro)
+            yield sock.connect((self.ip_addr, self.port))
             msg = 'FILEXFER:' + cPickle.dumps(xf)
-            yield sock.write_msg(0, msg, coro=coro)
+            yield sock.write_msg(0, msg)
             fd = open(xf.name, 'rb')
             while True:
                 data = fd.read(10240000)
                 if not data:
                     break
-                yield sock.write(data, coro=coro)
+                yield sock.write(data)
             fd.close()
-            ruid, resp = yield sock.read_msg(coro=coro)
+            ruid, resp = yield sock.read_msg()
             assert resp == 'ACK'
         except:
             logging.error("Couldn't transfer %s to %s", xf.name, self.ip_addr)
@@ -498,7 +498,8 @@ class _Cluster(object):
             job_result_sock.bind((self.ip_addr, 0))
             job_result_sock.listen(32)
             self.job_result_port = job_result_sock.getsockname()[1]
-            self.job_result_sock = AsynCoroSocket(job_result_sock, blocking=False, timeout=False)
+            self.job_result_sock = AsynCoroSocket(job_result_sock, coro=None,
+                                                  blocking=False, timeout=False)
             logging.debug('job result server at %s:%s', self.ip_addr, self.job_result_port)
             self.job_result_coro = Coro(self.job_result_server)
 
@@ -514,7 +515,7 @@ class _Cluster(object):
                 udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 udp_sock.bind(('', self.port))
                 self.port = udp_sock.getsockname()[1]
-                udp_sock = AsynCoroSocket(udp_sock, blocking=False, timeout=False)
+                udp_sock = AsynCoroSocket(udp_sock, coro=None, blocking=False, timeout=False)
                 logging.info('UDP server running at %s, %s', self.ip_addr, self.port)
                 self.udp_coro = Coro(self.udp_server, udp_sock)
 
@@ -523,7 +524,7 @@ class _Cluster(object):
         ping_request = cPickle.dumps({'scheduler_ip_addr':self.ip_addr,
                                       'scheduler_port':self.port, 'version':_dispy_version})
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock = AsynCoroSocket(sock, blocking=False)
+        sock = AsynCoroSocket(sock, coro=coro, blocking=False)
         for node_spec, node_info in cluster._compute.node_spec.iteritems():
             if node_spec.find('*') >= 0:
                 port = node_info['port']
@@ -531,9 +532,9 @@ class _Cluster(object):
                     port = self.node_port
                 bc_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                bc_sock = AsynCoroSocket(bc_sock, blocking=False)
+                bc_sock = AsynCoroSocket(bc_sock, coro=coro, blocking=False)
                 try:
-                    yield bc_sock.sendto('PING:%s' % ping_request, ('<broadcast>', port), coro=coro)
+                    yield bc_sock.sendto('PING:%s' % ping_request, ('<broadcast>', port))
                 except:
                     pass
                 bc_sock.close()
@@ -545,7 +546,7 @@ class _Cluster(object):
                 if not port:
                     port = self.node_port
                 try:
-                    yield sock.sendto('PING:%s' % ping_request, (ip_addr, port), coro=coro)
+                    yield sock.sendto('PING:%s' % ping_request, (ip_addr, port))
                 except:
                     pass
         sock.close()
@@ -622,22 +623,22 @@ class _Cluster(object):
 
         if self.shared:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock = AsynCoroSocket(sock, blocking=False, auth_code=cluster.auth_code,
+            sock = AsynCoroSocket(sock, coro=coro, blocking=False, auth_code=cluster.auth_code,
                                   certfile=cluster.certfile, keyfile=cluster.keyfile)
-            yield sock.connect((cluster.scheduler_ip_addr, cluster.scheduler_port), coro=coro)
+            yield sock.connect((cluster.scheduler_ip_addr, cluster.scheduler_port))
             req = 'DEL_COMPUTE:' + cPickle.dumps({'ID':cluster._compute.id})
-            yield sock.write_msg(cluster._compute.id, req, coro=coro)
+            yield sock.write_msg(cluster._compute.id, req)
             sock.close()
         else:
             self._sched_cv.acquire(coro)
-            nodes = compute.nodes.values()
+            nodes = cluster._compute.nodes.values()
             for node in nodes:
                 logging.debug('node %s is being removed', node.ip_addr)
-                node.clusters.remove(compute.id)
-            compute.nodes = {}
+                node.clusters.remove(cluster._compute.id)
+            cluster._compute.nodes = {}
             self._sched_cv.release(coro)
             for node in nodes:
-                yield node.close(compute, coro=coro)
+                yield node.close(cluster._compute, coro=coro)
             if cluster.fault_recover_file:
                 self.fault_recover_lock.acquire()
                 shelf = shelve.open(cluster.fault_recover_file, flag='r')
@@ -791,8 +792,9 @@ class _Cluster(object):
     def udp_server(self, udp_sock, coro=None):
         # generator
         assert coro is not None
+        udp_sock.set_coro(coro)
         while True:
-            msg, addr = yield udp_sock.recvfrom(1024, coro=coro)
+            msg, addr = yield udp_sock.recvfrom(1024)
             if msg.startswith('PULSE:'):
                 msg = msg[len('PULSE:'):]
                 try:
@@ -801,9 +803,9 @@ class _Cluster(object):
                     assert 0 <= info['cpus'] <= node.cpus
                     node.last_pulse = time.time()
                     msg = 'PULSE:' + cPickle.dumps({'ip_addr':self.ip_addr})
-                    sock = AsynCoroSocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM),
-                                          blocking=False)
-                    yield sock.sendto(msg, (info['ip_addr'], info['port']), coro=coro)
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM),
+                    sock = AsynCoroSocket(sock, coro=coro, blocking=False)
+                    yield sock.sendto(msg, (info['ip_addr'], info['port']))
                     sock.close()
                 except:
                     logging.warning('Ignoring pulse message from %s', addr[0])
@@ -887,19 +889,20 @@ class _Cluster(object):
     def job_result_server(self, coro=None):
         # generator
         assert coro is not None
+        self.job_result_sock.set_coro(coro)
         while True:
-            new_sock, addr = yield self.job_result_sock.accept(coro)
+            new_sock, addr = yield self.job_result_sock.accept()
             logging.debug('received job result from %s', str(addr))
             Coro(self.job_result_task, new_sock, addr)
 
     def job_result_task(self, sock, addr, coro=None):
         # generator
         assert coro is not None
-        sock = AsynCoroSocket(sock, certfile=self.certfile, keyfile=self.keyfile,
-                              server=True, blocking=False)
+        sock = AsynCoroSocket(sock, coro=coro, blocking=False, server=True,
+                              certfile=self.certfile, keyfile=self.keyfile)
         try:
-            uid, msg = yield sock.read_msg(coro=coro)
-            yield sock.write_msg(uid, 'ACK', coro=coro)
+            uid, msg = yield sock.read_msg()
+            yield sock.write_msg(uid, 'ACK')
         except:
             logging.warning('Failed to read job result from %s: %s',
                             str(addr), traceback.format_exc())
@@ -1035,10 +1038,9 @@ class _Cluster(object):
                                'client_scheduler_port':self.port,
                                'version':_dispy_version}
                         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                        sock = AsynCoroSocket(sock, blocking=False)
+                        sock = AsynCoroSocket(sock, coro=coro, blocking=False)
                         yield sock.sendto('PULSE:' + cPickle.dumps(msg),
-                                          (cluster.scheduler_ip_addr,
-                                           cluster.scheduler_udp_port), coro=coro)
+                                          (cluster.scheduler_ip_addr, cluster.scheduler_udp_port))
                         sock.close()
                 else:
                     self._sched_cv.acquire(coro)
@@ -1530,7 +1532,7 @@ class JobCluster(object):
                             dep = f
                             break
                     else:
-                        raise Exception('Program "%s" is not valid', dep)
+                        raise Exception('Program "%s" is not valid' % dep)
                 try:
                     fd = open(dep, 'rb')
                     fd.close()
@@ -1549,6 +1551,8 @@ class JobCluster(object):
                     dep = dep.__class__
                 if id(dep) in depend_ids:
                     continue
+                if compute.type == _Compute.prog_type:
+                    raise Exception('Program computations cannot depend on "%s"' % dep.__name__)
                 lines = inspect.getsourcelines(dep)[0]
                 lines[0] = lines[0].lstrip()
                 compute.code += '\n' + ''.join(lines)
@@ -1739,7 +1743,7 @@ class SharedJobCluster(JobCluster):
                             self.scheduler_ip_addr, self.scheduler_udp_port)
         srv_sock.close()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock = AsynCoroSocket(sock, blocking=True, timeout=5,
+        sock = AsynCoroSocket(sock, coro=None, blocking=True, timeout=5,
                               auth_code=self.auth_code, certfile=certfile, keyfile=keyfile)
         try:
             sock.connect((self.scheduler_ip_addr, self.scheduler_port))
@@ -1762,7 +1766,7 @@ class SharedJobCluster(JobCluster):
             xf.compute_id = self._compute.id
             logging.debug('Sending file "%s"', xf.name)
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock = AsynCoroSocket(sock, blocking=True, timeout=5,
+            sock = AsynCoroSocket(sock, coro=None, blocking=True, timeout=5,
                                   auth_code=self.auth_code, certfile=certfile, keyfile=keyfile)
             try:
                 sock.connect((self.scheduler_ip_addr, self.scheduler_port))
@@ -1783,7 +1787,7 @@ class SharedJobCluster(JobCluster):
             sock.close()
             
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock = AsynCoroSocket(sock, blocking=True, timeout=5,
+        sock = AsynCoroSocket(sock, coro=None, blocking=True, timeout=5,
                               auth_code=self.auth_code, certfile=certfile, keyfile=keyfile)
         sock.connect((self.scheduler_ip_addr, self.scheduler_port))
         req = 'ADD_COMPUTE:' + cPickle.dumps({'ID':self._compute.id})
@@ -1817,19 +1821,19 @@ class SharedJobCluster(JobCluster):
 
         def _submit(self, _job, coro=None):
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock = AsynCoroSocket(sock, blocking=False, auth_code=self.auth_code,
+            sock = AsynCoroSocket(sock, coro=coro, blocking=False, auth_code=self.auth_code,
                                   certfile=self.certfile, keyfile=self.keyfile)
-            yield sock.connect((self.scheduler_ip_addr, self.scheduler_port), coro=coro)
+            yield sock.connect((self.scheduler_ip_addr, self.scheduler_port))
             req = 'JOB:' + cPickle.dumps(_job)
-            yield sock.write_msg(self._compute.id, req, coro=coro)
-            uid, msg = yield sock.read_msg(coro=coro)
+            yield sock.write_msg(self._compute.id, req)
+            uid, msg = yield sock.read_msg()
             _job.uid = cPickle.loads(msg)
             self._cluster._sched_cv.acquire(coro)
             self._cluster._sched_jobs[_job.uid] = _job
             self._pending_jobs += 1
             self._complete.clear()
             self._cluster._sched_cv.release(coro)
-            yield sock.write_msg(_job.uid, 'ACK', auth=False, coro=coro)
+            yield sock.write_msg(_job.uid, 'ACK', auth=False)
             sock.close()
             if self.fault_recover_file:
                 # TODO: reply may come back before we store it!
@@ -1876,12 +1880,12 @@ class SharedJobCluster(JobCluster):
             assert self._pending_jobs >= 1
             self._cluster._sched_cv.release(coro)
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock = AsynCoroSocket(sock, blocking=False, auth_code=self.auth_code,
+            sock = AsynCoroSocket(sock, coro=coro, blocking=False, auth_code=self.auth_code,
                                   certfile=self.certfile, keyfile=self.keyfile)
             try:
-                yield sock.connect((self.scheduler_ip_addr, self.scheduler_port), coro=coro)
+                yield sock.connect((self.scheduler_ip_addr, self.scheduler_port))
                 req = 'TERMINATE_JOB:' + cPickle.dumps(_job)
-                yield sock.write_msg(self._compute.id, req, coro=coro)
+                yield sock.write_msg(self._compute.id, req)
                 logging.debug('Job %s is cancelled', _job.uid)
             except:
                 logging.warning('Connection to scheduler failed: %s', traceback.format_exc())

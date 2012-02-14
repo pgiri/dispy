@@ -162,11 +162,13 @@ class _Scheduler(object):
             self.request_sock.bind((self.ip_addr, self.scheduler_port))
             self.scheduler_port = self.request_sock.getsockname()[1]
             self.request_sock.listen(32)
-            self.request_sock = AsynCoroSocket(self.request_sock, blocking=False, timeout=False)
+            self.request_sock = AsynCoroSocket(self.request_sock, coro=None,
+                                               blocking=False, timeout=False)
             self.request_coro = Coro(self.request_server)
 
             self.job_result_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.job_result_sock = AsynCoroSocket(self.job_result_sock, blocking=False, timeout=False)
+            self.job_result_sock = AsynCoroSocket(self.job_result_sock, coro=None,
+                                                  blocking=False, timeout=False)
             self.job_result_sock.bind((self.ip_addr, 0))
             self.job_result_sock.listen(50)
             self.job_result_coro = Coro(self.job_result_server)
@@ -174,7 +176,7 @@ class _Scheduler(object):
             self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.udp_sock.bind(('', self.port))
-            self.udp_sock = AsynCoroSocket(self.udp_sock, blocking=False, timeout=False)
+            self.udp_sock = AsynCoroSocket(self.udp_sock, coro=None, blocking=False, timeout=False)
             logging.debug('UDP server at %s:%s' % (self.udp_sock.getsockname()))
             self.udp_coro = Coro(self.udp_server)
 
@@ -213,8 +215,11 @@ class _Scheduler(object):
     def udp_server(self, coro=None):
         # generator
         assert coro is not None
+        self.udp_sock.set_coro(coro)
+
         while True:
-            msg, addr = yield self.udp_sock.recvfrom(1024, coro=coro)
+            msg, addr = yield self.udp_sock.recvfrom(1024)
+            # no need to create coros to process these requests
             if msg.startswith('PULSE:'):
                 msg = msg[len('PULSE:'):]
                 try:
@@ -236,8 +241,8 @@ class _Scheduler(object):
                         node.last_pulse = time.time()
                         msg = 'PULSE:' + cPickle.dumps({'ip_addr':self.ip_addr})
                         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                        sock = AsynCoroSocket(sock, blocking=False)
-                        yield sock.sendto(msg, (info['ip_addr'], info['port']), coro=coro)
+                        sock = AsynCoroSocket(sock, coro=coro, blocking=False)
+                        yield sock.sendto(msg, (info['ip_addr'], info['port']))
                         sock.close()
             elif msg.startswith('PONG:'):
                 try:
@@ -323,11 +328,10 @@ class _Scheduler(object):
                                   self.ip_addr, self.scheduler_port,
                                   req['ip_addr'], req['port'])
                     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                    sock = AsynCoroSocket(sock, blocking=False)
+                    sock = AsynCoroSocket(sock, coro=coro, blocking=False)
                     reply = {'ip_addr':self.ip_addr, 'port':self.scheduler_port,
                              'sign':self.sign, 'version':_dispy_version}
-                    yield sock.sendto(cPickle.dumps(reply), (req['ip_addr'], req['port']),
-                                      coro=coro)
+                    yield sock.sendto(cPickle.dumps(reply), (req['ip_addr'], req['port']))
                     sock.close()
                 except:
                     logging.debug(traceback.format_exc())
@@ -341,7 +345,7 @@ class _Scheduler(object):
         ping_request = cPickle.dumps({'scheduler_ip_addr':self.ip_addr,
                                       'scheduler_port':self.port, 'version':_dispy_version})
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock = AsynCoroSocket(sock, blocking=False)
+        sock = AsynCoroSocket(sock, coro=coro, blocking=False)
         for node_spec, node_info in cluster._compute.node_spec.iteritems():
             if node_spec.find('*') >= 0:
                 port = node_info['port']
@@ -349,9 +353,9 @@ class _Scheduler(object):
                     port = self.node_port
                 bc_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                bc_osck = AsynCoroSocket(bc_sock, blocking=False)
+                bc_osck = AsynCoroSocket(bc_sock, coro=coro, blocking=False)
                 try:
-                    yield bc_sock.sendto('PING:%s' % ping_request, ('<broadcast>', port), coro=coro)
+                    yield bc_sock.sendto('PING:%s' % ping_request, ('<broadcast>', port))
                 except:
                     pass
                 bc_sock.close()
@@ -363,7 +367,7 @@ class _Scheduler(object):
                 if not port:
                     port = self.node_port
                 try:
-                    yield sock.sendto('PING:%s' % ping_request, (ip_addr, port), coro=coro)
+                    yield sock.sendto('PING:%s' % ping_request, (ip_addr, port))
                 except:
                     pass
         sock.close()
@@ -422,11 +426,11 @@ class _Scheduler(object):
         assert coro is not None
         logging.debug('Sending results for %s to %s, %s', uid, ip, port)
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock = AsynCoroSocket(sock, blocking=False)
+        sock = AsynCoroSocket(sock, coro=coro, blocking=False)
         try:
-            yield sock.connect((ip, port), coro=coro)
-            yield sock.write_msg(uid, cPickle.dumps(result), coro=coro)
-            ruid, ack = yield sock.read_msg(coro=coro)
+            yield sock.connect((ip, port))
+            yield sock.write_msg(uid, cPickle.dumps(result))
+            ruid, ack = yield sock.read_msg()
             assert ack == 'ACK'
             assert uid == ruid
         except:
@@ -477,155 +481,162 @@ class _Scheduler(object):
     def request_server(self, coro=None):
         # generator
         assert coro is not None
-        def job_request_task(self, conn, msg, addr, coro):
-            # generator
-            try:
-                _job = cPickle.loads(msg)
-            except:
-                logging.debug('Ignoring job request from %s', addr[0])
-                raise StopIteration
-            self._sched_cv.acquire(coro)
-            _job.uid = self.job_uid
-            self.job_uid += 1
-            if self.job_uid == sys.maxint:
-                # TODO: check if it is okay to reset
-                self.job_uid = 1
-            self._sched_cv.release(coro)
-            setattr(_job, 'node', None)
-            job = type('DispyJob', (), {'status':DispyJob.Created,
-                                        'start_time':None, 'end_time':None})
-            setattr(_job, 'job', job)
-            resp = cPickle.dumps(_job.uid)
-            try:
-                yield conn.write_msg(0, resp, coro=coro)
-            except:
-                logging.warning('Failed to send response to %s: %s',
-                                str(addr), traceback.format_exc())
-                raise StopIteration
-            try:
-                uid, msg = yield conn.read_msg(coro=coro)
-                assert msg == 'ACK'
-                assert uid == _job.uid
-            except:
-                logging.warning('Invalid reply for job: %s, %s',
-                                _job.uid, traceback.format_exc())
-                raise StopIteration
-            self._sched_cv.acquire(coro)
-            cluster = self._clusters.get(_job.compute_id, None)
-            if cluster is None:
-                logging.debug('cluster %s is not valid anymore for job %s',
-                              _job.compute_id, _job.uid)
-                self._sched_cv.release(coro)
-                raise StopIteration
-            cluster._jobs.append(_job)
-            self.unsched_jobs += 1
-            cluster._pending_jobs += 1
-            cluster.last_pulse = time.time()
-            self._sched_cv.notify()
-            self._sched_cv.release(coro)
+        self.request_sock.set_coro(coro)
 
-        def compute_task(self, conn, msg, addr, coro):
-            # generator
-            try:
-                compute = cPickle.loads(msg)
-            except:
-                logging.debug('Ignoring compute request from %s', addr[0])
-                raise StopIteration(None)
-            setattr(compute, 'nodes', {})
-            cluster = _Cluster(compute)
-            compute = cluster._compute
-            cluster.client_job_result_port = compute.job_result_port
-            cluster.client_scheduler_ip_addr = compute.scheduler_ip_addr
-            cluster.client_scheduler_port = compute.scheduler_port
-            compute.job_result_port = self.job_result_sock.getsockname()[1]
-            compute.scheduler_ip_addr = self.ip_addr
-            compute.scheduler_port = self.port
-            self._sched_cv.acquire(coro)
-            compute.id = cluster.id = self.cluster_id
-            self._clusters[cluster.id] = cluster
-            self.cluster_id += 1
-            dest_path = os.path.join(self.dest_path_prefix, str(compute.id))
-            if not os.path.isdir(dest_path):
-                try:
-                    os.makedirs(dest_path)
-                except:
-                    logging.warning('Could not create directory "%s"', dest_path)
-                    if compute.xfer_files:
-                        self._sched_cv.release(coro)
-                        conn.close()
-                        raise StopIteration
-            for xf in compute.xfer_files:
-                xf.compute_id = compute.id
-                xf.name = os.path.join(dest_path, os.path.basename(xf.name))
-            self._sched_cv.release(coro)
-            resp = {'ID':compute.id,
-                    'pulse_interval':(self.zombie_interval / 5.0) if self.zombie_interval else None}
-            resp = cPickle.dumps(resp)
-            logging.debug('New computation %s: %s, %s', compute.id, compute.name,
-                          len(compute.xfer_files))
-            yield resp
+        def _request_task(self, conn, addr, coro=None):
 
-        def xfer_file_task(self, conn, msg, addr, coro):
-            # generator
-            try:
-                xf = cPickle.loads(msg)
-            except:
-                logging.debug('Ignoring file trasnfer request from %s', addr[0])
-                raise StopIteration
-            resp = ''
-            if xf.compute_id not in self._clusters:
-                logging.error('computation "%s" is invalid' % xf.compute_id)
-                raise StopIteration
-            compute = self._clusters[xf.compute_id]
-            dest_path = os.path.join(self.dest_path_prefix, str(compute.id))
-            if not os.path.isdir(dest_path):
+            def _job_request_task(self, conn, msg, addr, coro):
+                # generator
                 try:
-                    os.makedirs(dest_path)
+                    _job = cPickle.loads(msg)
                 except:
+                    logging.debug('Ignoring job request from %s', addr[0])
                     raise StopIteration
-            tgt = os.path.join(dest_path, os.path.basename(xf.name))
-            logging.debug('Copying file %s to %s (%s)', xf.name,
-                          tgt, xf.stat_buf.st_size)
-            try:
-                fd = open(tgt, 'wb')
-                n = 0
-                while n < xf.stat_buf.st_size:
-                    data = yield conn.read(min(xf.stat_buf.st_size-n, 1024000), coro=coro)
-                    if not data:
-                        break
-                    fd.write(data)
-                    n += len(data)
-                    if self.max_file_size and n > self.max_file_size:
-                        logging.warning('File "%s" is too big (%s); it is truncated',
-                                        tgt, n)
-                        break
-                fd.close()
-                if n < xf.stat_buf.st_size:
-                    resp = 'NAK (read only %s bytes)' % n
-                else:
-                    resp = 'ACK'
-                    logging.debug('Copied file %s, %s', tgt, resp)
-                    os.utime(tgt, (xf.stat_buf.st_atime, xf.stat_buf.st_mtime))
-                    os.chmod(tgt, stat.S_IMODE(xf.stat_buf.st_mode))
-            except:
-                logging.warning('Copying file "%s" failed with "%s"',
-                                xf.name, traceback.format_exc())
-                resp = 'NACK'
-            if resp:
+                self._sched_cv.acquire(coro)
+                _job.uid = self.job_uid
+                self.job_uid += 1
+                if self.job_uid == sys.maxint:
+                    # TODO: check if it is okay to reset
+                    self.job_uid = 1
+                self._sched_cv.release(coro)
+                setattr(_job, 'node', None)
+                job = type('DispyJob', (), {'status':DispyJob.Created,
+                                            'start_time':None, 'end_time':None})
+                setattr(_job, 'job', job)
+                resp = cPickle.dumps(_job.uid)
                 try:
-                    yield conn.write_msg(0, resp, coro=coro)
+                    yield conn.write_msg(0, resp)
                 except:
-                    logging.debug('Could not send reply for "%s"', xf.name)
+                    logging.warning('Failed to send response to %s: %s',
+                                    str(addr), traceback.format_exc())
+                    raise StopIteration
+                try:
+                    uid, msg = yield conn.read_msg()
+                    assert msg == 'ACK'
+                    assert uid == _job.uid
+                except:
+                    logging.warning('Invalid reply for job: %s, %s',
+                                    _job.uid, traceback.format_exc())
+                    raise StopIteration
+                self._sched_cv.acquire(coro)
+                cluster = self._clusters.get(_job.compute_id, None)
+                if cluster is None:
+                    logging.debug('cluster %s is not valid anymore for job %s',
+                                  _job.compute_id, _job.uid)
+                    self._sched_cv.release(coro)
+                    raise StopIteration
+                cluster._jobs.append(_job)
+                self.unsched_jobs += 1
+                cluster._pending_jobs += 1
+                cluster.last_pulse = time.time()
+                self._sched_cv.notify()
+                self._sched_cv.release(coro)
 
-        def request_task(self, conn, addr, coro=None):
+            def _compute_task(self, conn, msg, addr, coro):
+                # generator
+                try:
+                    compute = cPickle.loads(msg)
+                except:
+                    logging.debug('Ignoring compute request from %s', addr[0])
+                    raise StopIteration(None)
+                setattr(compute, 'nodes', {})
+                cluster = _Cluster(compute)
+                compute = cluster._compute
+                cluster.client_job_result_port = compute.job_result_port
+                cluster.client_scheduler_ip_addr = compute.scheduler_ip_addr
+                cluster.client_scheduler_port = compute.scheduler_port
+                compute.job_result_port = self.job_result_sock.getsockname()[1]
+                compute.scheduler_ip_addr = self.ip_addr
+                compute.scheduler_port = self.port
+                self._sched_cv.acquire(coro)
+                compute.id = cluster.id = self.cluster_id
+                self._clusters[cluster.id] = cluster
+                self.cluster_id += 1
+                dest_path = os.path.join(self.dest_path_prefix, str(compute.id))
+                if not os.path.isdir(dest_path):
+                    try:
+                        os.makedirs(dest_path)
+                    except:
+                        logging.warning('Could not create directory "%s"', dest_path)
+                        if compute.xfer_files:
+                            self._sched_cv.release(coro)
+                            conn.close()
+                            raise StopIteration
+                for xf in compute.xfer_files:
+                    xf.compute_id = compute.id
+                    xf.name = os.path.join(dest_path, os.path.basename(xf.name))
+                self._sched_cv.release(coro)
+                resp = {'ID':compute.id,
+                        'pulse_interval':(self.zombie_interval / 5.0) if self.zombie_interval else None}
+                resp = cPickle.dumps(resp)
+                logging.debug('New computation %s: %s, %s', compute.id, compute.name,
+                              len(compute.xfer_files))
+                yield resp
+
+            def _xfer_file_task(self, conn, msg, addr, coro):
+                # generator
+                try:
+                    xf = cPickle.loads(msg)
+                except:
+                    logging.debug('Ignoring file trasnfer request from %s', addr[0])
+                    raise StopIteration
+                resp = ''
+                if xf.compute_id not in self._clusters:
+                    logging.error('computation "%s" is invalid' % xf.compute_id)
+                    raise StopIteration
+                compute = self._clusters[xf.compute_id]
+                dest_path = os.path.join(self.dest_path_prefix, str(compute.id))
+                if not os.path.isdir(dest_path):
+                    try:
+                        os.makedirs(dest_path)
+                    except:
+                        raise StopIteration
+                tgt = os.path.join(dest_path, os.path.basename(xf.name))
+                logging.debug('Copying file %s to %s (%s)', xf.name,
+                              tgt, xf.stat_buf.st_size)
+                try:
+                    fd = open(tgt, 'wb')
+                    n = 0
+                    while n < xf.stat_buf.st_size:
+                        data = yield conn.read(min(xf.stat_buf.st_size-n, 1024000))
+                        if not data:
+                            break
+                        fd.write(data)
+                        n += len(data)
+                        if self.max_file_size and n > self.max_file_size:
+                            logging.warning('File "%s" is too big (%s); it is truncated',
+                                            tgt, n)
+                            break
+                    fd.close()
+                    if n < xf.stat_buf.st_size:
+                        resp = 'NAK (read only %s bytes)' % n
+                    else:
+                        resp = 'ACK'
+                        logging.debug('Copied file %s, %s', tgt, resp)
+                        os.utime(tgt, (xf.stat_buf.st_atime, xf.stat_buf.st_mtime))
+                        os.chmod(tgt, stat.S_IMODE(xf.stat_buf.st_mode))
+                except:
+                    logging.warning('Copying file "%s" failed with "%s"',
+                                    xf.name, traceback.format_exc())
+                    resp = 'NACK'
+                if resp:
+                    try:
+                        yield conn.write_msg(0, resp)
+                    except:
+                        logging.debug('Could not send reply for "%s"', xf.name)
+
+            # _request_task begins here
+            conn = AsynCoroSocket(conn, coro=coro, blocking=False, certfile=self.cluster_certfile,
+                                  keyfile=self.cluster_keyfile, server=True)
+
             resp = None
             try:
-                req = yield conn.read(len(self.auth_code), coro=coro)
+                req = yield conn.read(len(self.auth_code))
                 if req != self.auth_code:
                     conn.close()
                     logging.warning('Invalid/unauthorized request ignored')
                     raise StopIteration
-                uid, msg = yield conn.read_msg(coro=coro)
+                uid, msg = yield conn.read_msg()
                 if not msg:
                     conn.close()
                     logging.info('Closing connection')
@@ -637,11 +648,11 @@ class _Scheduler(object):
                 raise StopIteration
             if msg.startswith('JOB:'):
                 msg = msg[len('JOB:'):]
-                yield job_request_task(self, conn, msg, addr, coro)
+                yield _job_request_task(self, conn, msg, addr, coro)
                 conn.close()
             elif msg.startswith('COMPUTE:'):
                 msg = msg[len('COMPUTE:'):]
-                resp = yield compute_task(self, conn, msg, addr, coro)
+                resp = yield _compute_task(self, conn, msg, addr, coro)
             elif msg.startswith('ADD_COMPUTE:'):
                 msg = msg[len('ADD_COMPUTE:'):]
                 self._sched_cv.acquire(coro)
@@ -678,7 +689,7 @@ class _Scheduler(object):
                 self._sched_cv.release(coro)
             elif msg.startswith('FILEXFER:'):
                 msg = msg[len('FILEXFER:'):]
-                yield xfer_file_task(self, conn, msg, addr, coro)
+                yield _xfer_file_task(self, conn, msg, addr, coro)
             elif msg.startswith('TERMINATE_JOB:'):
                 msg = msg[len('TERMINATE_JOB:'):]
                 conn.close()
@@ -727,8 +738,8 @@ class _Scheduler(object):
                         job_reply = cPickle.load(fd)
                         fd.close()
                         if job_reply.hash == req['hash']:
-                            yield conn.write_msg(req['uid'], cPickle.dumps(job_reply), coro=coro)
-                            ruid, ack = yield conn.read_msg(coro=coro)
+                            yield conn.write_msg(req['uid'], cPickle.dumps(job_reply))
+                            ruid, ack = yield conn.read_msg()
                             assert ack == 'ACK'
                             assert ruid == req['uid']
                             try:
@@ -755,20 +766,18 @@ class _Scheduler(object):
 
             if resp is not None:
                 try:
-                    yield conn.write_msg(0, resp, coro=coro)
+                    yield conn.write_msg(0, resp)
                 except:
                     logging.warning('Failed to send response to %s: %s',
                                     str(addr), traceback.format_exc())
                 conn.close()
-            # end of request_task
+            # end of _request_task
 
-        # scheduler_server starts here
-        logging.info('Scheduler running at %s:%s', self.ip_addr, self.port)
+        # request_server starts here
+        logging.info('scheduler running at %s:%s', self.ip_addr, self.port)
         while True:
-            conn, addr = yield self.request_sock.accept(coro=coro)
-            conn = AsynCoroSocket(conn, blocking=False, certfile=self.cluster_certfile,
-                                  keyfile=self.cluster_keyfile, server=True)
-            Coro(request_task, self, conn, addr)
+            conn, addr = yield self.request_sock.accept()
+            Coro(_request_task, self, conn, addr)
 
     def timer_task(self, coro=None):
         reset = True
@@ -876,9 +885,12 @@ class _Scheduler(object):
     def job_result_task(self, conn, addr, coro=None):
         # generator
         assert coro is not None
+        conn = AsynCoroSocket(conn, coro=coro, blocking=False, certfile=self.node_certfile,
+                              keyfile=self.node_keyfile, server=True)
+
         try:
-            uid, msg = yield conn.read_msg(coro=coro)
-            yield conn.write_msg(uid, 'ACK', coro=coro)
+            uid, msg = yield conn.read_msg()
+            yield conn.write_msg(uid, 'ACK')
         except:
             logging.warning('Failed to read job results from %s', str(addr))
             raise StopIteration
@@ -946,16 +958,15 @@ class _Scheduler(object):
     def job_result_server(self, coro=None):
         # generator
         assert coro is not None
+        self.job_result_sock.set_coro(coro)
         logging.debug('Job results port is %s:%s',
                       self.ip_addr, self.job_result_sock.getsockname()[1])
         while True:
-            conn, addr = yield self.job_result_sock.accept(coro=coro)
+            conn, addr = yield self.job_result_sock.accept()
             if addr[0] not in self._nodes:
                 logging.warning('Ignoring results from %s', addr[0])
                 conn.close()
                 continue
-            conn = AsynCoroSocket(conn, blocking=False, certfile=self.node_certfile,
-                                  keyfile=self.node_keyfile, server=True)
             Coro(self.job_result_task, conn, addr)
 
     def fast_node_schedule(self):
