@@ -503,7 +503,7 @@ class AsynCoro(object):
             self._coros = {}
             self._running = set()
             self._suspended = set()
-            # if a coro is sleeps till timeout, then the timeout is
+            # if a coro sleeps till timeout, then the timeout is
             # inserted into (sorted) _timeouts list and its id is
             # inserted into _timeout_cids at the same index
             self._timeouts = []
@@ -530,10 +530,6 @@ class AsynCoro(object):
         self._sched_cv.release()
 
     def _suspend(self, cid, timeout=None):
-        # for now only executing coro can call suspend (itself).
-        # TODO: does it make sense to have (co-operating) coros
-        # suspend/resume others (will make things even more
-        # interesting!)?
         if timeout is not None:
             if not isinstance(timeout, float) or timeout <= 0:
                 logging.warning('invalid timeout %s', timeout)
@@ -583,6 +579,7 @@ class AsynCoro(object):
         self._suspended.discard(coro._id)
         coro._scheduler = None
         assert not coro._stack
+        coro._complete.set()
         del self._coros[coro._id]
         if not self._coros:
             self._complete.set()
@@ -684,9 +681,8 @@ class AsynCoro(object):
                             coro._state = AsynCoro._Scheduled
                     else:
                         if sys.exc_type != StopIteration:
-                            logging.warning('%s uncaught exception:', coro.name)
-                            traceback.print_exception(*coro._value)
-                        coro._complete.set()
+                            logging.warning('uncaught exception in %s:\n%s', coro.name,
+                                            ''.join(traceback.format_exception(*coro._value)))
                         self._delete(coro)
                     self._sched_cv.release()
                 else:

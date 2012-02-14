@@ -1892,10 +1892,8 @@ class SharedJobCluster(JobCluster):
         return Coro(_cancel, self, job).value()
 
     def close(self):
-        if hasattr(self, '_compute'):
-            self._complete.wait()
-            Coro(self._cluster.del_cluster, self).value()
-            del self._compute
+        self._complete.wait()
+        Coro(self._cluster.del_cluster, self).value()
 
 def fault_recover_jobs(fault_recover_file, port=51348,
                        secret='', certfile=None, keyfile=None, ip_addr=None):
