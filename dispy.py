@@ -1439,7 +1439,7 @@ class JobCluster(object):
                 assert 1.0 <= pulse_interval <= 1000
             except:
                 raise Exception('Invalid pulse_interval; must be between 1 and 1000')
-        logging.debug('ping_interval: %s, pulse_interval: %s', self.ping_interval, pulse_interval)
+
         if callback:
             assert inspect.isfunction(callback) or inspect.ismethod(callback), \
                    "callback must be a function or method"

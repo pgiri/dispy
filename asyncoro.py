@@ -105,6 +105,8 @@ class AsynCoroSocket(object):
             self.notifier.add_fd(self)
 
     def async_recv(self, bufsize, flags=0, coro=None):
+        """Asynchronous version of socket recv method.
+        """
         def _recv(self, bufsize, flags, coro):
             self.result = self.sock.recv(bufsize, flags)
             if self.result >= 0:
@@ -122,6 +124,8 @@ class AsynCoroSocket(object):
         self.notifier.modify(self, _AsyncNotifier._Readable)
 
     def async_read(self, bufsize, flags=0, coro=None):
+        """Read exactly bufsize bytes.
+        """
         self.result = bytearray()
         def _read(self, bufsize, flags, coro):
             plen = len(self.result)
@@ -144,12 +148,16 @@ class AsynCoroSocket(object):
         self.notifier.modify(self, _AsyncNotifier._Readable)
 
     def sync_read(self, bufsize, flags=0):
+        """Synchronous version of async_read.
+        """
         self.result = bytearray()
         while len(self.result) < bufsize:
             self.result[len(self.result):] = self.sock.recv(bufsize - len(self.result), flags)
         return str(self.result)
 
     def async_recvfrom(self, bufsize, flags=0, coro=None):
+        """Asynchronous version of socket recvfrom method.
+        """
         def _recvfrom(self, bufsize, flags, coro):
             self.result, addr = self.sock.recvfrom(bufsize, flags)
             self.notifier.modify(self, 0)
@@ -164,6 +172,8 @@ class AsynCoroSocket(object):
         self.notifier.modify(self, _AsyncNotifier._Readable)
 
     def async_send(self, data, flags=0, coro=None):
+        """Asynchronous version of socket send method.
+        """
         # NB: send only what can be sent in one operation, instead of
         # sending all the data, as done in write/write_msg
         def _send(self, data, flags, coro):
@@ -186,6 +196,9 @@ class AsynCoroSocket(object):
         self.notifier.modify(self, _AsyncNotifier._Writable)
 
     def async_sendto(self, data, *args, **kwargs):
+        """Asynchronous version of socket sendto method.
+        """
+
         # NB: send only what can be sent in one operation, instead of
         # sending all the data, as done in write/write_msg
         def _sendto(self, data, flags, addr, coro):
@@ -225,6 +238,8 @@ class AsynCoroSocket(object):
         self.notifier.modify(self, _AsyncNotifier._Writable)
 
     def async_write(self, data, coro=None):
+        """Send all the data (similar to sendall).
+        """
         self.result = buffer(data, 0)
         def _write(self, coro):
             try:
@@ -250,6 +265,9 @@ class AsynCoroSocket(object):
         self.notifier.modify(self, _AsyncNotifier._Writable)
 
     def sync_write(self, data):
+        """Synchronous version of async_write.
+        """
+        # TODO: is sendall better?
         self.result = buffer(data, 0)
         while len(self.result) > 0:
             n = self.sock.send(self.result)
@@ -258,11 +276,15 @@ class AsynCoroSocket(object):
         return 0
 
     def close(self):
+        """Close AsynCoroSocket.
+        """
         if self.notifier:
             self.notifier.del_fd(self)
         self.sock.close()
 
     def async_accept(self, coro=None):
+        """Asynchronous version of socket accept method.
+        """
         def _accept(self, coro):
             conn, addr = self.sock.accept()
             self.result = (conn, addr)
@@ -276,6 +298,8 @@ class AsynCoroSocket(object):
         self.notifier.modify(self, _AsyncNotifier._Readable)
 
     def async_connect(self, (host, port), coro=None):
+        """Asynchronous version of socket connect method.
+        """
         def _connect(self, host, port, coro):
             # TODO: check with getsockopt
             err = self.sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
@@ -298,6 +322,10 @@ class AsynCoroSocket(object):
                 logging.debug('connect error: %s', e.args[0])
 
     def async_read_msg(self, coro):
+        """Message is tagged with unique identifier (integer) and
+        length of the payload (data). This method reads entire message and
+        reads uid and the message as tuple.
+        """
         try:
             info_len = struct.calcsize('>LL')
             info = yield self.read(info_len, coro=coro)
@@ -316,6 +344,8 @@ class AsynCoroSocket(object):
             raise
 
     def sync_read_msg(self):
+        """Synchronous version of async_read_msg.
+        """
         try:
             info_len = struct.calcsize('>LL')
             info = self.sync_read(info_len)
@@ -334,12 +364,20 @@ class AsynCoroSocket(object):
             return (None, None)
 
     def async_write_msg(self, uid, data, auth=True, coro=None):
-        assert coro is not None
+        """Messages are tagged with a unique identifier (integer) and
+        length of the payload (data). If socket has authentication
+        data and argument 'auth' is True, then the message is prefixed
+        with authentication data. The receiving side has to know how
+        long authentication data is, as this part is not tagged with
+        length.
+        """
         if auth and self.auth_code:
             yield self.write(self.auth_code, coro=coro)
         yield self.write(struct.pack('>LL', uid, len(data)) + data, coro=coro)
 
     def sync_write_msg(self, uid, data, auth=True):
+        """Synchronous version of async_write_msg.
+        """
         if auth and self.auth_code:
             self.sync_write(self.auth_code)
         self.sync_write(struct.pack('>LL', uid, len(data)) + data)
@@ -403,6 +441,8 @@ class Coro(object):
             logging.warning('resume: coroutine %s removed?', self.name)
       
     def throw(self, *args):
+        """Throw exception in coroutine.
+        """
         if self._scheduler:
             self._scheduler._throw(self._id, *args)
         else:
@@ -475,9 +515,13 @@ class CoroCondition(object):
         return False
 
 class AsynCoro(object):
-    """'Coroutine' scheduler. The only properties available to users
-    are 'terminate' and 'join' methods.
-    """
+    """Coroutine scheduler.
+
+    Once created (singleton) AsynCoro, any coroutines built with Coro
+    class above will start executing. AsynCoro creates _AsyncNotifier
+    to wake up suspended coroutines waiting for I/O completion. The
+    only properties available to users are 'terminate' and 'join'
+    methods.  """
 
     __metaclass__ = MetaSingleton
     __instance = None
@@ -497,6 +541,9 @@ class AsynCoro(object):
 
     @classmethod
     def instance(cls):
+        """Returns (singleton) instance of AsynCoro. This method
+        should be called only after initializing AsynCoro.
+        """
         return cls.__instance
 
     def __init__(self):
@@ -521,6 +568,8 @@ class AsynCoro(object):
             self.notifier = _AsyncNotifier()
 
     def _add(self, coro):
+        """Internal use only. See Coro class.
+        """
         self._sched_cv.acquire()
         coro._id = AsynCoro._coro_id
         AsynCoro._coro_id += 1
@@ -532,6 +581,8 @@ class AsynCoro(object):
         self._sched_cv.release()
 
     def _suspend(self, cid, timeout=None):
+        """Internal use only. See sleep/suspend in Coro.
+        """
         if timeout is not None:
             if not isinstance(timeout, float) or timeout <= 0:
                 logging.warning('invalid timeout %s', timeout)
@@ -558,6 +609,8 @@ class AsynCoro(object):
         self._sched_cv.release()
 
     def _resume(self, cid, value):
+        """Internal use only. See resume in Coro.
+        """
         self._sched_cv.acquire()
         coro = self._coros.get(cid, None)
         if coro is None:
@@ -576,6 +629,8 @@ class AsynCoro(object):
         self._sched_cv.release()
 
     def _delete(self, coro):
+        """Internal use only.
+        """
         # called with _sched_cv locked
         self._running.discard(coro._id)
         self._suspended.discard(coro._id)
@@ -587,6 +642,8 @@ class AsynCoro(object):
             self._complete.set()
 
     def _throw(self, cid, *args):
+        """Internal use only. See throw in Coro.
+        """
         self._sched_cv.acquire()
         coro = self._coros.get(cid, None)
         if coro is None:
@@ -605,6 +662,8 @@ class AsynCoro(object):
         self._sched_cv.release()
 
     def _scheduler(self):
+        """Internal use only.
+        """
         _time = time.time
         while True:
             self._sched_cv.acquire()
@@ -716,6 +775,9 @@ class AsynCoro(object):
         self._complete.set()
 
     def terminate(self):
+        """Terminate (singleton) instance of AsynCoro. This 'kills'
+        all running coroutines.
+        """
         self.notifier.terminate()
         self._sched_cv.acquire()
         self._terminate = True
@@ -725,6 +787,9 @@ class AsynCoro(object):
         logging.debug('AsynCoro terminated')
 
     def join(self):
+        """Wait for currently scheduled coroutines to finish. AsynCoro
+        continues to execute, so new coroutines can be added if necessary.
+        """
         self._complete.wait()
 
 class _AsyncNotifier(object):
@@ -746,6 +811,9 @@ class _AsyncNotifier(object):
 
     @classmethod
     def instance(cls):
+        """Returns instance of AsynCoro. This method should be called
+        only after initializing AsynCoro.
+        """
         return cls.__instance
 
     def __init__(self, poll_interval=2, fd_timeout=10):
@@ -786,10 +854,15 @@ class _AsyncNotifier(object):
             # termination)
 
     def _notifier(self):
-        last_timeout = time.time()
+        """Calls 'task' method of registered fds when there is a
+        read/write event for it. Since coroutuines can do only one
+        thing, only one of read, write tasks can be done.
+        """
+        _time = time.time
+        last_timeout = _time()
         while not self._terminate:
             events = self._poller.poll(self._poll_interval)
-            now = time.time()
+            now = _time()
             self._lock.acquire()
             events = [(self._fds.get(fileno, None), event) for fileno, event in events]
             # logging.debug('events: %s', len(events))
@@ -821,7 +894,7 @@ class _AsyncNotifier(object):
                         # HUP and close?)
                         continue
             except:
-                pass
+                logging.debug(traceback.format_exc())
             if (now - last_timeout) >= self._fd_timeout:
                 last_timeout = now
                 self._lock.acquire()
@@ -923,6 +996,7 @@ class _SelectNotifier(object):
     """Internal use only.
     """
 
+    # TODO: For Windows more efficient asynchronous notifier is needed
     __metaclass__ = MetaSingleton
 
     def __init__(self):
