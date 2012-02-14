@@ -608,11 +608,17 @@ class _Cluster(object):
     def del_cluster(self, cluster, coro=None):
         # generator
         self._sched_cv.acquire(coro)
-        if self._clusters.pop(cluster._compute.id, None) != cluster._compute.id:
+        if self._clusters.pop(cluster._compute.id, None) != cluster:
             logging.warning('cluster %s already closed?', cluster._compute.name)
             self._sched_cv.release(coro)
             raise StopIteration
-        self._cluster._sched_cv.release()
+
+        if cluster._jobs or cluster._pending_jobs:
+            logging.warning('cluster %s has pending jobs', compute.name)
+            self._sched_cv.release(coro)
+            raise StopIteration
+
+        self._sched_cv.release(coro)
 
         if self.shared:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -620,15 +626,10 @@ class _Cluster(object):
                                   certfile=cluster.certfile, keyfile=cluster.keyfile)
             yield sock.connect((cluster.scheduler_ip_addr, cluster.scheduler_port), coro=coro)
             req = 'DEL_COMPUTE:' + cPickle.dumps({'ID':cluster._compute.id})
-            yield sock.write_msg(self._compute.id, req, coro=coro)
+            yield sock.write_msg(cluster._compute.id, req, coro=coro)
             sock.close()
         else:
-            self._cluster._sched_cv.release()
-            if cluster._jobs or cluster._pending_jobs:
-                logging.warning('cluster %s has pending jobs', compute.name)
-                self._sched_cv.release(coro)
-                raise StopIteration
-
+            self._sched_cv.acquire(coro)
             nodes = compute.nodes.values()
             for node in nodes:
                 logging.debug('node %s is being removed', node.ip_addr)
@@ -1255,14 +1256,12 @@ class _Cluster(object):
             self.select_job_node = None
             if select_job_node:
                 logging.debug('shutting down scheduler ...')
-                # NB: coroutines are not supposed to wait, but nothing
-                # else needs to run now
-                if not self.shared:
-                    for cid, cluster in self._clusters.iteritems():
-                        compute = cluster._compute
-                        for node in compute.nodes.itervalues():
-                            yield node.close(compute, coro=coro)
+                clusters = self._clusters.values()
+                self._sched_cv.release(coro)
+                for cluster in clusters:
+                    yield del_cluster(cluster, coro=coro)
 
+                self._sched_cv.acquire(coro)
                 for uid, _job in self._sched_jobs.iteritems():
                     # TODO: handle shared scheduler jobs appropriately
                     if _job.job.status == DispyJob.Running:

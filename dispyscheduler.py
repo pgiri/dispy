@@ -1079,26 +1079,27 @@ class _Scheduler(object):
             self.select_job_node = None
             if select_job_node:
                 logging.debug('shutting down scheduler ...')
-                # NB: coroutines are not supposed to wait, but nothing
-                # else needs to run now
-
+                coros = []
                 for uid, _job in self._sched_jobs.iteritems():
                     reply = _JobReply(_job, self.ip_addr, status=DispyJob.Terminated)
                     cluster = self._clusters[_job.compute_id]
                     compute = cluster._compute
-                    yield self.send_job_result(_job.uid, compute.id,
-                                               cluster.client_scheduler_ip_addr,
-                                               cluster.client_job_result_port, reply, coro=coro)
-                for cid, cluster in self._clusters.iteritems():
-                    compute = cluster._compute
-                    for node in compute.nodes.itervalues():
-                        yield node.close(compute, coro=coro)
-
+                    coros.append(Coro(self.send_job_result, _job.uid, compute.id,
+                                      cluster.client_scheduler_ip_addr,
+                                      cluster.client_job_result_port, reply))
+                clusters = self._clusters.values()
                 self._clusters = {}
                 self._sched_jobs = {}
                 self._terminate_scheduler = True
                 self._sched_cv.notify()
                 self._sched_cv.release(coro)
+
+                for cluster in clusters:
+                    compute = cluster._compute
+                    for node in compute.nodes.itervalues():
+                        yield node.close(compute, coro=coro)
+                for coro in coros:
+                    coro.value()
         Coro(_shutdown, self).value()
         self.asyncoro.terminate()
 
