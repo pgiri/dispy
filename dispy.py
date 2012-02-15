@@ -639,29 +639,17 @@ class _Cluster(object):
             self._sched_cv.release(coro)
             for node in nodes:
                 yield node.close(cluster._compute, coro=coro)
-            if cluster.fault_recover_file:
-                self.fault_recover_lock.acquire()
-                shelf = shelve.open(cluster.fault_recover_file, flag='r')
-                n = len(shelf)
-                shelf.close()
-                if n == 0:
-                    try:
-                        os.remove(cluster.fault_recover_file)
-                    except:
-                        pass
-                self.fault_recover_lock.release()
 
-        if cluster.fault_recover_file:
-            self.fault_recover_lock.acquire()
-            shelf = shelve.open(cluster.fault_recover_file, flag='r')
-            n = len(shelf)
-            shelf.close()
-            if n == 0:
-                try:
-                    os.remove(cluster.fault_recover_file)
-                except:
-                    pass
-            self.fault_recover_lock.release()
+        self.fault_recover_lock.acquire(coro)
+        shelf = shelve.open(cluster.fault_recover_file, flag='r')
+        n = len(shelf)
+        shelf.close()
+        if n == 0:
+            try:
+                os.remove(cluster.fault_recover_file)
+            except:
+                pass
+        self.fault_recover_lock.release(coro)
 
     def worker(self):
         # used for user callbacks only
@@ -678,7 +666,7 @@ class _Cluster(object):
                 logging.debug('Running %s failed: %s', func.__name__, traceback.format_exc())
             self.worker_Q.task_done()
 
-    def finish_job(self, _job, status, cluster):
+    def finish_job(self, _job, status, cluster, coro):
         # non-generator called with _sched_cv locked
         job = _job.job
         if cluster.callback:
@@ -687,7 +675,7 @@ class _Cluster(object):
             _job.finish(status)
             if status != DispyJob.ProvisionalResult:
                 if cluster.fault_recover_file:
-                    self.fault_recover_lock.acquire()
+                    self.fault_recover_lock.acquire(coro)
                     shelf = shelve.open(cluster.fault_recover_file, flag='c')
                     try:
                         del shelf[str(_job.uid)]
@@ -695,7 +683,7 @@ class _Cluster(object):
                         # logging.warning('Apparently job %s is recovered?', _job.uid)
                         pass
                     shelf.close()
-                    self.fault_recover_lock.release()
+                    self.fault_recover_lock.release(coro)
                 assert cluster._pending_jobs > 0
                 cluster._pending_jobs -= 1
                 if cluster._pending_jobs == 0:
@@ -716,7 +704,7 @@ class _Cluster(object):
         finally:
             def _finish_job(self, _job, cluster, coro=None):
                 if cluster.fault_recover_file:
-                    self.fault_recover_lock.acquire()
+                    self.fault_recover_lock.acquire(coro)
                     shelf = shelve.open(cluster.fault_recover_file, flag='c')
                     try:
                         del shelf[str(_job.uid)]
@@ -724,7 +712,7 @@ class _Cluster(object):
                         # logging.warning('Apparently job %s is recovered?', _job.uid)
                         pass
                     shelf.close()
-                    self.fault_recover_lock.release()
+                    self.fault_recover_lock.release(coro)
                 self._sched_cv.acquire(coro)
                 assert cluster._pending_jobs > 0
                 cluster._pending_jobs -= 1
@@ -757,7 +745,7 @@ class _Cluster(object):
         # generator
         assert coro is not None
         if cluster.fault_recover_file:
-            self.store_job_info(_job, cluster)
+            self.store_job_info(_job, cluster, coro)
             # not really necessary to remove it in case of exception
         try:
             yield _job.run(coro=coro)
@@ -873,7 +861,7 @@ class _Cluster(object):
                     dead_jobs = [_job for _job in self._sched_jobs.itervalues() \
                                  if _job.node is not None and \
                                  _job.node.ip_addr == node.ip_addr]
-                    self.reschedule_jobs(dead_jobs)
+                    self.reschedule_jobs(dead_jobs, coro)
                     for cid, cluster in self._clusters.iteritems():
                         if cluster._compute.nodes.pop(node.ip_addr, None) is not None:
                             node.clusters.remove(cid)
@@ -946,7 +934,7 @@ class _Cluster(object):
                 job.ip_addr = node.ip_addr
                 node.last_pulse = time.time()
             if reply.status == DispyJob.ProvisionalResult:
-                self.finish_job(_job, DispyJob.ProvisionalResult, cluster)
+                self.finish_job(_job, DispyJob.ProvisionalResult, cluster, coro)
                 self._sched_cv.release(coro)
                 raise StopIteration
             else:
@@ -985,12 +973,12 @@ class _Cluster(object):
                 node.jobs += 1
             if job.end_time is not None:
                 node.cpu_time += job.end_time - job.start_time
-        self.finish_job(_job, reply.status, cluster)
+        self.finish_job(_job, reply.status, cluster, coro)
         self._sched_cv.notify()
         self._sched_cv.release(coro)
         raise StopIteration # job_result_task
 
-    def reschedule_jobs(self, dead_jobs):
+    def reschedule_jobs(self, dead_jobs, coro):
         # non-generator, called with _sched_cv locked
         for _job in dead_jobs:
             # TODO: should we send terminate request to the node?
@@ -1009,7 +997,7 @@ class _Cluster(object):
                     status = DispyJob.Terminated
                 else:
                     status = DispyJob.Cancelled
-                self.finish_job(_job, status, cluster)
+                self.finish_job(_job, status, cluster, coro)
 
     def timer_task(self, coro=None):
         reset = True
@@ -1059,7 +1047,7 @@ class _Cluster(object):
                                  if _job.node is not None and _job.node.ip_addr in dead_nodes]
                     if dead_nodes or dead_jobs:
                         self._sched_cv.notify()
-                    self.reschedule_jobs(dead_jobs)
+                    self.reschedule_jobs(dead_jobs, coro)
                     self._sched_cv.release(coro)
 
             if self.ping_interval and (now - last_ping_time) >= self.ping_interval:
@@ -1159,7 +1147,7 @@ class _Cluster(object):
                     status = DispyJob.Terminated
                 else:
                     status = DispyJob.Cancelled
-                self.finish_job(_job, status, cluster)
+                self.finish_job(_job, status, cluster, coro)
             cluster._jobs = []
 
         self._nodes = {}
@@ -1170,18 +1158,18 @@ class _Cluster(object):
             coro.value()
         logging.debug('scheduler quit')
 
-    def store_job_info(self, _job, cluster):
+    def store_job_info(self, _job, cluster, coro):
         # non-generator
         if not cluster.fault_recover_file:
             return
-        self.fault_recover_lock.acquire()
+        self.fault_recover_lock.acquire(coro)
         shelf = shelve.open(cluster.fault_recover_file, flag='c')
         state = {'id':_job.job.id, 'hash':_job.hash, 'compute_id':_job.compute_id,
                  'args':_job.args, 'kwargs':_job.kwargs,
                  'ip_addr':_job.node.ip_addr, 'port':_job.node.port}
         shelf[str(_job.uid)] = state
         shelf.close()
-        self.fault_recover_lock.release()
+        self.fault_recover_lock.release(coro)
         return
 
     def submit_job(self, _job, coro=None):
@@ -1225,7 +1213,7 @@ class _Cluster(object):
             assert _job.uid not in self._sched_jobs
             cluster._jobs.remove(_job)
             self.unsched_jobs -= 1
-            self.finish_job(_job, DispyJob.Cancelled, cluster)
+            self.finish_job(_job, DispyJob.Cancelled, cluster, coro)
             self._sched_cv.release(coro)
             logging.debug('Cancelled (removed) job %s', _job.uid)
             raise StopIteration(0)
@@ -1271,7 +1259,7 @@ class _Cluster(object):
                         status = DispyJob.Terminated
                     else:
                         status = DispyJob.Cancelled
-                    self.finish_job(_job, status, self._clusters[_job.compute_id])
+                    self.finish_job(_job, status, self._clusters[_job.compute_id], coro)
 
                 self._clusters = {}
                 self._sched_jobs = {}
@@ -1483,14 +1471,13 @@ class JobCluster(object):
                                  shared=shared, fault_recover_file=self.fault_recover_file)
 
         if self.fault_recover_file:
-            self._cluster.fault_recover_lock.acquire()
             try:
                 shelf = shelve.open(self.fault_recover_file, flag='c')
                 shelf.close()
             except:
-                raise Exception('Could not create fault recover file "%s"' % self.fault_recover_file)
-            finally:
-                self._cluster.fault_recover_lock.release()
+                raise Exception('Could not create fault recover file "%s"' % \
+                                self.fault_recover_file)
+
             # TODO?: it is safer to use file locking instead of thread
             # locking, but it is more efficient to use thread locking
             # (in this case). However, 'fault_recover_jobs' function
@@ -1837,7 +1824,7 @@ class SharedJobCluster(JobCluster):
             sock.close()
             if self.fault_recover_file:
                 # TODO: reply may come back before we store it!
-                self.store_job_info(_job)
+                self.store_job_info(_job, coro)
             yield _job.job
 
         try:
@@ -1850,17 +1837,17 @@ class SharedJobCluster(JobCluster):
             del _job.job
             return None
 
-    def store_job_info(self, _job):
+    def store_job_info(self, _job, coro):
         if not self.fault_recover_file:
             return
-        self._cluster.fault_recover_lock.acquire()
+        self._cluster.fault_recover_lock.acquire(coro)
         shelf = shelve.open(self.fault_recover_file, flag='c')
         state = {'id':_job.job.id, 'hash':_job.hash, 'compute_id':_job.compute_id,
                  'args':_job.args, 'kwargs':_job.kwargs,
                  'ip_addr':self.scheduler_ip_addr, 'port':self.scheduler_port}
         shelf[str(_job.uid)] = state
         shelf.close()
-        self._cluster.fault_recover_lock.release()
+        self._cluster.fault_recover_lock.release(coro)
         return
 
     def cancel(self, job):

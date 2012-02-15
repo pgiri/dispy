@@ -81,7 +81,7 @@ class AsynCoroSocket(object):
 
         if self.blocking:
             self.timestamp = None
-            if isinstance(timeout, float):
+            if isinstance(timeout, (int, float)):
                 self.sock.settimeout(timeout)
             for method in ['recv', 'send', 'recvfrom', 'sendto', 'accept', 'connect',
                            'settimeout', 'gettimeout']:
@@ -826,7 +826,7 @@ class _AsyncNotifier(object):
         """
         return cls.__instance
 
-    def __init__(self, poll_interval=1, fd_timeout=5):
+    def __init__(self, poll_interval=2, fd_timeout=10):
         if self.__class__.__instance is None:
             assert fd_timeout >= 5 * poll_interval
             self.__class__.__instance = self
@@ -920,9 +920,9 @@ class _AsyncNotifier(object):
                 try:
                     for fd in timeouts:
                         if fd.coro:
-                            e = 'timeout %s' % (now - fd.timestamp)
+                            e = 'timed out %s' % (now - fd.timestamp)
                             fd.timestamp = None
-                            fd.coro.throw(Exception, Exception(e))
+                            fd.coro.throw(socket.timeout, socket.timeout(e))
                 except:
                     logging.debug(traceback.format_exc())
                 self._lock.release()
