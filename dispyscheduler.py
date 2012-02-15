@@ -538,7 +538,8 @@ class _Scheduler(object):
                     compute = cPickle.loads(msg)
                 except:
                     logging.debug('Ignoring compute request from %s', addr[0])
-                    raise StopIteration(None)
+                    yield None
+                    raise StopIteration
                 setattr(compute, 'nodes', {})
                 cluster = _Cluster(compute)
                 compute = cluster._compute
@@ -832,7 +833,7 @@ class _Scheduler(object):
                 last_zombie_time = now
                 self._sched_cv.acquire(coro)
                 for cluster in self._clusters.itervalues():
-                    if (now - cluster.last_pulse) > zombie_interval:
+                    if (now - cluster.last_pulse) > self.zombie_interval:
                         cluster.zombie = True
                 zombies = [cluster for cluster in self._clusters.itervalues() \
                            if cluster.zombie and cluster._pending_jobs == 0]

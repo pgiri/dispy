@@ -373,8 +373,8 @@ class AsynCoroSocket(object):
 
 class Coro(object):
     """'Coroutine' factory to build coroutines to be scheduled with
-    AsynCoro. Automatically starts executing 'func'.  The
-    function definition should have 'coro' keyword argument set to
+    AsynCoro. Automatically starts executing 'func'.  The function
+    definition should have 'coro' argument set to (default value)
     None. When the function is called, that argument will be this
     object.
     """
@@ -407,8 +407,8 @@ class Coro(object):
         """Suspend/sleep coro (until woken up, usually by
         AsyncNotifier in the case of AsynCoroSockets).
 
-        If timeout is a (floating) number, this coro is suspended till
-        that many seconds (or fractions of second).
+        If timeout is a (floating point) number, this coro is
+        suspended till that many seconds (or fractions of second).
         """
         if self._scheduler:
             self._scheduler._suspend(self._id, timeout)
@@ -440,7 +440,7 @@ class Coro(object):
         """'Return' value of coro.
 
         Once coroutine stops (finishes) executing, the last value
-        yielded by is returned.
+        yielded by it is returned.
         """
         self._complete.wait()
         return self._value
@@ -474,7 +474,6 @@ class CoroCondition(object):
     def __init__(self):
         self._waitlist = []
         self._owner = None
-        # support multiple notifications?
         self._notify = False
 
     def acquire(self, coro):
@@ -487,12 +486,22 @@ class CoroCondition(object):
 
     def notify(self):
         self._notify = True
-        if len(self._waitlist):
+        if self._waitlist:
             wake = self._waitlist.pop(0)
             wake.resume(None)
 
     def wait(self, coro):
-        # see dispy.py in _scheduler for how to use it
+        """If condition variable is called cv, then a typical use in consumer is:
+
+        while True:
+            cv.acquire(coro)
+            while not queue and cv.wait(coro):
+                yield None
+            item = queue.pop(0)
+            process(item)
+            yield cv.release(coro)
+        
+        """
         if not self._notify:
             self._owner = None
             self._waitlist.append(coro)
@@ -629,7 +638,6 @@ class AsynCoro(object):
         assert not coro._callers
         coro._complete.set()
         del self._coros[coro._id]
-        # coro._generator.close()
         if not self._coros:
             self._complete.set()
 
@@ -642,7 +650,6 @@ class AsynCoro(object):
             logging.warning('invalid coroutine %s to throw exception', cid)
         elif coro._state in [AsynCoro._Scheduled, AsynCoro._Stopped]:
             # prevent throwing more than once?
-            #logging.debug('throwing %s, %s to %s/%s', args[0], args[1], coro.name, coro._id)
             coro._exception = args
             self._suspended.discard(coro._id)
             self._running.add(coro._id)
@@ -674,10 +681,9 @@ class AsynCoro(object):
             if self._terminate:
                 # probably not needed?
                 def close_coro(coro):
-                    if coro._id not in self._coros:
+                    if self._coros.pop(coro._id, None) is None:
                         return
                     coro._generator.close()
-                    self._coros.pop(coro._id, None)
                     while coro._callers:
                         caller = coro._callers.pop(-1)
                         if isinstance(caller, types.GeneratorType):
@@ -923,6 +929,7 @@ class _AsyncNotifier(object):
                             e = 'timed out %s' % (now - fd.timestamp)
                             fd.timestamp = None
                             fd.coro.throw(socket.timeout, socket.timeout(e))
+                            # TODO: unregister and close?
                 except:
                     logging.debug(traceback.format_exc())
                 self._lock.release()

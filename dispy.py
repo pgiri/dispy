@@ -254,21 +254,25 @@ class _Node(object):
                     xfer_files = cPickle.loads(resp)
                 except:
                     logging.error("Couldn't transfer file '%s'", xf.name)
-                    raise StopIteration(-1)
+                    yield -1
+                    raise StopIteration
                 for xf in xfer_files:
                     logging.debug('Sending "%s"', xf.name)
                     resp = yield self.xfer_file(xf, coro=coro)
                     if resp != 'ACK':
                         logging.error("Couldn't transfer file '%s'", xf.name)
-                        raise StopIteration(-1)
+                        yield -1
+                        raise StopIteration
             elif not resp:
                 pass
             else:
                 logging.error('Invalid response to computation: %s', resp)
-                raise StopIteration(-1)
+                yield -1
+                raise StopIteration
         else:
             logging.warning('Got "%s": Ignoring node %s', resp, self.ip_addr)
-            raise StopIteration(-1)
+            yield -1
+            raise StopIteration
         yield 0
 
     def send(self, uid, msg, reply=True, coro=None):
@@ -640,16 +644,17 @@ class _Cluster(object):
             for node in nodes:
                 yield node.close(cluster._compute, coro=coro)
 
-        self.fault_recover_lock.acquire(coro)
-        shelf = shelve.open(cluster.fault_recover_file, flag='r')
-        n = len(shelf)
-        shelf.close()
-        if n == 0:
-            try:
-                os.remove(cluster.fault_recover_file)
-            except:
-                pass
-        self.fault_recover_lock.release(coro)
+        if cluster.fault_recover_file:
+            self.fault_recover_lock.acquire(coro)
+            shelf = shelve.open(cluster.fault_recover_file, flag='r')
+            n = len(shelf)
+            shelf.close()
+            if n == 0:
+                try:
+                    os.remove(cluster.fault_recover_file)
+                except:
+                    pass
+            self.fault_recover_lock.release(coro)
 
     def worker(self):
         # used for user callbacks only
@@ -1201,13 +1206,15 @@ class _Cluster(object):
         if _job is None:
             self._sched_cv.release(coro)
             logging.warning('Job %s is invalid for cancellation!', job.id)
-            raise StopIteration(-1)
+            yield -1
+            raise StopIteration
         cluster = self._clusters.get(_job.compute_id, None)
         if not cluster:
             logging.warning('Invalid job %s for cluster "%s"!',
                             _job.uid, cluster._compute.name)
             self._sched_cv.release(coro)
-            raise StopIteration(-1)
+            yield -1
+            raise StopIteration
         assert cluster._pending_jobs >= 1
         if _job.job.status == DispyJob.Created:
             assert _job.uid not in self._sched_jobs
@@ -1216,12 +1223,14 @@ class _Cluster(object):
             self.finish_job(_job, DispyJob.Cancelled, cluster, coro)
             self._sched_cv.release(coro)
             logging.debug('Cancelled (removed) job %s', _job.uid)
-            raise StopIteration(0)
+            yield 0
+            raise StopIteration
         elif not (_job.job.status == DispyJob.Running or \
                   _job.job.status == DispyJob.ProvisionalResult):
             self._sched_cv.release(coro)
             logging.warning('Job %s is not valid for cancel (%s)', _job.uid, _job.job.status)
-            raise StopIteration(-1)
+            yield -1
+            raise StopIteration
         _job.job.status = DispyJob.Cancelled
         self._sched_cv.release(coro)
         if _job.node is not None:
@@ -1231,8 +1240,9 @@ class _Cluster(object):
                 logging.debug('Job %s is being terminated', _job.uid)
             except:
                 logging.warning('Terminating job %s failed: %s', _job.uid, traceback.format_exc())
-                raise StopIteration(-1)
-        raise StopIteration(0)
+                yield -1
+                raise StopIteration
+        yield 0
 
     def shutdown(self):
         # non-generator
@@ -1249,7 +1259,7 @@ class _Cluster(object):
                 clusters = self._clusters.values()
                 self._sched_cv.release(coro)
                 for cluster in clusters:
-                    yield del_cluster(cluster, coro=coro)
+                    yield self.del_cluster(cluster, coro=coro)
 
                 self._sched_cv.acquire(coro)
                 for uid, _job in self._sched_jobs.iteritems():
@@ -1857,11 +1867,13 @@ class SharedJobCluster(JobCluster):
             if _job is None or self._cluster._clusters.get(_job.compute_id, None) != self:
                 logging.warning('Invalid job %s for cluster "%s"!', job.id, self._compute.name)
                 self._cluster._sched_cv.release(coro)
-                raise StopIteration(-1)
+                yield -1
+                raise StopIteration
             if job.status not in [DispyJob.Created, DispyJob.ProvisionalResult]:
                 logging.warning('Job %s is not valid for cancel (%s)', job.id, job.status)
                 self._cluster._sched_cv.release(coro)
-                raise StopIteration(-1)
+                yield -1
+                raise StopIteration
 
             job.status = DispyJob.Cancelled
             assert self._pending_jobs >= 1
@@ -1876,10 +1888,13 @@ class SharedJobCluster(JobCluster):
                 logging.debug('Job %s is cancelled', _job.uid)
             except:
                 logging.warning('Connection to scheduler failed: %s', traceback.format_exc())
-                raise StopIteration(-1)
+                yield -1
+                raise StopIteration
             finally:
                 sock.close()
-            raise StopIteration(0)
+
+            yield 0
+
         return Coro(_cancel, self, job).value()
 
     def close(self):
