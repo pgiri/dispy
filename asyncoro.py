@@ -43,6 +43,57 @@ if platform.system() == 'Windows':
 else:
     from errno import EINPROGRESS
 
+"""
+AsynCoro and associated classes in this file provide framework for
+developing programs with coroutines and asynchronous I/O for
+sockets. The programs will have same logic as normal python progorams
+(with synchronous sockets and threads), except for converting sockets
+to asynchronous model with AsynCoroSocket class, 'yield' when waiting
+(i.e., socket operations, sleep and waiting on CoroCondition) and
+using CoroLock, CoroCondition in place of thread locking. Tehcnically,
+CoroLock is not needed (as there is at most one thread of execution at
+anytime), but if one wants to maintain same program for both
+synchronous and asynchronous models, it should be simple to
+interchange threading.Lock and CoroLock and a few syntactic changes.
+
+For example, a simple tcp server looks like:
+
+def process(sock, coro=None):
+    asock = AsynCoroSocket(sock, coro=coro)
+    # get (exactly) 4MB of data, for example, and let other coroutines
+    # (process methods, in this case) execute in the meantime
+    data = yield asock.read(4096*1024)
+    ...
+    yield asock.write(reply)
+    asock.close()
+
+if __name__ == '__main__':
+    host, port = '', 3456
+    # start asyncoro scheduler before creating coroutines
+    asyncoro = AsynCoro()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind((host, port))
+    sock.listen(128)
+    while True:
+        conn, addr = sock.accept()
+        Coro(process, conn)
+
+Here we mixed synchronous sockets in server loop with asynchronous
+sockets in the 'process' method for illustration. The server does not
+do any processing, so the loop can quickly accept connections. Each
+request is processed in a separate coroutine. A coroutine method must
+have 'coro=None' default argument. The coroutine builder Coro will set
+coro argument with the Coro instance, which needs to be used with
+asynchronous sockets, CoroCondition, CoroLock and methods in Coro
+class.
+
+With 'yield', 'suspend' and 'resume' methods, coroutines can cooperate
+scheduling their execution, send/receive values to/from each other,
+etc.
+
+See dispy files in this package for details on how to use asyncoro.
+"""
+
 class MetaSingleton(type):
     __instance = None
     def __call__(cls, *args, **kwargs):
@@ -417,7 +468,7 @@ class Coro(object):
 
     sleep = suspend
 
-    def resume(self, value):
+    def resume(self, value=None):
         """Resume/wake up this coro and send 'value' to it.
 
         The resuming coro gets 'value' for the 'yield' that caused it
@@ -437,10 +488,20 @@ class Coro(object):
             logging.warning('throw: coroutine %s removed?', self.name)
 
     def value(self):
-        """'Return' value of coro.
+        """Get 'return' value of coro.
+
+        NB: This method should not be called from a coroutine!
 
         Once coroutine stops (finishes) executing, the last value
         yielded by it is returned.
+
+        If waiting for one coro from another is needed, there are
+        multiple approaches: If one coro starts another, then caller
+        can 'yield' to the generator instead of creating coro. If that
+        is not the case, they should use CoroCondition variable and
+        coro being waited on should use .notify on that variable and
+        the coro waiting on should use .wait on that variable (see
+        CoroCondition).
         """
         self._complete.wait()
         return self._value
@@ -495,7 +556,7 @@ class CoroCondition(object):
 
         while True:
             cv.acquire(coro)
-            while not queue and cv.wait(coro):
+            while not queue or cv.wait(coro):
                 yield None
             item = queue.pop(0)
             process(item)
@@ -696,7 +757,7 @@ class AsynCoro(object):
                     coro = self._coros.get(cid, None)
                     if coro is None:
                         continue
-                    logging.debug('terminating %s/%s', coro.name, coro._id)
+                    logging.warning('terminating coroutine %s', coro.name)
                     close_coro(coro)
                     coro._scheduler = None
                 self._running = self._suspended = set()
@@ -888,7 +949,6 @@ class _AsyncNotifier(object):
             now = _time()
             self._lock.acquire()
             events = [(self._fds.get(fileno, None), event) for fileno, event in events]
-            # logging.debug('events: %s', len(events))
             self._lock.release()
             try:
                 for fd, evnt in events:
