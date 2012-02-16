@@ -51,11 +51,12 @@ sockets. The programs will have same logic as normal python progorams
 to asynchronous model with AsynCoroSocket class, 'yield' when waiting
 (i.e., socket operations, sleep and waiting on CoroCondition) and
 using CoroLock, CoroCondition in place of thread locking. Tehcnically,
-CoroLock is not needed (as there is at most one thread of execution at
-anytime), but if one wants to maintain same program for both
-synchronous and asynchronous models, it should be simple to
-interchange threading.Lock and CoroLock, threading.Condition and
-CoroCondition, and a few syntactic changes.
+CoroLock is not needed (as there is no forced preemption with
+coroutines and at most one coroutine is executing at anytime), but if
+one wants to maintain same program for both synchronous and
+asynchronous models, it should be simple to interchange threading.Lock
+and CoroLock, threading.Condition and CoroCondition, and a few
+syntactic changes.
 
 For example, a simple tcp server looks like:
 
