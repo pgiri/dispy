@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 # asyncoro: Sockets with asynchronous I/O and coroutines;
-# see accompanying 'dispy' for more details.
+# see accompanying 'asyncoro.html' for more details.
 
 # Copyright (C) 2012 Giridhar Pemmasani (pgiri@yahoo.com)
 
@@ -44,30 +44,30 @@ else:
     from errno import EINPROGRESS
 
 """
-AsynCoro and associated classes in this file provide framework for
-developing programs with coroutines and asynchronous I/O for
-sockets. The programs will have same logic as normal python progorams
-(with synchronous sockets and threads), except for converting sockets
-to asynchronous model with AsynCoroSocket class, 'yield' when waiting
-(i.e., socket operations, sleep and waiting on CoroCondition) and
-using CoroLock, CoroCondition in place of thread locking. Tehcnically,
-CoroLock is not needed (as there is no forced preemption with
-coroutines and at most one coroutine is executing at anytime), but if
-one wants to maintain same program for both synchronous and
-asynchronous models, it should be simple to interchange threading.Lock
-and CoroLock, threading.Condition and CoroCondition, and a few
-syntactic changes.
+AsynCoro and associated classes in this file provide framework
+for developing programs with coroutines and asynchronous I/O for
+sockets. The programs developed with asyncoro will have same logic as
+python progorams with synchronous sockets and threads, except for
+converting sockets to asynchronous model with AsynCoroSocket class,
+'yield' when waiting for completion of tasks (i.e., socket operations,
+sleep and waiting on CoroCondition) and using CoroLock, CoroCondition
+in place of thread locking. Tehcnically, CoroLock is not needed (as
+there is no forced preemption with coroutines and at most one
+coroutine is executing at anytime), but if one wants to maintain same
+program for both synchronous and asynchronous models, it should be
+simple to interchange threading.Lock and CoroLock, threading.Condition
+and CoroCondition, and a few syntactic changes.
 
 For example, a simple tcp server looks like:
 
 def process(sock, coro=None):
-    asock = AsynCoroSocket(sock)
+    sock = AsynCoroSocket(sock, blocking=False)
     # get (exactly) 4MB of data, for example, and let other coroutines
     # (process methods, in this case) execute in the meantime
-    data = yield asock.read(4096*1024)
+    data = yield sock.read(4096*1024)
     ...
-    yield asock.write(reply)
-    asock.close()
+    yield sock.write(reply)
+    sock.close()
 
 if __name__ == '__main__':
     host, port = '', 3456
@@ -85,7 +85,7 @@ sockets in the 'process' method for illustration. The server does not
 do any processing, so the loop can quickly accept connections. Each
 request is processed in a separate coroutine. A coroutine method must
 have 'coro=None' default argument. The coroutine builder Coro will set
-coro argument with the Coro instance, which needs to be used with
+coro argument with the Coro instance, which is used for calling
 methods in Coro class.
 
 With 'yield', 'suspend' and 'resume' methods, coroutines can cooperate
@@ -487,17 +487,19 @@ class Coro(object):
 
     sleep = suspend
 
-    def resume(self, value=None):
-        """Resume/wake up this coro and send 'value' to it.
+    def resume(self, update=None):
+        """Resume/wake up this coro and send 'update' to it.
 
-        The resuming coro gets 'value' for the 'yield' that caused it
+        The resuming coro gets 'update' for the 'yield' that caused it
         to suspend.
         """
         if self._scheduler:
-            self._scheduler._resume(self._id, value)
+            self._scheduler._resume(self._id, update)
         else:
             logging.warning('resume: coroutine %s removed?', self.name)
       
+    wakeup = resume
+
     def throw(self, *args):
         """Throw exception in coroutine.
         """
@@ -567,7 +569,7 @@ class CoroCondition(object):
 
     def release(self):
         cid = self._asyncoro.cur_coro()._id
-        assert self._owner == cid, 'invalid lock release %s != %s' % (self._owner, cid)
+        assert self._owner == cid, 'invalid cv release %s != %s' % (self._owner, cid)
         self._owner = None
 
     def notify(self):
@@ -580,23 +582,24 @@ class CoroCondition(object):
         """If condition variable is called cv, then a typical use in consumer is:
 
         while True:
-            cv.acquire(coro)
-            while not queue or cv.wait(coro):
+            cv.acquire()
+            while not queue or cv.wait():
                 yield None
             item = queue.pop(0)
             process(item)
-            yield cv.release(coro)
+            yield cv.release()
         
         """
         coro = self._asyncoro.cur_coro()
-        if not self._notify:
+        if self._notify:
+            self._notify = False
+            self._owner = coro._id
+            return False
+        else:
             self._owner = None
             self._waitlist.append(coro)
             coro.suspend()
             return True
-        self._notify = False
-        self._owner = coro._id
-        return False
 
 class AsynCoro(object):
     """Coroutine scheduler.
@@ -701,7 +704,7 @@ class AsynCoro(object):
                             coro.name, coro._id, coro._state)
         self._sched_cv.release()
 
-    def _resume(self, cid, value):
+    def _resume(self, cid, update):
         """Internal use only. See resume in Coro.
         """
         self._sched_cv.acquire()
@@ -711,7 +714,7 @@ class AsynCoro(object):
             logging.warning('invalid coroutine %s to resume', cid)
             return
         if coro._state in [AsynCoro._Stopped, AsynCoro._Suspended]:
-            coro._value = value
+            coro._value = update
             self._suspended.discard(cid)
             self._running.add(cid)
             coro._state = AsynCoro._Scheduled

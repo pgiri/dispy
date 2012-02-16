@@ -16,60 +16,53 @@
     <small><a href="http://sourceforge.net/projects/dispy/">dispy</a>:  Project Web Hosting - Open Source Software</small> 
     <h1>dispy</h1> 
     <div id="projectinfo"> 
-      <div class="left"> 
-        <p><strong> 
-          <a href="http://dispy.sourceforge.net/index.html"> 
-            Project Page</a> 
-        </strong></p> 
-        <p><strong> 
-          <a href="http://sourceforge.net/projects/dispy/files"> 
-            Download dispy</a> 
-        </strong></p> 
-        <p><strong> 
-          <a href="http://sourceforge.net/projects/dispy/"> 
-            Project detail</a> 
-        </strong></p> 
-        <p><strong> 
-          <a href="http://sourceforge.net/projects/dispy/support"> 
-            Get support</a> 
-	      </strong></p> 
+      <div id="menu">
+	<ul>
+        <li><a href="http://dispy.sourceforge.net/index.html">Project Page</a></li> 
+        <li><a href="http://sourceforge.net/projects/dispy/files">Download dispy</a></li> 
+        <li><a href="http://sourceforge.net/projects/dispy/">Project detail</a></li> 
+        <li><a href="http://sourceforge.net/projects/dispy/support">Get support</a></li>
+	</ul>
       </div> 
-      <div class="middle"> 
+      <div id="content"> 
         <h2> 
           asyncoro
         </h2> 
 <p>
-  asyncoro is framework for developing programs with asynchronous I/O
-  sockets and coroutines.
+  asyncoro is a framework for developing programs with coroutines and
+  asynchronous sockets. discopy, available
+  from <a href="http://sourceforge.net/projects/dispy/files">download
+  section</a>, is an implementation of dispy using asyncoro
+  framework. asyncoro can be used independently of dispy/discopy.
   </p>
 
 <p>
-AsynCoro and associated classes in this file provide framework for
-developing programs with coroutines and asynchronous I/O for
-sockets. The programs will have same logic as normal python progorams
-(with synchronous sockets and threads), except for converting sockets
-to asynchronous model with AsynCoroSocket class, 'yield' when waiting
-(i.e., socket operations, sleep and waiting on CoroCondition) and
-using CoroLock, CoroCondition in place of thread locking. Tehcnically,
-CoroLock is not needed (as there is no forced preemption with
-coroutines and at most one coroutine is executing at anytime), but if
-one wants to maintain same program for both synchronous and
-asynchronous models, it should be simple to interchange threading.Lock
-and CoroLock, threading.Condition and CoroCondition, and a few
-syntactic changes.
+AsynCoro and associated classes in asyncoro.py file provide framework
+for developing programs with coroutines and asynchronous I/O for
+sockets. The programs developed with asyncoro will have same logic as
+python progorams with synchronous sockets and threads, except for
+converting sockets to asynchronous model with AsynCoroSocket class,
+'yield' when waiting for completion of tasks (i.e., socket operations,
+sleep and waiting on CoroCondition) and using CoroLock, CoroCondition
+in place of thread locking. Tehcnically, CoroLock is not needed (as
+there is no forced preemption with coroutines and at most one
+coroutine is executing at anytime), but if one wants to maintain same
+program for both synchronous and asynchronous models, it would be
+simple to interchange threading.Lock and CoroLock, threading.Condition
+and CoroCondition, and a few syntactic changes.
 </p>
 
 <p>
 For example, a simple tcp server with asyncoro looks like:
 </p>
 <code>def process(sock, coro=None):
-    asock = AsynCoroSocket(sock)
+    sock = AsynCoroSocket(sock, blocking=False)
     # get (exactly) 4MB of data, for example, and let other coroutines
     # (process methods, in this case) execute in the meantime
-    data = yield asock.read(4096*1024)
+    data = yield sock.read(4096*1024)
     ...
-    yield asock.write(reply)
-    asock.close()
+    yield sock.write(reply)
+    sock.close()
 
 if __name__ == '__main__':
     host, port = '', 3456
@@ -84,27 +77,43 @@ if __name__ == '__main__':
 </code>
 
 <p>
-Here we mixed synchronous sockets in server loop with asynchronous
+Here we mixed synchronous sockets in server loop and asynchronous
 sockets in the 'process' method for illustration. The server does not
 do any processing, so the loop can quickly accept connections. Each
 request is processed in a separate coroutine. A coroutine method must
 have 'coro=None' default argument. The coroutine builder Coro will set
-coro argument with the Coro instance, which needs to be used with
+coro argument with the Coro instance, which is used for calling
 methods in Coro class.
 </p>
+
+<p>When it is necessary to suspend/sleep, a coro (instance of Coro)
+should use coro.sleep(timeout=None) instead of time.sleep. A
+coro.sleep allows other coros to execute during sleep, whereas
+time.sleep blocks other coros. If timeout is None, some other coro or
+program thread must wake it up. If timetout is a number, the coro
+sleeps for that many seconds (or fractions of second) unless someone
+else wakes it up before. A sleeping coro can be woken up/resumed with
+coro.resume(update=None). The update value is 'sent' to the sleeping
+coro, so that 'yield' that caused it to suspend will receive
+update. Thus, if coro1 suspends with <tt>u = coro1.sleep()</tt> and
+later, another coro, coro2, can wake it up
+with <tt>coro1.resume('rained')</tt>. This sets 'u' to 'rained' in
+coro1 and coro1 resumes execution.  The update can be any python
+object. asyncoro framework requires that 'resume' called on only
+currently sleeping coro(s). Otherwise, the update is ignored (and a
+warning is given). If necessary, cooperating coros can use a
+CoroCondition to signal when a coro is going to sleep.
+  </p>
 
 <p>
 With 'yield', 'suspend' and 'resume' methods, coroutines can cooperate
 scheduling their execution, send/receive values to/from each other,
-etc.
+and play relay race.
 </p>
 
 <p>
-discopy, available
-from <a href="http://sourceforge.net/projects/dispy/files">download
-section</a>, is an implementation of dispy with asyncoro.
-
-See discopy files for details/examples on how to use asyncoro.
+See discopy files for details/examples on how to use
+asyncoro.
 </p>
 
       </div> 
