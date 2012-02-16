@@ -226,12 +226,12 @@ class _Scheduler(object):
                     logging.warning('Ignoring pulse message from %s', addr[0])
                     continue
                 if 'client_scheduler_ip_addr' in info:
-                    self._sched_cv.acquire(coro)
+                    self._sched_cv.acquire()
                     for cluster in self._clusters.itervalues():
                         if cluster.client_scheduler_ip_addr == info['client_scheduler_ip_addr'] and \
                                cluster.client_scheduler_port == info['client_scheduler_port']:
                             cluster.last_pulse = time.time()
-                    self._sched_cv.release(coro)
+                    self._sched_cv.release()
                 else:
                     node = self._nodes.get(info['ip_addr'], None)
                     if node is not None:
@@ -255,7 +255,7 @@ class _Scheduler(object):
                 if status['cpus'] <= 0:
                     logging.debug('Ignoring node %s', status['ip_addr'])
                     continue
-                self._sched_cv.acquire(coro)
+                self._sched_cv.acquire()
                 node = self._nodes.get(status['ip_addr'], None)
                 if node is None:
                     node = _Node(status['ip_addr'], status['port'], status['cpus'],
@@ -267,7 +267,7 @@ class _Scheduler(object):
                     h = _xor_string(status['sign'], self.node_secret)
                     h = hashlib.sha1(h).hexdigest()
                     if node.port == status['port'] and node.auth_code == h:
-                        self._sched_cv.release(coro)
+                        self._sched_cv.release()
                         logging.debug('Node %s is already known', node.ip_addr)
                         continue
                     node.port = status['port']
@@ -287,14 +287,14 @@ class _Scheduler(object):
                             break
                 if node_computes:
                     Coro(self.setup_node, node, node_computes)
-                self._sched_cv.release(coro)
+                self._sched_cv.release()
             elif msg.startswith('TERMINATED:'):
                 try:
                     data = cPickle.loads(msg[len('TERMINATED:'):])
-                    self._sched_cv.acquire(coro)
+                    self._sched_cv.acquire()
                     node = self._nodes.pop(data['ip_addr'], None)
                     if not node:
-                        self._sched_cv.release(coro)
+                        self._sched_cv.release()
                         continue
                     logging.debug('Removing node %s', node.ip_addr)
                     h = _xor_string(data['sign'], self.node_secret)
@@ -315,7 +315,7 @@ class _Scheduler(object):
                                               node.ip_addr)
                                 pass
                     self._sched_cv.notify()
-                    self._sched_cv.release(coro)
+                    self._sched_cv.release()
                     del node
                 except:
                     logging.debug('Removing node failed: %s', traceback.format_exc())
@@ -378,7 +378,7 @@ class _Scheduler(object):
         # TODO: should we allow clients to add new nodes, or use only
         # the nodes initially created with command-line?
         yield self.send_ping_cluster(cluster, coro)
-        self._sched_cv.acquire(coro)
+        self._sched_cv.acquire()
         compute_nodes = []
         for node_spec, host in compute.node_spec.iteritems():
             for ip_addr, node in self._nodes.iteritems():
@@ -388,7 +388,7 @@ class _Scheduler(object):
                     compute_nodes.append(node)
                     break
         # self._sched_cv.notify()
-        self._sched_cv.release(coro)
+        self._sched_cv.release()
 
         for node in compute_nodes:
             r = yield node.setup(compute, coro=coro)
@@ -396,12 +396,12 @@ class _Scheduler(object):
                 logging.warning('Failed to setup %s for computation "%s"',
                                 node.ip_addr, compute.name)
             else:
-                self._sched_cv.acquire(coro)
+                self._sched_cv.acquire()
                 if node.ip_addr not in compute.nodes:
                     compute.nodes[node.ip_addr] = node
                     node.clusters.append(compute.id)
                     self._sched_cv.notify()
-                self._sched_cv.release(coro)
+                self._sched_cv.release()
 
     def setup_node(self, node, computes, coro=None):
         # generator
@@ -412,12 +412,12 @@ class _Scheduler(object):
                 logging.warning('Failed to setup %s for computation "%s"',
                                 node.ip_addr, compute.name)
             else:
-                self._sched_cv.acquire(coro)
+                self._sched_cv.acquire()
                 if node.ip_addr not in compute.nodes:
                     compute.nodes[node.ip_addr] = node
                     node.clusters.append(compute.id)
                     self._sched_cv.notify()
-                self._sched_cv.release(coro)
+                self._sched_cv.release()
 
     def send_job_result(self, uid, cid, ip, port, result, coro=None):
         # generator
@@ -443,11 +443,11 @@ class _Scheduler(object):
                 logging.debug('Could not save results for job %s', uid)
                 logging.debug(traceback.format_exc())
 
-            self._sched_cv.acquire(coro)
+            self._sched_cv.acquire()
             cluster = self._clusters.get(cid, None)
             if cluster:
                 cluster.pending_results += 1
-            self._sched_cv.release(coro)
+            self._sched_cv.release()
         else:
             cluster = self._clusters.get(cid, None)
             if cluster:
@@ -489,13 +489,13 @@ class _Scheduler(object):
                 except:
                     logging.debug('Ignoring job request from %s', addr[0])
                     raise StopIteration
-                self._sched_cv.acquire(coro)
+                self._sched_cv.acquire()
                 _job.uid = self.job_uid
                 self.job_uid += 1
                 if self.job_uid == sys.maxint:
                     # TODO: check if it is okay to reset
                     self.job_uid = 1
-                self._sched_cv.release(coro)
+                self._sched_cv.release()
                 setattr(_job, 'node', None)
                 job = type('DispyJob', (), {'status':DispyJob.Created,
                                             'start_time':None, 'end_time':None})
@@ -515,19 +515,19 @@ class _Scheduler(object):
                     logging.warning('Invalid reply for job: %s, %s',
                                     _job.uid, traceback.format_exc())
                     raise StopIteration
-                self._sched_cv.acquire(coro)
+                self._sched_cv.acquire()
                 cluster = self._clusters.get(_job.compute_id, None)
                 if cluster is None:
                     logging.debug('cluster %s is not valid anymore for job %s',
                                   _job.compute_id, _job.uid)
-                    self._sched_cv.release(coro)
+                    self._sched_cv.release()
                     raise StopIteration
                 cluster._jobs.append(_job)
                 self.unsched_jobs += 1
                 cluster._pending_jobs += 1
                 cluster.last_pulse = time.time()
                 self._sched_cv.notify()
-                self._sched_cv.release(coro)
+                self._sched_cv.release()
 
             def _compute_task(self, conn, msg, addr, coro):
                 # generator
@@ -545,7 +545,7 @@ class _Scheduler(object):
                 compute.job_result_port = self.job_result_sock.getsockname()[1]
                 compute.scheduler_ip_addr = self.ip_addr
                 compute.scheduler_port = self.port
-                self._sched_cv.acquire(coro)
+                self._sched_cv.acquire()
                 compute.id = cluster.id = self.cluster_id
                 self._clusters[cluster.id] = cluster
                 self.cluster_id += 1
@@ -556,13 +556,13 @@ class _Scheduler(object):
                     except:
                         logging.warning('Could not create directory "%s"', dest_path)
                         if compute.xfer_files:
-                            self._sched_cv.release(coro)
+                            self._sched_cv.release()
                             conn.close()
                             raise StopIteration
                 for xf in compute.xfer_files:
                     xf.compute_id = compute.id
                     xf.name = os.path.join(dest_path, os.path.basename(xf.name))
-                self._sched_cv.release(coro)
+                self._sched_cv.release()
                 resp = {'ID':compute.id,
                         'pulse_interval':(self.zombie_interval / 5.0) if self.zombie_interval else None}
                 resp = cPickle.dumps(resp)
@@ -652,7 +652,7 @@ class _Scheduler(object):
                 resp = yield _compute_task(self, conn, msg, addr, coro)
             elif msg.startswith('ADD_COMPUTE:'):
                 msg = msg[len('ADD_COMPUTE:'):]
-                self._sched_cv.acquire(coro)
+                self._sched_cv.acquire()
                 try:
                     req = cPickle.loads(msg)
                     cluster = self._clusters[req['ID']]
@@ -665,7 +665,7 @@ class _Scheduler(object):
                     conn.close()
                     raise StopIteration
                 finally:
-                    self._sched_cv.release(coro)
+                    self._sched_cv.release()
             elif msg.startswith('DEL_COMPUTE:'):
                 msg = msg[len('DEL_COMPUTE:'):]
                 conn.close()
@@ -675,15 +675,15 @@ class _Scheduler(object):
                 except:
                     logging.warning('Invalid compuation for deleting')
                     raise StopIteration
-                self._sched_cv.acquire(coro)
+                self._sched_cv.acquire()
                 cluster = self._clusters.get(req['ID'], None)
                 if cluster is None:
                     # this cluster is closed
-                    self._sched_cv.release(coro)
+                    self._sched_cv.release()
                     raise StopIteration
                 cluster.zombie = True
                 self.cleanup_computation(cluster)
-                self._sched_cv.release(coro)
+                self._sched_cv.release()
             elif msg.startswith('FILEXFER:'):
                 msg = msg[len('FILEXFER:'):]
                 yield _xfer_file_task(self, conn, msg, addr, coro)
@@ -695,11 +695,11 @@ class _Scheduler(object):
                 except:
                     logging.warning('Invalid job cancel message')
                     raise StopIteration
-                self._sched_cv.acquire(coro)
+                self._sched_cv.acquire()
                 cluster = self._clusters.get(job.compute_id, None)
                 if not cluster:
                     logging.debug('Invalid job %s!', job.uid)
-                    self._sched_cv.release(coro)
+                    self._sched_cv.release()
                     raise StopIteration
                 compute = cluster._compute
                 cluster.last_pulse = time.time()
@@ -720,7 +720,7 @@ class _Scheduler(object):
                     _job.job.status = DispyJob.Cancelled
                     Coro(_job.node.send, _job.uid, 'TERMINATE_JOB:' + cPickle.dumps(_job),
                          reply=False)
-                self._sched_cv.release(coro)
+                self._sched_cv.release()
             elif msg.startswith('RETRIEVE_JOB:'):
                 req = msg[len('RETRIEVE_JOB:'):]
                 try:
@@ -741,7 +741,7 @@ class _Scheduler(object):
                             assert ruid == req['uid']
                             try:
                                 os.remove(result_file)
-                                self._sched_cv.acquire(coro)
+                                self._sched_cv.acquire()
                                 cluster = self._clusters.get(req['compute_id'], None)
                                 if cluster is None:
                                     p = os.path.dirname(result_file)
@@ -749,7 +749,7 @@ class _Scheduler(object):
                                         os.rmdir(p)
                                 else:
                                     cluster.pending_results -= 1
-                                self._sched_cv.release(coro)
+                                self._sched_cv.release()
                             except:
                                 logging.debug('Could not remove "%s"', result_file)
                             raise StopIteration
@@ -802,7 +802,7 @@ class _Scheduler(object):
             now = time.time()
             if self.pulse_timeout and (now - last_pulse_time) >= self.pulse_timeout:
                 last_pulse_time = now
-                self._sched_cv.acquire(coro)
+                self._sched_cv.acquire()
                 dead_nodes = {}
                 for node in self._nodes.itervalues():
                     if node.busy and node.last_pulse + pulse_timeout < now:
@@ -818,16 +818,16 @@ class _Scheduler(object):
                 self.reschedule_jobs(dead_jobs)
                 if dead_nodes or dead_jobs:
                     self._sched_cv.notify()
-                self._sched_cv.release(coro)
+                self._sched_cv.release()
             if self.ping_interval and (now - last_ping_time) >= self.ping_interval:
                 last_ping_time = now
-                self._sched_cv.acquire(coro)
+                self._sched_cv.acquire()
                 for cluster in self.clusters.itervalues():
                     Coro(self.send_ping_cluster, cluster)
-                self._sched_cv.release(coro)
+                self._sched_cv.release()
             if self.zombie_interval and (now - last_zombie_time) >= self.zombie_interval:
                 last_zombie_time = now
-                self._sched_cv.acquire(coro)
+                self._sched_cv.acquire()
                 for cluster in self._clusters.itervalues():
                     if (now - cluster.last_pulse) > self.zombie_interval:
                         cluster.zombie = True
@@ -863,7 +863,7 @@ class _Scheduler(object):
                             os.remove(result_file)
                         except:
                             logging.debug('Could not remove "%s"', result_file)
-                self._sched_cv.release(coro)
+                self._sched_cv.release()
 
     def load_balance_schedule(self):
         node = None
@@ -895,23 +895,23 @@ class _Scheduler(object):
             conn.close()
 
         logging.debug('Received reply for job %s from %s' % (uid, addr[0]))
-        self._sched_cv.acquire(coro)
+        self._sched_cv.acquire()
         node = self._nodes.get(addr[0], None)
         if node is None:
-            self._sched_cv.release(coro)
+            self._sched_cv.release()
             logging.warning('Ignoring invalid reply for job %s from %s',
                             uid, addr[0])
             raise StopIteration
         node.last_pulse = time.time()
         _job = self._sched_jobs.get(uid, None)
         if _job is None:
-            self._sched_cv.release(coro)
+            self._sched_cv.release()
             logging.warning('Ignoring invalid job %s from %s', uid, addr[0])
             raise StopIteration
         _job.job.end_time = time.time()
         cluster = self._clusters.get(_job.compute_id, None)
         if cluster is None:
-            self._sched_cv.release(coro)
+            self._sched_cv.release()
             logging.warning('Invalid cluster for job %s from %s', uid, addr[0])
             raise StopIteration
         compute = cluster._compute
@@ -928,12 +928,12 @@ class _Scheduler(object):
                 Coro(self.send_job_result,
                      _job.uid, compute.id, cluster.client_scheduler_ip_addr,
                      cluster.client_job_result_port, reply)
-                self._sched_cv.release(coro)
+                self._sched_cv.release()
                 raise StopIteration
             else:
                 del self._sched_jobs[uid]
         except:
-            self._sched_cv.release(coro)
+            self._sched_cv.release()
             logging.warning('Invalid job result for %s from %s', uid, addr[0])
             logging.debug(traceback.format_exc())
             raise StopIteration
@@ -950,7 +950,7 @@ class _Scheduler(object):
         Coro(self.send_job_result, _job.uid, compute.id, cluster.client_scheduler_ip_addr,
              cluster.client_job_result_port, reply)
         self._sched_cv.notify()
-        self._sched_cv.release(coro)
+        self._sched_cv.release()
 
     def job_result_server(self, coro=None):
         # generator
@@ -994,7 +994,7 @@ class _Scheduler(object):
         except EnvironmentError:
             logging.warning('Failed to run job %s on %s for computation %s; removing this node',
                             _job.uid, _job.node.ip_addr, cluster._compute.name)
-            self._sched_cv.acquire(coro)
+            self._sched_cv.acquire()
             if cluster._compute.nodes.pop(_job.node.ip_addr, None) is not None:
                 try:
                     _job.node.clusters.remove(cluster.compute.id)
@@ -1009,32 +1009,32 @@ class _Scheduler(object):
                 self.unsched_jobs += 1
                 _job.node.busy -= 1
             self._sched_cv.notify()
-            self._sched_cv.release(coro)
+            self._sched_cv.release()
         except:
             logging.debug(traceback.format_exc())
             logging.warning('Failed to run job %s on %s for computation %s; rescheduling it',
                             _job.uid, _job.node.ip_addr, cluster._compute.name)
             # TODO: delay executing again for some time?
-            self._sched_cv.acquire(coro)
+            self._sched_cv.acquire()
             # this job might have been deleted already due to timeout
             if self._sched_jobs.pop(_job.uid, None) == _job:
                 cluster._jobs.append(_job)
                 self.unsched_jobs += 1
                 _job.node.busy -= 1
             self._sched_cv.notify()
-            self._sched_cv.release(coro)
+            self._sched_cv.release()
 
     def _schedule_jobs(self, coro=None):
         # generator
         assert coro is not None
         while True:
-            self._sched_cv.acquire(coro)
+            self._sched_cv.acquire()
             # n = sum(len(cluster._jobs) for cluster in self._clusters.itervalues())
             # assert self.unsched_jobs == n, '%s != %s' % (self.unsched_jobs, n)
-            while self._sched_cv.wait(coro):
+            while self._sched_cv.wait():
                 yield None
             if self._terminate_scheduler:
-                self._sched_cv.release(coro)
+                self._sched_cv.release()
                 break
             while self.unsched_jobs:
                 logging.debug('Pending jobs: %s', self.unsched_jobs)
@@ -1059,8 +1059,8 @@ class _Scheduler(object):
                 self.unsched_jobs -= 1
                 node.busy += 1
                 Coro(self.run_job, _job, cluster)
-            yield self._sched_cv.release(coro)
-        self._sched_cv.acquire(coro)
+            yield self._sched_cv.release()
+        self._sched_cv.acquire()
         logging.debug('scheduler quitting (%s / %s)',
                       len(self._sched_jobs), self.unsched_jobs)
         for cid, cluster in self._clusters.iteritems():
@@ -1072,7 +1072,7 @@ class _Scheduler(object):
                 Coro(self.send_job_result, _job.uid, compute.id, cluster.client_scheduler_ip_addr,
                      cluster.client_job_result_port, reply)
             cluster._jobs = []
-        self._sched_cv.release(coro)
+        self._sched_cv.release()
         logging.debug('scheduler quit')
 
     def shutdown(self):
@@ -1081,7 +1081,7 @@ class _Scheduler(object):
             assert coro is not None
             # TODO: send shutdown notification to clients? Or wait for all
             # pending tasks to complete?
-            self._sched_cv.acquire(coro)
+            self._sched_cv.acquire()
             select_job_node = self.select_job_node
             self.select_job_node = None
             if select_job_node:
@@ -1099,7 +1099,7 @@ class _Scheduler(object):
                 self._sched_jobs = {}
                 self._terminate_scheduler = True
                 self._sched_cv.notify()
-                self._sched_cv.release(coro)
+                self._sched_cv.release()
 
                 for cluster in clusters:
                     compute = cluster._compute

@@ -54,7 +54,8 @@ using CoroLock, CoroCondition in place of thread locking. Tehcnically,
 CoroLock is not needed (as there is at most one thread of execution at
 anytime), but if one wants to maintain same program for both
 synchronous and asynchronous models, it should be simple to
-interchange threading.Lock and CoroLock and a few syntactic changes.
+interchange threading.Lock and CoroLock, threading.Condition and
+CoroCondition, and a few syntactic changes.
 
 For example, a simple tcp server looks like:
 
@@ -84,7 +85,7 @@ do any processing, so the loop can quickly accept connections. Each
 request is processed in a separate coroutine. A coroutine method must
 have 'coro=None' default argument. The coroutine builder Coro will set
 coro argument with the Coro instance, which needs to be used with
-CoroCondition, CoroLock and methods in Coro class.
+methods in Coro class.
 
 With 'yield', 'suspend' and 'resume' methods, coroutines can cooperate
 scheduling their execution, send/receive values to/from each other,
@@ -534,13 +535,15 @@ class CoroLock(object):
     """
     def __init__(self):
         self._owner = None
+        self._asyncoro = AsynCoro.instance()
 
-    def acquire(self, coro):
+    def acquire(self):
         assert self._owner == None, 'invalid lock acquire: %s, %s' % (self._owner, coro._id)
-        self._owner = coro._id
+        self._owner = self._asyncoro.cur_coro()._id
 
-    def release(self, coro):
-        assert self._owner == coro._id, 'invalid lock release %s != %s' % (self._owner, coro._id)
+    def release(self):
+        cid = self._asyncoro.cur_coro()._id
+        assert self._owner == cid, 'invalid lock release %s != %s' % (self._owner, cid)
         self._owner = None
 
 class CoroCondition(object):
@@ -555,13 +558,15 @@ class CoroCondition(object):
         self._waitlist = []
         self._owner = None
         self._notify = False
+        self._asyncoro = AsynCoro.instance()
 
-    def acquire(self, coro):
+    def acquire(self):
         assert self._owner == None, 'invalid cv acquire: %s, %s' % (self._owner, coro._id)
-        self._owner = coro._id
+        self._owner = self._asyncoro.cur_coro()._id
 
-    def release(self, coro):
-        assert self._owner == coro._id, 'invalid cv release %s != %s' % (self._owner, coro._id)
+    def release(self):
+        cid = self._asyncoro.cur_coro()._id
+        assert self._owner == cid, 'invalid lock release %s != %s' % (self._owner, cid)
         self._owner = None
 
     def notify(self):
@@ -570,7 +575,7 @@ class CoroCondition(object):
             wake = self._waitlist.pop(0)
             wake.resume(None)
 
-    def wait(self, coro):
+    def wait(self):
         """If condition variable is called cv, then a typical use in consumer is:
 
         while True:
@@ -582,6 +587,7 @@ class CoroCondition(object):
             yield cv.release(coro)
         
         """
+        coro = self._asyncoro.cur_coro()
         if not self._notify:
             self._owner = None
             self._waitlist.append(coro)

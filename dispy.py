@@ -554,13 +554,13 @@ class _Cluster(object):
         # generator (due to _sched_cv)
         assert coro is not None
         compute = cluster._compute
-        self._sched_cv.acquire(coro)
+        self._sched_cv.acquire()
         if self.shared:
             assert cluster._compute.id not in self._clusters
             self._clusters[compute.id] = cluster
             for xf in compute.xfer_files:
                 xf.compute_id = compute.id
-            self._sched_cv.release(coro)
+            self._sched_cv.release()
             raise StopIteration
         else:
             self._clusters[self.cluster_id] = cluster
@@ -569,7 +569,7 @@ class _Cluster(object):
             for xf in compute.xfer_files:
                 xf.compute_id = compute.id
             self.cluster_id += 1
-        self._sched_cv.release(coro)
+        self._sched_cv.release()
 
         if compute.pulse_interval:
             self.pulse_interval = max(self.pulse_interval, compute.pulse_interval)
@@ -579,7 +579,7 @@ class _Cluster(object):
             self.timer_coro.resume(True)
 
         yield self.send_ping_cluster(cluster, coro=coro)
-        self._sched_cv.acquire(coro)
+        self._sched_cv.acquire()
         compute_nodes = []
         for node_spec, host in compute.node_spec.iteritems():
             for ip_addr, node in self._nodes.iteritems():
@@ -589,7 +589,7 @@ class _Cluster(object):
                     compute_nodes.append(node)
                     break
         self._sched_cv.notify()
-        self._sched_cv.release(coro)
+        self._sched_cv.release()
 
         for node in compute_nodes:
             r = yield node.setup(compute, coro=coro)
@@ -597,27 +597,27 @@ class _Cluster(object):
                 logging.warning('Failed to setup %s for compute "%s"',
                                 node.ip_addr, compute)
             else:
-                self._sched_cv.acquire(coro)
+                self._sched_cv.acquire()
                 if node.ip_addr not in compute.nodes:
                     compute.nodes[node.ip_addr] = node
                     node.clusters.append(compute.id)
                     self._sched_cv.notify()
-                self._sched_cv.release(coro)
+                self._sched_cv.release()
 
     def del_cluster(self, cluster, coro=None):
         # generator
-        self._sched_cv.acquire(coro)
+        self._sched_cv.acquire()
         if self._clusters.pop(cluster._compute.id, None) != cluster:
             logging.warning('cluster %s already closed?', cluster._compute.name)
-            self._sched_cv.release(coro)
+            self._sched_cv.release()
             raise StopIteration
 
         if cluster._jobs or cluster._pending_jobs:
             logging.warning('cluster %s has pending jobs', compute.name)
-            self._sched_cv.release(coro)
+            self._sched_cv.release()
             raise StopIteration
 
-        self._sched_cv.release(coro)
+        self._sched_cv.release()
 
         if self.shared:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -628,18 +628,18 @@ class _Cluster(object):
             yield sock.write_msg(cluster._compute.id, req)
             sock.close()
         else:
-            self._sched_cv.acquire(coro)
+            self._sched_cv.acquire()
             nodes = cluster._compute.nodes.values()
             for node in nodes:
                 logging.debug('node %s is being removed', node.ip_addr)
                 node.clusters.remove(cluster._compute.id)
             cluster._compute.nodes = {}
-            self._sched_cv.release(coro)
+            self._sched_cv.release()
             for node in nodes:
                 yield node.close(cluster._compute, coro=coro)
 
         if cluster.fault_recover_file:
-            self.fault_recover_lock.acquire(coro)
+            self.fault_recover_lock.acquire()
             shelf = shelve.open(cluster.fault_recover_file, flag='r')
             n = len(shelf)
             shelf.close()
@@ -648,7 +648,7 @@ class _Cluster(object):
                     os.remove(cluster.fault_recover_file)
                 except:
                     pass
-            self.fault_recover_lock.release(coro)
+            self.fault_recover_lock.release()
 
     def worker(self):
         # used for user callbacks only
@@ -674,7 +674,7 @@ class _Cluster(object):
             _job.finish(status)
             if status != DispyJob.ProvisionalResult:
                 if cluster.fault_recover_file:
-                    self.fault_recover_lock.acquire(coro)
+                    self.fault_recover_lock.acquire()
                     shelf = shelve.open(cluster.fault_recover_file, flag='c')
                     try:
                         del shelf[str(_job.uid)]
@@ -682,7 +682,7 @@ class _Cluster(object):
                         # logging.warning('Apparently job %s is recovered?', _job.uid)
                         pass
                     shelf.close()
-                    self.fault_recover_lock.release(coro)
+                    self.fault_recover_lock.release()
                 assert cluster._pending_jobs > 0
                 cluster._pending_jobs -= 1
                 if cluster._pending_jobs == 0:
@@ -703,7 +703,7 @@ class _Cluster(object):
         finally:
             def _finish_job(self, _job, cluster, coro=None):
                 if cluster.fault_recover_file:
-                    self.fault_recover_lock.acquire(coro)
+                    self.fault_recover_lock.acquire()
                     shelf = shelve.open(cluster.fault_recover_file, flag='c')
                     try:
                         del shelf[str(_job.uid)]
@@ -711,14 +711,14 @@ class _Cluster(object):
                         # logging.warning('Apparently job %s is recovered?', _job.uid)
                         pass
                     shelf.close()
-                    self.fault_recover_lock.release(coro)
-                self._sched_cv.acquire(coro)
+                    self.fault_recover_lock.release()
+                self._sched_cv.acquire()
                 assert cluster._pending_jobs > 0
                 cluster._pending_jobs -= 1
                 if cluster._pending_jobs == 0:
                     cluster.end_time = time.time()
                     cluster._complete.set()
-                self._sched_cv.release(coro)
+                self._sched_cv.release()
                 yield None
                 
             if status != DispyJob.ProvisionalResult:
@@ -733,12 +733,12 @@ class _Cluster(object):
                 logging.warning('Failed to setup %s for compute "%s"',
                                 node.ip_addr, compute)
             else:
-                self._sched_cv.acquire(coro)
+                self._sched_cv.acquire()
                 if node.ip_addr not in compute.nodes:
                     compute.nodes[node.ip_addr] = node
                     node.clusters.append(compute.id)
                     self._sched_cv.notify()
-                self._sched_cv.release(coro)
+                self._sched_cv.release()
 
     def run_job(self, _job, cluster, coro=None):
         # generator
@@ -751,7 +751,7 @@ class _Cluster(object):
         except EnvironmentError:
             logging.warning('Failed to run job %s on %s for computation %s; removing this node',
                             _job.uid, _job.node.ip_addr, cluster._compute.name)
-            self._sched_cv.acquire(coro)
+            self._sched_cv.acquire()
             if cluster._compute.nodes.pop(_job.node.ip_addr, None) is not None:
                 _job.node.clusters.remove(cluster.compute.id)
                 # TODO: remove the node from all clusters and globally?
@@ -761,20 +761,20 @@ class _Cluster(object):
                 self.unsched_jobs += 1
                 _job.node.busy -= 1
             self._sched_cv.notify()
-            self._sched_cv.release(coro)
+            self._sched_cv.release()
         except:
             logging.warning('Failed to run job %s on %s for computation %s; rescheduling it',
                             _job.uid, _job.node.ip_addr, cluster._compute.name)
             logging.debug(traceback.format_exc())
             # TODO: delay executing again for some time?
-            self._sched_cv.acquire(coro)
+            self._sched_cv.acquire()
             # this job might have been deleted already due to timeout
             if self._sched_jobs.pop(_job.uid, None) == _job:
                 cluster._jobs.append(_job)
                 self.unsched_jobs += 1
                 _job.node.busy -= 1
             self._sched_cv.notify()
-            self._sched_cv.release(coro)
+            self._sched_cv.release()
 
     def udp_server(self, udp_sock, coro=None):
         # generator
@@ -811,7 +811,7 @@ class _Cluster(object):
                 if status['cpus'] <= 0:
                     logging.debug('Ignoring node %s', status['ip_addr'])
                     continue
-                self._sched_cv.acquire(coro)
+                self._sched_cv.acquire()
                 node = self._nodes.get(status['ip_addr'], None)
                 if node is None:
                     node = _Node(status['ip_addr'], status['port'],
@@ -823,7 +823,7 @@ class _Cluster(object):
                     h = _xor_string(status['sign'], self._secret)
                     h = hashlib.sha1(h).hexdigest()
                     if node.port == status['port'] and node.auth_code == h:
-                        self._sched_cv.release(coro)
+                        self._sched_cv.release()
                         continue
                     node.port = status['port']
                     node.auth_code = h
@@ -840,16 +840,16 @@ class _Cluster(object):
                                 node.name = host['name']
                             node_computations.append(compute)
                             break
-                self._sched_cv.release(coro)
+                self._sched_cv.release()
                 if node_computations:
                     Coro(self.setup_node, node, node_computations)
             elif msg.startswith('TERMINATED:'):
                 try:
                     data = cPickle.loads(msg[len('TERMINATED:'):])
-                    self._sched_cv.acquire(coro)
+                    self._sched_cv.acquire()
                     node = self._nodes.pop(data['ip_addr'], None)
                     if not node:
-                        self._sched_cv.release(coro)
+                        self._sched_cv.release()
                         continue
                     logging.debug('Removing node %s', node.ip_addr)
                     h = _xor_string(data['sign'], self._secret)
@@ -863,7 +863,7 @@ class _Cluster(object):
                     for cid, cluster in self._clusters.iteritems():
                         if cluster._compute.nodes.pop(node.ip_addr, None) is not None:
                             node.clusters.remove(cid)
-                    self._sched_cv.release(coro)
+                    self._sched_cv.release()
                     del node
                 except:
                     logging.debug('Removing node failed: %s', traceback.format_exc())
@@ -896,11 +896,11 @@ class _Cluster(object):
             sock.close()
 
         logging.debug('Received reply for job %s from %s', uid, addr[0])
-        self._sched_cv.acquire(coro)
+        self._sched_cv.acquire()
         node = self._nodes.get(addr[0], None)
         _job = self._sched_jobs.get(uid, None)
         if (node is None and self.shared is False) or (_job is None):
-            self._sched_cv.release(coro)
+            self._sched_cv.release()
             logging.warning('Ignoring invalid reply for job %s from %s',
                             uid, addr[0])
             raise StopIteration
@@ -910,7 +910,7 @@ class _Cluster(object):
             if self.shared is False:
                 assert node.busy > 0
                 node.busy -= 1
-            self._sched_cv.release(coro)
+            self._sched_cv.release()
             raise StopIteration
         compute = cluster._compute
         job = _job.job
@@ -932,12 +932,12 @@ class _Cluster(object):
                 node.last_pulse = time.time()
             if reply.status == DispyJob.ProvisionalResult:
                 self.finish_job(_job, DispyJob.ProvisionalResult, cluster, coro)
-                self._sched_cv.release(coro)
+                self._sched_cv.release()
                 raise StopIteration
             else:
                 del self._sched_jobs[uid]
         except:
-            self._sched_cv.release(coro)
+            self._sched_cv.release()
             logging.warning('Invalid job result for %s from %s',
                             uid, addr[0])
             logging.debug('%s, %s', str(reply), traceback.format_exc())
@@ -957,7 +957,7 @@ class _Cluster(object):
         else:
             if addr[0] != cluster.scheduler_ip_addr:
                 logging.warning('Ignoring job reply from %s', addr[0])
-                self._sched_cv.release(coro)
+                self._sched_cv.release()
                 raise StopIteration
             node = self._nodes.get(job.ip_addr, None)
             if node is None:
@@ -972,7 +972,7 @@ class _Cluster(object):
                 node.cpu_time += job.end_time - job.start_time
         self.finish_job(_job, reply.status, cluster, coro)
         self._sched_cv.notify()
-        self._sched_cv.release(coro)
+        self._sched_cv.release()
         raise StopIteration # job_result_task
 
     def reschedule_jobs(self, dead_jobs, coro):
@@ -1015,9 +1015,9 @@ class _Cluster(object):
             if self.pulse_timeout and (now - last_pulse_time) >= self.pulse_timeout:
                 last_pulse_time = now
                 if self.shared:
-                    self._sched_cv.acquire(coro)
+                    self._sched_cv.acquire()
                     clusters = self._clusters.values()
-                    self._sched_cv.release(coro)
+                    self._sched_cv.release()
                     for cluster in clusters:
                         msg = {'client_scheduler_ip_addr':self.ip_addr,
                                'client_scheduler_port':self.port,
@@ -1028,7 +1028,7 @@ class _Cluster(object):
                                           (cluster.scheduler_ip_addr, cluster.scheduler_udp_port))
                         sock.close()
                 else:
-                    self._sched_cv.acquire(coro)
+                    self._sched_cv.acquire()
                     dead_nodes = {}
                     for node in self._nodes.itervalues():
                         if node.busy and node.last_pulse is not None and \
@@ -1045,14 +1045,14 @@ class _Cluster(object):
                     if dead_nodes or dead_jobs:
                         self._sched_cv.notify()
                     self.reschedule_jobs(dead_jobs, coro)
-                    self._sched_cv.release(coro)
+                    self._sched_cv.release()
 
             if self.ping_interval and (now - last_ping_time) >= self.ping_interval:
                 last_ping_time = now
-                self._sched_cv.acquire(coro)
+                self._sched_cv.acquire()
                 for cluster in self._clusters.itervalues():
                     Coro(self.send_ping_cluster, cluster)
-                self._sched_cv.release(coro)
+                self._sched_cv.release()
 
     def load_balance_schedule(self):
         host = None
@@ -1094,13 +1094,13 @@ class _Cluster(object):
         # generator
         assert coro is not None
         while True:
-            self._sched_cv.acquire(coro)
+            self._sched_cv.acquire()
             # n = sum(len(cluster._jobs) for cluster in self._clusters.itervalues())
             # assert self.unsched_jobs == n, '%s != %s' % (self.unsched_jobs, n)
-            while self._sched_cv.wait(coro):
+            while self._sched_cv.wait():
                 yield None
             if self.terminate_scheduler:
-                yield self._sched_cv.release(coro)
+                yield self._sched_cv.release()
                 break
             while self.unsched_jobs:
                 logging.debug('Pending jobs: %s', self.unsched_jobs)
@@ -1124,8 +1124,8 @@ class _Cluster(object):
                 self.unsched_jobs -= 1
                 node.busy += 1
                 Coro(self.run_job, _job, cluster)
-            yield self._sched_cv.release(coro)
-        self._sched_cv.acquire(coro)
+            yield self._sched_cv.release()
+        self._sched_cv.acquire()
         logging.debug('scheduler quitting (%s / %s)',
                       len(self._sched_jobs), self.unsched_jobs)
         coros = []
@@ -1150,7 +1150,7 @@ class _Cluster(object):
         self._nodes = {}
         self.unsched_jobs = 0
         self._sched_jobs = {}
-        self._sched_cv.release(coro)
+        self._sched_cv.release()
         for coro in coros:
             coro.value()
         logging.debug('scheduler quit')
@@ -1159,20 +1159,20 @@ class _Cluster(object):
         # non-generator
         if not cluster.fault_recover_file:
             return
-        self.fault_recover_lock.acquire(coro)
+        self.fault_recover_lock.acquire()
         shelf = shelve.open(cluster.fault_recover_file, flag='c')
         state = {'id':_job.job.id, 'hash':_job.hash, 'compute_id':_job.compute_id,
                  'args':_job.args, 'kwargs':_job.kwargs,
                  'ip_addr':_job.node.ip_addr, 'port':_job.node.port}
         shelf[str(_job.uid)] = state
         shelf.close()
-        self.fault_recover_lock.release(coro)
+        self.fault_recover_lock.release()
         return
 
     def submit_job(self, _job, coro=None):
         # generator
         assert coro is not None
-        self._sched_cv.acquire(coro)
+        self._sched_cv.acquire()
         #_job.uid = id(_job)
         _job.uid = self.job_uid
         self.job_uid += 1
@@ -1186,24 +1186,24 @@ class _Cluster(object):
         cluster._complete.clear()
         logging.debug('adding job %s', _job.uid)
         self._sched_cv.notify()
-        self._sched_cv.release(coro)
+        self._sched_cv.release()
         yield True
 
     def cancel_job(self, job, coro=None):
         # generator
         assert coro is not None
         assert self.shared is False
-        self._sched_cv.acquire(coro)
+        self._sched_cv.acquire()
         _job = job._dispy_job_
         if _job is None:
-            self._sched_cv.release(coro)
+            self._sched_cv.release()
             logging.warning('Job %s is invalid for cancellation!', job.id)
             yield -1; raise StopIteration
         cluster = self._clusters.get(_job.compute_id, None)
         if not cluster:
             logging.warning('Invalid job %s for cluster "%s"!',
                             _job.uid, cluster._compute.name)
-            self._sched_cv.release(coro)
+            self._sched_cv.release()
             yield -1; raise StopIteration
         assert cluster._pending_jobs >= 1
         if _job.job.status == DispyJob.Created:
@@ -1211,16 +1211,16 @@ class _Cluster(object):
             cluster._jobs.remove(_job)
             self.unsched_jobs -= 1
             self.finish_job(_job, DispyJob.Cancelled, cluster, coro)
-            self._sched_cv.release(coro)
+            self._sched_cv.release()
             logging.debug('Cancelled (removed) job %s', _job.uid)
             yield 0; raise StopIteration
         elif not (_job.job.status == DispyJob.Running or \
                   _job.job.status == DispyJob.ProvisionalResult):
-            self._sched_cv.release(coro)
+            self._sched_cv.release()
             logging.warning('Job %s is not valid for cancel (%s)', _job.uid, _job.job.status)
             yield -1; raise StopIteration
         _job.job.status = DispyJob.Cancelled
-        self._sched_cv.release(coro)
+        self._sched_cv.release()
         if _job.node is not None:
             try:
                 yield _job.node.send(_job.uid, 'TERMINATE_JOB:' + cPickle.dumps(_job), reply=False,
@@ -1238,17 +1238,17 @@ class _Cluster(object):
             # TODO: make sure JobCluster instances are done
             if not hasattr(self, '_scheduler'):
                 raise StopIteration
-            self._sched_cv.acquire(coro)
+            self._sched_cv.acquire()
             select_job_node = self.select_job_node
             self.select_job_node = None
             if select_job_node:
                 logging.debug('shutting down scheduler ...')
                 clusters = self._clusters.values()
-                self._sched_cv.release(coro)
+                self._sched_cv.release()
                 for cluster in clusters:
                     yield self.del_cluster(cluster, coro=coro)
 
-                self._sched_cv.acquire(coro)
+                self._sched_cv.acquire()
                 for uid, _job in self._sched_jobs.iteritems():
                     # TODO: handle shared scheduler jobs appropriately
                     if _job.job.status == DispyJob.Running:
@@ -1262,11 +1262,11 @@ class _Cluster(object):
                 self._sched_jobs = {}
                 self.terminate_scheduler = True
                 self._sched_cv.notify()
-                self._sched_cv.release(coro)
+                self._sched_cv.release()
                 self.worker_Q.put((99, None, None))
                 self.worker_Q.join()
             else:
-                self._sched_cv.release(coro)
+                self._sched_cv.release()
             yield None
         Coro(_shutdown, self).value()
         self.asyncoro.terminate()
@@ -1812,11 +1812,11 @@ class SharedJobCluster(JobCluster):
             yield sock.write_msg(self._compute.id, req)
             uid, msg = yield sock.read_msg()
             _job.uid = cPickle.loads(msg)
-            self._cluster._sched_cv.acquire(coro)
+            self._cluster._sched_cv.acquire()
             self._cluster._sched_jobs[_job.uid] = _job
             self._pending_jobs += 1
             self._complete.clear()
-            self._cluster._sched_cv.release(coro)
+            self._cluster._sched_cv.release()
             yield sock.write_msg(_job.uid, 'ACK', auth=False)
             sock.close()
             if self.fault_recover_file:
@@ -1837,32 +1837,32 @@ class SharedJobCluster(JobCluster):
     def store_job_info(self, _job, coro):
         if not self.fault_recover_file:
             return
-        self._cluster.fault_recover_lock.acquire(coro)
+        self._cluster.fault_recover_lock.acquire()
         shelf = shelve.open(self.fault_recover_file, flag='c')
         state = {'id':_job.job.id, 'hash':_job.hash, 'compute_id':_job.compute_id,
                  'args':_job.args, 'kwargs':_job.kwargs,
                  'ip_addr':self.scheduler_ip_addr, 'port':self.scheduler_port}
         shelf[str(_job.uid)] = state
         shelf.close()
-        self._cluster.fault_recover_lock.release(coro)
+        self._cluster.fault_recover_lock.release()
         return
 
     def cancel(self, job):
         def _cancel(self, job, coro=None):
-            self._cluster._sched_cv.acquire(coro)
+            self._cluster._sched_cv.acquire()
             _job = job._dispy_job_
             if _job is None or self._cluster._clusters.get(_job.compute_id, None) != self:
                 logging.warning('Invalid job %s for cluster "%s"!', job.id, self._compute.name)
-                self._cluster._sched_cv.release(coro)
+                self._cluster._sched_cv.release()
                 yield -1; raise StopIteration
             if job.status not in [DispyJob.Created, DispyJob.ProvisionalResult]:
                 logging.warning('Job %s is not valid for cancel (%s)', job.id, job.status)
-                self._cluster._sched_cv.release(coro)
+                self._cluster._sched_cv.release()
                 yield -1; raise StopIteration
 
             job.status = DispyJob.Cancelled
             assert self._pending_jobs >= 1
-            self._cluster._sched_cv.release(coro)
+            self._cluster._sched_cv.release()
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock = AsynCoroSocket(sock, blocking=False, auth_code=self.auth_code,
                                   certfile=self.certfile, keyfile=self.keyfile)
