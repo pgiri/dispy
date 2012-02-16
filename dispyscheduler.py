@@ -162,12 +162,11 @@ class _Scheduler(object):
             self.request_sock.bind((self.ip_addr, self.scheduler_port))
             self.scheduler_port = self.request_sock.getsockname()[1]
             self.request_sock.listen(32)
-            self.request_sock = AsynCoroSocket(self.request_sock, coro=None,
-                                               blocking=False, timeout=False)
+            self.request_sock = AsynCoroSocket(self.request_sock, blocking=False, timeout=False)
             self.request_coro = Coro(self.request_server)
 
             self.job_result_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.job_result_sock = AsynCoroSocket(self.job_result_sock, coro=None,
+            self.job_result_sock = AsynCoroSocket(self.job_result_sock,
                                                   blocking=False, timeout=False)
             self.job_result_sock.bind((self.ip_addr, 0))
             self.job_result_sock.listen(50)
@@ -176,7 +175,7 @@ class _Scheduler(object):
             self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.udp_sock.bind(('', self.port))
-            self.udp_sock = AsynCoroSocket(self.udp_sock, coro=None, blocking=False, timeout=False)
+            self.udp_sock = AsynCoroSocket(self.udp_sock, blocking=False, timeout=False)
             logging.debug('UDP server at %s:%s' % (self.udp_sock.getsockname()))
             self.udp_coro = Coro(self.udp_server)
 
@@ -215,7 +214,6 @@ class _Scheduler(object):
     def udp_server(self, coro=None):
         # generator
         assert coro is not None
-        self.udp_sock.set_coro(coro)
 
         while True:
             msg, addr = yield self.udp_sock.recvfrom(1024)
@@ -241,7 +239,7 @@ class _Scheduler(object):
                         node.last_pulse = time.time()
                         msg = 'PULSE:' + cPickle.dumps({'ip_addr':self.ip_addr})
                         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                        sock = AsynCoroSocket(sock, coro=coro, blocking=False)
+                        sock = AsynCoroSocket(sock, blocking=False)
                         yield sock.sendto(msg, (info['ip_addr'], info['port']))
                         sock.close()
             elif msg.startswith('PONG:'):
@@ -328,7 +326,7 @@ class _Scheduler(object):
                                   self.ip_addr, self.scheduler_port,
                                   req['ip_addr'], req['port'])
                     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                    sock = AsynCoroSocket(sock, coro=coro, blocking=False)
+                    sock = AsynCoroSocket(sock, blocking=False)
                     reply = {'ip_addr':self.ip_addr, 'port':self.scheduler_port,
                              'sign':self.sign, 'version':_dispy_version}
                     yield sock.sendto(cPickle.dumps(reply), (req['ip_addr'], req['port']))
@@ -345,7 +343,7 @@ class _Scheduler(object):
         ping_request = cPickle.dumps({'scheduler_ip_addr':self.ip_addr,
                                       'scheduler_port':self.port, 'version':_dispy_version})
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock = AsynCoroSocket(sock, coro=coro, blocking=False)
+        sock = AsynCoroSocket(sock, blocking=False)
         for node_spec, node_info in cluster._compute.node_spec.iteritems():
             if node_spec.find('*') >= 0:
                 port = node_info['port']
@@ -353,7 +351,7 @@ class _Scheduler(object):
                     port = self.node_port
                 bc_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                bc_osck = AsynCoroSocket(bc_sock, coro=coro, blocking=False)
+                bc_osck = AsynCoroSocket(bc_sock, blocking=False)
                 try:
                     yield bc_sock.sendto('PING:%s' % ping_request, ('<broadcast>', port))
                 except:
@@ -426,7 +424,7 @@ class _Scheduler(object):
         assert coro is not None
         logging.debug('Sending results for %s to %s, %s', uid, ip, port)
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock = AsynCoroSocket(sock, coro=coro, blocking=False)
+        sock = AsynCoroSocket(sock, blocking=False)
         try:
             yield sock.connect((ip, port))
             yield sock.write_msg(uid, cPickle.dumps(result))
@@ -481,7 +479,6 @@ class _Scheduler(object):
     def request_server(self, coro=None):
         # generator
         assert coro is not None
-        self.request_sock.set_coro(coro)
 
         def _request_task(self, conn, addr, coro=None):
 
@@ -538,8 +535,7 @@ class _Scheduler(object):
                     compute = cPickle.loads(msg)
                 except:
                     logging.debug('Ignoring compute request from %s', addr[0])
-                    yield None
-                    raise StopIteration
+                    yield None; raise StopIteration
                 setattr(compute, 'nodes', {})
                 cluster = _Cluster(compute)
                 compute = cluster._compute
@@ -627,7 +623,7 @@ class _Scheduler(object):
                         logging.debug('Could not send reply for "%s"', xf.name)
 
             # _request_task begins here
-            conn = AsynCoroSocket(conn, coro=coro, blocking=False, certfile=self.cluster_certfile,
+            conn = AsynCoroSocket(conn, blocking=False, certfile=self.cluster_certfile,
                                   keyfile=self.cluster_keyfile, server=True)
 
             resp = None
@@ -886,7 +882,7 @@ class _Scheduler(object):
     def job_result_task(self, conn, addr, coro=None):
         # generator
         assert coro is not None
-        conn = AsynCoroSocket(conn, coro=coro, blocking=False, certfile=self.node_certfile,
+        conn = AsynCoroSocket(conn, blocking=False, certfile=self.node_certfile,
                               keyfile=self.node_keyfile, server=True)
 
         try:
@@ -959,7 +955,6 @@ class _Scheduler(object):
     def job_result_server(self, coro=None):
         # generator
         assert coro is not None
-        self.job_result_sock.set_coro(coro)
         logging.debug('Job results port is %s:%s',
                       self.ip_addr, self.job_result_sock.getsockname()[1])
         while True:

@@ -59,7 +59,7 @@ interchange threading.Lock and CoroLock and a few syntactic changes.
 For example, a simple tcp server looks like:
 
 def process(sock, coro=None):
-    asock = AsynCoroSocket(sock, coro=coro)
+    asock = AsynCoroSocket(sock)
     # get (exactly) 4MB of data, for example, and let other coroutines
     # (process methods, in this case) execute in the meantime
     data = yield asock.read(4096*1024)
@@ -84,8 +84,7 @@ do any processing, so the loop can quickly accept connections. Each
 request is processed in a separate coroutine. A coroutine method must
 have 'coro=None' default argument. The coroutine builder Coro will set
 coro argument with the Coro instance, which needs to be used with
-asynchronous sockets, CoroCondition, CoroLock and methods in Coro
-class.
+CoroCondition, CoroLock and methods in Coro class.
 
 With 'yield', 'suspend' and 'resume' methods, coroutines can cooperate
 scheduling their execution, send/receive values to/from each other,
@@ -106,23 +105,20 @@ class AsynCoroSocket(object):
     I/O completion and coroutines.
     """
 
-    def __init__(self, sock, coro=None, blocking=False, timeout=True,
+    def __init__(self, sock, blocking=False, timeout=True,
                  auth_code=None, certfile=None, keyfile=None, server=False):
-        """coro argument must be coroutine where this socket is
-        used. With asynchronous I/O (blocking=False), that core is
-        suspended and resumed. This means that if a coroutine passes
-        an asynchronous socket to (or returned from) another
-        coroutine, care must be taken to set the coro appropriately
-        with 'set_coro' method in both the callee (when it is sent
-        there) and caller (when callee returns).
+        """Setup sock for use wih asyncoro. For synchronous sockets
+        (with blocking=True) this only sock for SSL (when certfile is
+        used), timeout is set and adds 'read', 'write', 'read_msg' and
+        'write_msg' methods. For asynchronous sockets (with
+        blocking=False), it sets up for suspend and resume facilities
+        of calling coro.
         """
-
         if certfile:
             self.sock = ssl.wrap_socket(sock, server_side=server, keyfile=keyfile,
                                         certfile=certfile, ssl_version=ssl.PROTOCOL_TLSv1)
         else:
             self.sock = sock
-        self.coro = coro
         self.blocking = blocking == True
         self.auth_code = auth_code
         self.result = None
@@ -142,7 +138,8 @@ class AsynCoroSocket(object):
             self.read_msg = self.sync_read_msg
             self.write_msg = self.sync_write_msg
             self._notifier = None
-            self.coro = None
+            self._asyncoro = None
+            self._coro = None
         else:
             self.sock.setblocking(0)
             if timeout:
@@ -162,11 +159,10 @@ class AsynCoroSocket(object):
             self.read_msg = self.async_read_msg
             self.write_msg = self.async_write_msg
 
+            self._asyncoro = AsynCoro.instance()
+            self._coro = None
             self._notifier = _AsyncNotifier.instance()
             self._notifier.add_fd(self)
-
-    def set_coro(self, coro):
-        self.coro = coro
 
     def async_recv(self, *args):
         """Asynchronous version of socket recv method.
@@ -175,15 +171,18 @@ class AsynCoroSocket(object):
             self.result = self.sock.recv(*args)
             if self.result >= 0:
                 self._notifier.modify(self, 0)
-                self.coro.resume(self.result)
+                coro, self._coro = self._coro, None
+                coro.resume(self.result)
             else:
                 self._notifier.modify(self, 0)
-                self.coro.throw(Exception, Exception('socket recv error'), None)
+                coro, self._coro = self._coro, None
+                coro.throw(Exception, Exception('socket recv error'), None)
 
         self.task = functools.partial(_recv, self, *args)
         if self.timestamp is not None:
             self.timestamp = time.time()
-        self.coro.suspend()
+        self._coro = self._asyncoro.cur_coro()
+        self._coro.suspend()
         self._notifier.modify(self, _AsyncNotifier._Readable)
 
     def async_read(self, bufsize, *args):
@@ -196,17 +195,20 @@ class AsynCoroSocket(object):
             if len(self.result) == bufsize or self.sock.type == socket.SOCK_DGRAM:
                 self._notifier.modify(self, 0)
                 self.result = str(self.result)
-                self.coro.resume(self.result)
+                coro, self._coro = self._coro, None
+                coro.resume(self.result)
             elif len(self.result) == plen:
                 # TODO: check for error and delete?
                 self.result = None
                 self._notifier.modify(self, 0)
-                self.coro.throw(Exception, Exception('socket reading error'), None)
+                coro, self._coro = self._coro, None
+                coro.throw(Exception, Exception('socket reading error'), None)
 
         self.task = functools.partial(_read, self, bufsize, *args)
         if self.timestamp is not None:
             self.timestamp = time.time()
-        self.coro.suspend()
+        self._coro = self._asyncoro.cur_coro()
+        self._coro.suspend()
         self._notifier.modify(self, _AsyncNotifier._Readable)
 
     def sync_read(self, bufsize, *args):
@@ -224,12 +226,14 @@ class AsynCoroSocket(object):
             self.result, addr = self.sock.recvfrom(*args)
             self._notifier.modify(self, 0)
             self.result = (self.result, addr)
-            self.coro.resume(self.result)
+            coro, self._coro = self._coro, None
+            coro.resume(self.result)
 
         self.task = functools.partial(_recvfrom, self, *args)
         if self.timestamp is not None:
             self.timestamp = time.time()
-        self.coro.suspend()
+        self._coro = self._asyncoro.cur_coro()
+        self._coro.suspend()
         self._notifier.modify(self, _AsyncNotifier._Readable)
 
     def async_send(self, *args):
@@ -244,15 +248,18 @@ class AsynCoroSocket(object):
                 # TODO: close socket, inform coro
                 logging.debug('write error', self.fileno)
                 self._notifier.unregister(self)
-                self.coro.throw(*sys.exc_info())
+                coro, self._coro = self._coro, None
+                coro.throw(*sys.exc_info())
             else:
                 self._notifier.modify(self, 0)
-                self.coro.resume(self.result)
+                coro, self._coro = self._coro, None
+                coro.resume(self.result)
 
         self.task = functools.partial(_send, self, *args)
         if self.timestamp is not None:
             self.timestamp = time.time()
-        self.coro.suspend()
+        self._coro = self._asyncoro.cur_coro()
+        self._coro.suspend()
         self._notifier.modify(self, _AsyncNotifier._Writable)
 
     def async_sendto(self, *args):
@@ -268,15 +275,18 @@ class AsynCoroSocket(object):
                 # TODO: close socket, inform coro
                 logging.debug('write error: %s', traceback.format_exc())
                 self._notifier.unregister(self)
-                self.coro.throw(*sys.exc_info())
+                coro, self._coro = self._coro, None
+                coro.throw(*sys.exc_info())
             else:
                 self._notifier.modify(self, 0)
-                self.coro.resume(self.result)
+                coro, self._coro = self._coro, None
+                coro.resume(self.result)
 
         self.task = functools.partial(_sendto, self, *args)
         if self.timestamp is not None:
             self.timestamp = time.time()
-        self.coro.suspend()
+        self._coro = self._asyncoro.cur_coro()
+        self._coro.suspend()
         self._notifier.modify(self, _AsyncNotifier._Writable)
 
     def async_write(self, data):
@@ -291,18 +301,21 @@ class AsynCoroSocket(object):
                 # TODO: close socket, inform coro
                 self.result = None
                 self._notifier.unregister(self)
-                self.coro.throw(*sys.exc_info())
+                coro, self._coro = self._coro, None
+                coro.throw(*sys.exc_info())
             else:
                 if n > 0:
                     self.result = buffer(self.result, n)
                     if len(self.result) == 0:
                         self._notifier.modify(self, 0)
-                        self.coro.resume(0)
+                        coro, self._coro = self._coro, None
+                        coro.resume(0)
 
         self.task = functools.partial(_write, self)
         if self.timestamp is not None:
             self.timestamp = time.time()
-        self.coro.suspend()
+        self._coro = self._asyncoro.cur_coro()
+        self._coro.suspend()
         self._notifier.modify(self, _AsyncNotifier._Writable)
 
     def sync_write(self, data):
@@ -330,11 +343,13 @@ class AsynCoroSocket(object):
             conn, addr = self.sock.accept()
             self.result = (conn, addr)
             self._notifier.modify(self, 0)
-            self.coro.resume(self.result)
+            coro, self._coro = self._coro, None
+            coro.resume(self.result)
 
         self.task = functools.partial(_accept, self)
         self.timestamp = None
-        self.coro.suspend()
+        self._coro = self._asyncoro.cur_coro()
+        self._coro.suspend()
         self._notifier.modify(self, _AsyncNotifier._Readable)
 
     def async_connect(self, *args):
@@ -345,14 +360,16 @@ class AsynCoroSocket(object):
             err = self.sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
             if not err:
                 self._notifier.modify(self, 0)
-                self.coro.resume(0)
+                coro, self._coro = self._coro, None
+                coro.resume(0)
             else:
                 logging.debug('connect error: %s', err)
 
         self.task = functools.partial(_connect, self, *args)
         if self.timestamp is not None:
             self.timestamp = time.time()
-        self.coro.suspend()
+        self._coro = self._asyncoro.cur_coro()
+        self._coro.suspend()
         self._notifier.modify(self, _AsyncNotifier._Writable)
         try:
             self.sock.connect(*args)
@@ -490,7 +507,9 @@ class Coro(object):
     def value(self):
         """Get 'return' value of coro.
 
-        NB: This method should not be called from a coroutine!
+        NB: This method should not be called from a coroutine! This
+        method is meant for main thread in the user program to wait
+        for (main) coroutine(s) it creates.
 
         Once coroutine stops (finishes) executing, the last value
         yielded by it is returned.
@@ -579,7 +598,8 @@ class AsynCoro(object):
     class above will start executing. AsynCoro creates _AsyncNotifier
     to wake up suspended coroutines waiting for I/O completion. The
     only properties available to users are 'terminate' and 'join'
-    methods.  """
+    methods.
+    """
 
     __metaclass__ = MetaSingleton
     __instance = None
@@ -592,22 +612,17 @@ class AsynCoro(object):
     _Suspended = 3
     # in _suspended, not executing
     _Stopped = 4
-    # called another generator or coro, not in _running or _suspended
+    # called another coro, not in _running or _suspended
+    # this should not be necessary (anymore)
     _Frozen = 5
 
     _coro_id = 1
-
-    @classmethod
-    def instance(cls):
-        """Returns (singleton) instance of AsynCoro. This method
-        should be called only after initializing AsynCoro.
-        """
-        return cls.__instance
 
     def __init__(self):
         if self.__class__.__instance is None:
             self.__class__.__instance = self
             self._coros = {}
+            self._cur_coro = None
             self._running = set()
             self._suspended = set()
             # if a coro sleeps till timeout, then the timeout is
@@ -627,6 +642,16 @@ class AsynCoro(object):
             self._scheduler.start()
 
             self.notifier = _AsyncNotifier()
+
+    @classmethod
+    def instance(cls):
+        """Returns (singleton) instance of AsynCoro. This method
+        should be called only after initializing AsynCoro.
+        """
+        return cls.__instance
+
+    def cur_coro(self):
+        return self._cur_coro
 
     def _add(self, coro):
         """Internal use only. See Coro class.
@@ -785,6 +810,7 @@ class AsynCoro(object):
                     continue
                 self._sched_cv.acquire()
                 coro._state = AsynCoro._Running
+                self._cur_coro = coro
                 self._sched_cv.release()
                 try:
                     if coro._exception:
@@ -793,6 +819,7 @@ class AsynCoro(object):
                         retval = coro._generator.send(coro._value)
                 except:
                     self._sched_cv.acquire()
+                    self._cur_coro = None
                     if sys.exc_type == StopIteration:
                         coro._exception = None
                     else:
@@ -820,6 +847,7 @@ class AsynCoro(object):
                     self._sched_cv.release()
                 else:
                     self._sched_cv.acquire()
+                    self._cur_coro = None
                     if coro._state == AsynCoro._Suspended:
                         # if this coroutine is suspended, don't update
                         # the value; it will be updated with the value
