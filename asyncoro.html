@@ -18,9 +18,16 @@
     <div id="projectinfo"> 
       <div id="menu">
 	<ul>
-        <li><a href="http://dispy.sourceforge.net/index.html">Project Page</a></li> 
+        <li><a href="index.html">Project Page</a></li> 
+        <li><a href="dispy.html">dispy</a></li> 
+        <li><a href="dispynode.html">dispynode</a></li> 
+        <li><a href="dispyscheduler.html">dispyscheduler</a></li> 
+        <li><a href="dispynetrelay.html">dispynetrelay</a></li>
+	</ul>
+	<hr />
+	<ul>
         <li><a href="http://sourceforge.net/projects/dispy/files">Download dispy</a></li> 
-        <li><a href="http://sourceforge.net/projects/dispy/">Project detail</a></li> 
+        <li><a href="http://sourceforge.net/projects/dispy/">Project details</a></li> 
         <li><a href="http://sourceforge.net/projects/dispy/support">Get support</a></li>
 	</ul>
       </div> 
@@ -95,25 +102,26 @@ sleeps for that many seconds (or fractions of second) unless someone
 else wakes it up before. A sleeping coro can be woken up/resumed with
 coro.resume(update=None). The update value is 'sent' to the sleeping
 coro, so that 'yield' that caused it to suspend will receive
-update. Thus, if coro1 suspends with <tt>u = coro1.sleep()</tt> and
-later, another coro, coro2, can wake it up
-with <tt>coro1.resume('rained')</tt>. This sets 'u' to 'rained' in
+update. Thus, if coro1 suspends with <tt>news = yield
+coro1.sleep()</tt> and later, another coro, coro2, can wake it up
+with <tt>coro1.wakeup('rained')</tt>. This sets 'news' to 'rained' in
 coro1 and coro1 resumes execution.  The update can be any python
 object. asyncoro framework requires that 'resume' called on only
 currently sleeping coro(s). Otherwise, the update is ignored (and a
 warning is given). If necessary, cooperating coros can use a
-CoroCondition to signal when a coro is going to sleep.
+CoroCondition to signal when a coro is going to sleep. Note that
+'sleep' must be used with 'yield'; otherwise, entire coroutine
+suite will be locked up.
   </p>
 
 <p>
-With 'yield', 'suspend' and 'resume' methods, coroutines can cooperate
-scheduling their execution, send/receive values to/from each other,
-and play relay race.
+With 'yield', 'sleep'/'suspend' and 'wakeup'/'resume' methods,
+coroutines can cooperate scheduling their execution, send/receive
+values to/from each other, and play relay race.
 </p>
 
 <p>
-See discopy files for details/examples on how to use
-asyncoro.
+See discopy files for details/examples on how to use asyncoro.
 </p>
 
       </div> 

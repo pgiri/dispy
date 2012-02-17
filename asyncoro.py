@@ -541,8 +541,9 @@ class CoroLock(object):
         self._asyncoro = AsynCoro.instance()
 
     def acquire(self):
-        assert self._owner == None, 'invalid lock acquire: %s, %s' % (self._owner, coro._id)
-        self._owner = self._asyncoro.cur_coro()._id
+        cid = self._asyncoro.cur_coro()._id
+        assert self._owner == None, 'invalid lock acquire: %s, %s' % (self._owner, cid)
+        self._owner = cid
 
     def release(self):
         cid = self._asyncoro.cur_coro()._id
@@ -564,8 +565,9 @@ class CoroCondition(object):
         self._asyncoro = AsynCoro.instance()
 
     def acquire(self):
-        assert self._owner == None, 'invalid cv acquire: %s, %s' % (self._owner, coro._id)
-        self._owner = self._asyncoro.cur_coro()._id
+        cid = self._asyncoro.cur_coro()._id
+        assert self._owner == None, 'invalid cv acquire: %s, %s' % (self._owner, cid)
+        self._owner = cid
 
     def release(self):
         cid = self._asyncoro.cur_coro()._id

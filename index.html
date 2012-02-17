@@ -37,12 +37,13 @@
 dispy
 </h3>
 <p>
-dispy is a Python module for distributing computations across multiple
-processors on a single machine, among many machines in a cluster, grid
-or cloud for parallel execution. dispy is well suited for data
-parallellism (SIMD paradigm) where a computation is evaluated with
-different (large) datasets independently. Salient features of dispy
-are:
+dispy is a framework, developed
+in <a href="www.python.org">Python</a>, for distributing computations
+across multiple processors on a single machine, among many machines in
+a cluster, grid or cloud for parallel execution. dispy is well suited
+for data parallellism (SIMD paradigm) where a computation is evaluated
+with different (large) datasets independently. Salient features of
+dispy are:
 <ul>
 <li>Computations (Python functions or standalone programs) and its
     dependencies (files, Python functions, classes, modules) are
@@ -86,12 +87,15 @@ are:
     and <a href="dispyscheduler.html">dispyscheduler</a>).</li>
 
 <li>Although not exactly a feature, there is now an implementation of
-dispy with asynchronous I/O and coroutines (without threads). This
-version is released as 'discopy' to avoid confusion with dispy
-releases. Usage of discopy is same as that of dispy. discopy has not
-yet been well tested and not known if it works with Windows. The hope
-is that discopy scales better than dispy for large number of
-connections, but currently this is more of an academic point.</li>
+dispy with <a href="asyncoro.html">asyncoro</a>, a framework for
+asynchronous sockets and coroutines (without threads). This version is
+released
+as <a href="http://sourceforge.net/projects/dispy/files/discopy">discopy</a>
+to avoid confusion with dispy releases. Usage of discopy is same as
+that of dispy. discopy has not yet been well tested and not known if
+it works with Windows. <a href="asyncoro.html">asyncoro</a> framework
+can be used independently of dispy/discopy to develop programs with
+asynchronous I/O completion and coroutines.</li>
   </ul>
 <p>
 dispy consists of 4 components:
