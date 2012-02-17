@@ -181,13 +181,13 @@ class _DispyNode(object):
         self.zombie_interval = 60 * zombie_interval
 
         logging.debug('auth_code for %s: %s', ip_addr, self.auth_code)
-        logging.info('Serving %s cpus at %s:%s',
-                     self.cpus, self.address[0], self.address[1])
 
         self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.udp_sock.bind(('', node_port))
-        logging.info('node running at %s:%s', self.address[0], node_port)
+        logging.info('serving %s cpus at %s:%s',
+                     self.cpus, self.address[0], node_port)
+        logging.debug('tcp server at %s:%s', self.address[0], self.address[1])
         self.udp_sock = AsynCoroSocket(self.udp_sock, blocking=False, timeout=False)
 
         scheduler_ip_addr = _node_name_ipaddr(scheduler_node)[1]
@@ -257,7 +257,7 @@ class _DispyNode(object):
                     self.lock.acquire()
                     for compute in self.computations.itervalues():
                         compute.last_pulse = time.time()
-                    self.lock.release()
+                    yield self.lock.release()
                 except:
                     logging.warning('Ignoring PULSE from %s', addr[0])
             elif msg.startswith('SERVERPORT:'):
@@ -279,6 +279,8 @@ class _DispyNode(object):
         while True:
             conn, addr = yield self.tcp_sock.accept()
             logging.debug('new tcp request from %s', str(addr))
+            conn = AsynCoroSocket(conn, blocking=False, server=True,
+                                  certfile=self.certfile, keyfile=self.keyfile)
             Coro(self.tcp_serve_task, conn, addr)
 
     def tcp_serve_task(self, conn, addr, coro=None):
@@ -296,7 +298,7 @@ class _DispyNode(object):
                 compute = None
             elif addr[0] != compute.scheduler_ip_addr:
                 compute = None
-            self.lock.release()
+            yield self.lock.release()
             _job.uid = uid
             if self.avail_cpus == 0:
                 logging.warning('All cpus busy')
@@ -371,7 +373,7 @@ class _DispyNode(object):
                 self.job_infos[_job.uid] = job_info
                 self.avail_cpus -= 1
                 compute.pending_jobs += 1
-                self.lock.release()
+                yield self.lock.release()
                 prog_thread = threading.Thread(target=self.__job_program, args=(_job, job_info))
                 prog_thread.start()
                 raise StopIteration
@@ -479,7 +481,7 @@ class _DispyNode(object):
                 except:
                     pass
                 xfer_files.append(xf)
-            self.lock.release()
+            yield self.lock.release()
             if (self.scheduler_ip_addr is None) or \
                    (self.scheduler_ip_addr == compute.scheduler_ip_addr):
                 self.computations[compute.id] = compute
@@ -520,7 +522,7 @@ class _DispyNode(object):
                         self.file_uses[tgt] += 1
                     else:
                         self.file_uses[tgt] = 1
-                    self.lock.release()
+                    yield self.lock.release()
                     resp = 'ACK'
                 else:
                     logging.warning('File "%s" already exists with different status as "%s"',
@@ -578,22 +580,38 @@ class _DispyNode(object):
                               uid, addr[0])
                 raise StopIteration
             try:
-                logging.debug('Killing job %s', uid)
+                logging.debug('Terminating job %s', uid)
                 job_info.proc.terminate()
-                # TODO: make sure process is really killed?
-                # called from coroutine, so not good to wait
                 if isinstance(job_info.proc, multiprocessing.Process):
-                    job_info.proc.join(1)
+                    for x in xrange(20):
+                        yield coro.sleep(0.1)
+                        if not job_info.proc.is_alive():
+                            logging.debug('Process "%s" for job %s terminated',
+                                          compute.name, uid)
+                            break
+                    else:
+                        logging.warning('Could not kill process %s', compute.name)
                 else:
-                    job_info.proc.wait()
+                    assert isinstance(job_info.proc, subprocess.Popen)
+                    for x in xrange(20):
+                        yield coro.sleep(0.1)
+                        rc = job_info.proc.poll()
+                        logging.debug('Program "%s" for job %s terminated with %s',
+                                      compute.name, uid, rc)
+                        if rc is not None:
+                            break
+                        if x == 10:
+                            logging.debug('Killing job %s', uid)
+                            job_info.proc.kill()
+                    else:
+                        logging.warning('Could not kill process %s', compute.name)
             except:
                 logging.debug(traceback.format_exc())
-            logging.debug('Killed process for job %s', uid)
             reply_addr = (addr[0], compute.job_result_port)
             reply = _JobReply(_job, self.ip_addr)
             job_info = _DispyJobInfo(reply, reply_addr, compute)
             reply.status = DispyJob.Terminated
-            Coro(self._send_job_reply, job_info, resending=False)
+            yield self._send_job_reply(job_info, resending=False, coro=coro)
 
         def retrieve_job_task(conn, uid, msg, addr, coro):
             assert coro is not None
@@ -666,8 +684,6 @@ class _DispyNode(object):
                     pass
 
         # tcp_serve_task starts
-        conn = AsynCoroSocket(conn, blocking=False, server=True,
-                              certfile=self.certfile, keyfile=self.keyfile)
         try:
             req = yield conn.read(len(self.auth_code))
             assert req == self.auth_code
