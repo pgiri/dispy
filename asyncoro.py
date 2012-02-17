@@ -520,10 +520,10 @@ class Coro(object):
 
         If waiting for one coro from another is needed, there are
         multiple approaches: If one coro starts another, then caller
-        can 'yield' to the generator instead of creating coro. If that
-        is not the case, they should use CoroCondition variable and
-        coro being waited on should use .notify on that variable and
-        the coro waiting on should use .wait on that variable (see
+        can 'yield' to the generator instead of creating coro. If
+        coros are conccurrent, they can use CoroCondition variable so
+        coro being waited on uses .notify on that variable and the
+        coro waiting on uses .wait on that variable (see
         CoroCondition).
         """
         self._complete.wait()
@@ -1023,10 +1023,10 @@ class _AsyncNotifier(object):
                             if fd.timestamp and (now - fd.timestamp) >= self._fd_timeout]
                 try:
                     for fd in timeouts:
-                        if fd.coro:
+                        if fd._coro:
                             e = 'timed out %s' % (now - fd.timestamp)
                             fd.timestamp = None
-                            fd.coro.throw(socket.timeout, socket.timeout(e))
+                            fd._coro.throw(socket.timeout, socket.timeout(e))
                             # TODO: unregister and close?
                 except:
                     logging.debug(traceback.format_exc())
