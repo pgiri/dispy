@@ -122,12 +122,13 @@ class _DispySocket(object):
         else:
             self.sock = sock
         self.auth_code = auth_code
-        for method in ['connect', 'settimeout', 'close', 'bind', 'listen', 'accept']:
+        for method in ['connect', 'settimeout', 'close', 'bind', 'listen', 'accept',
+                       'getsockname', 'getsockopt', 'setsockopt']:
             setattr(self, method, getattr(self.sock, method))
         if timeout is not None:
             sock.settimeout(timeout)
 
-    def read(self, data_len=4096):
+    def read(self, data_len):
         data = bytearray()
         while len(data) < data_len:
             prev_len = len(data)

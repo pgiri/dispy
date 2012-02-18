@@ -591,6 +591,11 @@ class _DispyNode(object):
                 resp = 'ACK'
                 if xfer_files:
                     resp += ':XFER_FILES:' + cPickle.dumps(xfer_files)
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock = _DispySocket(sock, auth_code=self.auth_code)
+                sock.connect((self.ip_addr, self.cmd_sock.getsockname()[1]))
+                sock.write_msg(0, 'reset_interval')
+                sock.close()
             else:
                 resp = 'Busy'
                 if os.path.isdir(compute.dest_path):
@@ -891,7 +896,7 @@ class _DispyNode(object):
         """
         job_reply = job_info.job_reply
         logging.debug('Sending result for job %s (%s) to %s',
-                      job_reply.uid, job_reply.status, job_info.reply_addr[0])
+                      job_reply.uid, job_reply.status, str(job_info.reply_addr))
         sock = _DispySocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                             certfile=self.certfile, keyfile=self.keyfile, timeout=5)
         try:
