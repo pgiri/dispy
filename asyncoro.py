@@ -108,7 +108,7 @@ class AsynCoroSocket(object):
     """
 
     def __init__(self, sock, blocking=False, timeout=True,
-                 auth_code=None, certfile=None, keyfile=None, server=False):
+                 certfile=None, keyfile=None, server=False):
         """Setup sock for use wih asyncoro. For synchronous sockets
         (with blocking=True) this only sock for SSL (when certfile is
         used), timeout is set and adds 'read', 'write', 'read_msg' and
@@ -122,7 +122,6 @@ class AsynCoroSocket(object):
         else:
             self.sock = sock
         self.blocking = blocking == True
-        self.auth_code = auth_code
         self.result = None
         self.fileno = sock.fileno()
         for method in ['bind', 'listen', 'getsockname', 'setsockopt', 'getsockopt']:
@@ -385,18 +384,18 @@ class AsynCoroSocket(object):
         reads uid and the message as tuple.
         """
         try:
-            info_len = struct.calcsize('>LL')
+            info_len = struct.calcsize('>L')
             info = yield self.read(info_len)
             if len(info) < info_len:
                 logging.error('Socket disconnected?(%s, %s)', len(info), info_len)
                 yield (None, None)
-            (uid, msg_len) = struct.unpack('>LL', info)
+            msg_len = struct.unpack('>L', info)[0]
             assert msg_len > 0
             msg = yield self.read(msg_len)
             if len(msg) < msg_len:
                 logging.error('Socket disconnected?(%s, %s)', len(msg), msg_len)
-                yield (None, None)
-            yield (uid, msg)
+                yield None
+            yield msg
         except:
             logging.error('Socket reading error: %s' % traceback.format_exc())
             raise
@@ -405,41 +404,32 @@ class AsynCoroSocket(object):
         """Synchronous version of async_read_msg.
         """
         try:
-            info_len = struct.calcsize('>LL')
+            info_len = struct.calcsize('>L')
             info = self.sync_read(info_len)
             if len(info) < info_len:
                 logging.error('Socket disconnected?(%s, %s)', len(info), info_len)
-                return (None, None)
-            (uid, msg_len) = struct.unpack('>LL', info)
+                return None
+            msg_len = struct.unpack('>L', info)[0]
             assert msg_len > 0
             msg = self.sync_read(msg_len)
             if len(msg) < msg_len:
                 logging.error('Socket disconnected?(%s, %s)', len(msg), msg_len)
-                return (None, None)
-            return (uid, msg)
+                return None
+            return msg
         except socket.timeout:
             logging.error('Socket disconnected(timeout)?')
-            return (None, None)
+            return None
 
-    def async_write_msg(self, uid, data, auth=True):
-        """Messages are tagged with a unique identifier (integer) and
-        length of the payload (data). If socket has authentication
-        data and argument 'auth' is True, then the message is prefixed
-        with authentication data. The receiving side has to know how
-        long authentication data is, as this part is not tagged with
-        length.
+    def async_write_msg(self, data):
+        """Messages are tagged with length of the data, so on the
+        receiving side, read_msg knows how much data to read.
         """
-        if auth and self.auth_code:
-            yield self.write(self.auth_code)
-        yield self.write(struct.pack('>LL', uid, len(data)) + data)
+        yield self.write(struct.pack('>L', len(data)) + data)
 
-    def sync_write_msg(self, uid, data, auth=True):
+    def sync_write_msg(self, data):
         """Synchronous version of async_write_msg.
         """
-        if auth and self.auth_code:
-            self.sync_write(self.auth_code)
-        self.sync_write(struct.pack('>LL', uid, len(data)) + data)
-        return 0
+        return self.sync_write(struct.pack('>L', len(data)) + data)
 
 class Coro(object):
     """'Coroutine' factory to build coroutines to be scheduled with
@@ -530,10 +520,12 @@ class Coro(object):
         return self._value
 
     def terminate(self):
+        """Terminate coro.
+        """
         if self._asyncoro:
             self._asyncoro._terminate_coro(self._id)
         else:
-            logging.warning('throw: coroutine %s removed?', self.name)
+            logging.warning('terminate: coroutine %s removed?', self.name)
 
 class CoroLock(object):
     """'Lock' primitive for coroutines.

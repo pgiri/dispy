@@ -427,10 +427,9 @@ class _Scheduler(object):
         sock = AsynCoroSocket(sock, blocking=False)
         try:
             yield sock.connect((ip, port))
-            yield sock.write_msg(uid, cPickle.dumps(result))
-            ruid, ack = yield sock.read_msg()
+            yield sock.write_msg(cPickle.dumps(result))
+            ack = yield sock.read_msg()
             assert ack == 'ACK'
-            assert uid == ruid
         except:
             f = os.path.join(self.dest_path_prefix, str(cid), '_dispy_job_reply_%s' % uid)
             logging.debug('storing results for job %s', uid)
@@ -502,15 +501,14 @@ class _Scheduler(object):
                 setattr(_job, 'job', job)
                 resp = cPickle.dumps(_job.uid)
                 try:
-                    yield conn.write_msg(0, resp)
+                    yield conn.write_msg(resp)
                 except:
                     logging.warning('Failed to send response to %s: %s',
                                     str(addr), traceback.format_exc())
                     raise StopIteration
                 try:
-                    uid, msg = yield conn.read_msg()
+                    msg = yield conn.read_msg()
                     assert msg == 'ACK'
-                    assert uid == _job.uid
                 except:
                     logging.warning('Invalid reply for job: %s, %s',
                                     _job.uid, traceback.format_exc())
@@ -618,7 +616,7 @@ class _Scheduler(object):
                     resp = 'NACK'
                 if resp:
                     try:
-                        yield conn.write_msg(0, resp)
+                        yield conn.write_msg(resp)
                     except:
                         logging.debug('Could not send reply for "%s"', xf.name)
 
@@ -633,7 +631,7 @@ class _Scheduler(object):
                     conn.close()
                     logging.warning('Invalid/unauthorized request ignored')
                     raise StopIteration
-                uid, msg = yield conn.read_msg()
+                msg = yield conn.read_msg()
                 if not msg:
                     conn.close()
                     logging.info('Closing connection')
@@ -735,10 +733,9 @@ class _Scheduler(object):
                         job_reply = cPickle.load(fd)
                         fd.close()
                         if job_reply.hash == req['hash']:
-                            yield conn.write_msg(req['uid'], cPickle.dumps(job_reply))
-                            ruid, ack = yield conn.read_msg()
+                            yield conn.write_msg(cPickle.dumps(job_reply))
+                            ack = yield conn.read_msg()
                             assert ack == 'ACK'
-                            assert ruid == req['uid']
                             try:
                                 os.remove(result_file)
                                 self._sched_cv.acquire()
@@ -763,7 +760,7 @@ class _Scheduler(object):
 
             if resp is not None:
                 try:
-                    yield conn.write_msg(0, resp)
+                    yield conn.write_msg(resp)
                 except:
                     logging.warning('Failed to send response to %s: %s',
                                     str(addr), traceback.format_exc())
@@ -886,37 +883,37 @@ class _Scheduler(object):
                               keyfile=self.node_keyfile, server=True)
 
         try:
-            uid, msg = yield conn.read_msg()
-            yield conn.write_msg(uid, 'ACK')
+            msg = yield conn.read_msg()
+            yield conn.write_msg('ACK')
+            reply = cPickle.loads(msg)
         except:
             logging.warning('Failed to read job results from %s', str(addr))
             raise StopIteration
         finally:
             conn.close()
 
-        logging.debug('Received reply for job %s from %s' % (uid, addr[0]))
+        logging.debug('Received reply for job %s from %s' % (reply.uid, addr[0]))
         self._sched_cv.acquire()
         node = self._nodes.get(addr[0], None)
         if node is None:
             self._sched_cv.release()
             logging.warning('Ignoring invalid reply for job %s from %s',
-                            uid, addr[0])
+                            reply.uid, addr[0])
             raise StopIteration
         node.last_pulse = time.time()
-        _job = self._sched_jobs.get(uid, None)
+        _job = self._sched_jobs.get(reply.uid, None)
         if _job is None:
             self._sched_cv.release()
-            logging.warning('Ignoring invalid job %s from %s', uid, addr[0])
+            logging.warning('Ignoring invalid job %s from %s', reply.uid, addr[0])
             raise StopIteration
         _job.job.end_time = time.time()
         cluster = self._clusters.get(_job.compute_id, None)
         if cluster is None:
             self._sched_cv.release()
-            logging.warning('Invalid cluster for job %s from %s', uid, addr[0])
+            logging.warning('Invalid cluster for job %s from %s', reply.uid, addr[0])
             raise StopIteration
         compute = cluster._compute
         try:
-            reply = cPickle.loads(msg)
             assert reply.uid == _job.uid
             assert reply.hash == _job.hash
             assert _job.job.status not in [DispyJob.Created, DispyJob.Finished]
@@ -924,17 +921,17 @@ class _Scheduler(object):
             setattr(reply, 'start_time', _job.job.start_time)
             setattr(reply, 'end_time', _job.job.end_time)
             if reply.status == DispyJob.ProvisionalResult:
-                logging.debug('Receveid provisional result for %s', uid)
+                logging.debug('Receveid provisional result for %s', reply.uid)
                 Coro(self.send_job_result,
                      _job.uid, compute.id, cluster.client_scheduler_ip_addr,
                      cluster.client_job_result_port, reply)
                 self._sched_cv.release()
                 raise StopIteration
             else:
-                del self._sched_jobs[uid]
+                del self._sched_jobs[_job.uid]
         except:
             self._sched_cv.release()
-            logging.warning('Invalid job result for %s from %s', uid, addr[0])
+            logging.warning('Invalid job result for %s from %s', reply.uid, addr[0])
             logging.debug(traceback.format_exc())
             raise StopIteration
 
