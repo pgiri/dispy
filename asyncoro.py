@@ -539,13 +539,15 @@ class CoroLock(object):
         self._asyncoro = AsynCoro.instance()
 
     def acquire(self):
-        cid = self._asyncoro.cur_coro()._id
-        assert self._owner == None, 'invalid lock acquire: %s, %s' % (self._owner, cid)
-        self._owner = cid
+        owner = self._asyncoro.cur_coro()
+        assert self._owner == None, '"%s"/%s: lock owned by "%s"/%s' % \
+               (owner.name, owner._id, self._owner.name, self._owner._id)
+        self._owner = owner
 
     def release(self):
-        cid = self._asyncoro.cur_coro()._id
-        assert self._owner == cid, 'invalid lock release %s != %s' % (self._owner, cid)
+        owner = self._asyncoro.cur_coro()
+        assert self._owner == owner, '"%s"/%s: invalid lock release - owned by "%s"/%s' % \
+               (owner.name, owner._id, self._owner.name, self._owner._id)
         self._owner = None
 
 class CoroCondition(object):
@@ -563,16 +565,21 @@ class CoroCondition(object):
         self._asyncoro = AsynCoro.instance()
 
     def acquire(self):
-        cid = self._asyncoro.cur_coro()._id
-        assert self._owner == None, 'invalid cv acquire: %s, %s' % (self._owner, cid)
-        self._owner = cid
+        owner = self._asyncoro.cur_coro()
+        assert self._owner == None, '"%s"/%s: condition variable owned by "%s"/%s' % \
+               (owner.name, owner._id, self._owner.name, self._owner._id)
+        self._owner = owner
 
     def release(self):
-        cid = self._asyncoro.cur_coro()._id
-        assert self._owner == cid, 'invalid cv release %s != %s' % (self._owner, cid)
+        owner = self._asyncoro.cur_coro()
+        assert self._owner == owner, '"%s"/%s: invalid condition variable release - owned by "%s"/%s' % \
+               (owner.name, owner._id, self._owner.name, self._owner._id)
         self._owner = None
 
     def notify(self):
+        owner = self._asyncoro.cur_coro()
+        assert self._owner == owner, '"%s"/%s: invalid condition variable notify - owned by "%s"/%s' % \
+               (owner.name, owner._id, self._owner.name, self._owner._id)
         self._notify = True
         if self._waitlist:
             wake = self._waitlist.pop(0)
@@ -591,9 +598,12 @@ class CoroCondition(object):
         
         """
         coro = self._asyncoro.cur_coro()
+        if self._owner is not None:
+            assert self._owner == coro, '"%s"/%s: invalid condition variable release - owned by "%s"/%s' % \
+                   (coro.name, coro._id, self._owner.name, self._owner._id)
         if self._notify:
             self._notify = False
-            self._owner = coro._id
+            self._owner = coro
             return False
         else:
             self._owner = None
@@ -845,7 +855,7 @@ class AsynCoro(object):
                 except:
                     self._sched_cv.acquire()
                     self._cur_coro = None
-                    if sys.exc_type in [StopIteration]:
+                    if sys.exc_type == StopIteration:
                         coro._exception = None
                     else:
                         coro._exception = sys.exc_info()
@@ -865,7 +875,7 @@ class AsynCoro(object):
                             caller._value = coro._value
                             self._delete(coro)
                     else:
-                        if sys.exc_type not in [StopIteration]:
+                        if coro._exception is not None:
                             logging.warning('uncaught exception in %s:\n%s', coro.name,
                                             ''.join(traceback.format_exception(*coro._exception)))
                         self._delete(coro)
