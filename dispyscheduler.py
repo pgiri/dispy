@@ -156,7 +156,7 @@ class _Scheduler(object):
             self.select_job_node = self.load_balance_schedule
             self.start_time = time.time()
 
-            self.timer = Coro(self.timer_task)
+            self.timer_coro = Coro(self.timer_task)
 
             self.request_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.request_sock.bind((self.ip_addr, self.scheduler_port))
@@ -231,7 +231,7 @@ class _Scheduler(object):
                         if cluster.client_scheduler_ip_addr == info['client_scheduler_ip_addr'] and \
                                cluster.client_scheduler_port == info['client_scheduler_port']:
                             cluster.last_pulse = time.time()
-                    self._sched_cv.release()
+                    yield self._sched_cv.release()
                 else:
                     node = self._nodes.get(info['ip_addr'], None)
                     if node is not None:
@@ -267,7 +267,7 @@ class _Scheduler(object):
                     h = _xor_string(status['sign'], self.node_secret)
                     h = hashlib.sha1(h).hexdigest()
                     if node.port == status['port'] and node.auth_code == h:
-                        self._sched_cv.release()
+                        yield self._sched_cv.release()
                         logging.debug('Node %s is already known', node.ip_addr)
                         continue
                     node.port = status['port']
@@ -287,14 +287,14 @@ class _Scheduler(object):
                             break
                 if node_computes:
                     Coro(self.setup_node, node, node_computes)
-                self._sched_cv.release()
+                yield self._sched_cv.release()
             elif msg.startswith('TERMINATED:'):
                 try:
                     data = cPickle.loads(msg[len('TERMINATED:'):])
                     self._sched_cv.acquire()
                     node = self._nodes.pop(data['ip_addr'], None)
                     if not node:
-                        self._sched_cv.release()
+                        yield self._sched_cv.release()
                         continue
                     logging.debug('Removing node %s', node.ip_addr)
                     h = _xor_string(data['sign'], self.node_secret)
@@ -315,7 +315,7 @@ class _Scheduler(object):
                                               node.ip_addr)
                                 pass
                     self._sched_cv.notify()
-                    self._sched_cv.release()
+                    yield self._sched_cv.release()
                     del node
                 except:
                     logging.debug('Removing node failed: %s', traceback.format_exc())
@@ -388,7 +388,7 @@ class _Scheduler(object):
                     compute_nodes.append(node)
                     break
         # self._sched_cv.notify()
-        self._sched_cv.release()
+        yield self._sched_cv.release()
 
         for node in compute_nodes:
             r = yield node.setup(compute, coro=coro)
@@ -417,7 +417,7 @@ class _Scheduler(object):
                     compute.nodes[node.ip_addr] = node
                     node.clusters.append(compute.id)
                     self._sched_cv.notify()
-                self._sched_cv.release()
+                yield self._sched_cv.release()
 
     def send_job_result(self, uid, cid, ip, port, result, coro=None):
         # generator
@@ -495,7 +495,7 @@ class _Scheduler(object):
                 if self.job_uid == sys.maxint:
                     # TODO: check if it is okay to reset
                     self.job_uid = 1
-                self._sched_cv.release()
+                yield self._sched_cv.release()
                 setattr(_job, 'node', None)
                 job = type('DispyJob', (), {'status':DispyJob.Created,
                                             'start_time':None, 'end_time':None})
@@ -665,7 +665,7 @@ class _Scheduler(object):
                     conn.close()
                     raise StopIteration
                 finally:
-                    self._sched_cv.release()
+                    yield self._sched_cv.release()
             elif msg.startswith('DEL_COMPUTE:'):
                 msg = msg[len('DEL_COMPUTE:'):]
                 conn.close()
@@ -683,7 +683,7 @@ class _Scheduler(object):
                     raise StopIteration
                 cluster.zombie = True
                 self.cleanup_computation(cluster)
-                self._sched_cv.release()
+                yield self._sched_cv.release()
             elif msg.startswith('FILEXFER:'):
                 msg = msg[len('FILEXFER:'):]
                 yield _xfer_file_task(self, conn, msg, addr, coro)
@@ -720,7 +720,7 @@ class _Scheduler(object):
                     _job.job.status = DispyJob.Cancelled
                     Coro(_job.node.send, _job.uid, 'TERMINATE_JOB:' + cPickle.dumps(_job),
                          reply=False)
-                self._sched_cv.release()
+                yield self._sched_cv.release()
             elif msg.startswith('RETRIEVE_JOB:'):
                 req = msg[len('RETRIEVE_JOB:'):]
                 try:
@@ -749,7 +749,7 @@ class _Scheduler(object):
                                         os.rmdir(p)
                                 else:
                                     cluster.pending_results -= 1
-                                self._sched_cv.release()
+                                yield self._sched_cv.release()
                             except:
                                 logging.debug('Could not remove "%s"', result_file)
                             raise StopIteration
@@ -818,13 +818,13 @@ class _Scheduler(object):
                 self.reschedule_jobs(dead_jobs)
                 if dead_nodes or dead_jobs:
                     self._sched_cv.notify()
-                self._sched_cv.release()
+                yield self._sched_cv.release()
             if self.ping_interval and (now - last_ping_time) >= self.ping_interval:
                 last_ping_time = now
                 self._sched_cv.acquire()
                 for cluster in self.clusters.itervalues():
                     Coro(self.send_ping_cluster, cluster)
-                self._sched_cv.release()
+                yield self._sched_cv.release()
             if self.zombie_interval and (now - last_zombie_time) >= self.zombie_interval:
                 last_zombie_time = now
                 self._sched_cv.acquire()
@@ -863,7 +863,7 @@ class _Scheduler(object):
                             os.remove(result_file)
                         except:
                             logging.debug('Could not remove "%s"', result_file)
-                self._sched_cv.release()
+                yield self._sched_cv.release()
 
     def load_balance_schedule(self):
         node = None
@@ -1034,7 +1034,7 @@ class _Scheduler(object):
             while self._sched_cv.wait():
                 yield None
             if self._terminate_scheduler:
-                self._sched_cv.release()
+                yield self._sched_cv.release()
                 break
             while self.unsched_jobs:
                 logging.debug('Pending jobs: %s', self.unsched_jobs)
@@ -1072,7 +1072,7 @@ class _Scheduler(object):
                 Coro(self.send_job_result, _job.uid, compute.id, cluster.client_scheduler_ip_addr,
                      cluster.client_job_result_port, reply)
             cluster._jobs = []
-        self._sched_cv.release()
+        yield self._sched_cv.release()
         logging.debug('scheduler quit')
 
     def shutdown(self):
@@ -1099,7 +1099,7 @@ class _Scheduler(object):
                 self._sched_jobs = {}
                 self._terminate_scheduler = True
                 self._sched_cv.notify()
-                self._sched_cv.release()
+                yield self._sched_cv.release()
 
                 for cluster in clusters:
                     compute = cluster._compute
@@ -1108,6 +1108,11 @@ class _Scheduler(object):
                 for coro in coros:
                     coro.value()
         Coro(_shutdown, self).value()
+        self.timer_coro.terminate()
+        self.request_coro.terminate()
+        self.job_result_coro.terminate()
+        self.udp_coro.terminate()
+        self.asyncoro.join()
         self.asyncoro.terminate()
 
     def stats(self):

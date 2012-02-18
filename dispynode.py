@@ -993,6 +993,10 @@ class _DispyNode(object):
             self.udp_sock.close()
             self.timer.terminate()
         Coro(_shutdown, self).value()
+        self.timer_coro.terminate()
+        self.tcp_coro.terminate()
+        self.udp_coro.terminate()
+        self.asyncoro.join()
         self.asyncoro.terminate()
 
 if __name__ == '__main__':

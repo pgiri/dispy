@@ -469,9 +469,9 @@ class Coro(object):
         self._value = None
         self._exception = False
         self._callers = []
-        self._scheduler = AsynCoro.instance()
+        self._asyncoro = AsynCoro.instance()
         self._complete = threading.Event()
-        self._scheduler._add(self)
+        self._asyncoro._add(self)
 
     def suspend(self, timeout=None):
         """Suspend/sleep coro (until woken up, usually by
@@ -480,8 +480,8 @@ class Coro(object):
         If timeout is a (floating point) number, this coro is
         suspended till that many seconds (or fractions of second).
         """
-        if self._scheduler:
-            self._scheduler._suspend(self._id, timeout)
+        if self._asyncoro:
+            self._asyncoro._suspend(self._id, timeout)
         else:
             logging.warning('suspend: coroutine %s removed?', self.name)
 
@@ -493,8 +493,8 @@ class Coro(object):
         The resuming coro gets 'update' for the 'yield' that caused it
         to suspend.
         """
-        if self._scheduler:
-            self._scheduler._resume(self._id, update)
+        if self._asyncoro:
+            self._asyncoro._resume(self._id, update)
         else:
             logging.warning('resume: coroutine %s removed?', self.name)
       
@@ -503,8 +503,8 @@ class Coro(object):
     def throw(self, *args):
         """Throw exception in coroutine.
         """
-        if self._scheduler:
-            self._scheduler._throw(self._id, *args)
+        if self._asyncoro:
+            self._asyncoro._throw(self._id, *args)
         else:
             logging.warning('throw: coroutine %s removed?', self.name)
 
@@ -528,6 +528,12 @@ class Coro(object):
         """
         self._complete.wait()
         return self._value
+
+    def terminate(self):
+        if self._asyncoro:
+            self._asyncoro._terminate_coro(self._id)
+        else:
+            logging.warning('throw: coroutine %s removed?', self.name)
 
 class CoroLock(object):
     """'Lock' primitive for coroutines.
@@ -732,7 +738,7 @@ class AsynCoro(object):
         # called with _sched_cv locked
         self._running.discard(coro._id)
         self._suspended.discard(coro._id)
-        coro._scheduler = None
+        coro._asyncoro = None
         assert not coro._callers
         coro._complete.set()
         del self._coros[coro._id]
@@ -757,6 +763,21 @@ class AsynCoro(object):
             logging.warning('invalid coroutine %s/%s to throw exception: %s',
                             coro.name, coro._id, coro._state)
         self._sched_cv.release()
+
+    def _terminate_coro(self, cid):
+        self._sched_cv.acquire()
+        coro = self._coros.get(cid, None)
+        if coro is None:
+            logging.warning('invalid coroutine %s to close', cid)
+        else:
+            logging.debug('closing %s', coro.name)
+            coro._generator.close()
+            self._suspended.discard(cid)
+            self._running.add(cid)
+            coro._state = AsynCoro._Scheduled
+            self._sched_cv.notify()
+            self._sched_cv.release()
+        #self._generator.throw(GeneratorExit, GeneratorExit('terminate'))
 
     def _scheduler(self):
         """Internal use only.
@@ -796,7 +817,7 @@ class AsynCoro(object):
                         continue
                     logging.warning('terminating coroutine %s', coro.name)
                     close_coro(coro)
-                    coro._scheduler = None
+                    coro._asyncoro = None
                 self._running = self._suspended = set()
                 self._coros = {}
                 self._sched_cv.release()
@@ -832,7 +853,7 @@ class AsynCoro(object):
                 except:
                     self._sched_cv.acquire()
                     self._cur_coro = None
-                    if sys.exc_type == StopIteration:
+                    if sys.exc_type in [StopIteration]:
                         coro._exception = None
                     else:
                         coro._exception = sys.exc_info()
@@ -852,7 +873,7 @@ class AsynCoro(object):
                             caller._value = coro._value
                             self._delete(coro)
                     else:
-                        if sys.exc_type != StopIteration:
+                        if sys.exc_type not in [StopIteration]:
                             logging.warning('uncaught exception in %s:\n%s', coro.name,
                                             ''.join(traceback.format_exception(*coro._exception)))
                         self._delete(coro)
@@ -903,6 +924,11 @@ class AsynCoro(object):
         """Wait for currently scheduled coroutines to finish. AsynCoro
         continues to execute, so new coroutines can be added if necessary.
         """
+        self._sched_cv.acquire()
+        for coro in self._coros.itervalues():
+            logging.debug('waiting for %s', coro.name)
+        self._sched_cv.release()
+
         self._complete.wait()
 
 class _AsyncNotifier(object):
@@ -1073,9 +1099,9 @@ class _AsyncNotifier(object):
             logging.warning('unregister of %s failed with %s', fd.fileno, traceback.format_exc())
 
     def terminate(self):
+        self._terminate = True
         if hasattr(self._poller, 'terminate'):
             self._poller.terminate()
-        self._terminate = True
 
 class _KQueueNotifier(object):
     """Internal use only.

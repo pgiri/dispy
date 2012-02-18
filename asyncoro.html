@@ -36,11 +36,12 @@
           asyncoro
         </h2> 
 <p>
-  asyncoro is a framework for developing programs with coroutines and
-  asynchronous sockets. discopy, available
-  from <a href="http://sourceforge.net/projects/dispy/files">download
-  section</a>, is an implementation of dispy using asyncoro
-  framework. asyncoro can be used independently of dispy/discopy.
+  asyncoro, available
+  in <a href="http://sourceforge.net/projects/dispy/files/discopy">discopy</a>
+  package, is a framework for developing programs with asynchronous
+  sockets and coroutines.  discopy is an implementation of dispy using
+  asyncoro framework. asyncoro can be used independently of
+  dispy/discopy.
   </p>
 
 <p>
@@ -115,9 +116,26 @@ suite will be locked up.
   </p>
 
 <p>
-With 'yield', 'sleep'/'suspend' and 'wakeup'/'resume' methods,
-coroutines can cooperate scheduling their execution, send/receive
-values to/from each other, and play relay race.
+With python's coroutines, a coroutine stops at each yield statement
+and proceeds only after next iteration is asked for (with 'next' or
+'send' methods). With asyncore, yield is used to convey to the
+scheduler that the statement associated with yield is time consuming
+so the scheduler can run other coroutines while waiting for that task
+to complete. Thus, asyncore coroutines continue execution (interleaved
+with other coroutines) after each yield, unless it has been suspended
+with sleep/suspend method. And while python's coroutines can be sent
+values with 'send' method at anytime, with asyncore, that is not very
+useful, as coroutines don't stop at each yield. Instead, with
+asyncore, the correct way to synchronize for data exchange is for
+receiving coroutine to suspend and for the sending coroutine to resume
+sleeping coroutine with the value.
+</p>
+
+<p>
+With asyncore's 'sleep'/'suspend' and 'wakeup'/'resume' methods,
+coroutines can send/receive values to/from each other at deliberate
+locations, and with 'yield' statements cooperate scheduling their
+execution (play relay race).
 </p>
 
 <p>
