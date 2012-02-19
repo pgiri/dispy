@@ -24,7 +24,6 @@ import time
 import threading
 import functools
 import socket
-import ssl
 import inspect
 import traceback
 import select
@@ -36,6 +35,7 @@ import logging
 import errno
 import platform
 import random
+import ssl
 from bisect import bisect_left
 
 if platform.system() == 'Windows':
@@ -102,38 +102,33 @@ class MetaSingleton(type):
             cls.__instance = super(MetaSingleton, cls).__call__(*args, **kwargs)
         return cls.__instance
 
-class AsynCoroSocket(object):
+class AsynCoroSocket(socket.socket):
     """Socket to be used with AsynCoro. This makes use of asynchronous
     I/O completion and coroutines.
     """
 
-    def __init__(self, sock, blocking=False, timeout=True,
-                 certfile=None, keyfile=None, server=False):
-        """Setup sock for use wih asyncoro. For synchronous sockets
-        (with blocking=True) this only sock for SSL (when certfile is
-        used), timeout is set and adds 'read', 'write', 'read_msg' and
-        'write_msg' methods. For asynchronous sockets (with
-        blocking=False), it sets up for suspend and resume facilities
-        of calling coro.
+    def __init__(self, sock, blocking=False, timeout=True):
+        """Setup sock for use wih asyncoro.
+
+        blocking=True implies synchronous sockets and blocking=False
+        implies asynchronous sockets.
+
+        For synchronous timeout must be a number. For asynchronous
+        sockets, it must be either True or False. For server sockets
+        (that wait for incoming connections), timeout must be False;
+        otherwise, those sockets will timeout, causing exception.
         """
-        if certfile:
-            self.sock = ssl.wrap_socket(sock, server_side=server, keyfile=keyfile,
-                                        certfile=certfile, ssl_version=ssl.PROTOCOL_TLSv1)
-        else:
-            self.sock = sock
+
+        socket.socket.__init__(self, _sock=sock._sock)
         self.blocking = blocking == True
+        self.sock = sock
         self.result = None
         self.fileno = sock.fileno()
-        for method in ['bind', 'listen', 'getsockname', 'setsockopt', 'getsockopt']:
-            setattr(self, method, getattr(self.sock, method))
 
         if self.blocking:
             self.timestamp = None
             if isinstance(timeout, (int, float)):
                 self.sock.settimeout(timeout)
-            for method in ['recv', 'send', 'recvfrom', 'sendto', 'accept', 'connect',
-                           'settimeout', 'gettimeout']:
-                setattr(self, method, getattr(self.sock, method))
             self.read = self.sync_read
             self.write = self.sync_write
             self.read_msg = self.sync_read_msg
