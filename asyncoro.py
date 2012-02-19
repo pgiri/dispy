@@ -107,7 +107,8 @@ class AsynCoroSocket(socket.socket):
     I/O completion and coroutines.
     """
 
-    def __init__(self, sock, blocking=False, timeout=True, keyfile=None, certfile=None):
+    def __init__(self, sock, blocking=False, timeout=True, keyfile=None, certfile=None,
+                 ssl_version=ssl.PROTOCOL_SSLv23):
         """Setup sock for use wih asyncoro.
 
         blocking=True implies synchronous sockets and blocking=False
@@ -127,6 +128,7 @@ class AsynCoroSocket(socket.socket):
         self.sock = sock
         self.keyfile = keyfile
         self.certfile = certfile
+        self.ssl_version = ssl_version
         self.result = None
         self.fileno = sock.fileno()
 
@@ -431,7 +433,8 @@ class AsynCoroSocket(socket.socket):
                 conn = AsynCoroSocket(conn, blocking=False,
                                       keyfile=self.keyfile, certfile=self.certfile)
                 conn.sock = ssl.wrap_socket(conn, keyfile=self.keyfile, certfile=self.certfile,
-                                            server_side=True, do_handshake_on_connect=False)
+                                            server_side=True, do_handshake_on_connect=False,
+                                            ssl_version=self.ssl_version)
 
                 conn.task = functools.partial(_ssl_handshake, conn, addr, coro)
                 conn.task()
