@@ -771,7 +771,15 @@ class _Scheduler(object):
         # request_server starts here
         logging.info('scheduler running at %s:%s', self.ip_addr, self.port)
         while True:
-            conn, addr = yield self.request_sock.accept()
+            try:
+                conn, addr = yield self.request_sock.accept()
+                if conn is None:
+                    continue
+            except GeneratorExit:
+                break
+            except:
+                logging.debug('execption: %s', sys.exc_type)
+                continue
             if not self.cluster_certfile:
                 conn = AsynCoroSocket(conn, blocking=False)
             Coro(_request_task, self, conn, addr)
@@ -956,7 +964,15 @@ class _Scheduler(object):
         logging.debug('Job results port is %s:%s',
                       self.ip_addr, self.job_result_sock.getsockname()[1])
         while True:
-            conn, addr = yield self.job_result_sock.accept()
+            try:
+                conn, addr = yield self.job_result_sock.accept()
+                if conn is None:
+                    continue
+            except GeneratorExit:
+                break
+            except:
+                logging.debug('execption: %s', sys.exc_type)
+                continue
             if addr[0] not in self._nodes:
                 logging.warning('Ignoring results from %s', addr[0])
                 conn.close()

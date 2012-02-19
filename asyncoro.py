@@ -387,7 +387,9 @@ class AsynCoroSocket(socket.socket):
                         elif err.args[0] == ssl.SSL_ERROR_WANT_WRITE:
                             conn._notifier.modify(conn, _AsyncNotifier._Writable)
                         else:
-                            raise
+                            logging.warning('SSL failed for %s', conn.fileno)
+                            conn._notifier.modify(conn, 0)
+                            coro.resume((None, None))
                     else:
                         conn._notifier.modify(conn, 0)
                         conn.result = (conn, addr)
@@ -429,7 +431,8 @@ class AsynCoroSocket(socket.socket):
                             elif err.args[0] == ssl.SSL_ERROR_WANT_WRITE:
                                 conn._notifier.modify(conn, _AsyncNotifier._Writable)
                             else:
-                                raise
+                                conn._notifier.modify(conn, 0)
+                                coro.resume(None)
                         else:
                             conn._notifier.modify(conn, 0)
                             coro.resume(0)

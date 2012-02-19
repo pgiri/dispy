@@ -875,7 +875,15 @@ class _Cluster(object):
         # generator
         assert coro is not None
         while True:
-            new_sock, addr = yield self.job_result_sock.accept()
+            try:
+                new_sock, addr = yield self.job_result_sock.accept()
+                if new_sock is None:
+                    continue
+            except GeneratorExit:
+                break
+            except:
+                logging.debug('execption: %s', sys.exc_type)
+                continue
             logging.debug('received job result from %s', str(addr))
             if not self.certfile:
                 new_sock = AsynCoroSocket(new_sock, blocking=False)

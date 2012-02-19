@@ -279,7 +279,15 @@ class _DispyNode(object):
 
     def tcp_server(self, coro=None):
         while True:
-            conn, addr = yield self.tcp_sock.accept()
+            try:
+                conn, addr = yield self.tcp_sock.accept()
+                if conn is None:
+                    continue
+            except GeneratorExit:
+                break
+            except:
+                logging.debug('execption: %s', sys.exc_type)
+                continue
             logging.debug('new tcp request from %s', str(addr))
             if not self.certfile:
                 conn = AsynCoroSocket(conn, blocking=False)
