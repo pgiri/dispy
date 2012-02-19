@@ -107,7 +107,8 @@ class AsynCoroSocket(socket.socket):
     I/O completion and coroutines.
     """
 
-    def __init__(self, sock, blocking=False, timeout=True, keyfile=None, certfile=None):
+    def __init__(self, sock, blocking=False, timeout=True, keyfile=None, certfile=None,
+                 server_side=False):
         """Setup sock for use wih asyncoro.
 
         blocking=True implies synchronous sockets and blocking=False
@@ -131,6 +132,10 @@ class AsynCoroSocket(socket.socket):
         self.fileno = sock.fileno()
 
         if self.blocking:
+            if self.certfile:
+                self.sock = ssl.wrap_socket(self.sock, keyfile=self.keyfile, certfile=self.certfile,
+                                            server_side=server_side)
+                # self.fileno = sock.fileno()
             self.timestamp = None
             if isinstance(timeout, (int, float)):
                 self.sock.settimeout(timeout)
@@ -389,7 +394,8 @@ class AsynCoroSocket(socket.socket):
                         conn._notifier.modify(conn, 0)
                         conn.result = (conn, addr)
                         coro.resume(conn.result)
-                conn = AsynCoroSocket(conn, blocking=False, certfile=self.certfile)
+                conn = AsynCoroSocket(conn, blocking=False,
+                                      keyfile=self.keyfile, certfile=self.certfile)
                 conn.sock = ssl.wrap_socket(conn, keyfile=self.keyfile, certfile=self.certfile,
                                             server_side=True, do_handshake_on_connect=False)
 

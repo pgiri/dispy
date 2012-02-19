@@ -961,7 +961,7 @@ class _Scheduler(object):
                 logging.warning('Ignoring results from %s', addr[0])
                 conn.close()
                 continue
-            if not self.certfile:
+            if not self.node_certfile:
                 conn = AsynCoroSocket(conn, blocking=False)
             Coro(self.job_result_task, conn, addr)
 

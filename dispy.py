@@ -1728,68 +1728,70 @@ class SharedJobCluster(JobCluster):
             raise Exception('Could not connect to scheduler at %s:%s',
                             self.scheduler_ip_addr, self.scheduler_udp_port)
         srv_sock.close()
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock = AsynCoroSocket(sock, blocking=True, timeout=5,
-                              keyfile=self.keyfile, certfile=self.certfile)
-        try:
-            sock.connect((self.scheduler_ip_addr, self.scheduler_port))
-            req = 'COMPUTE:' + cPickle.dumps(self._compute)
-            sock.write(self.auth_code)
-            sock.write_msg(req)
-            msg = sock.read_msg()
-            sock.close()
-            resp = cPickle.loads(msg)
-            self._compute.id = resp['ID']
-            assert self._compute.id is not None
-        except:
-            logging.debug(traceback.format_exc())
-            raise Exception("Couldn't connect to scheduler at %s:%s" % \
-                            (self.scheduler_ip_addr, self.scheduler_port))
-        if resp['pulse_interval'] and self._cluster.pulse_interval:
-            self._cluster.pulse_interval = min(self._cluster.pulse_interval, resp['pulse_interval'])
-        else:
-            self._cluster.pulse_interval = max(self._cluster.pulse_interval, resp['pulse_interval'])
-
-        for xf in self._compute.xfer_files:
-            xf.compute_id = self._compute.id
-            logging.debug('Sending file "%s"', xf.name)
+        def _add_compute(self, coro=None):
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock = AsynCoroSocket(sock, blocking=True, timeout=5,
+            sock = AsynCoroSocket(sock, blocking=False,
                                   keyfile=self.keyfile, certfile=self.certfile)
             try:
-                sock.connect((self.scheduler_ip_addr, self.scheduler_port))
-                msg = 'FILEXFER:' + cPickle.dumps(xf)
-                sock.write(self.auth_code)
-                sock.write_msg(msg)
-                fd = open(xf.name, 'rb')
-                while True:
-                    data = fd.read(10240000)
-                    if not data:
-                        break
-                    sock.write(data)
-                fd.close()
-                resp = sock.read_msg()
-                assert resp == 'ACK'
+                yield sock.connect((self.scheduler_ip_addr, self.scheduler_port))
+                req = 'COMPUTE:' + cPickle.dumps(self._compute)
+                yield sock.write(self.auth_code)
+                yield sock.write_msg(req)
+                msg = yield sock.read_msg()
+                sock.close()
+                resp = cPickle.loads(msg)
+                self._compute.id = resp['ID']
+                assert self._compute.id is not None
             except:
-                logging.error("Couldn't transfer %s to %s", xf.name, self.ip_addr)
-                # TODO: delete computation?
+                logging.debug(traceback.format_exc())
+                raise Exception("Couldn't connect to scheduler at %s:%s" % \
+                                (self.scheduler_ip_addr, self.scheduler_port))
+            if resp['pulse_interval'] and self._cluster.pulse_interval:
+                self._cluster.pulse_interval = min(self._cluster.pulse_interval, resp['pulse_interval'])
+            else:
+                self._cluster.pulse_interval = max(self._cluster.pulse_interval, resp['pulse_interval'])
+
+            for xf in self._compute.xfer_files:
+                xf.compute_id = self._compute.id
+                logging.debug('Sending file "%s"', xf.name)
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock = AsynCoroSocket(sock, blocking=False,
+                                      keyfile=self.keyfile, certfile=self.certfile)
+                try:
+                    yield sock.connect((self.scheduler_ip_addr, self.scheduler_port))
+                    msg = 'FILEXFER:' + cPickle.dumps(xf)
+                    yield sock.write(self.auth_code)
+                    yield sock.write_msg(msg)
+                    fd = open(xf.name, 'rb')
+                    while True:
+                        data = fd.read(10240000)
+                        if not data:
+                            break
+                        yield sock.write(data)
+                    fd.close()
+                    resp = yield sock.read_msg()
+                    assert resp == 'ACK'
+                except:
+                    logging.error("Couldn't transfer %s to %s", xf.name, self.ip_addr)
+                    # TODO: delete computation?
+                sock.close()
+
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock = AsynCoroSocket(sock, blocking=False,
+                                  keyfile=self.keyfile, certfile=self.certfile)
+            yield sock.connect((self.scheduler_ip_addr, self.scheduler_port))
+            req = 'ADD_COMPUTE:' + cPickle.dumps({'ID':self._compute.id})
+            yield sock.write(self.auth_code)
+            yield sock.write_msg(req)
+            msg = yield sock.read_msg()
             sock.close()
-            
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock = AsynCoroSocket(sock, blocking=True, timeout=5,
-                              keyfile=self.keyfile, certfile=self.certfile)
-        sock.connect((self.scheduler_ip_addr, self.scheduler_port))
-        req = 'ADD_COMPUTE:' + cPickle.dumps({'ID':self._compute.id})
-        sock.write(self.auth_code)
-        sock.write_msg(req)
-        msg = sock.read_msg()
-        sock.close()
-        resp = cPickle.loads(msg)
-        if resp == self._compute.id:
-            logging.debug('Computation %s created with %s', self._compute.name, self._compute.id)
-            Coro(self._cluster.add_cluster, self).value()
-        else:
-            raise Exception('Computation "%s" could not be sent to scheduler' % self._compute.name)
+            resp = cPickle.loads(msg)
+            if resp == self._compute.id:
+                logging.debug('Computation %s created with %s', self._compute.name, self._compute.id)
+                yield self._cluster.add_cluster(self, coro=coro)
+            else:
+                raise Exception('Computation "%s" could not be sent to scheduler' % self._compute.name)
+        Coro(_add_compute, self).value()
 
     def submit(self, *args, **kwargs):
         """Submit a job for execution with the given arguments.
