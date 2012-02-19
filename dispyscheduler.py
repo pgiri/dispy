@@ -162,14 +162,18 @@ class _Scheduler(object):
             self.request_sock.bind((self.ip_addr, self.scheduler_port))
             self.scheduler_port = self.request_sock.getsockname()[1]
             self.request_sock.listen(32)
-            self.request_sock = AsynCoroSocket(self.request_sock, blocking=False, timeout=False)
+            self.request_sock = AsynCoroSocket(self.request_sock, blocking=False, timeout=False,
+                                               keyfile=self.cluster_keyfile,
+                                               certfile=self.cluster_certfile)
             self.request_coro = Coro(self.request_server)
 
             self.job_result_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.job_result_sock = AsynCoroSocket(self.job_result_sock,
-                                                  blocking=False, timeout=False)
+
             self.job_result_sock.bind((self.ip_addr, 0))
             self.job_result_sock.listen(50)
+            self.job_result_sock = AsynCoroSocket(self.job_result_sock, blocking=False,
+                                                  timeout=False, keyfile=self.node_keyfile,
+                                                  certfile=self.node_certfile)
             self.job_result_coro = Coro(self.job_result_server)
 
             self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -260,7 +264,7 @@ class _Scheduler(object):
                 if node is None:
                     node = _Node(status['ip_addr'], status['port'], status['cpus'],
                                  status['sign'], self.node_secret,
-                                 self.node_keyfile, self.node_certfile)
+                                 keyfile=self.node_keyfile, certfile=self.node_certfile)
                     self._nodes[node.ip_addr] = node
                 else:
                     node.last_pulse = time.time()
@@ -621,9 +625,6 @@ class _Scheduler(object):
                         logging.debug('Could not send reply for "%s"', xf.name)
 
             # _request_task begins here
-            conn = AsynCoroSocket(conn, blocking=False, certfile=self.cluster_certfile,
-                                  keyfile=self.cluster_keyfile, server=True)
-
             resp = None
             try:
                 req = yield conn.read(len(self.auth_code))
@@ -771,6 +772,8 @@ class _Scheduler(object):
         logging.info('scheduler running at %s:%s', self.ip_addr, self.port)
         while True:
             conn, addr = yield self.request_sock.accept()
+            if not self.cluster_certfile:
+                conn = AsynCoroSocket(conn, blocking=False)
             Coro(_request_task, self, conn, addr)
 
     def timer_task(self, coro=None):
@@ -879,8 +882,6 @@ class _Scheduler(object):
     def job_result_task(self, conn, addr, coro=None):
         # generator
         assert coro is not None
-        conn = AsynCoroSocket(conn, blocking=False, certfile=self.node_certfile,
-                              keyfile=self.node_keyfile, server=True)
 
         try:
             msg = yield conn.read_msg()
@@ -960,6 +961,8 @@ class _Scheduler(object):
                 logging.warning('Ignoring results from %s', addr[0])
                 conn.close()
                 continue
+            if not self.certfile:
+                conn = AsynCoroSocket(conn, blocking=False)
             Coro(self.job_result_task, conn, addr)
 
     def fast_node_schedule(self):

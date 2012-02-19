@@ -31,6 +31,7 @@ import cPickle
 import subprocess
 import signal
 import cStringIO
+import ssl
 import traceback
 import base64
 import hashlib
@@ -147,6 +148,8 @@ class _DispyNode(object):
         self.ip_addr = ip_addr
         self.scheduler_port = scheduler_port
         self.pulse_interval = None
+        self.certfile = certfile
+        self.keyfile = keyfile
 
         self.asyncoro = AsynCoro()
 
@@ -154,7 +157,8 @@ class _DispyNode(object):
         self.tcp_sock.bind((ip_addr, 0))
         self.address = self.tcp_sock.getsockname()
         self.tcp_sock.listen(30)
-        self.tcp_sock = AsynCoroSocket(self.tcp_sock, blocking=False, timeout=False)
+        self.tcp_sock = AsynCoroSocket(self.tcp_sock, blocking=False, timeout=False,
+                                       keyfile=self.keyfile, certfile=self.certfile)
 
         if dest_path_prefix:
             self.dest_path_prefix = dest_path_prefix.strip().rstrip(os.sep)
@@ -176,8 +180,6 @@ class _DispyNode(object):
         self.terminate = False
         self.signature = os.urandom(20).encode('hex')
         self.auth_code = hashlib.sha1(_xor_string(self.signature, secret)).hexdigest()
-        self.keyfile = keyfile
-        self.certfile = certfile
         self.zombie_interval = 60 * zombie_interval
 
         logging.debug('auth_code for %s: %s', ip_addr, self.auth_code)
@@ -279,8 +281,8 @@ class _DispyNode(object):
         while True:
             conn, addr = yield self.tcp_sock.accept()
             logging.debug('new tcp request from %s', str(addr))
-            conn = AsynCoroSocket(conn, blocking=False, server=True,
-                                  certfile=self.certfile, keyfile=self.keyfile)
+            if not self.certfile:
+                conn = AsynCoroSocket(conn, blocking=False)
             Coro(self.tcp_serve_task, conn, addr)
 
     def tcp_serve_task(self, conn, addr, coro=None):
@@ -857,8 +859,7 @@ class _DispyNode(object):
         logging.debug('Sending result for job %s (%s) to %s',
                       job_reply.uid, job_reply.status, job_info.reply_addr[0])
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock = AsynCoroSocket(sock, blocking=False,
-                              certfile=self.certfile, keyfile=self.keyfile)
+        sock = AsynCoroSocket(sock, blocking=False, certfile=self.certfile, keyfile=self.keyfile)
         try:
             yield sock.connect(job_info.reply_addr)
             yield sock.write_msg(cPickle.dumps(job_reply))
