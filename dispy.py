@@ -881,6 +881,9 @@ class _Cluster(object):
                     continue
             except GeneratorExit:
                 break
+            except ssl.SSLError, err:
+                logging.debug('SSL connection to %s failed', str(addr))
+                continue
             except:
                 logging.debug('execption: %s', sys.exc_type)
                 continue

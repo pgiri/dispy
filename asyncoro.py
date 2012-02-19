@@ -167,20 +167,45 @@ class AsynCoroSocket(socket.socket):
             self._notifier = _AsyncNotifier.instance()
             self._notifier.add_fd(self)
 
+    def close(self):
+        """Close AsynCoroSocket.
+        """
+        if self._notifier:
+            self._notifier.del_fd(self)
+            self._notifier = None
+        self.sock.close()
+
+    def __del__(self):
+        self.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, trace):
+        self.close()
+
     def async_recv(self, bufsize, *args):
         """Asynchronous version of socket recv method.
         """
         def _recv(self, bufsize, *args):
             try:
                 self.result = self.sock.recv(bufsize, *args)
+            except ssl.SSLError, err:
+                if err.args[0] != ssl.SSL_ERROR_WANT_READ:
+                    raise Exception('socket reading error')
             except:
-                logging.warning(traceback.format_exc())
+                self.task = None
+                self._notifier.modify(self, 0)
+                coro, self._coro = self._coro, None
+                coro.throw(*sys.exc_info())
             else:
                 if self.result >= 0:
+                    self.task = None
                     self._notifier.modify(self, 0)
                     coro, self._coro = self._coro, None
                     coro.resume(self.result)
                 else:
+                    self.task = None
                     self._notifier.modify(self, 0)
                     coro, self._coro = self._coro, None
                     coro.throw(Exception, Exception('socket recv error'), None)
@@ -211,14 +236,20 @@ class AsynCoroSocket(socket.socket):
             plen = len(self.result)
             try:
                 self.result[len(self.result):] = self.sock.recv(bufsize - len(self.result), *args)
+            except ssl.SSLError, err:
+                if err.args[0] != ssl.SSL_ERROR_WANT_READ:
+                    raise Exception('socket reading error')
             except:
-                logging.warning(traceback.format_exc())
+                self.task = None
+                self._notifier.modify(self, 0)
+                coro, self._coro = self._coro, None
+                coro.throw(*sys.exc_info())
             else:
                 if len(self.result) == bufsize or self.sock.type == socket.SOCK_DGRAM:
+                    self.task = None
                     self._notifier.modify(self, 0)
-                    self.result = str(self.result)
                     coro, self._coro = self._coro, None
-                    coro.resume(self.result)
+                    coro.resume(str(self.result))
                 elif len(self.result) == plen:
                     # TODO: check for error and delete?
                     self.result = None
@@ -256,11 +287,18 @@ class AsynCoroSocket(socket.socket):
         """Asynchronous version of socket recvfrom method.
         """
         def _recvfrom(self, *args):
-            self.result, addr = self.sock.recvfrom(*args)
-            self._notifier.modify(self, 0)
-            self.result = (self.result, addr)
-            coro, self._coro = self._coro, None
-            coro.resume(self.result)
+            try:
+                self.result, addr = self.sock.recvfrom(*args)
+            except:
+                self.task = None
+                self._notifier.modify(self, 0)
+                coro, self._coro = self._coro, None
+                coro.throw(*sys.exc_info())
+            else:
+                self._notifier.modify(self, 0)
+                self.result = (self.result, addr)
+                coro, self._coro = self._coro, None
+                coro.resume(self.result)
 
         self.task = functools.partial(_recvfrom, self, *args)
         if self.timestamp is not None:
@@ -305,8 +343,6 @@ class AsynCoroSocket(socket.socket):
             try:
                 self.result = self.sock.sendto(*args)
             except:
-                # TODO: close socket, inform coro
-                logging.debug('write error: %s', traceback.format_exc())
                 self._notifier.unregister(self)
                 coro, self._coro = self._coro, None
                 coro.throw(*sys.exc_info())
@@ -330,8 +366,6 @@ class AsynCoroSocket(socket.socket):
             try:
                 n = self.sock.send(self.result)
             except:
-                logging.error('writing failed %s: %s', self.fileno, traceback.format_exc())
-                # TODO: close socket, inform coro
                 self.result = None
                 self._notifier.unregister(self)
                 coro, self._coro = self._coro, None
@@ -362,13 +396,6 @@ class AsynCoroSocket(socket.socket):
                 self.result = buffer(self.result, n)
         return 0
 
-    def close(self):
-        """Close AsynCoroSocket.
-        """
-        if self._notifier:
-            self._notifier.del_fd(self)
-        self.sock.close()
-
     def async_accept(self):
         """Asynchronous version of socket accept method.
         """
@@ -387,13 +414,20 @@ class AsynCoroSocket(socket.socket):
                         elif err.args[0] == ssl.SSL_ERROR_WANT_WRITE:
                             conn._notifier.modify(conn, _AsyncNotifier._Writable)
                         else:
-                            logging.warning('SSL failed for %s', conn.fileno)
-                            conn._notifier.modify(conn, 0)
+                            conn.task = None
+                            try:
+                                conn.sock.unwrap()
+                            except:
+                                pass
+                            conn.close()
+                            # TODO: throwing exception does not seem
+                            # to work: after a failed connection,
+                            # successive connections don't work either
+                            # coro.throw(*sys.exc_info())
                             coro.resume((None, None))
                     else:
                         conn._notifier.modify(conn, 0)
-                        conn.result = (conn, addr)
-                        coro.resume(conn.result)
+                        coro.resume((conn, addr))
                 conn = AsynCoroSocket(conn, blocking=False,
                                       keyfile=self.keyfile, certfile=self.certfile)
                 conn.sock = ssl.wrap_socket(conn, keyfile=self.keyfile, certfile=self.certfile,
@@ -431,8 +465,13 @@ class AsynCoroSocket(socket.socket):
                             elif err.args[0] == ssl.SSL_ERROR_WANT_WRITE:
                                 conn._notifier.modify(conn, _AsyncNotifier._Writable)
                             else:
-                                conn._notifier.modify(conn, 0)
-                                coro.resume(None)
+                                try:
+                                    conn.close()
+                                except:
+                                    pass
+                                conn.task = None
+                                # coro.resume(None)
+                                coro.throw(*sys.exc_info())
                         else:
                             conn._notifier.modify(conn, 0)
                             coro.resume(0)

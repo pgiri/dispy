@@ -285,10 +285,14 @@ class _DispyNode(object):
                     continue
             except GeneratorExit:
                 break
+            except ssl.SSLError, err:
+                logging.debug('SSL connection failed: %s', str(err))
+                logging.debug(traceback.format_exc())
+                continue
             except:
                 logging.debug('execption: %s', sys.exc_type)
                 continue
-            logging.debug('new tcp request from %s', str(addr))
+            # logging.debug('new tcp request from %s', str(addr))
             if not self.certfile:
                 conn = AsynCoroSocket(conn, blocking=False)
             Coro(self.tcp_serve_task, conn, addr)
