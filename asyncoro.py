@@ -107,8 +107,7 @@ class AsynCoroSocket(socket.socket):
     I/O completion and coroutines.
     """
 
-    def __init__(self, sock, blocking=False, timeout=True, keyfile=None, certfile=None,
-                 server_side=False):
+    def __init__(self, sock, blocking=False, timeout=True, keyfile=None, certfile=None):
         """Setup sock for use wih asyncoro.
 
         blocking=True implies synchronous sockets and blocking=False
@@ -133,9 +132,7 @@ class AsynCoroSocket(socket.socket):
 
         if self.blocking:
             if self.certfile:
-                self.sock = ssl.wrap_socket(self.sock, keyfile=self.keyfile, certfile=self.certfile,
-                                            server_side=server_side)
-                # self.fileno = sock.fileno()
+                raise Exception('SSL is not supported for blocking sockets')
             self.timestamp = None
             if isinstance(timeout, (int, float)):
                 self.sock.settimeout(timeout)
@@ -378,6 +375,7 @@ class AsynCoroSocket(socket.socket):
         def _accept(self):
             conn, addr = self.sock.accept()
             self._notifier.modify(self, 0)
+            coro, self._coro = self._coro, None
 
             if self.certfile:
                 def _ssl_handshake(conn, addr, coro):
@@ -399,10 +397,9 @@ class AsynCoroSocket(socket.socket):
                 conn.sock = ssl.wrap_socket(conn, keyfile=self.keyfile, certfile=self.certfile,
                                             server_side=True, do_handshake_on_connect=False)
 
-                conn.task = functools.partial(_ssl_handshake, conn, addr, self._coro)
+                conn.task = functools.partial(_ssl_handshake, conn, addr, coro)
                 conn.task()
             else:
-                coro, self._coro = self._coro, None
                 self.result = (conn, addr)
                 coro.resume(self.result)
 
