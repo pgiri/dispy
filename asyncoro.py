@@ -207,15 +207,12 @@ class AsynCoroSocket(socket.socket):
                 coro, self._coro = self._coro, None
                 coro.throw(*sys.exc_info())
             else:
-                if self._result >= 0:
-                    self._task = None
-                    self._notifier.modify(self, 0)
-                    coro, self._coro = self._coro, None
+                self._task = None
+                self._notifier.modify(self, 0)
+                coro, self._coro = self._coro, None
+                if self._result > 0:
                     coro.resume(self._result)
                 else:
-                    self._task = None
-                    self._notifier.modify(self, 0)
-                    coro, self._coro = self._coro, None
                     coro.throw(Exception, Exception('socket recv error'), None)
 
         if self._certfile:
@@ -259,6 +256,7 @@ class AsynCoroSocket(socket.socket):
                     coro.resume(str(self._result))
                 elif len(self._result) == plen:
                     # TODO: check for error and delete?
+                    self._task = None
                     self._result = None
                     self._notifier.modify(self, 0)
                     coro, self._coro = self._coro, None
@@ -301,6 +299,7 @@ class AsynCoroSocket(socket.socket):
                 coro, self._coro = self._coro, None
                 coro.throw(*sys.exc_info())
             else:
+                self._task = None
                 self._notifier.modify(self, 0)
                 self._result = (self._result, addr)
                 coro, self._coro = self._coro, None
@@ -322,11 +321,13 @@ class AsynCoroSocket(socket.socket):
                 self._result = self._rsock.send(*args)
             except:
                 # TODO: close socket, inform coro
+                self._task = None
                 logging.debug('write error', self._fileno)
                 self._notifier.unregister(self)
                 coro, self._coro = self._coro, None
                 coro.throw(*sys.exc_info())
             else:
+                self._task = None
                 self._notifier.modify(self, 0)
                 coro, self._coro = self._coro, None
                 coro.resume(self._result)
@@ -347,10 +348,12 @@ class AsynCoroSocket(socket.socket):
             try:
                 self._result = self._rsock.sendto(*args)
             except:
+                self._task = None
                 self._notifier.unregister(self)
                 coro, self._coro = self._coro, None
                 coro.throw(*sys.exc_info())
             else:
+                self._task = None
                 self._notifier.modify(self, 0)
                 coro, self._coro = self._coro, None
                 coro.resume(self._result)
@@ -369,6 +372,7 @@ class AsynCoroSocket(socket.socket):
             try:
                 n = self._rsock.send(self._result)
             except:
+                self._task = None
                 self._result = None
                 self._notifier.unregister(self)
                 coro, self._coro = self._coro, None
@@ -377,6 +381,7 @@ class AsynCoroSocket(socket.socket):
                 if n > 0:
                     self._result = buffer(self._result, n)
                     if len(self._result) == 0:
+                        self._task = None
                         self._notifier.modify(self, 0)
                         coro, self._coro = self._coro, None
                         coro.resume(0)
@@ -405,6 +410,7 @@ class AsynCoroSocket(socket.socket):
             conn, addr = self._rsock.accept()
             self._notifier.modify(self, 0)
             coro, self._coro = self._coro, None
+            self._task = None
 
             if self._certfile:
                 def _ssl_handshake(conn, addr, coro):
@@ -417,6 +423,7 @@ class AsynCoroSocket(socket.socket):
                             conn._notifier.modify(conn, _AsyncNotifier._Writable)
                         else:
                             conn._task = None
+                            conn._notifier.modify(conn, 0)
                             try:
                                 conn._rsock.unwrap()
                             except:
@@ -428,6 +435,7 @@ class AsynCoroSocket(socket.socket):
                             # coro.throw(*sys.exc_info())
                             coro.resume((None, None))
                     else:
+                        conn._task = None
                         conn._notifier.modify(conn, 0)
                         coro.resume((conn, addr))
                 conn = AsynCoroSocket(conn, blocking=False,
@@ -455,6 +463,7 @@ class AsynCoroSocket(socket.socket):
             # TODO: check with getsockopt
             err = self._rsock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
             if not err:
+                self._task = None
                 self._notifier.modify(self, 0)
                 coro, self._coro = self._coro, None
 
@@ -468,11 +477,12 @@ class AsynCoroSocket(socket.socket):
                             elif err.args[0] == ssl.SSL_ERROR_WANT_WRITE:
                                 conn._notifier.modify(conn, _AsyncNotifier._Writable)
                             else:
+                                conn._task = None
+                                conn._notifier.modify(conn, 0)
                                 try:
                                     conn.close()
                                 except:
                                     pass
-                                conn._task = None
                                 # coro.resume(None)
                                 coro.throw(*sys.exc_info())
                         else:
@@ -500,10 +510,21 @@ class AsynCoroSocket(socket.socket):
             if e.args[0] != EINPROGRESS:
                 logging.debug('connect error: %s', e.args[0])
 
+    def async_write_msg(self, data):
+        """Messages are tagged with length of the data, so on the
+        receiving side, read_msg knows how much data to read.
+        """
+        yield self.write(struct.pack('>L', len(data)) + data)
+
+    def sync_write_msg(self, data):
+        """Synchronous version of async_write_msg.
+        """
+        return self.sync_write(struct.pack('>L', len(data)) + data)
+
     def async_read_msg(self):
-        """Message is tagged with unique identifier (integer) and
-        length of the payload (data). This method reads entire message and
-        reads uid and the message as tuple.
+        """Message is tagged with length of the payload (data). This
+        method reads length of payload, then the payload and returns
+        the payload.
         """
         try:
             info_len = struct.calcsize('>L')
@@ -541,17 +562,6 @@ class AsynCoroSocket(socket.socket):
         except socket.timeout:
             logging.error('Socket disconnected(timeout)?')
             return None
-
-    def async_write_msg(self, data):
-        """Messages are tagged with length of the data, so on the
-        receiving side, read_msg knows how much data to read.
-        """
-        yield self.write(struct.pack('>L', len(data)) + data)
-
-    def sync_write_msg(self, data):
-        """Synchronous version of async_write_msg.
-        """
-        return self.sync_write(struct.pack('>L', len(data)) + data)
 
 class Coro(object):
     """'Coroutine' factory to build coroutines to be scheduled with
@@ -777,8 +787,7 @@ class AsynCoro(object):
             # lock
             self._sched_cv = threading.Condition()
             self._terminate = False
-            self._lock = threading.RLock()
-            self._complete = threading.Event(self._lock)
+            self._complete = threading.Event()
             self._scheduler = threading.Thread(target=self._scheduler)
             self._scheduler.daemon = True
             self._scheduler.start()
