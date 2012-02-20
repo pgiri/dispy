@@ -119,44 +119,49 @@ class AsynCoroSocket(socket.socket):
         Only methods should be used; other attributes are for internal use only.
         """
 
-        socket.socket.__init__(self, _sock=sock._sock)
-        self._blocking = blocking == True
-        self._rsock = sock
-        self._keyfile = keyfile
-        self._certfile = certfile
-        self._ssl_version = ssl_version
-        self._result = None
-        self._fileno = sock.fileno()
-        self._timeout = 0
-        self._timestamp = None
-        self._coro = None
-        self._task = None
-
-        if self._blocking:
-            if self._certfile:
-                raise Exception('SSL is not supported for blocking sockets')
-            self.read = self.sync_read
-            self.write = self.sync_write
-            self.read_msg = self.sync_read_msg
-            self.write_msg = self.sync_write_msg
-            self._asyncoro = None
-            self._notifier = None
+        if isinstance(sock, AsynCoroSocket):
+            logging.warning('Socket %s is already AsynCoroSocket', sock._fileno)
+            socket.socket.__init__(self, _sock=sock._rsock._sock)
+            self.__dict__ = sock.__dict__
         else:
-            self._rsock.setblocking(0)
-            self.recv = self.async_recv
-            self.send = self.async_send
-            self.read = self.async_read
-            self.write = self.async_write
-            self.recvfrom = self.async_recvfrom
-            self.sendto = self.async_sendto
-            self.accept = self.async_accept
-            self.connect = self.async_connect
-            self.read_msg = self.async_read_msg
-            self.write_msg = self.async_write_msg
+            socket.socket.__init__(self, _sock=sock._sock)
+            self._blocking = blocking == True
+            self._rsock = sock
+            self._keyfile = keyfile
+            self._certfile = certfile
+            self._ssl_version = ssl_version
+            self._result = None
+            self._fileno = sock.fileno()
+            self._timeout = 0
+            self._timestamp = None
+            self._coro = None
+            self._task = None
 
-            self._asyncoro = AsynCoro.instance()
-            self._notifier = _AsyncNotifier.instance()
-            self._notifier.add_fd(self)
+            if self._blocking:
+                if self._certfile:
+                    raise Exception('SSL is not supported for blocking sockets')
+                self.read = self.sync_read
+                self.write = self.sync_write
+                self.read_msg = self.sync_read_msg
+                self.write_msg = self.sync_write_msg
+                self._asyncoro = None
+                self._notifier = None
+            else:
+                self._rsock.setblocking(0)
+                self.recv = self.async_recv
+                self.send = self.async_send
+                self.read = self.async_read
+                self.write = self.async_write
+                self.recvfrom = self.async_recvfrom
+                self.sendto = self.async_sendto
+                self.accept = self.async_accept
+                self.connect = self.async_connect
+                self.read_msg = self.async_read_msg
+                self.write_msg = self.async_write_msg
+
+                self._asyncoro = AsynCoro.instance()
+                self._notifier = _AsyncNotifier.instance()
+                self._notifier.add_fd(self)
 
     def close(self):
         """'close' must be called when done with socket.
@@ -169,6 +174,11 @@ class AsynCoroSocket(socket.socket):
             self._rsock = None
         self._asyncoro = None
         self._coro = None
+
+    def shutdown(self, flags):
+        if flags == socket.SHUT_RDWR:
+            self._notifier.del_fd(self)
+        self._rsock.shutdown(flags)
 
     def unwrap(self):
         """Get rid of AsynCoroSocket setup and return underlying socket object.
@@ -193,7 +203,7 @@ class AsynCoroSocket(socket.socket):
             self._timestamp = None
             self._rsock.settimeout(timeout)
         else:
-            if isinstance(timeout, (int, float)):
+            if isinstance(timeout, (int, float)) and timeout >= 0:
                 self._timeout = timeout
             else:
                 logging.warning('invalid timeout %s ignored' % timeout)
@@ -230,13 +240,13 @@ class AsynCoroSocket(socket.socket):
         if self._certfile:
             # in case of SSL, attempt read first
             try:
-                self._result= self._rsock.recv(bufsize)
+                self._result = self._rsock.recv(bufsize)
             except ssl.SSLError, err:
                 if err.args[0] != ssl.SSL_ERROR_WANT_READ:
                     logging.debug('reading error: %s for %s', sys.exc_type, self._fileno)
                     # TODO: throw this exception?
-            else:
-                return self._result
+                elif len(self._result) > 0:
+                    return self._result
 
         self._task = functools.partial(_recv, self, bufsize, *args)
         self._timestamp = time.time()
@@ -677,8 +687,8 @@ class CoroLock(object):
     """'Lock' primitive for coroutines.
 
     Since a coroutine runs until 'yield', there is no need for
-    lock. The caller has to guarantee that once a lock is obtained,
-    'yield' call is not made.
+    lock. The caller has to guarantee that 'yield' statement is not
+    used from when lock is acquired and till when lock is released.
     """
     def __init__(self):
         self._owner = None
@@ -1172,14 +1182,14 @@ class _AsyncNotifier(object):
                         # logging.debug('fd %s is readable', fd._fileno)
                         fd._timestamp = now
                         if fd._task is None:
-                            logging.error('fd %s is not registered?', fd._fileno)
+                            logging.error('fd %s is not registered for read?', fd._fileno)
                         else:
                             fd._task()
                     elif event == _AsyncNotifier._Writable:
                         # logging.debug('fd %s is writable', fd._fileno)
                         fd._timestamp = now
                         if fd._task is None:
-                            logging.error('fd %s is not registered?', fd._fileno)
+                            logging.error('fd %s is not registered for write?', fd._fileno)
                         else:
                             fd._task()
                     elif event == _AsyncNotifier._Error:
@@ -1200,7 +1210,6 @@ class _AsyncNotifier(object):
                             e = 'timed out %s' % (now - fd._timestamp)
                             fd._timestamp = None
                             fd._coro.throw(socket.timeout, socket.timeout(e))
-                            # TODO: unregister and close?
                 except:
                     logging.debug(traceback.format_exc())
                 self._lock.release()
