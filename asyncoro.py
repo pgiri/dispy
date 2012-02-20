@@ -61,7 +61,7 @@ and CoroCondition, and a few syntactic changes.
 For example, a simple tcp server looks like:
 
 def process(sock, coro=None):
-    sock = AsynCoroSocket(sock, blocking=False)
+    sock = AsynCoroSocket(sock)
     # get (exactly) 4MB of data, for example, and let other coroutines
     # (process methods, in this case) execute in the meantime
     data = yield sock.read(4096*1024)
@@ -107,51 +107,41 @@ class AsynCoroSocket(socket.socket):
     I/O completion and coroutines.
     """
 
-    def __init__(self, sock, blocking=False, timeout=True, keyfile=None, certfile=None,
+    def __init__(self, sock, blocking=False, keyfile=None, certfile=None,
                  ssl_version=ssl.PROTOCOL_SSLv23):
-        """Setup sock for use wih asyncoro.
+        """Setup socket for use wih asyncoro.
 
         blocking=True implies synchronous sockets and blocking=False
         implies asynchronous sockets.
 
-        For synchronous sockets timeout must be a number. For
-        asynchronous sockets, it must be either True or False. For
-        server sockets (that wait for incoming connections) timeout
-        must be False; otherwise, those sockets will timeout, causing
-        exception.
+        keyfile, certfile and ssl_version are as per ssl's wrap_socket method.
 
-        keyfile and certfile are as per ssl's wrap_socket method.
+        Only methods should be used; other attributes are for internal use only.
         """
 
         socket.socket.__init__(self, _sock=sock._sock)
-        self.blocking = blocking == True
-        self.sock = sock
-        self.keyfile = keyfile
-        self.certfile = certfile
-        self.ssl_version = ssl_version
-        self.result = None
-        self.fileno = sock.fileno()
+        self._blocking = blocking == True
+        self._rsock = sock
+        self._keyfile = keyfile
+        self._certfile = certfile
+        self._ssl_version = ssl_version
+        self._result = None
+        self._fileno = sock.fileno()
+        self._timeout = 0
+        self._timestamp = None
+        self._coro = None
 
-        if self.blocking:
-            if self.certfile:
+        if self._blocking:
+            if self._certfile:
                 raise Exception('SSL is not supported for blocking sockets')
-            self.timestamp = None
-            if isinstance(timeout, (int, float)):
-                self.sock.settimeout(timeout)
             self.read = self.sync_read
             self.write = self.sync_write
             self.read_msg = self.sync_read_msg
             self.write_msg = self.sync_write_msg
-            self._notifier = None
             self._asyncoro = None
-            self._coro = None
+            self._notifier = None
         else:
-            self.sock.setblocking(0)
-            if timeout:
-                self.timestamp = 0
-            else:
-                self.timestamp = None
-
+            self._rsock.setblocking(0)
             self.task = None
             self.recv = self.async_recv
             self.send = self.async_send
@@ -165,20 +155,20 @@ class AsynCoroSocket(socket.socket):
             self.write_msg = self.async_write_msg
 
             self._asyncoro = AsynCoro.instance()
-            self._coro = None
             self._notifier = _AsyncNotifier.instance()
             self._notifier.add_fd(self)
 
     def close(self):
-        """Close AsynCoroSocket.
+        """'close' must be called when done with socket.
         """
         if self._notifier:
             self._notifier.del_fd(self)
             self._notifier = None
-        self.sock.close()
-
-    def __del__(self):
-        self.close()
+        if self._rsock:
+            self._rsock.close()
+            self._rsock = None
+        self._asyncoro = None
+        self._coro = None
 
     def __enter__(self):
         return self
@@ -186,12 +176,28 @@ class AsynCoroSocket(socket.socket):
     def __exit__(self, exc_type, exc_value, trace):
         self.close()
 
+    def settimeout(self, timeout):
+        if self._blocking:
+            self._timestamp = None
+            self._rsock.settimeout(timeout)
+        else:
+            if isinstance(timeout, (int, float)):
+                self._timeout = timeout
+            else:
+                logging.warning('invalid timeout %s ignored' % timeout)
+
+    def gettimeout(self):
+        if self._blocking:
+            return self._rsock.gettimeout()
+        else:
+            return self._timeout
+
     def async_recv(self, bufsize, *args):
         """Asynchronous version of socket recv method.
         """
         def _recv(self, bufsize, *args):
             try:
-                self.result = self.sock.recv(bufsize, *args)
+                self._result = self._rsock.recv(bufsize, *args)
             except ssl.SSLError, err:
                 if err.args[0] != ssl.SSL_ERROR_WANT_READ:
                     raise Exception('socket reading error')
@@ -201,31 +207,30 @@ class AsynCoroSocket(socket.socket):
                 coro, self._coro = self._coro, None
                 coro.throw(*sys.exc_info())
             else:
-                if self.result >= 0:
+                if self._result >= 0:
                     self.task = None
                     self._notifier.modify(self, 0)
                     coro, self._coro = self._coro, None
-                    coro.resume(self.result)
+                    coro.resume(self._result)
                 else:
                     self.task = None
                     self._notifier.modify(self, 0)
                     coro, self._coro = self._coro, None
                     coro.throw(Exception, Exception('socket recv error'), None)
 
-        if self.certfile:
+        if self._certfile:
             # in case of SSL, attempt read first
             try:
-                self.result= self.sock.recv(bufsize)
+                self._result= self._rsock.recv(bufsize)
             except ssl.SSLError, err:
                 if err.args[0] != ssl.SSL_ERROR_WANT_READ:
-                    logging.debug('reading error: %s for %s', sys.exc_type, self.fileno)
+                    logging.debug('reading error: %s for %s', sys.exc_type, self._fileno)
                     # TODO: throw this exception?
             else:
-                return self.result
+                return self._result
 
         self.task = functools.partial(_recv, self, bufsize, *args)
-        if self.timestamp is not None:
-            self.timestamp = time.time()
+        self._timestamp = time.time()
         self._coro = self._asyncoro.cur_coro()
         self._coro.suspend()
         self._notifier.modify(self, _AsyncNotifier._Readable)
@@ -233,11 +238,11 @@ class AsynCoroSocket(socket.socket):
     def async_read(self, bufsize, *args):
         """Read exactly bufsize bytes.
         """
-        self.result = bytearray()
+        self._result = bytearray()
         def _read(self, bufsize, *args):
-            plen = len(self.result)
+            plen = len(self._result)
             try:
-                self.result[len(self.result):] = self.sock.recv(bufsize - len(self.result), *args)
+                self._result[len(self._result):] = self._rsock.recv(bufsize - len(self._result), *args)
             except ssl.SSLError, err:
                 if err.args[0] != ssl.SSL_ERROR_WANT_READ:
                     raise Exception('socket reading error')
@@ -247,32 +252,31 @@ class AsynCoroSocket(socket.socket):
                 coro, self._coro = self._coro, None
                 coro.throw(*sys.exc_info())
             else:
-                if len(self.result) == bufsize or self.sock.type == socket.SOCK_DGRAM:
+                if len(self._result) == bufsize or self._rsock.type == socket.SOCK_DGRAM:
                     self.task = None
                     self._notifier.modify(self, 0)
                     coro, self._coro = self._coro, None
-                    coro.resume(str(self.result))
-                elif len(self.result) == plen:
+                    coro.resume(str(self._result))
+                elif len(self._result) == plen:
                     # TODO: check for error and delete?
-                    self.result = None
+                    self._result = None
                     self._notifier.modify(self, 0)
                     coro, self._coro = self._coro, None
                     coro.throw(Exception, Exception('socket reading error'), None)
 
-        if self.certfile:
+        if self._certfile:
             # in case of SSL, attempt read first
             try:
-                self.result[len(self.result):] = self.sock.read(bufsize)
+                self._result[len(self._result):] = self._rsock.read(bufsize)
             except ssl.SSLError, err:
                 if err.args[0] != ssl.SSL_ERROR_WANT_READ:
-                    logging.debug('reading error: %s for %s', sys.exc_type, self.fileno)
+                    logging.debug('reading error: %s for %s', sys.exc_type, self._fileno)
             else:
-                if len(self.result) == bufsize:
-                    return str(self.result)
+                if len(self._result) == bufsize:
+                    return str(self._result)
 
         self.task = functools.partial(_read, self, bufsize, *args)
-        if self.timestamp is not None:
-            self.timestamp = time.time()
+        self._timestamp = time.time()
         self._coro = self._asyncoro.cur_coro()
         self._coro.suspend()
         self._notifier.modify(self, _AsyncNotifier._Readable)
@@ -280,17 +284,17 @@ class AsynCoroSocket(socket.socket):
     def sync_read(self, bufsize, *args):
         """Synchronous version of async_read.
         """
-        self.result = bytearray()
-        while len(self.result) < bufsize:
-            self.result[len(self.result):] = self.sock.recv(bufsize - len(self.result), *args)
-        return str(self.result)
+        self._result = bytearray()
+        while len(self._result) < bufsize:
+            self._result[len(self._result):] = self._rsock.recv(bufsize - len(self._result), *args)
+        return str(self._result)
 
     def async_recvfrom(self, *args):
         """Asynchronous version of socket recvfrom method.
         """
         def _recvfrom(self, *args):
             try:
-                self.result, addr = self.sock.recvfrom(*args)
+                self._result, addr = self._rsock.recvfrom(*args)
             except:
                 self.task = None
                 self._notifier.modify(self, 0)
@@ -298,13 +302,12 @@ class AsynCoroSocket(socket.socket):
                 coro.throw(*sys.exc_info())
             else:
                 self._notifier.modify(self, 0)
-                self.result = (self.result, addr)
+                self._result = (self._result, addr)
                 coro, self._coro = self._coro, None
-                coro.resume(self.result)
+                coro.resume(self._result)
 
         self.task = functools.partial(_recvfrom, self, *args)
-        if self.timestamp is not None:
-            self.timestamp = time.time()
+        self._timestamp = time.time()
         self._coro = self._asyncoro.cur_coro()
         self._coro.suspend()
         self._notifier.modify(self, _AsyncNotifier._Readable)
@@ -316,21 +319,20 @@ class AsynCoroSocket(socket.socket):
         # sending all the data, as done in write/write_msg
         def _send(self, *args):
             try:
-                self.result = self.sock.send(*args)
+                self._result = self._rsock.send(*args)
             except:
                 # TODO: close socket, inform coro
-                logging.debug('write error', self.fileno)
+                logging.debug('write error', self._fileno)
                 self._notifier.unregister(self)
                 coro, self._coro = self._coro, None
                 coro.throw(*sys.exc_info())
             else:
                 self._notifier.modify(self, 0)
                 coro, self._coro = self._coro, None
-                coro.resume(self.result)
+                coro.resume(self._result)
 
         self.task = functools.partial(_send, self, *args)
-        if self.timestamp is not None:
-            self.timestamp = time.time()
+        self._timestamp = time.time()
         self._coro = self._asyncoro.cur_coro()
         self._coro.suspend()
         self._notifier.modify(self, _AsyncNotifier._Writable)
@@ -343,7 +345,7 @@ class AsynCoroSocket(socket.socket):
         # sending all the data, as done in write/write_msg
         def _sendto(self, *args):
             try:
-                self.result = self.sock.sendto(*args)
+                self._result = self._rsock.sendto(*args)
             except:
                 self._notifier.unregister(self)
                 coro, self._coro = self._coro, None
@@ -351,11 +353,10 @@ class AsynCoroSocket(socket.socket):
             else:
                 self._notifier.modify(self, 0)
                 coro, self._coro = self._coro, None
-                coro.resume(self.result)
+                coro.resume(self._result)
 
         self.task = functools.partial(_sendto, self, *args)
-        if self.timestamp is not None:
-            self.timestamp = time.time()
+        self._timestamp = time.time()
         self._coro = self._asyncoro.cur_coro()
         self._coro.suspend()
         self._notifier.modify(self, _AsyncNotifier._Writable)
@@ -363,26 +364,25 @@ class AsynCoroSocket(socket.socket):
     def async_write(self, data):
         """Send all the data (similar to sendall).
         """
-        self.result = buffer(data, 0)
+        self._result = buffer(data, 0)
         def _write(self):
             try:
-                n = self.sock.send(self.result)
+                n = self._rsock.send(self._result)
             except:
-                self.result = None
+                self._result = None
                 self._notifier.unregister(self)
                 coro, self._coro = self._coro, None
                 coro.throw(*sys.exc_info())
             else:
                 if n > 0:
-                    self.result = buffer(self.result, n)
-                    if len(self.result) == 0:
+                    self._result = buffer(self._result, n)
+                    if len(self._result) == 0:
                         self._notifier.modify(self, 0)
                         coro, self._coro = self._coro, None
                         coro.resume(0)
 
         self.task = functools.partial(_write, self)
-        if self.timestamp is not None:
-            self.timestamp = time.time()
+        self._timestamp = time.time()
         self._coro = self._asyncoro.cur_coro()
         self._coro.suspend()
         self._notifier.modify(self, _AsyncNotifier._Writable)
@@ -391,25 +391,25 @@ class AsynCoroSocket(socket.socket):
         """Synchronous version of async_write.
         """
         # TODO: is sendall better?
-        self.result = buffer(data, 0)
-        while len(self.result) > 0:
-            n = self.sock.send(self.result)
+        self._result = buffer(data, 0)
+        while len(self._result) > 0:
+            n = self._rsock.send(self._result)
             if n > 0:
-                self.result = buffer(self.result, n)
+                self._result = buffer(self._result, n)
         return 0
 
     def async_accept(self):
         """Asynchronous version of socket accept method.
         """
         def _accept(self):
-            conn, addr = self.sock.accept()
+            conn, addr = self._rsock.accept()
             self._notifier.modify(self, 0)
             coro, self._coro = self._coro, None
 
-            if self.certfile:
+            if self._certfile:
                 def _ssl_handshake(conn, addr, coro):
                     try:
-                        conn.sock.do_handshake()
+                        conn._rsock.do_handshake()
                     except ssl.SSLError, err:
                         if err.args[0] == ssl.SSL_ERROR_WANT_READ:
                             conn._notifier.modify(conn, _AsyncNotifier._Readable)
@@ -418,7 +418,7 @@ class AsynCoroSocket(socket.socket):
                         else:
                             conn.task = None
                             try:
-                                conn.sock.unwrap()
+                                conn._rsock.unwrap()
                             except:
                                 pass
                             conn.close()
@@ -431,19 +431,19 @@ class AsynCoroSocket(socket.socket):
                         conn._notifier.modify(conn, 0)
                         coro.resume((conn, addr))
                 conn = AsynCoroSocket(conn, blocking=False,
-                                      keyfile=self.keyfile, certfile=self.certfile)
-                conn.sock = ssl.wrap_socket(conn, keyfile=self.keyfile, certfile=self.certfile,
-                                            server_side=True, do_handshake_on_connect=False,
-                                            ssl_version=self.ssl_version)
+                                      keyfile=self._keyfile, certfile=self._certfile)
+                conn._rsock = ssl.wrap_socket(conn, keyfile=self._keyfile, certfile=self._certfile,
+                                              server_side=True, do_handshake_on_connect=False,
+                                              ssl_version=self._ssl_version)
 
                 conn.task = functools.partial(_ssl_handshake, conn, addr, coro)
                 conn.task()
             else:
-                self.result = (conn, addr)
-                coro.resume(self.result)
+                self._result = (conn, addr)
+                coro.resume(self._result)
 
         self.task = functools.partial(_accept, self)
-        self.timestamp = None
+        self._timestamp = None
         self._coro = self._asyncoro.cur_coro()
         self._coro.suspend()
         self._notifier.modify(self, _AsyncNotifier._Readable)
@@ -453,15 +453,15 @@ class AsynCoroSocket(socket.socket):
         """
         def _connect(self, *args):
             # TODO: check with getsockopt
-            err = self.sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+            err = self._rsock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
             if not err:
                 self._notifier.modify(self, 0)
                 coro, self._coro = self._coro, None
 
-                if self.certfile:
+                if self._certfile:
                     def _ssl_handshake(conn, coro):
                         try:
-                            conn.sock.do_handshake()
+                            conn._rsock.do_handshake()
                         except ssl.SSLError, err:
                             if err.args[0] == ssl.SSL_ERROR_WANT_READ:
                                 conn._notifier.modify(conn, _AsyncNotifier._Readable)
@@ -479,8 +479,9 @@ class AsynCoroSocket(socket.socket):
                             conn._notifier.modify(conn, 0)
                             coro.resume(0)
 
-                    self.sock = ssl.wrap_socket(self.sock, keyfile=self.keyfile, certfile=self.certfile,
-                                                server_side=False, do_handshake_on_connect=False)
+                    self._rsock = ssl.wrap_socket(self._rsock, keyfile=self._keyfile,
+                                                  certfile=self._certfile, server_side=False,
+                                                  do_handshake_on_connect=False)
                     self.task = functools.partial(_ssl_handshake, self, coro)
                     self.task()
                 else:
@@ -489,13 +490,12 @@ class AsynCoroSocket(socket.socket):
                 logging.debug('connect error: %s', err)
 
         self.task = functools.partial(_connect, self, *args)
-        if self.timestamp is not None:
-            self.timestamp = time.time()
+        self._timestamp = time.time()
         self._coro = self._asyncoro.cur_coro()
         self._coro.suspend()
         self._notifier.modify(self, _AsyncNotifier._Writable)
         try:
-            self.sock.connect(*args)
+            self._rsock.connect(*args)
         except socket.error, e:
             if e.args[0] != EINPROGRESS:
                 logging.debug('connect error: %s', e.args[0])
@@ -519,7 +519,7 @@ class AsynCoroSocket(socket.socket):
                 yield None
             yield msg
         except:
-            logging.error('Socket reading error for %s: %s', self.fileno, traceback.format_exc())
+            logging.error('Socket reading error for %s: %s', self._fileno, traceback.format_exc())
             raise
 
     def sync_read_msg(self):
@@ -1083,9 +1083,9 @@ class _AsyncNotifier(object):
         """
         return cls.__instance
 
-    def __init__(self, poll_interval=2, fd_timeout=10):
+    def __init__(self, poll_interval=2, timeout_interval=10):
         if self.__class__.__instance is None:
-            assert fd_timeout >= 5 * poll_interval
+            assert timeout_interval >= 5 * poll_interval
             self.__class__.__instance = self
 
             if hasattr(select, 'epoll'):
@@ -1110,7 +1110,7 @@ class _AsyncNotifier(object):
                 self.__class__._Error = 0x10
 
             self._poll_interval = poll_interval
-            self._fd_timeout = fd_timeout
+            self._timeout_interval = timeout_interval
             self._fds = {}
             self._terminate = False
             self._lock = threading.Lock()
@@ -1143,41 +1143,39 @@ class _AsyncNotifier(object):
             try:
                 for fd, evnt in events:
                     if fd is None:
-                        logging.debug('Invalid fd!')
+                        logging.debug('Invalid fd for event %s!', event)
                         continue
                     if event == _AsyncNotifier._Readable:
-                        # logging.debug('fd %s is readable', fd.fileno)
-                        if fd.timestamp is not None:
-                            fd.timestamp = now
+                        # logging.debug('fd %s is readable', fd._fileno)
+                        fd._timestamp = now
                         if fd.task is None:
-                            logging.error('fd %s is not registered?', fd.fileno)
+                            logging.error('fd %s is not registered?', fd._fileno)
                         else:
                             fd.task()
                     elif event == _AsyncNotifier._Writable:
-                        # logging.debug('fd %s is writable', fd.fileno)
-                        if fd.timestamp is not None:
-                            fd.timestamp = now
+                        # logging.debug('fd %s is writable', fd._fileno)
+                        fd._timestamp = now
                         if fd.task is None:
-                            logging.error('fd %s is not registered?', fd.fileno)
+                            logging.error('fd %s is not registered?', fd._fileno)
                         else:
                             fd.task()
                     elif event == _AsyncNotifier._Error:
-                        # logging.debug('Error on %s', fd.fileno)
+                        # logging.debug('Error on %s', fd._fileno)
                         # TODO: figure out what to do (e.g., register also for
                         # HUP and close?)
                         continue
             except:
                 logging.debug(traceback.format_exc())
-            if (now - last_timeout) >= self._fd_timeout:
+            if (now - last_timeout) >= self._timeout_interval:
                 last_timeout = now
                 self._lock.acquire()
                 timeouts = [fd for fd in self._fds.itervalues() \
-                            if fd.timestamp and (now - fd.timestamp) >= self._fd_timeout]
+                            if fd._timeout and fd._timestamp and (now - fd._timestamp) >= fd._timeout]
                 try:
                     for fd in timeouts:
                         if fd._coro:
-                            e = 'timed out %s' % (now - fd.timestamp)
-                            fd.timestamp = None
+                            e = 'timed out %s' % (now - fd._timestamp)
+                            fd._timestamp = None
                             fd._coro.throw(socket.timeout, socket.timeout(e))
                             # TODO: unregister and close?
                 except:
@@ -1187,40 +1185,39 @@ class _AsyncNotifier(object):
 
     def add_fd(self, fd):
         self._lock.acquire()
-        self._fds[fd.fileno] = fd
+        self._fds[fd._fileno] = fd
         self._lock.release()
         self.register(fd, 0)
 
     def del_fd(self, fd):
         self._lock.acquire()
-        fd = self._fds.pop(fd.fileno, None)
+        fd = self._fds.pop(fd._fileno, None)
         self._lock.release()
         if fd is not None:
             self.unregister(fd)
 
     def register(self, fd, event):
         try:
-            self._poller.register(fd.fileno, event)
+            self._poller.register(fd._fileno, event)
         except:
             logging.warning('register of %s for %s failed with %s',
-                            fd.fileno, event, traceback.format_exc())
+                            fd._fileno, event, traceback.format_exc())
 
     def modify(self, fd, event):
         if not event:
-            if fd.timestamp is not None:
-                fd.timestamp = 0
+            fd._timestamp = None
         try:
-            self._poller.modify(fd.fileno, event)
+            self._poller.modify(fd._fileno, event)
         except:
             logging.warning('modify of %s for %s failed with %s',
-                            fd.fileno, event, traceback.format_exc())
+                            fd._fileno, event, traceback.format_exc())
 
     def unregister(self, fd):
         try:
-            self._poller.unregister(fd.fileno)
-            fd.timestamp = None
+            self._poller.unregister(fd._fileno)
+            fd._timestamp = None
         except:
-            logging.warning('unregister of %s failed with %s', fd.fileno, traceback.format_exc())
+            logging.warning('unregister of %s failed with %s', fd._fileno, traceback.format_exc())
 
     def terminate(self):
         self._terminate = True

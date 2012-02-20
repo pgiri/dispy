@@ -64,7 +64,7 @@ and CoroCondition, and a few syntactic changes.
 For example, a simple tcp server with asyncoro looks like:
 </p>
 <code>def process(sock, coro=None):
-    sock = AsynCoroSocket(sock, blocking=False)
+    sock = AsynCoroSocket(sock)
     # get (exactly) 4MB of data, for example, and let other coroutines
     # (process methods, in this case) execute in the meantime
     data = yield sock.read(4096*1024)
