@@ -784,8 +784,6 @@ class _Scheduler(object):
             except:
                 logging.debug('execption: %s', sys.exc_type)
                 continue
-            if not self.cluster_certfile:
-                conn = AsynCoroSocket(conn, blocking=False)
             conn.settimeout(2)
             Coro(_request_task, self, conn, addr)
 
@@ -982,8 +980,6 @@ class _Scheduler(object):
                 logging.warning('Ignoring results from %s', addr[0])
                 conn.close()
                 continue
-            if not self.node_certfile:
-                conn = AsynCoroSocket(conn, blocking=False)
             conn.settimeout(2)
             Coro(self.job_result_task, conn, addr)
 

@@ -170,6 +170,18 @@ class AsynCoroSocket(socket.socket):
         self._asyncoro = None
         self._coro = None
 
+    def unwrap(self):
+        """Get rid of AsynCoroSocket setup and return underlying socket object.
+        """
+        if self._notifier:
+            self._notifier.del_fd(self)
+        self._asyncoro = None
+        self._notifier = None
+        self._coro = None
+        sock = self._rsock
+        self._rsock = None
+        return sock
+
     def __enter__(self):
         return self
 
@@ -404,7 +416,8 @@ class AsynCoroSocket(socket.socket):
         return 0
 
     def async_accept(self):
-        """Asynchronous version of socket accept method.
+        """Asynchronous version of socket accept method. Socket in
+        returned pair is AsynCoroSocket.
         """
         def _accept(self):
             conn, addr = self._rsock.accept()
@@ -447,6 +460,7 @@ class AsynCoroSocket(socket.socket):
                 conn._task = functools.partial(_ssl_handshake, conn, addr, coro)
                 conn._task()
             else:
+                conn = AsynCoroSocket(conn, blocking=False)
                 self._result = (conn, addr)
                 coro.resume(self._result)
 
@@ -1338,6 +1352,8 @@ class RepeatTimer(threading.Thread):
     """Timer that calls given function every 'interval' seconds. The
     timer can be stopped, (re)started, reset to different interval
     etc. until terminated.
+
+    This is not used in AsynCoro or dispy, so likely to be discarded.
     """
     def __init__(self, interval, function, args=(), kwargs={}):
         threading.Thread.__init__(self)

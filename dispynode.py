@@ -295,8 +295,6 @@ class _DispyNode(object):
                 logging.debug('execption: %s', sys.exc_type)
                 continue
             # logging.debug('new tcp request from %s', str(addr))
-            if not self.certfile:
-                conn = AsynCoroSocket(conn, blocking=False)
             conn.settimeout(3)
             Coro(self.tcp_serve_task, conn, addr)
 

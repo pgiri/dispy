@@ -894,8 +894,6 @@ class _Cluster(object):
                 logging.debug('execption: %s', sys.exc_type)
                 continue
             logging.debug('received job result from %s', str(addr))
-            if not self.certfile:
-                new_sock = AsynCoroSocket(new_sock, blocking=False)
             new_sock.settimeout(2)
             Coro(self.job_result_task, new_sock, addr)
 
