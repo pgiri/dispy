@@ -63,8 +63,9 @@ def dispy_provisional_result(result):
     __dispy_job_reply.status = DispyJob.ProvisionalResult
     __dispy_job_reply.result = result
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock = AsynCoroSocket(sock, blocking=True, timeout=2,
+    sock = AsynCoroSocket(sock, blocking=True,
                           certfile=__dispy_job_certfile, keyfile=__dispy_job_keyfile)
+    sock.settimeout(2)
     try:
         sock.connect(__dispy_job_info.reply_addr)
         sock.write_msg(cPickle.dumps(__dispy_job_reply))
@@ -157,7 +158,7 @@ class _DispyNode(object):
         self.tcp_sock.bind((ip_addr, 0))
         self.address = self.tcp_sock.getsockname()
         self.tcp_sock.listen(30)
-        self.tcp_sock = AsynCoroSocket(self.tcp_sock, blocking=False, timeout=False,
+        self.tcp_sock = AsynCoroSocket(self.tcp_sock, blocking=False,
                                        keyfile=self.keyfile, certfile=self.certfile)
 
         if dest_path_prefix:
@@ -190,7 +191,7 @@ class _DispyNode(object):
         logging.info('serving %s cpus at %s:%s',
                      self.cpus, self.address[0], node_port)
         logging.debug('tcp server at %s:%s', self.address[0], self.address[1])
-        self.udp_sock = AsynCoroSocket(self.udp_sock, blocking=False, timeout=False)
+        self.udp_sock = AsynCoroSocket(self.udp_sock, blocking=False)
 
         scheduler_ip_addr = _node_name_ipaddr(scheduler_node)[1]
 
@@ -269,6 +270,7 @@ class _DispyNode(object):
                     reply = {'ip_addr':self.address[0], 'port':self.address[1],
                              'sign':self.signature, 'version':_dispy_version}
                     sock = AsynCoroSocket(sock, blocking=False)
+                    sock.settimeout(1)
                     yield sock.sendto(cPickle.dumps(reply), (req['ip_addr'], req['port']))
                     sock.close()
                 except:
@@ -295,6 +297,7 @@ class _DispyNode(object):
             # logging.debug('new tcp request from %s', str(addr))
             if not self.certfile:
                 conn = AsynCoroSocket(conn, blocking=False)
+            conn.settimeout(3)
             Coro(self.tcp_serve_task, conn, addr)
 
     def tcp_serve_task(self, conn, addr, coro=None):
@@ -774,6 +777,7 @@ class _DispyNode(object):
                                                     'port':self.udp_sock.getsockname()[1], 'cpus':n})
                     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                     sock = AsynCoroSocket(sock, blocking=False)
+                    sock.settimeout(1)
                     yield sock.sendto(msg, (self.scheduler_ip_addr, self.scheduler_port))
                     sock.close()
             if self.zombie_interval and (now - last_zombie_time) >= self.zombie_interval:
@@ -816,6 +820,7 @@ class _DispyNode(object):
                 for compute in zombies:
                     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                     sock = AsynCoroSocket(sock, blocking=False)
+                    sock.settimeout(1)
                     logging.debug('Sending TERMINATE to %s', compute.scheduler_ip_addr)
                     data = cPickle.dumps({'ip_addr':self.address[0], 'port':self.address[1],
                                           'sign':self.signature})
@@ -872,6 +877,7 @@ class _DispyNode(object):
                       job_reply.uid, job_reply.status, job_info.reply_addr[0])
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock = AsynCoroSocket(sock, blocking=False, certfile=self.certfile, keyfile=self.keyfile)
+        sock.settimeout(2)
         try:
             yield sock.connect(job_info.reply_addr)
             yield sock.write_msg(cPickle.dumps(job_reply))
@@ -989,6 +995,7 @@ class _DispyNode(object):
             for cid, compute in computations:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 sock = AsynCoroSocket(sock, blocking=False)
+                sock.settimeout(2)
                 logging.debug('Sending TERMINATE to %s', compute.scheduler_ip_addr)
                 data = cPickle.dumps({'ip_addr':self.address[0], 'port':self.address[1],
                                       'sign':self.signature})

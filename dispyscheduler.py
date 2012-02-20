@@ -162,7 +162,7 @@ class _Scheduler(object):
             self.request_sock.bind((self.ip_addr, self.scheduler_port))
             self.scheduler_port = self.request_sock.getsockname()[1]
             self.request_sock.listen(32)
-            self.request_sock = AsynCoroSocket(self.request_sock, blocking=False, timeout=False,
+            self.request_sock = AsynCoroSocket(self.request_sock, blocking=False,
                                                keyfile=self.cluster_keyfile,
                                                certfile=self.cluster_certfile)
             self.request_coro = Coro(self.request_server)
@@ -172,14 +172,14 @@ class _Scheduler(object):
             self.job_result_sock.bind((self.ip_addr, 0))
             self.job_result_sock.listen(50)
             self.job_result_sock = AsynCoroSocket(self.job_result_sock, blocking=False,
-                                                  timeout=False, keyfile=self.node_keyfile,
+                                                  keyfile=self.node_keyfile,
                                                   certfile=self.node_certfile)
             self.job_result_coro = Coro(self.job_result_server)
 
             self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.udp_sock.bind(('', self.port))
-            self.udp_sock = AsynCoroSocket(self.udp_sock, blocking=False, timeout=False)
+            self.udp_sock = AsynCoroSocket(self.udp_sock, blocking=False)
             logging.debug('UDP server at %s:%s' % (self.udp_sock.getsockname()))
             self.udp_coro = Coro(self.udp_server)
 
@@ -244,6 +244,7 @@ class _Scheduler(object):
                         msg = 'PULSE:' + cPickle.dumps({'ip_addr':self.ip_addr})
                         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                         sock = AsynCoroSocket(sock, blocking=False)
+                        sock.settimeout(1)
                         yield sock.sendto(msg, (info['ip_addr'], info['port']))
                         sock.close()
             elif msg.startswith('PONG:'):
@@ -331,6 +332,7 @@ class _Scheduler(object):
                                   req['ip_addr'], req['port'])
                     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                     sock = AsynCoroSocket(sock, blocking=False)
+                    sock.settimeout(1)
                     reply = {'ip_addr':self.ip_addr, 'port':self.scheduler_port,
                              'sign':self.sign, 'version':_dispy_version}
                     yield sock.sendto(cPickle.dumps(reply), (req['ip_addr'], req['port']))
@@ -348,6 +350,7 @@ class _Scheduler(object):
                                       'scheduler_port':self.port, 'version':_dispy_version})
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock = AsynCoroSocket(sock, blocking=False)
+        sock.settimeout(1)
         for node_spec, node_info in cluster._compute.node_spec.iteritems():
             if node_spec.find('*') >= 0:
                 port = node_info['port']
@@ -429,6 +432,7 @@ class _Scheduler(object):
         logging.debug('Sending results for %s to %s, %s', uid, ip, port)
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock = AsynCoroSocket(sock, blocking=False)
+        sock.settimeout(2)
         try:
             yield sock.connect((ip, port))
             yield sock.write_msg(cPickle.dumps(result))
@@ -782,6 +786,7 @@ class _Scheduler(object):
                 continue
             if not self.cluster_certfile:
                 conn = AsynCoroSocket(conn, blocking=False)
+            conn.settimeout(2)
             Coro(_request_task, self, conn, addr)
 
     def timer_task(self, coro=None):
@@ -979,6 +984,7 @@ class _Scheduler(object):
                 continue
             if not self.node_certfile:
                 conn = AsynCoroSocket(conn, blocking=False)
+            conn.settimeout(2)
             Coro(self.job_result_task, conn, addr)
 
     def fast_node_schedule(self):
