@@ -197,7 +197,7 @@ class _Compute(object):
         self.node_ip = None
         self.nodes = {}
         self.node_spec = None
-        self.resubmit = False
+        self.reentrant = False
         self.scheduler_ip_addr = None
         self.scheduler_port = None
         self.pulse_interval = None
@@ -888,8 +888,10 @@ class _Cluster(object):
             except GeneratorExit:
                 break
             except ssl.SSLError, err:
-                logging.debug('SSL connection to %s failed', str(addr))
-                continue
+                logging.debug('SSL connection failed: %s', str(err))
+                # see dispynode for issue with failed SSL accept
+                self.job_result_coro = Coro(self.job_result_server)
+                break
             except:
                 logging.debug('execption: %s', sys.exc_type)
                 continue
@@ -996,7 +998,7 @@ class _Cluster(object):
             # TODO: should we send terminate request to the node?
             cluster = self._clusters[_job.compute_id]
             del self._sched_jobs[_job.uid]
-            if cluster._compute.resubmit:
+            if cluster._compute.reentrant:
                 logging.debug('Rescheduling job %s from %s',
                               _job.uid, _job.node.ip_addr)
                 _job.job.status = DispyJob.Created
@@ -1322,7 +1324,7 @@ class JobCluster(object):
     def __init__(self, computation, nodes=['*'], depends=[], callback=None, max_cpus=None,
                  ip_addr=None, port=None, node_port=None, dest_path=None,
                  loglevel=logging.WARNING, cleanup=True, ping_interval=None, pulse_interval=None,
-                 resubmit=False, secret='', keyfile=None, certfile=None, fault_recover=None):
+                 reentrant=False, secret='', keyfile=None, certfile=None, fault_recover=None):
         """Create an instance of cluster for a specific computation.
 
         @computation is either a string (which is name of program, possibly
@@ -1400,13 +1402,13 @@ class JobCluster(object):
         pulse_interval is set, dispy directs nodes to send 'pulse'
         messages to indicate they are computing submitted jobs. A node
         is presumed dead if 5*pulse_interval elapses without a pulse
-        message. See 'resubmit' below.
+        message. See 'reentrant' below.
 
-        @resubmit must be either True or False. This value is used
+        @reentrant must be either True or False. This value is used
         only if 'pulse_interval' is set for any of the clusters. If
-        pulse_interval is given and resubmit is False (default), jobs
+        pulse_interval is given and reentrant is False (default), jobs
         scheduled for a dead node are automatically cancelled; if
-        resubmit is True, then jobs scheduled for a dead node are
+        reentrant is True, then jobs scheduled for a dead node are
         resubmitted to other eligible nodes.
 
         @fault_recover must be either True or file path. When this
@@ -1428,10 +1430,10 @@ class JobCluster(object):
                 nodes = [nodes]
             else:
                 raise Exception('"nodes" must be list of IP addresses or host names')
-        if resubmit != True and resubmit != False:
-            logging.warning('Invalid value for resubmit (%s) is ignored; ' \
-                            'it must be either True or False' % resubmit)
-            resubmit = False
+        if reentrant != True and reentrant != False:
+            logging.warning('Invalid value for reentrant (%s) is ignored; ' \
+                            'it must be either True or False' % reentrant)
+            reentrant = False
         if ping_interval is not None:
             try:
                 ping_interval = float(ping_interval)
@@ -1586,7 +1588,7 @@ class JobCluster(object):
         compute.scheduler_ip_addr = self._cluster.ip_addr
         compute.scheduler_port = self._cluster.port
         compute.cleanup = cleanup
-        compute.resubmit = resubmit
+        compute.reentrant = reentrant
         compute.pulse_interval = pulse_interval
 
         if not shared:
@@ -1690,7 +1692,7 @@ class SharedJobCluster(JobCluster):
     def __init__(self, computation, nodes=['*'], depends=[], callback=None,
                  ip_addr=None, port=51347, scheduler_node=None,
                  loglevel=logging.WARNING, cleanup=True,
-                 pulse_interval=None, ping_interval=None, resubmit=False,
+                 pulse_interval=None, ping_interval=None, reentrant=False,
                  secret='', keyfile=None, certfile=None, fault_recover=None):
         if not isinstance(nodes, list):
             if isinstance(nodes, str):
@@ -1702,7 +1704,7 @@ class SharedJobCluster(JobCluster):
         JobCluster.__init__(self, computation, nodes='dummy', depends=depends,
                             callback=callback, ip_addr=ip_addr, port=0,
                             cleanup=cleanup, pulse_interval=None,
-                            resubmit=resubmit, loglevel=loglevel, fault_recover=fault_recover)
+                            reentrant=reentrant, loglevel=loglevel, fault_recover=fault_recover)
         if pulse_interval is not None:
             logging.warning('pulse_interval is not used in SharedJobCluster; ' \
                             'dispyscheduler should be started appropriately.')

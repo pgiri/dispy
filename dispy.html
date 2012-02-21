@@ -62,7 +62,7 @@ computations.
 <tt>JobCluster(computation, nodes=['*'], depends=[], callback=None,
            ip_addr=None, port=51347, node_port=51348, fault_recover=False,
            dest_path=None, loglevel=logging.WARNING, cleanup=True,
-           pulse_interval=None, ping_interval=None, resubmit=False,
+           pulse_interval=None, ping_interval=None, reentrant=False,
            secret='', keyfile=None, certfile=None)</tt><br/>
 where
 <ul>
@@ -161,16 +161,16 @@ where
   messages that nodes send to indicate they are computing submitted
   jobs. If this value is given as an integer or floating number between
   1 and 600, then a node is presumed dead if 5*pulse_interval seconds
-  elapse without a pulse message. See 'resubmit' below.
+  elapse without a pulse message. See 'reentrant' below.
 </li>
 <li>
-  <tt>resubmit</tt> must be either True or False. This value is used
+  <tt>reentrant</tt> must be either True or False. This value is used
   only if 'pulse_interval' is set for any of the clusters. If
-  pulse_interval is given and resubmit is False (default), jobs
+  pulse_interval is given and reentrant is False (default), jobs
   scheduled for a dead node are automatically cancelled (for such jobs,
   execution result, output and error fields are set to None, exception
   field is set to 'Cancelled' and status is set to Cancelled); if
-  resubmit is True, then jobs scheduled for a dead node are resubmitted
+  reentrant is True, then jobs scheduled for a dead node are resubmitted
   to other eligible nodes.
 </li>
 <li>
@@ -205,7 +205,7 @@ where
 <tt>SharedJobCluster(computation, nodes=['*'], depends=[], ip_addr=None,
                  scheduler_node=None, port=51347,
                  dest_path=None, loglevel=logging.WARNING, cleanup=True,
-                 resubmit=False, secret='', keyfile=None, certfile=None)</tt><br/>
+                 reentrant=False, secret='', keyfile=None, certfile=None)</tt><br/>
 where all arguments common to <tt>JobCluster</tt> are same, and
 <ul>
 <li>

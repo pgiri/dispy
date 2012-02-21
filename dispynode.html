@@ -37,13 +37,7 @@
         </h2> 
 <p>
   dispynode runs on each of the nodes in a cluster and executes jobs
-  for dispy. Normally, it is expected that the nodes run this program
-  always. However, if dispynode is started on a node and jobs are
-  already submitted to a cluster to which this node belongs, then
-  dispy will find out the node and will submit jobs to it as
-  appropriate. However, dispy is not yet fault tolerant and the node
-  is expected to keep running dispynode until all the clusters that
-  use the node have terminated.
+  for dispy clients (and dispyscheduler in case of SharedJobCluster).
 </p>
 
 <p>Below are various options to invoking dispynode:

@@ -66,9 +66,9 @@
     <li><tt>--pulse_interval n</tt> directs nodes it controls to send
     pulse messages every <tt>n</tt> seconds; if a pulse message is not
     received within 5*n, then a node is presumed dead. In that case,
-    if a cluster set 'resubmit=True', then jobs scheduled on that node
+    if a cluster set 'reentrant=True', then jobs scheduled on that node
     will be migrated to other node(s) if possible; if
-    'resubmit=False', then jobs are automatically
+    'reentrant=False', then jobs are automatically
     cancelled. <tt>n</tt> must be between 1 and 600.
       <li>
 	<tt>ping_interval</tt> is number of seconds.  Normally

@@ -467,7 +467,7 @@ class _Scheduler(object):
         for _job in dead_jobs:
             cluster = self._clusters[_job.compute_id]
             del self._sched_jobs[_job.uid]
-            if cluster._compute.resubmit:
+            if cluster._compute.reentrant:
                 logging.debug('Rescheduling job %s from %s',
                               _job.uid, _job.node.ip_addr)
                 _job.job.status = DispyJob.Created
@@ -486,292 +486,6 @@ class _Scheduler(object):
     def request_server(self, coro=None):
         # generator
         assert coro is not None
-
-        def _request_task(self, conn, addr, coro=None):
-
-            def _job_request_task(self, conn, msg, addr, coro):
-                # generator
-                try:
-                    _job = cPickle.loads(msg)
-                except:
-                    logging.debug('Ignoring job request from %s', addr[0])
-                    raise StopIteration
-                self._sched_cv.acquire()
-                _job.uid = self.job_uid
-                self.job_uid += 1
-                if self.job_uid == sys.maxint:
-                    # TODO: check if it is okay to reset
-                    self.job_uid = 1
-                yield self._sched_cv.release()
-                setattr(_job, 'node', None)
-                job = type('DispyJob', (), {'status':DispyJob.Created,
-                                            'start_time':None, 'end_time':None})
-                setattr(_job, 'job', job)
-                resp = cPickle.dumps(_job.uid)
-                try:
-                    yield conn.write_msg(resp)
-                except:
-                    logging.warning('Failed to send response to %s: %s',
-                                    str(addr), traceback.format_exc())
-                    raise StopIteration
-                try:
-                    msg = yield conn.read_msg()
-                    assert msg == 'ACK'
-                except:
-                    logging.warning('Invalid reply for job: %s, %s',
-                                    _job.uid, traceback.format_exc())
-                    raise StopIteration
-                self._sched_cv.acquire()
-                cluster = self._clusters.get(_job.compute_id, None)
-                if cluster is None:
-                    logging.debug('cluster %s is not valid anymore for job %s',
-                                  _job.compute_id, _job.uid)
-                    self._sched_cv.release()
-                    raise StopIteration
-                cluster._jobs.append(_job)
-                self.unsched_jobs += 1
-                cluster._pending_jobs += 1
-                cluster.last_pulse = time.time()
-                self._sched_cv.notify()
-                self._sched_cv.release()
-
-            def _compute_task(self, conn, msg, addr, coro):
-                # generator
-                try:
-                    compute = cPickle.loads(msg)
-                except:
-                    logging.debug('Ignoring compute request from %s', addr[0])
-                    yield None; raise StopIteration
-                setattr(compute, 'nodes', {})
-                cluster = _Cluster(compute)
-                compute = cluster._compute
-                cluster.client_job_result_port = compute.job_result_port
-                cluster.client_scheduler_ip_addr = compute.scheduler_ip_addr
-                cluster.client_scheduler_port = compute.scheduler_port
-                compute.job_result_port = self.job_result_sock.getsockname()[1]
-                compute.scheduler_ip_addr = self.ip_addr
-                compute.scheduler_port = self.port
-                self._sched_cv.acquire()
-                compute.id = cluster.id = self.cluster_id
-                self._clusters[cluster.id] = cluster
-                self.cluster_id += 1
-                dest_path = os.path.join(self.dest_path_prefix, str(compute.id))
-                if not os.path.isdir(dest_path):
-                    try:
-                        os.makedirs(dest_path)
-                    except:
-                        logging.warning('Could not create directory "%s"', dest_path)
-                        if compute.xfer_files:
-                            self._sched_cv.release()
-                            conn.close()
-                            raise StopIteration
-                for xf in compute.xfer_files:
-                    xf.compute_id = compute.id
-                    xf.name = os.path.join(dest_path, os.path.basename(xf.name))
-                self._sched_cv.release()
-                resp = {'ID':compute.id,
-                        'pulse_interval':(self.zombie_interval / 5.0) if self.zombie_interval else None}
-                resp = cPickle.dumps(resp)
-                logging.debug('New computation %s: %s, %s', compute.id, compute.name,
-                              len(compute.xfer_files))
-                yield resp
-
-            def _xfer_file_task(self, conn, msg, addr, coro):
-                # generator
-                try:
-                    xf = cPickle.loads(msg)
-                except:
-                    logging.debug('Ignoring file trasnfer request from %s', addr[0])
-                    raise StopIteration
-                resp = ''
-                if xf.compute_id not in self._clusters:
-                    logging.error('computation "%s" is invalid' % xf.compute_id)
-                    raise StopIteration
-                compute = self._clusters[xf.compute_id]
-                dest_path = os.path.join(self.dest_path_prefix, str(compute.id))
-                if not os.path.isdir(dest_path):
-                    try:
-                        os.makedirs(dest_path)
-                    except:
-                        raise StopIteration
-                tgt = os.path.join(dest_path, os.path.basename(xf.name))
-                logging.debug('Copying file %s to %s (%s)', xf.name,
-                              tgt, xf.stat_buf.st_size)
-                try:
-                    fd = open(tgt, 'wb')
-                    n = 0
-                    while n < xf.stat_buf.st_size:
-                        data = yield conn.read(min(xf.stat_buf.st_size-n, 1024000))
-                        if not data:
-                            break
-                        fd.write(data)
-                        n += len(data)
-                        if self.max_file_size and n > self.max_file_size:
-                            logging.warning('File "%s" is too big (%s); it is truncated',
-                                            tgt, n)
-                            break
-                    fd.close()
-                    if n < xf.stat_buf.st_size:
-                        resp = 'NAK (read only %s bytes)' % n
-                    else:
-                        resp = 'ACK'
-                        logging.debug('Copied file %s, %s', tgt, resp)
-                        os.utime(tgt, (xf.stat_buf.st_atime, xf.stat_buf.st_mtime))
-                        os.chmod(tgt, stat.S_IMODE(xf.stat_buf.st_mode))
-                except:
-                    logging.warning('Copying file "%s" failed with "%s"',
-                                    xf.name, traceback.format_exc())
-                    resp = 'NACK'
-                if resp:
-                    try:
-                        yield conn.write_msg(resp)
-                    except:
-                        logging.debug('Could not send reply for "%s"', xf.name)
-
-            # _request_task begins here
-            resp = None
-            try:
-                req = yield conn.read(len(self.auth_code))
-                if req != self.auth_code:
-                    conn.close()
-                    logging.warning('Invalid/unauthorized request ignored')
-                    raise StopIteration
-                msg = yield conn.read_msg()
-                if not msg:
-                    conn.close()
-                    logging.info('Closing connection')
-                    raise StopIteration
-            except:
-                logging.warning('Failed to read message from %s: %s',
-                                str(addr), traceback.format_exc())
-                conn.close()
-                raise StopIteration
-            if msg.startswith('JOB:'):
-                msg = msg[len('JOB:'):]
-                yield _job_request_task(self, conn, msg, addr, coro)
-                conn.close()
-            elif msg.startswith('COMPUTE:'):
-                msg = msg[len('COMPUTE:'):]
-                resp = yield _compute_task(self, conn, msg, addr, coro)
-            elif msg.startswith('ADD_COMPUTE:'):
-                msg = msg[len('ADD_COMPUTE:'):]
-                self._sched_cv.acquire()
-                try:
-                    req = cPickle.loads(msg)
-                    cluster = self._clusters[req['ID']]
-                    for xf in cluster._compute.xfer_files:
-                        assert os.path.isfile(xf.name)
-                    resp = cPickle.dumps(cluster._compute.id)
-                    Coro(self.add_cluster, cluster)
-                except:
-                    logging.debug('Ignoring compute request from %s', addr[0])
-                    conn.close()
-                    raise StopIteration
-                finally:
-                    yield self._sched_cv.release()
-            elif msg.startswith('DEL_COMPUTE:'):
-                msg = msg[len('DEL_COMPUTE:'):]
-                conn.close()
-                try:
-                    req = cPickle.loads(msg)
-                    assert isinstance(req['ID'], int)
-                except:
-                    logging.warning('Invalid compuation for deleting')
-                    raise StopIteration
-                self._sched_cv.acquire()
-                cluster = self._clusters.get(req['ID'], None)
-                if cluster is None:
-                    # this cluster is closed
-                    self._sched_cv.release()
-                    raise StopIteration
-                cluster.zombie = True
-                self.cleanup_computation(cluster)
-                yield self._sched_cv.release()
-            elif msg.startswith('FILEXFER:'):
-                msg = msg[len('FILEXFER:'):]
-                yield _xfer_file_task(self, conn, msg, addr, coro)
-            elif msg.startswith('TERMINATE_JOB:'):
-                msg = msg[len('TERMINATE_JOB:'):]
-                conn.close()
-                try:
-                    job = cPickle.loads(msg)
-                except:
-                    logging.warning('Invalid job cancel message')
-                    raise StopIteration
-                self._sched_cv.acquire()
-                cluster = self._clusters.get(job.compute_id, None)
-                if not cluster:
-                    logging.debug('Invalid job %s!', job.uid)
-                    self._sched_cv.release()
-                    raise StopIteration
-                compute = cluster._compute
-                cluster.last_pulse = time.time()
-                _job = self._sched_jobs.get(job.uid, None)
-                if _job is None:
-                    for i, _job in enumerate(cluster._jobs):
-                        if _job.uid == job.uid:
-                            del cluster._jobs[i]
-                            self.unsched_jobs -= 1
-                            reply = _JobReply(_job, self.ip_addr, status=DispyJob.Cancelled)
-                            Coro(self.send_job_result,
-                                 _job.uid, compute.id, cluster.client_scheduler_ip_addr,
-                                 cluster.client_job_result_port, reply)
-                            break
-                    else:
-                        logging.debug('Invalid job %s!', job.uid)
-                else:
-                    _job.job.status = DispyJob.Cancelled
-                    Coro(_job.node.send, _job.uid, 'TERMINATE_JOB:' + cPickle.dumps(_job),
-                         reply=False)
-                yield self._sched_cv.release()
-            elif msg.startswith('RETRIEVE_JOB:'):
-                req = msg[len('RETRIEVE_JOB:'):]
-                try:
-                    req = cPickle.loads(req)
-                    assert req['uid'] is not None
-                    assert req['hash'] is not None
-                    assert req['compute_id'] is not None
-                    result_file = os.path.join(self.dest_path_prefix, str(req['compute_id']),
-                                               '_dispy_job_reply_%s' % req['uid'])
-                    if os.path.isfile(result_file):
-                        fd = open(result_file, 'rb')
-                        job_reply = cPickle.load(fd)
-                        fd.close()
-                        if job_reply.hash == req['hash']:
-                            yield conn.write_msg(cPickle.dumps(job_reply))
-                            ack = yield conn.read_msg()
-                            assert ack == 'ACK'
-                            try:
-                                os.remove(result_file)
-                                self._sched_cv.acquire()
-                                cluster = self._clusters.get(req['compute_id'], None)
-                                if cluster is None:
-                                    p = os.path.dirname(result_file)
-                                    if len(os.listdir(p)) == 0:
-                                        os.rmdir(p)
-                                else:
-                                    cluster.pending_results -= 1
-                                yield self._sched_cv.release()
-                            except:
-                                logging.debug('Could not remove "%s"', result_file)
-                            raise StopIteration
-                        else:
-                            resp = cPickle.dumps('Invalid job')
-                except:
-                    resp = cPickle.dumps('Invalid job')
-                    # logging.debug(traceback.format_exc())
-            else:
-                logging.debug('Ignoring invalid command')
-
-            if resp is not None:
-                try:
-                    yield conn.write_msg(resp)
-                except:
-                    logging.warning('Failed to send response to %s: %s',
-                                    str(addr), traceback.format_exc())
-                conn.close()
-            # end of _request_task
-
         # request_server starts here
         logging.info('scheduler running at %s:%s', self.ip_addr, self.port)
         while True:
@@ -781,11 +495,301 @@ class _Scheduler(object):
                     continue
             except GeneratorExit:
                 break
+            except ssl.SSLError, err:
+                logging.debug('SSL connection failed: %s', str(err))
+                # see dispynode for issue with failed SSL accept
+                self.request_coro = Coro(self.request_server)
+                break
             except:
                 logging.debug('execption: %s', sys.exc_type)
                 continue
             conn.settimeout(2)
-            Coro(_request_task, self, conn, addr)
+            Coro(self._request_task, conn, addr)
+
+    def _request_task(self, conn, addr, coro=None):
+        # generator
+        def _job_request_task(self, msg):
+            # generator
+            try:
+                _job = cPickle.loads(msg)
+            except:
+                logging.debug('Ignoring job request from %s', addr[0])
+                raise StopIteration
+            self._sched_cv.acquire()
+            _job.uid = self.job_uid
+            self.job_uid += 1
+            if self.job_uid == sys.maxint:
+                # TODO: check if it is okay to reset
+                self.job_uid = 1
+            yield self._sched_cv.release()
+            setattr(_job, 'node', None)
+            job = type('DispyJob', (), {'status':DispyJob.Created,
+                                        'start_time':None, 'end_time':None})
+            setattr(_job, 'job', job)
+            resp = cPickle.dumps(_job.uid)
+            try:
+                yield conn.write_msg(resp)
+            except:
+                logging.warning('Failed to send response to %s: %s',
+                                str(addr), traceback.format_exc())
+                raise StopIteration
+            try:
+                msg = yield conn.read_msg()
+                assert msg == 'ACK'
+            except:
+                logging.warning('Invalid reply for job: %s, %s',
+                                _job.uid, traceback.format_exc())
+                raise StopIteration
+            self._sched_cv.acquire()
+            cluster = self._clusters.get(_job.compute_id, None)
+            if cluster is None:
+                logging.debug('cluster %s is not valid anymore for job %s',
+                              _job.compute_id, _job.uid)
+                self._sched_cv.release()
+                raise StopIteration
+            cluster._jobs.append(_job)
+            self.unsched_jobs += 1
+            cluster._pending_jobs += 1
+            cluster.last_pulse = time.time()
+            self._sched_cv.notify()
+            self._sched_cv.release()
+
+        def _compute_task(self, msg):
+            # generator
+            try:
+                compute = cPickle.loads(msg)
+            except:
+                logging.debug('Ignoring compute request from %s', addr[0])
+                yield None; raise StopIteration
+            setattr(compute, 'nodes', {})
+            cluster = _Cluster(compute)
+            compute = cluster._compute
+            cluster.client_job_result_port = compute.job_result_port
+            cluster.client_scheduler_ip_addr = compute.scheduler_ip_addr
+            cluster.client_scheduler_port = compute.scheduler_port
+            compute.job_result_port = self.job_result_sock.getsockname()[1]
+            compute.scheduler_ip_addr = self.ip_addr
+            compute.scheduler_port = self.port
+            self._sched_cv.acquire()
+            compute.id = cluster.id = self.cluster_id
+            self._clusters[cluster.id] = cluster
+            self.cluster_id += 1
+            dest_path = os.path.join(self.dest_path_prefix, str(compute.id))
+            if not os.path.isdir(dest_path):
+                try:
+                    os.makedirs(dest_path)
+                except:
+                    logging.warning('Could not create directory "%s"', dest_path)
+                    if compute.xfer_files:
+                        self._sched_cv.release()
+                        conn.close()
+                        raise StopIteration
+            for xf in compute.xfer_files:
+                xf.compute_id = compute.id
+                xf.name = os.path.join(dest_path, os.path.basename(xf.name))
+            self._sched_cv.release()
+            resp = {'ID':compute.id,
+                    'pulse_interval':(self.zombie_interval / 5.0) if self.zombie_interval else None}
+            resp = cPickle.dumps(resp)
+            logging.debug('New computation %s: %s, %s', compute.id, compute.name,
+                          len(compute.xfer_files))
+            yield resp
+
+        def _xfer_file_task(self, msg):
+            # generator
+            try:
+                xf = cPickle.loads(msg)
+            except:
+                logging.debug('Ignoring file trasnfer request from %s', addr[0])
+                raise StopIteration
+            resp = ''
+            if xf.compute_id not in self._clusters:
+                logging.error('computation "%s" is invalid' % xf.compute_id)
+                raise StopIteration
+            compute = self._clusters[xf.compute_id]
+            dest_path = os.path.join(self.dest_path_prefix, str(compute.id))
+            if not os.path.isdir(dest_path):
+                try:
+                    os.makedirs(dest_path)
+                except:
+                    raise StopIteration
+            tgt = os.path.join(dest_path, os.path.basename(xf.name))
+            logging.debug('Copying file %s to %s (%s)', xf.name,
+                          tgt, xf.stat_buf.st_size)
+            try:
+                fd = open(tgt, 'wb')
+                n = 0
+                while n < xf.stat_buf.st_size:
+                    data = yield conn.read(min(xf.stat_buf.st_size-n, 1024000))
+                    if not data:
+                        break
+                    fd.write(data)
+                    n += len(data)
+                    if self.max_file_size and n > self.max_file_size:
+                        logging.warning('File "%s" is too big (%s); it is truncated',
+                                        tgt, n)
+                        break
+                fd.close()
+                if n < xf.stat_buf.st_size:
+                    resp = 'NAK (read only %s bytes)' % n
+                else:
+                    resp = 'ACK'
+                    logging.debug('Copied file %s, %s', tgt, resp)
+                    os.utime(tgt, (xf.stat_buf.st_atime, xf.stat_buf.st_mtime))
+                    os.chmod(tgt, stat.S_IMODE(xf.stat_buf.st_mode))
+            except:
+                logging.warning('Copying file "%s" failed with "%s"',
+                                xf.name, traceback.format_exc())
+                resp = 'NACK'
+            if resp:
+                try:
+                    yield conn.write_msg(resp)
+                except:
+                    logging.debug('Could not send reply for "%s"', xf.name)
+
+        # _request_task begins here
+        resp = None
+        try:
+            req = yield conn.read(len(self.auth_code))
+            if req != self.auth_code:
+                conn.close()
+                logging.warning('Invalid/unauthorized request ignored')
+                raise StopIteration
+            msg = yield conn.read_msg()
+            if not msg:
+                conn.close()
+                logging.info('Closing connection')
+                raise StopIteration
+        except:
+            logging.warning('Failed to read message from %s: %s',
+                            str(addr), traceback.format_exc())
+            conn.close()
+            raise StopIteration
+        if msg.startswith('JOB:'):
+            msg = msg[len('JOB:'):]
+            yield _job_request_task(self, msg)
+            conn.close()
+        elif msg.startswith('COMPUTE:'):
+            msg = msg[len('COMPUTE:'):]
+            resp = yield _compute_task(self, msg)
+        elif msg.startswith('ADD_COMPUTE:'):
+            msg = msg[len('ADD_COMPUTE:'):]
+            self._sched_cv.acquire()
+            try:
+                req = cPickle.loads(msg)
+                cluster = self._clusters[req['ID']]
+                for xf in cluster._compute.xfer_files:
+                    assert os.path.isfile(xf.name)
+                resp = cPickle.dumps(cluster._compute.id)
+                Coro(self.add_cluster, cluster)
+            except:
+                logging.debug('Ignoring compute request from %s', addr[0])
+                conn.close()
+                raise StopIteration
+            finally:
+                yield self._sched_cv.release()
+        elif msg.startswith('DEL_COMPUTE:'):
+            msg = msg[len('DEL_COMPUTE:'):]
+            conn.close()
+            try:
+                req = cPickle.loads(msg)
+                assert isinstance(req['ID'], int)
+            except:
+                logging.warning('Invalid compuation for deleting')
+                raise StopIteration
+            self._sched_cv.acquire()
+            cluster = self._clusters.get(req['ID'], None)
+            if cluster is None:
+                # this cluster is closed
+                self._sched_cv.release()
+                raise StopIteration
+            cluster.zombie = True
+            self.cleanup_computation(cluster)
+            yield self._sched_cv.release()
+        elif msg.startswith('FILEXFER:'):
+            msg = msg[len('FILEXFER:'):]
+            yield _xfer_file_task(self, msg)
+        elif msg.startswith('TERMINATE_JOB:'):
+            msg = msg[len('TERMINATE_JOB:'):]
+            conn.close()
+            try:
+                job = cPickle.loads(msg)
+            except:
+                logging.warning('Invalid job cancel message')
+                raise StopIteration
+            self._sched_cv.acquire()
+            cluster = self._clusters.get(job.compute_id, None)
+            if not cluster:
+                logging.debug('Invalid job %s!', job.uid)
+                self._sched_cv.release()
+                raise StopIteration
+            compute = cluster._compute
+            cluster.last_pulse = time.time()
+            _job = self._sched_jobs.get(job.uid, None)
+            if _job is None:
+                for i, _job in enumerate(cluster._jobs):
+                    if _job.uid == job.uid:
+                        del cluster._jobs[i]
+                        self.unsched_jobs -= 1
+                        reply = _JobReply(_job, self.ip_addr, status=DispyJob.Cancelled)
+                        Coro(self.send_job_result,
+                             _job.uid, compute.id, cluster.client_scheduler_ip_addr,
+                             cluster.client_job_result_port, reply)
+                        break
+                else:
+                    logging.debug('Invalid job %s!', job.uid)
+            else:
+                _job.job.status = DispyJob.Cancelled
+                Coro(_job.node.send, _job.uid, 'TERMINATE_JOB:' + cPickle.dumps(_job),
+                     reply=False)
+            yield self._sched_cv.release()
+        elif msg.startswith('RETRIEVE_JOB:'):
+            req = msg[len('RETRIEVE_JOB:'):]
+            try:
+                req = cPickle.loads(req)
+                assert req['uid'] is not None
+                assert req['hash'] is not None
+                assert req['compute_id'] is not None
+                result_file = os.path.join(self.dest_path_prefix, str(req['compute_id']),
+                                           '_dispy_job_reply_%s' % req['uid'])
+                if os.path.isfile(result_file):
+                    fd = open(result_file, 'rb')
+                    job_reply = cPickle.load(fd)
+                    fd.close()
+                    if job_reply.hash == req['hash']:
+                        yield conn.write_msg(cPickle.dumps(job_reply))
+                        ack = yield conn.read_msg()
+                        assert ack == 'ACK'
+                        try:
+                            os.remove(result_file)
+                            self._sched_cv.acquire()
+                            cluster = self._clusters.get(req['compute_id'], None)
+                            if cluster is None:
+                                p = os.path.dirname(result_file)
+                                if len(os.listdir(p)) == 0:
+                                    os.rmdir(p)
+                            else:
+                                cluster.pending_results -= 1
+                            yield self._sched_cv.release()
+                        except:
+                            logging.debug('Could not remove "%s"', result_file)
+                        raise StopIteration
+                    else:
+                        resp = cPickle.dumps('Invalid job')
+            except:
+                resp = cPickle.dumps('Invalid job')
+                # logging.debug(traceback.format_exc())
+        else:
+            logging.debug('Ignoring invalid command')
+
+        if resp is not None:
+            try:
+                yield conn.write_msg(resp)
+            except:
+                logging.warning('Failed to send response to %s: %s',
+                                str(addr), traceback.format_exc())
+            conn.close()
+        # end of _request_task
 
     def timer_task(self, coro=None):
         reset = True

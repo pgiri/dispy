@@ -38,10 +38,17 @@
 <p>
   asyncoro, available
   in <a href="http://sourceforge.net/projects/dispy/files/discopy">discopy</a>
-  package, is a framework for developing programs with asynchronous
-  sockets and coroutines.  discopy is an implementation of dispy using
-  asyncoro framework. asyncoro can be used independently of
-  dispy/discopy.
+  package, is a framework for developing (concurrent) programs with
+  asynchronous sockets and coroutines. The coroutines should use
+  'yield' with tasks that take time to complete, such as waiting for
+  I/O completion, or sleep. Each yield statement gives control to
+  asyncoro's scheduler, which interleaves executions of coroutines,
+  similar to the way an operating system executes multiple
+  processes. asyncoro includes polling mechanisms epoll,
+  kqueue and poll for high performance and scalability.
+
+  discopy is an implementation of dispy using asyncoro
+  framework. asyncoro can be used independently of dispy/discopy.
   </p>
 
 <p>
@@ -118,21 +125,21 @@ suite will be locked up.
 <p>
 With python's coroutines, a coroutine stops at each yield statement
 and proceeds only after next iteration is asked for (with 'next' or
-'send' methods). With asyncore, yield is used to convey to the
+'send' methods). With asyncoro, yield is used to convey to the
 scheduler that the statement associated with yield is time consuming
 so the scheduler can run other coroutines while waiting for that task
-to complete. Thus, asyncore coroutines continue execution (interleaved
+to complete. Thus, asyncoro coroutines continue execution (interleaved
 with other coroutines) after each yield, unless it has been suspended
 with sleep/suspend method. And while python's coroutines can be sent
-values with 'send' method at anytime, with asyncore, that is not very
+values with 'send' method at anytime, with asyncoro, that is not very
 useful, as coroutines don't stop at each yield. Instead, with
-asyncore, the correct way to synchronize for data exchange is for
+asyncoro, the correct way to synchronize for data exchange is for
 receiving coroutine to suspend and for the sending coroutine to resume
 sleeping coroutine with the value.
 </p>
 
 <p>
-With asyncore's 'sleep'/'suspend' and 'wakeup'/'resume' methods,
+With asyncoro's 'sleep'/'suspend' and 'wakeup'/'resume' methods,
 coroutines can send/receive values to/from each other at deliberate
 locations, and with 'yield' statements cooperate scheduling their
 execution (play relay race).

@@ -289,8 +289,14 @@ class _DispyNode(object):
                 break
             except ssl.SSLError, err:
                 logging.debug('SSL connection failed: %s', str(err))
-                logging.debug(traceback.format_exc())
-                continue
+                # see AsynCoroSocket.accept with SSL. If exception is
+                # thrown there, continuing to next accept gives error
+                # again, although new connection is valid. If,
+                # instead, we start a new Coro and quit, it works
+                # fine.
+                # continue
+                self.tcp_coro = Coro(self.tcp_server)
+                break
             except:
                 logging.debug('execption: %s', sys.exc_type)
                 continue
@@ -299,7 +305,7 @@ class _DispyNode(object):
             Coro(self.tcp_serve_task, conn, addr)
 
     def tcp_serve_task(self, conn, addr, coro=None):
-        def job_request_task(conn, msg, addr, coro):
+        def job_request_task(msg):
             assert coro is not None
             try:
                 _job = cPickle.loads(msg)
@@ -396,7 +402,7 @@ class _DispyNode(object):
                     logging.warning('Failed to send response for new job to %s',
                                     str(addr))
 
-        def add_computation_task(conn, msg, addr, coro):
+        def add_computation_task(msg):
             assert coro is not None
             try:
                 compute = cPickle.loads(msg)
@@ -512,7 +518,7 @@ class _DispyNode(object):
                 except:
                     pass
 
-        def xfer_file_task(conn, msg, addr, coro):
+        def xfer_file_task(msg):
             assert coro is not None
             try:
                 xf = cPickle.loads(msg)
@@ -572,7 +578,7 @@ class _DispyNode(object):
                     logging.debug('Could not send reply for "%s"', xf.name)
             raise StopIteration # xfer_file_task
 
-        def terminate_job_task(msg, addr, coro):
+        def terminate_job_task(msg):
             assert coro is not None
             self.lock.acquire()
             try:
@@ -623,7 +629,7 @@ class _DispyNode(object):
             reply.status = DispyJob.Terminated
             yield self._send_job_reply(job_info, resending=False, coro=coro)
 
-        def retrieve_job_task(conn, msg, addr, coro):
+        def retrieve_job_task(msg):
             assert coro is not None
             try:
                 req = cPickle.loads(msg)
@@ -706,15 +712,15 @@ class _DispyNode(object):
             raise StopIteration
         if msg.startswith('JOB:'):
             msg = msg[len('JOB:'):]
-            yield job_request_task(conn, msg, addr, coro)
+            yield job_request_task(msg)
             conn.close()
         elif msg.startswith('COMPUTE:'):
             msg = msg[len('COMPUTE:'):]
-            yield add_computation_task(conn, msg, addr, coro)
+            yield add_computation_task(msg)
             conn.close()
         elif msg.startswith('FILEXFER:'):
             msg = msg[len('FILEXFER:'):]
-            yield xfer_file_task(conn, msg, addr, coro)
+            yield xfer_file_task(msg)
             conn.close()
         elif msg.startswith('DEL_COMPUTE:'):
             msg = msg[len('DEL_COMPUTE:'):]
@@ -735,11 +741,11 @@ class _DispyNode(object):
             conn.close()
         elif msg.startswith('TERMINATE_JOB:'):
             msg = msg[len('TERMINATE_JOB:'):]
-            yield terminate_job_task(msg, addr, coro)
+            yield terminate_job_task(msg)
             conn.close()
         elif msg.startswith('RETRIEVE_JOB:'):
             msg = msg[len('RETRIEVE_JOB:'):]
-            yield retrieve_job_task(conn, msg, addr, coro)
+            yield retrieve_job_task(msg)
             conn.close()
         else:
             logging.warning('Invalid request "%s" from %s',
