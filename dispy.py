@@ -276,7 +276,6 @@ class _Node(object):
         assert coro is not None
         logging.debug('Sending to %s:%s', self.ip_addr, self.port)
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        logging.debug('key/certfiles: %s, %s', self.keyfile, self.certfile)
         sock = AsynCoroSocket(sock, blocking=False, keyfile=self.keyfile, certfile=self.certfile)
         sock.settimeout(5)
         try:
@@ -883,14 +882,10 @@ class _Cluster(object):
         while True:
             try:
                 new_sock, addr = yield self.job_result_sock.accept()
-                if new_sock is None:
-                    continue
-            except GeneratorExit:
-                break
             except ssl.SSLError, err:
                 logging.debug('SSL connection failed: %s', str(err))
-                # see dispynode for issue with failed SSL accept
-                self.job_result_coro = Coro(self.job_result_server)
+                continue
+            except GeneratorExit:
                 break
             except:
                 logging.debug('execption: %s', sys.exc_type)

@@ -491,14 +491,10 @@ class _Scheduler(object):
         while True:
             try:
                 conn, addr = yield self.request_sock.accept()
-                if conn is None:
-                    continue
-            except GeneratorExit:
-                break
             except ssl.SSLError, err:
                 logging.debug('SSL connection failed: %s', str(err))
-                # see dispynode for issue with failed SSL accept
-                self.request_coro = Coro(self.request_server)
+                continue
+            except GeneratorExit:
                 break
             except:
                 logging.debug('execption: %s', sys.exc_type)
@@ -973,8 +969,9 @@ class _Scheduler(object):
         while True:
             try:
                 conn, addr = yield self.job_result_sock.accept()
-                if conn is None:
-                    continue
+            except ssl.SSLError, err:
+                logging.debug('SSL connection failed: %s', str(err))
+                continue
             except GeneratorExit:
                 break
             except:

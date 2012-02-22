@@ -445,19 +445,9 @@ class AsynCoroSocket(socket.socket):
                             conn._notifier.modify(conn, _AsyncNotifier._Writable)
                         else:
                             conn._task = None
-                            conn._notifier.modify(conn, 0)
-                            try:
-                                conn._rsock = conn._rsock.unwrap()
-                            except:
-                                pass
+                            conn._notifier.unregister(conn)
                             conn.close()
-                            # TODO: throwing exception does not seem
-                            # to work: after a failed connection,
-                            # successive connections don't work
-                            # either. This seems to be an issue with
-                            # throwing exception rather than SSL
-                            # coro.throw(*sys.exc_info())
-                            coro.resume((None, None))
+                            coro.throw(*sys.exc_info())
                     else:
                         conn._task = None
                         conn._notifier.modify(conn, 0)
@@ -485,7 +475,6 @@ class AsynCoroSocket(socket.socket):
         """Asynchronous version of socket connect method.
         """
         def _connect(self, *args):
-            # TODO: check with getsockopt
             err = self._rsock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
             if not err:
                 self._task = None
@@ -596,25 +585,24 @@ class Coro(object):
     object.
     """
     def __init__(self, func, *args, **kwargs):
-        self.name = func.__name__
-        if inspect.isfunction(func) or inspect.ismethod(func):
-            if not inspect.isgeneratorfunction(func):
-                raise Exception('%s is not a generator!' % func.__name__)
-            if 'coro' in kwargs:
-                raise Exception('Coro function %s should not be called with ' \
-                                '"coro" parameter' % self.name)
-            callargs = inspect.getcallargs(func, *args, **kwargs)
-            if 'coro' not in callargs or callargs['coro'] is not None:
-                raise Exception('Coro function %s should have "coro" argument with ' \
-                                'default value None' % self.name)
-            kwargs['coro'] = self
-            self._generator = func(*args, **kwargs)
-        else:
+        if not inspect.isfunction(func) and not inspect.ismethod(func):
             raise Exception('Invalid coroutine function %s', func.__name__)
+        if not inspect.isgeneratorfunction(func):
+            raise Exception('%s is not a generator!' % func.__name__)
+        if 'coro' in kwargs:
+            raise Exception('Coro function %s should not be called with ' \
+                            '"coro" parameter' % self.name)
+        callargs = inspect.getcallargs(func, *args, **kwargs)
+        if 'coro' not in callargs or callargs['coro'] is not None:
+            raise Exception('Coro function %s should have "coro" argument with ' \
+                            'default value None' % self.name)
+        kwargs['coro'] = self
+        self.name = func.__name__
+        self._generator = func(*args, **kwargs)
         self._id = None
         self._state = None
         self._value = None
-        self._exception = False
+        self._exception = None
         self._callers = []
         self._asyncoro = AsynCoro.instance()
         self._complete = threading.Event()
@@ -678,8 +666,6 @@ class Coro(object):
 
     def terminate(self):
         """Terminate coro.
-
-        NB: The coro must handle GeneratorExit exception.
         """
         if self._asyncoro:
             self._asyncoro._terminate_coro(self._id)
@@ -776,8 +762,8 @@ class AsynCoro(object):
     Once created (singleton) AsynCoro, any coroutines built with Coro
     class above will start executing. AsynCoro creates _AsyncNotifier
     to wake up suspended coroutines waiting for I/O completion. The
-    only properties available to users are 'terminate' and 'join'
-    methods.
+    only methods available to users are 'cur_coro', 'terminate' and
+    'join'.
     """
 
     __metaclass__ = MetaSingleton
@@ -791,9 +777,6 @@ class AsynCoro(object):
     _Suspended = 3
     # in _suspended, not executing
     _Stopped = 4
-    # called another coro, not in _running or _suspended
-    # this should not be necessary (anymore)
-    _Frozen = 5
 
     _coro_id = 1
 
@@ -829,6 +812,8 @@ class AsynCoro(object):
         return cls.__instance
 
     def cur_coro(self):
+        """Must be called from a coro only.
+        """
         return self._cur_coro
 
     def _add(self, coro):
@@ -896,14 +881,18 @@ class AsynCoro(object):
         """Internal use only.
         """
         # called with _sched_cv locked
-        self._running.discard(coro._id)
-        self._suspended.discard(coro._id)
-        coro._asyncoro = None
-        assert not coro._callers
-        coro._complete.set()
-        del self._coros[coro._id]
-        if not self._coros:
-            self._complete.set()
+        cid = self._coros.pop(coro._id, None)
+        if cid is None:
+            logging.debug('%s/%s is already removed', coro.name, coro._id)
+        else:
+            self._running.discard(coro._id)
+            self._suspended.discard(coro._id)
+            coro._asyncoro = None
+            assert not coro._callers
+            coro._complete.set()
+            coro._state = None
+            if not self._coros:
+                self._complete.set()
 
     def _throw(self, cid, *args):
         """Internal use only. See throw in Coro.
@@ -925,18 +914,19 @@ class AsynCoro(object):
         self._sched_cv.release()
 
     def _terminate_coro(self, cid):
+        """Internal use only.
+        """
         self._sched_cv.acquire()
         coro = self._coros.get(cid, None)
         if coro is None:
-            logging.warning('invalid coroutine %s to close', cid)
-        else:
-            logging.debug('closing %s', coro.name)
-            coro._generator.close()
-            self._suspended.discard(cid)
-            self._running.add(cid)
-            coro._state = AsynCoro._Scheduled
-            self._sched_cv.notify()
             self._sched_cv.release()
+            return
+        coro._exception = (GeneratorExit, GeneratorExit('close'))
+        self._suspended.discard(cid)
+        self._running.add(cid)
+        coro._state = AsynCoro._Scheduled
+        self._sched_cv.notify()
+        self._sched_cv.release()
 
     def _scheduler(self):
         """Internal use only.
@@ -957,29 +947,10 @@ class AsynCoro(object):
                 if timeout is not None:
                     break
             if self._terminate:
-                # probably not needed?
-                def close_coro(coro):
-                    if self._coros.pop(coro._id, None) is None:
-                        return
-                    coro._generator.close()
-                    while coro._callers:
-                        caller = coro._callers.pop(-1)
-                        if isinstance(caller, types.GeneratorType):
-                            caller.close()
-                        else:
-                            assert isinstance(caller, Coro)
-                            assert not coro._callers
-                            close_coro(caller)
-                for cid in self._running.union(self._suspended):
-                    coro = self._coros.get(cid, None)
-                    if coro is None:
-                        continue
-                    logging.warning('terminating coroutine %s', coro.name)
-                    close_coro(coro)
-                    coro._asyncoro = None
-                self._running = self._suspended = set()
-                self._coros = {}
+                cids = self._running.union(self._suspended)
                 self._sched_cv.release()
+                for cid in cids:
+                    self._close_coro(coro)
                 break
             if self._timeouts:
                 # wake up timed suspends
@@ -1001,12 +972,22 @@ class AsynCoro(object):
                 if coro is None:
                     continue
                 self._sched_cv.acquire()
+                if coro._state != AsynCoro._Scheduled:
+                    self._sched_cv.release()
+                    logging.warning('ignoring %s with state %s', coro.name, coro._state)
+                    continue
                 coro._state = AsynCoro._Running
                 self._cur_coro = coro
                 self._sched_cv.release()
+
                 try:
                     if coro._exception:
-                        retval = coro._generator.throw(*coro._exception)
+                        exc, coro._exception = coro._exception, None
+                        if exc[0] == GeneratorExit:
+                            # assert str(exc[1]) == 'close'
+                            coro._generator.close()
+                        else:
+                            retval = coro._generator.throw(*exc)
                     else:
                         retval = coro._generator.send(coro._value)
                 except:
@@ -1020,21 +1001,17 @@ class AsynCoro(object):
                     if coro._callers:
                         # return to caller
                         caller = coro._callers.pop(-1)
-                        if isinstance(caller, types.GeneratorType):
-                            coro._generator = caller
-                            coro._state = AsynCoro._Scheduled
-                        else:
-                            assert isinstance(caller, Coro)
-                            assert not coro._callers
-                            assert caller._state == AsynCoro._Frozen
-                            caller._state = AsynCoro._Scheduled
-                            self._running.add(caller._id)
-                            caller._value = coro._value
-                            self._delete(coro)
+                        assert isinstance(caller, types.GeneratorType)
+                        coro._generator = caller
+                        coro._state = AsynCoro._Scheduled
                     else:
                         if coro._exception is not None:
-                            logging.warning('uncaught exception in %s:\n%s', coro.name,
-                                            ''.join(traceback.format_exception(*coro._exception)))
+                            assert isinstance(coro._exception, tuple)
+                            if len(coro._exception) == 2:
+                                exc = ''.join(traceback.format_exception_only(*coro._exception))
+                            else:
+                                exc = ''.join(traceback.format_exception(*coro._exception))
+                            logging.warning('uncaught exception in %s:\n%s', coro.name, exc)
                         self._delete(coro)
                     self._sched_cv.release()
                 else:
@@ -1049,15 +1026,7 @@ class AsynCoro(object):
                         coro._value = retval
                         coro._state = AsynCoro._Scheduled
 
-                    if isinstance(retval, Coro):
-                        # freeze current coroutine and activate new
-                        # coroutine; control is returned to the caller
-                        # when new coroutine is done
-                        coro._state = AsyncCoro._Frozen
-                        self._running.discard(coro._id)
-                        assert not retval._callers
-                        retval._callers.append(coro)
-                    elif isinstance(retval, types.GeneratorType):
+                    if isinstance(retval, types.GeneratorType):
                         # push current generator onto stack and
                         # activate new generator
                         coro._callers.append(coro._generator)

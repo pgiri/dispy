@@ -283,19 +283,10 @@ class _DispyNode(object):
         while True:
             try:
                 conn, addr = yield self.tcp_sock.accept()
-                if conn is None:
-                    continue
-            except GeneratorExit:
-                break
             except ssl.SSLError, err:
                 logging.debug('SSL connection failed: %s', str(err))
-                # see AsynCoroSocket.accept with SSL. If exception is
-                # thrown there, continuing to next accept gives error
-                # again, although new connection is valid. If,
-                # instead, we start a new Coro and quit, it works
-                # fine.
-                # continue
-                self.tcp_coro = Coro(self.tcp_server)
+                continue
+            except GeneratorExit:
                 break
             except:
                 logging.debug('execption: %s', sys.exc_type)
