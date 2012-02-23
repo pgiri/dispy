@@ -1001,8 +1001,12 @@ class AsynCoro(object):
                     if coro._callers:
                         # return to caller
                         caller = coro._callers.pop(-1)
-                        assert isinstance(caller, types.GeneratorType)
-                        coro._generator = caller
+                        assert len(caller) == 2
+                        assert isinstance(caller[0], types.GeneratorType)
+                        coro._generator = caller[0]
+                        if isinstance(coro._exception, tuple) and \
+                               coro._exception[0] != StopIteration:
+                            coro._value = caller[1]
                         coro._state = AsynCoro._Scheduled
                     else:
                         if coro._exception is not None:
@@ -1018,16 +1022,16 @@ class AsynCoro(object):
                     self._sched_cv.acquire()
                     self._cur_coro = None
                     if coro._state == AsynCoro._Running:
+                        coro._state = AsynCoro._Scheduled
                         # if this coroutine is suspended, don't update
                         # the value; it will be updated with the value
                         # with which it is resumed
                         coro._value = retval
-                        coro._state = AsynCoro._Scheduled
 
                     if isinstance(retval, types.GeneratorType):
                         # push current generator onto stack and
                         # activate new generator
-                        coro._callers.append(coro._generator)
+                        coro._callers.append((coro._generator, coro._value))
                         coro._generator = retval
                         coro._value = None
                     self._sched_cv.release()
