@@ -493,11 +493,7 @@ class AsynCoroSocket(socket.socket):
                             else:
                                 conn._task = None
                                 conn._notifier.unregister(conn)
-                                try:
-                                    conn.close()
-                                except:
-                                    pass
-                                # coro.resume(None)
+                                conn.close()
                                 coro.throw(*sys.exc_info())
                         else:
                             conn._notifier.modify(conn, 0)
@@ -616,9 +612,10 @@ class Coro(object):
         suspended till that many seconds (or fractions of second).
         """
         if self._asyncoro:
-            self._asyncoro._suspend(self._id, timeout)
+            return self._asyncoro._suspend(self._id, timeout)
         else:
             logging.warning('suspend: coroutine %s removed?', self.name)
+            return -1
 
     sleep = suspend
 
@@ -629,19 +626,25 @@ class Coro(object):
         to suspend.
         """
         if self._asyncoro:
-            self._asyncoro._resume(self._id, update)
+            return self._asyncoro._resume(self._id, update)
         else:
             logging.warning('resume: coroutine %s removed?', self.name)
+            return -1
       
     wakeup = resume
 
     def throw(self, *args):
         """Throw exception in coroutine.
         """
-        if self._asyncoro:
-            self._asyncoro._throw(self._id, *args)
+        if len(args) < 2:
+            logging.warning('throw: invalid argument(s)')
+            return -1
         else:
-            logging.warning('throw: coroutine %s removed?', self.name)
+            if self._asyncoro:
+                return self._asyncoro._throw(self._id, *args)
+            else:
+                logging.warning('throw: coroutine %s removed?', self.name)
+                return -1
 
     def value(self):
         """Get 'return' value of coro.
@@ -668,9 +671,10 @@ class Coro(object):
         """Terminate coro.
         """
         if self._asyncoro:
-            self._asyncoro._terminate_coro(self._id)
+            return self._asyncoro._terminate_coro(self._id)
         else:
             logging.warning('terminate: coroutine %s removed?', self.name)
+            return -1
 
 class CoroLock(object):
     """'Lock' primitive for coroutines.
@@ -802,7 +806,7 @@ class AsynCoro(object):
             self._scheduler.daemon = True
             self._scheduler.start()
 
-            self.notifier = _AsyncNotifier()
+            self._notifier = _AsyncNotifier()
 
     @classmethod
     def instance(cls):
@@ -835,47 +839,41 @@ class AsynCoro(object):
         if timeout is not None:
             if not isinstance(timeout, (float, int)) or timeout <= 0:
                 logging.warning('invalid timeout %s', timeout)
-                return
+                return -1
         self._sched_cv.acquire()
         coro = self._coros.get(cid, None)
-        if coro is None:
+        if coro is None or coro._state != AsynCoro._Running:
             self._sched_cv.release()
             logging.warning('invalid coroutine %s to suspend', cid)
-            return
-        if coro._state == AsynCoro._Running:
-            self._running.discard(cid)
-            coro._state = AsynCoro._Suspended
-            self._suspended.add(cid)
-            if timeout is not None:
-                timeout = time.time() + timeout
-                i = bisect_left(self._timeouts, timeout)
-                self._timeouts.insert(i, timeout)
-                self._timeout_cids.insert(i, cid)
-                self._sched_cv.notify()
-        else:
-            logging.warning('invalid coroutine %s/%s to suspend: %s',
-                            coro.name, coro._id, coro._state)
+            return -1
+        self._running.discard(cid)
+        coro._state = AsynCoro._Suspended
+        self._suspended.add(cid)
+        if timeout is not None:
+            timeout = time.time() + timeout
+            i = bisect_left(self._timeouts, timeout)
+            self._timeouts.insert(i, timeout)
+            self._timeout_cids.insert(i, cid)
+            self._sched_cv.notify()
         self._sched_cv.release()
+        return 0
 
     def _resume(self, cid, update):
         """Internal use only. See resume in Coro.
         """
         self._sched_cv.acquire()
         coro = self._coros.get(cid, None)
-        if coro is None:
+        if coro is None or coro._state != AsynCoro._Suspended:
             self._sched_cv.release()
             logging.warning('invalid coroutine %s to resume', cid)
-            return
-        if coro._state in [AsynCoro._Stopped, AsynCoro._Suspended]:
-            coro._value = update
-            self._suspended.discard(cid)
-            self._running.add(cid)
-            coro._state = AsynCoro._Scheduled
-            self._sched_cv.notify()
-        else:
-            logging.warning('invalid coroutine %s/%s to resume: %s',
-                            coro.name, cid, coro._state)
+            return -1
+        coro._value = update
+        self._suspended.discard(cid)
+        self._running.add(cid)
+        coro._state = AsynCoro._Scheduled
+        self._sched_cv.notify()
         self._sched_cv.release()
+        return 0
 
     def _delete(self, coro):
         """Internal use only.
@@ -899,34 +897,35 @@ class AsynCoro(object):
         """
         self._sched_cv.acquire()
         coro = self._coros.get(cid, None)
-        if coro is None:
+        if coro is None or coro._state not in [AsynCoro._Scheduled, AsynCoro._Suspended]:
             logging.warning('invalid coroutine %s to throw exception', cid)
-        elif coro._state in [AsynCoro._Scheduled, AsynCoro._Stopped]:
-            # prevent throwing more than once?
-            coro._exception = args
-            self._suspended.discard(coro._id)
-            self._running.add(coro._id)
-            coro._state = AsynCoro._Scheduled
-            self._sched_cv.notify()
-        else:
-            logging.warning('invalid coroutine %s/%s to throw exception: %s',
-                            coro.name, coro._id, coro._state)
+            self._sched_cv.release()
+            return -1
+        # prevent throwing more than once?
+        coro._exception = args
+        self._suspended.discard(coro._id)
+        self._running.add(coro._id)
+        coro._state = AsynCoro._Scheduled
+        self._sched_cv.notify()
         self._sched_cv.release()
+        return 0
 
     def _terminate_coro(self, cid):
         """Internal use only.
         """
         self._sched_cv.acquire()
         coro = self._coros.get(cid, None)
-        if coro is None:
+        if coro is None or coro._state not in [AsynCoro._Scheduled, AsynCoro._Suspended]:
+            logging.warning('invalid coroutine %s to terminate', cid)
             self._sched_cv.release()
-            return
+            return -1
         coro._exception = (GeneratorExit, GeneratorExit('close'))
         self._suspended.discard(cid)
         self._running.add(cid)
         coro._state = AsynCoro._Scheduled
         self._sched_cv.notify()
         self._sched_cv.release()
+        return 0
 
     def _scheduler(self):
         """Internal use only.
@@ -997,6 +996,7 @@ class AsynCoro(object):
                         coro._exception = None
                     else:
                         coro._exception = sys.exc_info()
+                        coro._value = None
 
                     if coro._callers:
                         # return to caller
@@ -1017,12 +1017,10 @@ class AsynCoro(object):
                 else:
                     self._sched_cv.acquire()
                     self._cur_coro = None
-                    if coro._state == AsynCoro._Suspended:
+                    if coro._state == AsynCoro._Running:
                         # if this coroutine is suspended, don't update
                         # the value; it will be updated with the value
                         # with which it is resumed
-                        coro._state = AsynCoro._Stopped
-                    elif coro._state == AsynCoro._Running:
                         coro._value = retval
                         coro._state = AsynCoro._Scheduled
 
@@ -1040,7 +1038,7 @@ class AsynCoro(object):
         """Terminate (singleton) instance of AsynCoro. This 'kills'
         all running coroutines.
         """
-        self.notifier.terminate()
+        self._notifier.terminate()
         self._sched_cv.acquire()
         self._terminate = True
         self._sched_cv.notify()
@@ -1068,9 +1066,9 @@ class _AsyncNotifier(object):
     processing events.
 
     Timeouts for socket operations are handled in a rather simplisitc
-    way for efficiency: Instead of timeout for each socket, we provide
-    only a global timeout value and check if any socket I/O operation
-    has timedout every 'fd_timeout' seconds.
+    way for efficiency: Instead of maintaining timeouts in sorted data
+    structure, we check if any socket I/O operation has timedout every
+    'timeout_interval' (default 10) seconds.
     """
 
     __metaclass__ = MetaSingleton
