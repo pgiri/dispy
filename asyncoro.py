@@ -946,10 +946,27 @@ class AsynCoro(object):
                 if timeout is not None:
                     break
             if self._terminate:
-                cids = self._running.union(self._suspended)
+                for cid in self._running.union(self._suspended):
+                    coro = self._coros.get(cid, None)
+                    if coro is None:
+                        continue
+                    logging.debug('terminating Coro %s/%s', coro.name, coro._id)
+                    self._cur_coro = coro
+                    coro._state = AsynCoro._Scheduled
+                    while True:
+                        try:
+                            coro._generator.close()
+                        except:
+                            logging.debug('closing %s raised exception: %s',
+                                          coro._generator.__name__, traceback.format_exc())
+                        if coro._callers:
+                            coro._generator, coro._value = coro._callers.pop(-1)
+                        else:
+                            break
+                    coro._complete.set()
+                self._coros = {}
+                self._running = self._suspended = set()
                 self._sched_cv.release()
-                for cid in cids:
-                    self._close_coro(coro)
                 break
             if self._timeouts:
                 # wake up timed suspends
@@ -1026,6 +1043,7 @@ class AsynCoro(object):
                         # if this coroutine is suspended, don't update
                         # the value; it will be updated with the value
                         # with which it is resumed
+                        # TODO: not update if it is generator?
                         coro._value = retval
 
                     if isinstance(retval, types.GeneratorType):
