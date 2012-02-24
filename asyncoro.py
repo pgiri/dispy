@@ -30,7 +30,6 @@ import select
 import sys
 import types
 import struct
-import hashlib
 import logging
 import errno
 import platform
@@ -600,6 +599,7 @@ class Coro(object):
         self._value = None
         self._exception = None
         self._callers = []
+        self._timeout_id = None
         self._asyncoro = AsynCoro.instance()
         self._complete = threading.Event()
         self._asyncoro._add(self)
@@ -854,7 +854,10 @@ class AsynCoro(object):
             i = bisect_left(self._timeouts, timeout)
             self._timeouts.insert(i, timeout)
             self._timeout_cids.insert(i, cid)
+            coro._timeout_id = i
             self._sched_cv.notify()
+        else:
+            coro._timeout_id = None
         self._sched_cv.release()
         return 0
 
@@ -867,6 +870,10 @@ class AsynCoro(object):
             self._sched_cv.release()
             logging.warning('invalid coroutine %s to resume', cid)
             return -1
+        if coro._timeout_id is not None:
+            del self._timeouts[coro._timeout_id]
+            del self._timeout_cids[coro._timeout_id]
+            coro._timeout_id = None
         coro._value = update
         self._suspended.discard(cid)
         self._running.add(cid)
@@ -966,6 +973,7 @@ class AsynCoro(object):
                     coro._complete.set()
                 self._coros = {}
                 self._running = self._suspended = set()
+                self._timeouts = self._timeout_cids = []
                 self._sched_cv.release()
                 break
             if self._timeouts:
