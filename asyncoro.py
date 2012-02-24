@@ -35,7 +35,7 @@ import errno
 import platform
 import random
 import ssl
-from bisect import bisect_left
+from heapq import heappush, heappop
 
 if platform.system() == 'Windows':
     from errno import WSAEINPROGRESS as EINPROGRESS
@@ -791,11 +791,7 @@ class AsynCoro(object):
             self._cur_coro = None
             self._running = set()
             self._suspended = set()
-            # if a coro sleeps till timeout, then the timeout is
-            # inserted into (sorted) _timeouts list and its id is
-            # inserted into _timeout_cids at the same index
             self._timeouts = []
-            self._timeout_cids = []
             # because AsyncNotifier runs in a separate thread and
             # calls coro functions (resume, throw etc.), we need to
             # lock
@@ -851,10 +847,8 @@ class AsynCoro(object):
         self._suspended.add(cid)
         if timeout is not None:
             timeout = time.time() + timeout
-            i = bisect_left(self._timeouts, timeout)
-            self._timeouts.insert(i, timeout)
-            self._timeout_cids.insert(i, cid)
-            coro._timeout_id = i
+            heappush(self._timeouts, (timeout, cid))
+            coro._timeout_id = timeout
             self._sched_cv.notify()
         else:
             coro._timeout_id = None
@@ -870,10 +864,7 @@ class AsynCoro(object):
             self._sched_cv.release()
             logging.warning('invalid coroutine %s to resume', cid)
             return -1
-        if coro._timeout_id is not None:
-            del self._timeouts[coro._timeout_id]
-            del self._timeout_cids[coro._timeout_id]
-            coro._timeout_id = None
+        coro._timeout_id = None
         coro._value = update
         self._suspended.discard(cid)
         self._running.add(cid)
@@ -942,7 +933,7 @@ class AsynCoro(object):
             self._sched_cv.acquire()
             if self._timeouts:
                 now = _time()
-                timeout = self._timeouts[0] - now
+                timeout = self._timeouts[0][0] - now
                 # timeout can become negative?
                 if timeout < 0:
                     timeout = 0
@@ -960,7 +951,7 @@ class AsynCoro(object):
                     logging.debug('terminating Coro %s/%s', coro.name, coro._id)
                     self._cur_coro = coro
                     coro._state = AsynCoro._Scheduled
-                    while True:
+                    while coro._generator:
                         try:
                             coro._generator.close()
                         except:
@@ -969,7 +960,7 @@ class AsynCoro(object):
                         if coro._callers:
                             coro._generator, coro._value = coro._callers.pop(-1)
                         else:
-                            break
+                            coro._generator = None
                     coro._complete.set()
                 self._coros = {}
                 self._running = self._suspended = set()
@@ -979,15 +970,17 @@ class AsynCoro(object):
             if self._timeouts:
                 # wake up timed suspends
                 now = _time()
-                while self._timeouts and self._timeouts[0] <= now:
-                    coro = self._coros.get(self._timeout_cids[0], None)
-                    if coro is not None:
-                        self._suspended.discard(coro._id)
-                        self._running.add(coro._id)
-                        coro._state = AsynCoro._Scheduled
-                        coro._value = None
-                    del self._timeouts[0]
-                    del self._timeout_cids[0]
+                while self._timeouts and self._timeouts[0][0] <= now:
+                    timeout, cid = heappop(self._timeouts)
+                    assert timeout <= now
+                    coro = self._coros.get(cid, None)
+                    if coro is None or coro._timeout_id != timeout:
+                        continue
+                    coro._timeout_id = None
+                    self._suspended.discard(coro._id)
+                    self._running.add(coro._id)
+                    coro._state = AsynCoro._Scheduled
+                    coro._value = None
             running = [self._coros.get(cid, None) for cid in self._running]
             # random.shuffle(running)
             self._sched_cv.release()
