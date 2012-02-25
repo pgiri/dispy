@@ -289,7 +289,7 @@ class _DispyNode(object):
             except GeneratorExit:
                 break
             except:
-                logging.debug('execption: %s', sys.exc_type)
+                logging.debug(traceback.format_exc())
                 continue
             # logging.debug('new tcp request from %s', str(addr))
             conn.settimeout(3)

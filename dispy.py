@@ -47,7 +47,7 @@ import atexit
 
 from asyncoro import Coro, AsynCoro, CoroLock, CoroCondition, AsynCoroSocket, MetaSingleton
 
-_dispy_version = '1.3'
+_dispy_version = '1.6-coro'
 
 class DispyJob(object):
     """Job scheduled for execution with dispy.
@@ -888,9 +888,9 @@ class _Cluster(object):
             except GeneratorExit:
                 break
             except:
-                logging.debug('execption: %s', sys.exc_type)
+                logging.debug(traceback.format_exc())
                 continue
-            logging.debug('received job result from %s', str(addr))
+            # logging.debug('received job result from %s', str(addr))
             new_sock.settimeout(2)
             Coro(self.job_result_task, new_sock, addr)
 

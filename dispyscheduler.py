@@ -497,7 +497,7 @@ class _Scheduler(object):
             except GeneratorExit:
                 break
             except:
-                logging.debug('execption: %s', sys.exc_type)
+                logging.debug(traceback.format_exc())
                 continue
             conn.settimeout(2)
             Coro(self._request_task, conn, addr)
@@ -816,7 +816,7 @@ class _Scheduler(object):
                 self._sched_cv.acquire()
                 dead_nodes = {}
                 for node in self._nodes.itervalues():
-                    if node.busy and node.last_pulse + pulse_timeout < now:
+                    if node.busy and node.last_pulse + self.pulse_timeout < now:
                         logging.warning('Node %s is not responding; removing it (%s, %s, %s)',
                                         node.ip_addr, node.busy, node.last_pulse, now)
                         dead_nodes[node.ip_addr] = node
@@ -975,7 +975,7 @@ class _Scheduler(object):
             except GeneratorExit:
                 break
             except:
-                logging.debug('execption: %s', sys.exc_type)
+                logging.debug(traceback.format_exc())
                 continue
             if addr[0] not in self._nodes:
                 logging.warning('Ignoring results from %s', addr[0])

@@ -288,7 +288,7 @@ class AsynCoroSocket(socket.socket):
                 self._result = self._rsock.recv(bufsize)
             except ssl.SSLError, err:
                 if err.args[0] != ssl.SSL_ERROR_WANT_READ:
-                    logging.debug('reading error: %s for %s', sys.exc_type, self._fileno)
+                    logging.debug('reading error: %s for %s', err.args[0], self._fileno)
                     # TODO: throw this exception?
                 elif len(self._result) > 0:
                     return self._result
@@ -335,7 +335,7 @@ class AsynCoroSocket(socket.socket):
                 self._result[len(self._result):] = self._rsock.read(bufsize)
             except ssl.SSLError, err:
                 if err.args[0] != ssl.SSL_ERROR_WANT_READ:
-                    logging.debug('reading error: %s for %s', sys.exc_type, self._fileno)
+                    logging.debug('reading error: %s for %s', err.args[0], self._fileno)
             else:
                 if len(self._result) == bufsize:
                     return str(self._result)
@@ -1058,10 +1058,10 @@ class AsynCoro(object):
                 except:
                     self._sched_cv.acquire()
                     self._cur_coro = None
-                    if sys.exc_type == StopIteration:
+                    coro._exception = sys.exc_info()
+                    if coro._exception[0] == StopIteration:
                         coro._exception = None
                     else:
-                        coro._exception = sys.exc_info()
                         coro._value = None
 
                     if coro._callers:
@@ -1075,7 +1075,7 @@ class AsynCoro(object):
                             coro._value = caller[1]
                         coro._state = AsynCoro._Scheduled
                     else:
-                        if coro._exception is not None:
+                        if coro._exception:
                             assert isinstance(coro._exception, tuple)
                             if len(coro._exception) == 2:
                                 exc = ''.join(traceback.format_exception_only(*coro._exception))
@@ -1246,16 +1246,13 @@ class _AsyncNotifier(object):
             self._lock.acquire()
             while self._timeouts and self._timeouts[0] <= now:
                 fd = self._timeout_fds[0]
-                assert fd._timeout_id == self._timeouts[0]
-                if fd._coro:
-                    try:
+                if fd._timeout_id == self._timeouts[0]:
+                    if fd._coro:
                         fd._coro.throw(socket.timeout, socket.timeout('timed out'))
-                    except:
-                        logging.debug(traceback.format_exc())
                     # don't clear coro/task fields; the operation may still succeed
+                    fd._timeout_id = None
                 del self._timeouts[0]
                 del self._timeout_fds[0]
-                fd._timeout_id = None
             if self._timeouts:
                 now = _time()
                 timeout = self._timeouts[0] - now
