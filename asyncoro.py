@@ -36,11 +36,15 @@ import platform
 import random
 import ssl
 from heapq import heappush, heappop
+from bisect import bisect_left
 
 if platform.system() == 'Windows':
     from errno import WSAEINPROGRESS as EINPROGRESS
+    from time import clock as _time
+    _time()
 else:
     from errno import EINPROGRESS
+    from time import time as _time
 
 """
 AsynCoro and associated classes in this file provide framework
@@ -106,6 +110,8 @@ class AsynCoroSocket(socket.socket):
     I/O completion and coroutines.
     """
 
+    _default_timeout = None
+
     def __init__(self, sock, blocking=False, keyfile=None, certfile=None,
                  ssl_version=ssl.PROTOCOL_SSLv23):
         """Setup socket for use wih asyncoro.
@@ -131,35 +137,54 @@ class AsynCoroSocket(socket.socket):
             self._result = None
             self._fileno = sock.fileno()
             self._timeout = 0
-            self._timestamp = None
+            self._timeout_id = None
             self._coro = None
             self._task = None
+            self._asyncoro = None
+            self._notifier = None
 
-            if self._blocking:
-                if self._certfile:
-                    raise Exception('SSL is not supported for blocking sockets')
-                self.read = self.sync_read
-                self.write = self.sync_write
-                self.read_msg = self.sync_read_msg
-                self.write_msg = self.sync_write_msg
-                self._asyncoro = None
-                self._notifier = None
-            else:
-                self._rsock.setblocking(0)
-                self.recv = self.async_recv
-                self.send = self.async_send
-                self.read = self.async_read
-                self.write = self.async_write
-                self.recvfrom = self.async_recvfrom
-                self.sendto = self.async_sendto
-                self.accept = self.async_accept
-                self.connect = self.async_connect
-                self.read_msg = self.async_read_msg
-                self.write_msg = self.async_write_msg
+            self.read = None
+            self.write = None
+            self.read_msg = None
+            self.write_msg = None
 
-                self._asyncoro = AsynCoro.instance()
-                self._notifier = _AsyncNotifier.instance()
-                self._notifier.register(self)
+            self.setblocking(self._blocking)
+            # technically, we should set socket to blocking if
+            # _default_timeout is None, but ignore this case
+            if AsynCoroSocket._default_timeout:
+                self.settimeout(AsynCoroSocket._default_timeout)
+
+    def setblocking(self, blocking):
+        self._blocking = blocking
+        if blocking:
+            if self._certfile:
+                raise Exception('SSL is not supported for blocking sockets')
+            self._rsock.setblocking(1)
+            self.read = self.sync_read
+            self.write = self.sync_write
+            self.read_msg = self.sync_read_msg
+            self.write_msg = self.sync_write_msg
+            self._asyncoro = None
+            if self._notifier:
+                self._notifier.unregister(self)
+            self._notifier = None
+        else:
+            self._rsock.setblocking(0)
+
+            self.recv = self.async_recv
+            self.send = self.async_send
+            self.read = self.async_read
+            self.write = self.async_write
+            self.recvfrom = self.async_recvfrom
+            self.sendto = self.async_sendto
+            self.accept = self.async_accept
+            self.connect = self.async_connect
+            self.read_msg = self.async_read_msg
+            self.write_msg = self.async_write_msg
+
+            self._asyncoro = AsynCoro.instance()
+            self._notifier = _AsyncNotifier.instance()
+            self._notifier.register(self)
 
     def close(self):
         """'close' must be called when done with socket.
@@ -173,10 +198,11 @@ class AsynCoroSocket(socket.socket):
         self._asyncoro = None
         self._coro = None
 
-    def shutdown(self, flags):
-        if flags == socket.SHUT_RDWR:
-            self._notifier.unregister(self)
-        self._rsock.shutdown(flags)
+    # def shutdown(self, flags):
+    #     if flags == socket.SHUT_RDWR:
+    #         self._notifier.unregister(self)
+    #         self._notifier = None
+    #     self._rsock.shutdown(flags)
 
     def unwrap(self):
         """Get rid of AsynCoroSocket setup and return underlying socket object.
@@ -196,13 +222,34 @@ class AsynCoroSocket(socket.socket):
     def __exit__(self, exc_type, exc_value, trace):
         self.close()
 
+    def setdefaulttimeout(self, timeout):
+        if isinstance(timeout, (int, float)) and timeout > 0:
+            self._rsock.setdefaulttimeout(timeout)
+            self._default_timeout = timeout
+        else:
+            logging.warning('invalid timeout %s ignored', timeout)
+
+    def getdefaulttimeout(self):
+        if self._blocking:
+            return self._rsock.getdefalttimeout()
+        else:
+            return AsynCoroSocket._default_timeout
+
     def settimeout(self, timeout):
         if self._blocking:
-            self._timestamp = None
-            self._rsock.settimeout(timeout)
+            if timeout is None:
+                pass
+            elif not timeout:
+                self.setblocking(0)
+                self.settimeout(0.0)
+            else:
+                self._rsock.settimeout(timeout)
         else:
-            if isinstance(timeout, (int, float)) and timeout >= 0:
+            if timeout is None:
+                self.setblocking(1)
+            elif isinstance(timeout, (int, float)) and timeout >= 0:
                 self._timeout = timeout
+                # self._notifier._del_timeout(self)
             else:
                 logging.warning('invalid timeout %s ignored' % timeout)
 
@@ -247,7 +294,6 @@ class AsynCoroSocket(socket.socket):
                     return self._result
 
         self._task = functools.partial(_recv, self, bufsize, *args)
-        self._timestamp = time.time()
         self._coro = self._asyncoro.cur_coro()
         self._coro.suspend()
         self._notifier.modify(self, _AsyncNotifier._Readable)
@@ -273,7 +319,8 @@ class AsynCoroSocket(socket.socket):
                     self._task = None
                     self._notifier.modify(self, 0)
                     coro, self._coro = self._coro, None
-                    coro.resume(str(self._result))
+                    if coro.resume(str(self._result)):
+                        logging.debug('resume failed for %s, %s', coro._id, self._fileno)
                 elif len(self._result) == plen:
                     # TODO: check for error and delete?
                     self._task = None
@@ -294,7 +341,6 @@ class AsynCoroSocket(socket.socket):
                     return str(self._result)
 
         self._task = functools.partial(_read, self, bufsize, *args)
-        self._timestamp = time.time()
         self._coro = self._asyncoro.cur_coro()
         self._coro.suspend()
         self._notifier.modify(self, _AsyncNotifier._Readable)
@@ -326,7 +372,6 @@ class AsynCoroSocket(socket.socket):
                 coro.resume(self._result)
 
         self._task = functools.partial(_recvfrom, self, *args)
-        self._timestamp = time.time()
         self._coro = self._asyncoro.cur_coro()
         self._coro.suspend()
         self._notifier.modify(self, _AsyncNotifier._Readable)
@@ -353,7 +398,6 @@ class AsynCoroSocket(socket.socket):
                 coro.resume(self._result)
 
         self._task = functools.partial(_send, self, *args)
-        self._timestamp = time.time()
         self._coro = self._asyncoro.cur_coro()
         self._coro.suspend()
         self._notifier.modify(self, _AsyncNotifier._Writable)
@@ -379,7 +423,6 @@ class AsynCoroSocket(socket.socket):
                 coro.resume(self._result)
 
         self._task = functools.partial(_sendto, self, *args)
-        self._timestamp = time.time()
         self._coro = self._asyncoro.cur_coro()
         self._coro.suspend()
         self._notifier.modify(self, _AsyncNotifier._Writable)
@@ -407,7 +450,6 @@ class AsynCoroSocket(socket.socket):
                         coro.resume(0)
 
         self._task = functools.partial(_write, self)
-        self._timestamp = time.time()
         self._coro = self._asyncoro.cur_coro()
         self._coro.suspend()
         self._notifier.modify(self, _AsyncNotifier._Writable)
@@ -465,7 +507,6 @@ class AsynCoroSocket(socket.socket):
                 coro.resume(self._result)
 
         self._task = functools.partial(_accept, self)
-        self._timestamp = None
         self._coro = self._asyncoro.cur_coro()
         self._coro.suspend()
         self._notifier.modify(self, _AsyncNotifier._Readable)
@@ -509,7 +550,6 @@ class AsynCoroSocket(socket.socket):
                 logging.debug('connect error: %s', err)
 
         self._task = functools.partial(_connect, self, *args)
-        self._timestamp = time.time()
         self._coro = self._asyncoro.cur_coro()
         self._coro.suspend()
         self._notifier.modify(self, _AsyncNotifier._Writable)
@@ -535,42 +575,34 @@ class AsynCoroSocket(socket.socket):
         method reads length of payload, then the payload and returns
         the payload.
         """
-        try:
-            n = struct.calcsize('>L')
-            data = yield self.read(n)
-            if len(data) < n:
-                logging.error('Socket disconnected?(%s, %s)', len(data), n)
-                yield None
-            n = struct.unpack('>L', data)[0]
-            assert n > 0
-            data = yield self.read(n)
-            if len(data) < n:
-                logging.error('Socket disconnected?(%s, %s)', len(data), n)
-                yield None
-            yield data
-        except:
-            logging.error('Socket reading error for %s: %s', self._fileno, traceback.format_exc())
-            raise
+        n = struct.calcsize('>L')
+        data = yield self.read(n)
+        if len(data) < n:
+            logging.error('Socket disconnected?(%s, %s)', len(data), n)
+            yield None
+        n = struct.unpack('>L', data)[0]
+        assert n > 0
+        data = yield self.read(n)
+        if len(data) < n:
+            logging.error('Socket disconnected?(%s, %s)', len(data), n)
+            yield None
+        yield data
 
     def sync_read_msg(self):
         """Synchronous version of async_read_msg.
         """
-        try:
-            n = struct.calcsize('>L')
-            data = self.sync_read(n)
-            if len(data) < n:
-                logging.error('Socket disconnected?(%s, %s)', len(data), n)
-                return None
-            n = struct.unpack('>L', data)[0]
-            assert n > 0
-            data = self.sync_read(n)
-            if len(data) < n:
-                logging.error('Socket disconnected?(%s, %s)', len(data), n)
-                return None
-            return data
-        except socket.timeout:
-            logging.error('Socket disconnected(timeout)?')
+        n = struct.calcsize('>L')
+        data = self.sync_read(n)
+        if len(data) < n:
+            logging.error('Socket disconnected?(%s, %s)', len(data), n)
             return None
+        n = struct.unpack('>L', data)[0]
+        assert n > 0
+        data = self.sync_read(n)
+        if len(data) < n:
+            logging.error('Socket disconnected?(%s, %s)', len(data), n)
+            return None
+        return data
 
 class Coro(object):
     """'Coroutine' factory to build coroutines to be scheduled with
@@ -586,11 +618,11 @@ class Coro(object):
             raise Exception('%s is not a generator!' % func.__name__)
         if 'coro' in kwargs:
             raise Exception('Coro function %s should not be called with ' \
-                            '"coro" parameter' % self.name)
+                            '"coro" parameter' % func.__name__)
         callargs = inspect.getcallargs(func, *args, **kwargs)
         if 'coro' not in callargs or callargs['coro'] is not None:
-            raise Exception('Coro function %s should have "coro" argument with ' \
-                            'default value None' % self.name)
+            raise Exception('Coro function "%s" should have "coro" argument with ' \
+                            'default value None' % func.__name__)
         kwargs['coro'] = self
         self.name = func.__name__
         self._generator = func(*args, **kwargs)
@@ -599,7 +631,7 @@ class Coro(object):
         self._value = None
         self._exception = None
         self._callers = []
-        self._timeout_id = None
+        self._timeout = None
         self._asyncoro = AsynCoro.instance()
         self._complete = threading.Event()
         self._asyncoro._add(self)
@@ -704,8 +736,8 @@ class CoroCondition(object):
 
     Since a coroutine runs until 'yield', there is no need for
     lock. The caller has to guarantee that once a lock is obtained,
-    'yield' call is not made, except for the case of 'wait'. See
-    'dispy.py' on how to use it.
+    'yield' is not used, except for the case of 'wait'. See 'dispy.py'
+    on how to use it.
     """
     def __init__(self):
         self._waitlist = []
@@ -846,12 +878,12 @@ class AsynCoro(object):
         coro._state = AsynCoro._Suspended
         self._suspended.add(cid)
         if timeout is not None:
-            timeout = time.time() + timeout
+            timeout = _time() + timeout
             heappush(self._timeouts, (timeout, cid))
-            coro._timeout_id = timeout
+            coro._timeout = timeout
             self._sched_cv.notify()
         else:
-            coro._timeout_id = None
+            coro._timeout = None
         self._sched_cv.release()
         return 0
 
@@ -860,11 +892,26 @@ class AsynCoro(object):
         """
         self._sched_cv.acquire()
         coro = self._coros.get(cid, None)
-        if coro is None or coro._state != AsynCoro._Suspended:
+        if coro is None:
             self._sched_cv.release()
             logging.warning('invalid coroutine %s to resume', cid)
             return -1
-        coro._timeout_id = None
+        elif coro._state == AsynCoro._Scheduled:
+            if coro._exception:
+                # this can happen with sockets with timeouts:
+                # _AsyncNotifier may throw timeout exception, but
+                # before exception is thrown to coro, I/O operation
+                # may complete
+                logging.debug('throwing away exception for %s/%s', coro.name, cid)
+                coro._exception = None
+                coro._value = update
+                self._sched_cv.release()
+                return 0
+            else:
+                self._sched_cv.release()
+                logging.warning('invalid coroutine %s/%s to resume', coro.name, cid)
+                return -1
+        coro._timeout = None
         coro._value = update
         self._suspended.discard(cid)
         self._running.add(cid)
@@ -928,12 +975,12 @@ class AsynCoro(object):
     def _scheduler(self):
         """Internal use only.
         """
-        _time = time.time
         while True:
             self._sched_cv.acquire()
             if self._timeouts:
                 now = _time()
-                timeout = self._timeouts[0][0] - now
+                timeout, cid = self._timeouts[0]
+                timeout -= now
                 # timeout can become negative?
                 if timeout < 0:
                     timeout = 0
@@ -962,10 +1009,11 @@ class AsynCoro(object):
                         else:
                             coro._generator = None
                     coro._complete.set()
-                self._coros = {}
                 self._running = self._suspended = set()
-                self._timeouts = self._timeout_cids = []
+                self._timeouts = []
+                self._coros = {}
                 self._sched_cv.release()
+                self._complete.set()
                 break
             if self._timeouts:
                 # wake up timed suspends
@@ -974,9 +1022,9 @@ class AsynCoro(object):
                     timeout, cid = heappop(self._timeouts)
                     assert timeout <= now
                     coro = self._coros.get(cid, None)
-                    if coro is None or coro._timeout_id != timeout:
+                    if coro is None or coro._timeout != timeout:
                         continue
-                    coro._timeout_id = None
+                    coro._timeout = None
                     self._suspended.discard(coro._id)
                     self._running.add(coro._id)
                     coro._state = AsynCoro._Scheduled
@@ -1055,8 +1103,6 @@ class AsynCoro(object):
                         coro._value = None
                     self._sched_cv.release()
 
-        self._complete.set()
-
     def terminate(self):
         """Terminate (singleton) instance of AsynCoro. This 'kills'
         all running coroutines.
@@ -1109,9 +1155,14 @@ class _AsyncNotifier(object):
         """
         return cls.__instance
 
-    def __init__(self, poll_interval=2, timeout_interval=10):
+    def __init__(self, poll_interval=2):
         if self.__class__.__instance is None:
-            assert timeout_interval >= 5 * poll_interval
+            if poll_interval < 1:
+                logging.warning('invalid poll_interval; using 1 as poll_interval')
+                poll_interval = 1
+            elif poll_interval > 10:
+                logging.warning('invalid poll_interval; using 10 as poll_interval')
+                poll_interval = 10
             self.__class__.__instance = self
 
             if hasattr(select, 'epoll'):
@@ -1139,32 +1190,31 @@ class _AsyncNotifier(object):
                 self.__class__._Hangup = 0
                 self.__class__._Error = 0x10
 
-            self._poll_interval = poll_interval
-            self._timeout_interval = timeout_interval
             self._fds = {}
             self._terminate = False
+            self._timeouts = []
+            self._timeout_fds = []
             self._lock = threading.Lock()
-            self._notifier_thread = threading.Thread(target=self._notifier)
+            self._notifier_thread = threading.Thread(target=self._notifier, args=(poll_interval,))
             self._notifier_thread.daemon = True
             self._notifier_thread.start()
             # TODO: add controlling fd to wake up poller (for
             # termination)
 
-    def _notifier(self):
+    def _notifier(self, poll_interval):
         """Calls 'task' method of registered fds when there is a
         read/write event for it. Since coroutuines can do only one
         thing at a time, only one of read, write tasks can be done.
         """
-        _time = time.time
-        last_timeout = _time()
+        timeout = poll_interval
         while not self._terminate:
             try:
-                events = self._poller.poll(self._poll_interval)
+                events = self._poller.poll(timeout)
             except:
-                logging.debug('poller failed?')
+                logging.debug('poll failed')
                 logging.debug(traceback.format_exc())
                 # wait a bit to prevent tight loops
-                time.sleep(self._poll_interval)
+                time.sleep(poll_interval)
                 continue
             now = _time()
             self._lock.acquire()
@@ -1177,14 +1227,12 @@ class _AsyncNotifier(object):
                         continue
                     if event == _AsyncNotifier._Readable:
                         # logging.debug('fd %s is readable', fd._fileno)
-                        fd._timestamp = now
                         if fd._task is None:
                             logging.error('fd %s is not registered for read?', fd._fileno)
                         else:
                             fd._task()
                     elif event == _AsyncNotifier._Writable:
                         # logging.debug('fd %s is writable', fd._fileno)
-                        fd._timestamp = now
                         if fd._task is None:
                             logging.error('fd %s is not registered for write?', fd._fileno)
                         else:
@@ -1194,21 +1242,58 @@ class _AsyncNotifier(object):
                     #     logging.debug('hangup on %s', fd._fileno)
             except:
                 logging.debug(traceback.format_exc())
-            if (now - last_timeout) >= self._timeout_interval:
-                last_timeout = now
-                self._lock.acquire()
-                timeouts = [fd for fd in self._fds.itervalues() \
-                            if fd._timeout and fd._timestamp and (now - fd._timestamp) >= fd._timeout]
-                self._lock.release()
-                try:
-                    for fd in timeouts:
-                        if fd._coro:
-                            e = 'timed out %s' % (now - fd._timestamp)
-                            fd._timestamp = None
-                            fd._coro.throw(socket.timeout, socket.timeout(e))
-                except:
-                    logging.debug(traceback.format_exc())
+
+            self._lock.acquire()
+            while self._timeouts and self._timeouts[0] <= now:
+                fd = self._timeout_fds[0]
+                assert fd._timeout_id == self._timeouts[0]
+                if fd._coro:
+                    try:
+                        fd._coro.throw(socket.timeout, socket.timeout('timed out'))
+                    except:
+                        logging.debug(traceback.format_exc())
+                    # don't clear coro/task fields; the operation may still succeed
+                del self._timeouts[0]
+                del self._timeout_fds[0]
+                fd._timeout_id = None
+            if self._timeouts:
+                now = _time()
+                timeout = self._timeouts[0] - now
+                if timeout < 0.5:
+                    timeout = 0.5
+            else:
+                timeout = poll_interval
+            self._lock.release()
         logging.debug('AsyncNotifier terminated')
+
+    def _add_timeout(self, fd):
+        if fd._timeout:
+            timeout = _time() + fd._timeout
+            self._lock.acquire()
+            i = bisect_left(self._timeouts, timeout)
+            self._timeouts.insert(i, timeout)
+            self._timeout_fds.insert(i, fd)
+            fd._timeout_id = timeout
+            self._lock.release()
+        else:
+            fd._timeout_id = None
+
+    def _del_timeout(self, fd):
+        if fd._timeout_id is not None:
+            self._lock.acquire()
+            i = bisect_left(self._timeouts, fd._timeout_id)
+            # in case of identical timeouts (unlikely?), search for
+            # correct index where fd is
+            for i in xrange(i, len(self._timeouts)):
+                if self._timeout_fds[i] == fd:
+                    del self._timeouts[i]
+                    del self._timeout_fds[i]
+                    fd._timeout_id = None
+                    break
+                if fd._timeout_id != self._timeouts[i]:
+                    logging.warning('fd %s with %s is not found', fd._fileno, fd._timeout_id)
+                    break
+            self._lock.release()
 
     def register(self, fd, event=0):
         self._lock.acquire()
@@ -1218,6 +1303,8 @@ class _AsyncNotifier(object):
         #     return
         self._fds[fd._fileno] = fd
         self._lock.release()
+        if event:
+            self._add_timeout(fd)
         try:
             self._poller.register(fd._fileno, event)
         except:
@@ -1230,16 +1317,18 @@ class _AsyncNotifier(object):
             self._lock.release()
             logging.debug('fd %s is already unregistered', fd._fileno)
             return
-        fd._timestamp = None
         self._lock.release()
+        self._del_timeout(fd)
         try:
             self._poller.unregister(fd._fileno)
         except:
             logging.warning('unregister of %s failed with %s', fd._fileno, traceback.format_exc())
 
     def modify(self, fd, event):
-        if not event:
-            fd._timestamp = None
+        if event:
+            self._add_timeout(fd)
+        else:
+            self._del_timeout(fd)
         try:
             self._poller.modify(fd._fileno, event)
         except:
@@ -1252,7 +1341,8 @@ class _AsyncNotifier(object):
             try:
                 self._poller.unregister(fd._fileno)
             except:
-                logging.warning('unregister of %s failed with %s', fd._fileno, traceback.format_exc())
+                logging.warning('unregister of %s failed with %s',
+                                fd._fileno, traceback.format_exc())
         self._terminate = True
         self._lock.release()
         if hasattr(self._poller, 'terminate'):
