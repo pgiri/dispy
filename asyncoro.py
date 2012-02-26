@@ -641,7 +641,10 @@ class Coro(object):
         AsyncNotifier in the case of AsynCoroSockets).
 
         If timeout is a (floating point) number, this coro is
-        suspended till that many seconds (or fractions of second).
+        suspended till that many seconds (or fractions of
+        second). This method should be used with 'yield'; e.g., as
+        'x = yield coro.suspend(2.5)' to suspend execution of coro for 2.5
+        seconds; in that time other coroutines can execute.
         """
         if self._asyncoro:
             return self._asyncoro._suspend(self._id, timeout)
@@ -655,7 +658,10 @@ class Coro(object):
         """Resume/wake up this coro and send 'update' to it.
 
         The resuming coro gets 'update' for the 'yield' that caused it
-        to suspend.
+        to suspend. Thus, if coro1 resumes coro2 with
+        'coro2.resume({'a':1, 'b':2})' will cause coro2 to resume from
+        where it suspended itself and set the value of 'x' in above
+        suspend example to dictionary with keys 'a' and 'b'.
         """
         if self._asyncoro:
             return self._asyncoro._resume(self._id, update)
@@ -681,7 +687,7 @@ class Coro(object):
     def value(self):
         """Get 'return' value of coro.
 
-        NB: This method should not be called from a coroutine! This
+        NB: This method should _not_ be called from a coroutine! This
         method is meant for main thread in the user program to wait
         for (main) coroutine(s) it creates.
 
@@ -947,6 +953,7 @@ class AsynCoro(object):
             self._sched_cv.release()
             return -1
         # prevent throwing more than once?
+        coro._timeout = None
         coro._exception = args
         self._suspended.discard(coro._id)
         self._running.add(coro._id)
@@ -965,6 +972,7 @@ class AsynCoro(object):
             self._sched_cv.release()
             return -1
         coro._exception = (GeneratorExit, GeneratorExit('close'))
+        coro._timeout = None
         self._suspended.discard(cid)
         self._running.add(cid)
         coro._state = AsynCoro._Scheduled
@@ -1023,6 +1031,10 @@ class AsynCoro(object):
                     assert timeout <= now
                     coro = self._coros.get(cid, None)
                     if coro is None or coro._timeout != timeout:
+                        continue
+                    if coro._state != AsynCoro._Suspended:
+                        logging.warning('coro %s/%s is in state %s for resume; ignored',
+                                        coro.name, coro._id, coro._state)
                         continue
                     coro._timeout = None
                     self._suspended.discard(coro._id)
@@ -1283,6 +1295,7 @@ class _AsyncNotifier(object):
             # correct index where fd is
             for i in xrange(i, len(self._timeouts)):
                 if self._timeout_fds[i] == fd:
+                    # assert fd._timeout_id == self._timeouts[i]
                     del self._timeouts[i]
                     del self._timeout_fds[i]
                     fd._timeout_id = None
