@@ -558,7 +558,7 @@ class AsynCoroSocket(socket.socket):
         try:
             self._rsock.connect(*args)
         except socket.error, e:
-            if e.args[0] != EINPROGRESS and e.args[0] != EWOULDBLOCK:
+            if e.args[0] not in [EINPROGRESS, EWOULDBLOCK]:
                 logging.debug('connect error: %s', e.args[0])
 
     def async_write_msg(self, data):
@@ -1145,11 +1145,6 @@ class _AsyncNotifier(object):
     We use separate thread for _AsyncNotifier so AsynCoro users don't
     prevent (by taking too much time before yielding) notifier from
     processing events.
-
-    Timeouts for socket operations are handled in a rather simplisitc
-    way for efficiency: Instead of maintaining timeouts in sorted data
-    structure, we check if any socket I/O operation has timedout every
-    'timeout_interval' (default 10) seconds.
     """
 
     __metaclass__ = MetaSingleton
@@ -1479,6 +1474,8 @@ class _SelectNotifier(object):
             cmd = self.read_sock.recv(1)
         except:
             pass
+        # hack: give time for poll method to quit before closing read_sock
+        time.sleep(0.001)
         self.read_sock.close()
         self.rset = self.wset = self.xset = None
 

@@ -74,42 +74,43 @@ where
 <li>
   <tt>nodes</tt> is list of nodes, where each node is either IP
   address or host name. This list serves two purposes: dispy initially
-  sends a request to all the nodes listed to find out information about
-  them (e.g., number of processing units available for dispy), then
-  sends given computation to only those nodes that match the listed
-  nodes (dispy may know about nodes not listed in this computation, as
-  it also broadcasts identification request).  Wildcard '*' can be used
-  to match (part of) any IP address; e.g., '192.168.3.*' matches any
-  node whose IP address starts with '192.168.3'.  If there are any nodes
-  beyond local network, then all such nodes should be listed. If there
-  are many such nodes (on outside local network), it may be cumbersome
-  to list them all (it is not possible to send identification request to
+  sends a request to all the nodes listed to find out information
+  about them (e.g., number of processing units available for dispy),
+  then sends given computation to only those nodes that match the
+  listed nodes (dispy may know about nodes not listed in this
+  computation, as it also broadcasts identification request).
+  Wildcard '*' can be used to match (part of) any IP address; e.g.,
+  '192.168.3.*' matches any node whose IP address starts with
+  '192.168.3'.  If there are any nodes beyond local network, then all
+  such nodes should be mentioned in <tt>nodes</tt>. If there are many
+  such nodes (on outside local network), it may be cumbersome to list
+  them all (it is not possible to send identification request to
   outside networks with wildcard in them); in that
-  case, <a href="dispynetrelay.html">dispynetrelay</a> may be started on
-  one of the nodes on that network and the node running dispynetrelay
-  should be added to nodes list (and a wildcard for that network, so
-  that other nodes on that network match that wildcard); see below for examples.
+  case, <a href="dispynetrelay.html">dispynetrelay</a> may be started
+  on one of the nodes on that network and the node running
+  dispynetrelay should be added to nodes list (and a wildcard for that
+  network, so that other nodes on that network match that wildcard);
+  see below for examples.
 </li>
 <li>
   <tt>depends</tt> is list of dependencies needed
   for <tt>computation</tt>. Each element of this list can be either
-  Python function or Python class or a Python module or path to
-  file. Only Python modules that are not present on nodes already need
-  be listed; standard modules that are present on all nodes do not
-  need to be listed here.
+  Python function or Python class or an instance of class (object) or
+  a Python module or path to file. Only Python modules that are not
+  present on nodes already need be listed; standard modules that are
+  present on all nodes do not need to be listed here.
 </li>
 <li>
   <tt>callback</tt> is a function. When a job's results become
   available, dispy will call provided callback function with that job
-  as the argument. The results of computation can be retrieved with
-  'result' field of job, etc.  If a job sends provisional results with
+  as the argument. If a job sends provisional results with
   'dispy_provisional_result' multiple times, then dispy will call
   provided callback each such time. The (provisional) results of
   computation can be retrieved with 'result' field of job, etc. While
   computations are run on nodes in isolated environments, callbacks
   are run in the context of user programs from which
   (Shared)JobCluster is called - for example, callbacks can access
-  global variables in user programs.
+  global variables in programs that created cluster(s).
 </li>
 <li>
   <tt>ip_addr</tt> is IP address to use for (client)
@@ -117,7 +118,9 @@ where
   interfaces and default interface is not the right choice.
 </li>
 <li>
-  <tt>port</tt> is port to use for (client) communication.
+  <tt>port</tt> is port to use for (client) communication. Usually not
+  necessary. If not given, dispy will request socket library to choose
+  any available port.
 </li>
 <li>
   <tt>node_port</tt> is port to use for communicating with nodes
@@ -153,15 +156,18 @@ where
 <li>
   <tt>cleanup</tt>: Whether any files transferred should be deleted
   after the computation is done. If it is False, the files are left on
-  the nodes; this may speedup if same files are needed later; however,
-  this can be security risk and/or require manual cleanup.
+  the nodes; this may speedup if same files are needed for another
+  cluster later. However, this can be security risk and/or require
+  manual cleanup. If same files are used for multiple clusters, then
+  cleanup may be set to False and same <tt>dest_path</tt> used.
 </li>
 <li>
   <tt>pulse_interval</tt> is number of seconds between 'pulse'
-  messages that nodes send to indicate they are computing submitted
-  jobs. If this value is given as an integer or floating number between
-  1 and 600, then a node is presumed dead if 5*pulse_interval seconds
-  elapse without a pulse message. See 'reentrant' below.
+  messages that nodes send to indicate they are alive and computing
+  submitted jobs. If this value is given as an integer or floating
+  number between 1 and 600, then a node is presumed dead if
+  5*pulse_interval seconds elapse without a pulse message. See
+  'reentrant' below.
 </li>
 <li>
   <tt>reentrant</tt> must be either True or False. This value is used
@@ -171,7 +177,7 @@ where
   execution result, output and error fields are set to None, exception
   field is set to 'Cancelled' and status is set to Cancelled); if
   reentrant is True, then jobs scheduled for a dead node are resubmitted
-  to other eligible nodes.
+  to other available nodes.
 </li>
 <li>
   <tt>ping_interval</tt> is number of seconds.  Normally dispy can
@@ -275,8 +281,8 @@ As noted above, if 'fault_recover' option is used when creating a
 cluster, dispy stores information about scheduled but unfinished jobs
 in a file. If user program then terminates unexpectedly, the nodes
 that execute those jobs can't send the results back to dispy. In such
-cases, the results for the jobs can be retrieved from the nodes
-with:<br/>
+cases, the results for the jobs can be retrieved from the nodes with
+the function in dispy:<br/>
 <tt>fault_recover_jobs(fault_recover_file, ip_addr=None, secret='', node_port=51348,
                        certfile=None, keyfile=None)</tt>
 where

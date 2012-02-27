@@ -28,16 +28,13 @@ import time
 import socket
 import stat
 import cPickle
-import threading
 import struct
-import base64
 import logging
 import re
 import ssl
 import hashlib
 import atexit
 import traceback
-import Queue
 
 from dispy import _Compute, DispyJob, _DispyJob_, _Node, _JobReply, \
      _xor_string, _parse_nodes, _node_name_ipaddr, _XferFile, _dispy_version

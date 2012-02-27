@@ -32,9 +32,7 @@
 	</ul>
       </div> 
       <div id="content"> 
-        <h2> 
-          asyncoro
-        </h2> 
+	<center><h2>asyncoro</h2></center>
 <p>
   asyncoro, available
   in <a href="http://sourceforge.net/projects/dispy/files/discopy">discopy</a>
@@ -45,17 +43,21 @@
   asyncoro's scheduler, which interleaves executions of coroutines,
   similar to the way an operating system executes multiple
   processes. asyncoro includes polling mechanisms epoll,
-  kqueue and poll for high performance and scalability.
+  kqueue and poll for high performance and scalability.</p>
 
+<p>
   discopy is an implementation of dispy using asyncoro
   framework. asyncoro can be used independently of dispy/discopy.
   </p>
 
+<h4>Details</h4>
 <p>
+
 AsynCoro and associated classes in asyncoro.py file provide framework
 for developing programs with coroutines and asynchronous I/O for
-sockets. The programs developed with asyncoro will have same logic as
-python progorams with synchronous sockets and threads, except for
+sockets. Unlike with the case of callbacks used in event-based
+frameworks, the programs developed with asyncoro will have same logic
+as python progorams with synchronous sockets and threads, except for
 converting sockets to asynchronous model with AsynCoroSocket class,
 'yield' when waiting for completion of tasks (i.e., socket operations,
 sleep and waiting on CoroCondition) and using CoroLock, CoroCondition
@@ -98,28 +100,33 @@ do any processing, so the loop can quickly accept connections. Each
 request is processed in a separate coroutine. A coroutine method must
 have 'coro=None' default argument. The coroutine builder Coro will set
 coro argument with the Coro instance, which is used for calling
-methods in Coro class.
+methods in Coro class. In the 'process' method, socket I/O operations
+are called with 'yield'. With these statements, the I/O operation is
+initiated and control goes to AsynCoro's scheduler. When the I/O
+operation is complete, the scheduler returns the results of the method
+back to the method. During the time it takes to complete the I/O
+operation, the scheduler executes other coroutines.
 </p>
 
 <p>When it is necessary to suspend/sleep, a coro (instance of Coro)
 should use coro.sleep(timeout=None) instead of time.sleep. A
-coro.sleep allows other coros to execute during sleep, whereas
-time.sleep blocks other coros. If timeout is None, some other coro or
-program thread must wake it up. If timetout is a number, the coro
-sleeps for that many seconds (or fractions of second) unless someone
-else wakes it up before. A sleeping coro can be woken up/resumed with
-coro.resume(update=None). The update value is 'sent' to the sleeping
-coro, so that 'yield' that caused it to suspend will receive
-update. Thus, if coro1 suspends with <tt>news = yield
-coro1.sleep()</tt> and later, another coro, coro2, can wake it up
-with <tt>coro1.wakeup('rained')</tt>. This sets 'news' to 'rained' in
-coro1 and coro1 resumes execution.  The update can be any python
+coro.sleep used with 'yield' allows other coros to execute during
+sleep, whereas time.sleep blocks other coros. If timeout is None, some
+other coro or program thread must wake it up. If timetout is a number,
+the coro sleeps for that many seconds (or fractions of second) unless
+someone else wakes it up before. A sleeping coro can be woken
+up/resumed with coro.resume(update=None). The update value is 'sent'
+to the sleeping coro, so that 'yield' that caused it to suspend will
+receive update. Thus, if a method suspends (itself) with <tt>news =
+yield coro1.sleep()</tt> and later, another coro, coro2, can wake it
+up with <tt>coro1.wakeup('rained')</tt>. This sets 'news' to 'rained'
+in coro1 and coro1 resumes execution.  The update can be any python
 object. asyncoro framework requires that 'resume' called on only
 currently sleeping coro(s). Otherwise, the update is ignored (and a
 warning is given). If necessary, cooperating coros can use a
 CoroCondition to signal when a coro is going to sleep. Note that
-'sleep' must be used with 'yield'; otherwise, entire coroutine
-suite will be locked up.
+'sleep' must be used with 'yield'; otherwise, entire coroutine suite
+will be locked up.
   </p>
 
 <p>
@@ -128,14 +135,18 @@ and proceeds only after next iteration is asked for (with 'next' or
 'send' methods). With asyncoro, yield is used to convey to the
 scheduler that the statement associated with yield is time consuming
 so the scheduler can run other coroutines while waiting for that task
-to complete. Thus, asyncoro coroutines continue execution (interleaved
+to complete. When the task completes, the scheduler will execute the
+coroutine. Thus, asyncoro coroutines continue execution (interleaved
 with other coroutines) after each yield, unless it has been suspended
-with sleep/suspend method. And while python's coroutines can be sent
-values with 'send' method at anytime, with asyncoro, that is not very
-useful, as coroutines don't stop at each yield. Instead, with
-asyncoro, the correct way to synchronize for data exchange is for
-receiving coroutine to suspend and for the sending coroutine to resume
-sleeping coroutine with the value.
+with sleep/suspend method. With asyncoro, the coroutines must not
+'send' values or call 'next' for the coroutines created with 'Coro'
+class. They can call 'next' for generators (methods not associated
+with 'Coro' instance). However, those generators must not use any
+time-consuming tasks. If coroutines need to exchange data (as is done
+with python's yield), they can use asyncoro's suspend and resume
+methods: A coroutine to recieve data should suspend itself and a
+coroutine to send data should wake up the suspended coroutine, as
+explained above.
 </p>
 
 <p>

@@ -92,10 +92,10 @@ asynchronous sockets and coroutines (without threads). This version is
 released
 as <a href="http://sourceforge.net/projects/dispy/files/discopy">discopy</a>
 to avoid confusion with dispy releases. Usage of discopy is same as
-that of dispy. discopy has not yet been well tested and not known if
-it works with Windows. <a href="asyncoro.html">asyncoro</a> framework
-can be used independently of dispy/discopy to develop programs with
-asynchronous I/O completion and coroutines.</li>
+that of dispy. discopy has been tested with Linux and OS
+X. <a href="asyncoro.html">asyncoro</a> framework can be used
+independently of dispy/discopy to develop programs with asynchronous
+sockets and coroutines.</li>
   </ul>
 <p>
 dispy consists of 4 components:
@@ -142,10 +142,10 @@ execution.
 
 <p>
 As a tutorial, consider the following program, in which 'compute' is
-distributed across the nodes on a local network that are running
-'dispynode' program (it is possible to start 'dispynode' later, too,
-as and when necessary, and the scheduler will use the nodes as they
-become available).
+distributed to nodes on a local network for parallel execution. First,
+run 'dispynode' program on each of the nodes on the network. If
+parallelizing on an SMP (single node with multiple cores), then start
+'dispynode' on that node (which also runs dispy client).
 </p>
 
 </p>
@@ -176,14 +176,16 @@ if __name__ == '__main__':
 </code>
 
 <p>
-In this program, a cluster is created with function 'compute'. This
-computation is then scheduled for execution with various
-arguments. dispy's scheduler schedules the jobs to all the nods
-on local network running 'dispynode'. The nodes
+Now run the above program, which creates a cluster with function
+'compute'. dispy schedules this computation with various arguments to
+all the nodes running 'dispynode'; each time computation is submitted,
+dispy returns an instnce of DispyJob, or job for short. The nodes
 execute the computation with the job's arguments in isolation -
 computations shouldn't depend on global state, such as modules
 imported outside of computations, global variables etc. In this case,
-'compute' needs modules 'time' and 'socket', so it must import them.
+'compute' needs modules 'time' and 'socket', so it must import
+them. The program then retrieves results of execution for each job
+with 'job()'.
 </p>
 
 <p>
@@ -193,8 +195,10 @@ SharedJobCluster is similar):
 
 <ul>
   <li>
-  <tt>cluster = dispy.JobCluster('/some/program', nodes=['192.168.3.*'])</tt><br />
-    distributes '/some/program' to all nodes whose IP address starts with '192.168.3'.</li>
+  <tt>cluster = dispy.JobCluster('/some/program',
+    nodes=['192.168.3.*'])</tt><br /> distributes '/some/program' (an
+    executable program, instead of python function) to all nodes whose
+    IP address starts with '192.168.3'.</li>
 
   <li><tt>cluster = dispy.JobCluster(compute, depends=[ClassA, moduleB, 'file1'])</tt><br />
     distributes 'compute' along with ClassA (python object), moduleB (python object) and
@@ -206,25 +210,27 @@ SharedJobCluster is similar):
     used only for establishing communication initially, but not used
     to encrypt programs or code for python objects. This can be useful
     to prevent other users from (inadvertantly) using the nodes. If
-    encryption is needed, use SSL, see below.</li>
+    encryption is needed, use SSL; see below.</li>
 
-  <li><tt>cluster = dispy.JobCluster(compute, certfile='mycert', keyfile='mykey')</tt><br />
-  distributes 'compute' and encrypts all
-    communication using SSL certificate stored in 'mycert' file and
-    key stored in 'mykey' file.
+  <li><tt>cluster = dispy.JobCluster(compute, certfile='mycert',
+  keyfile='mykey')</tt><br /> distributes 'compute' and encrypts all
+  communication using SSL certificate stored in 'mycert' file and key
+  stored in 'mykey' file. In this case, dispynode must also use same
+  certificate and key; i.e., each dispynode must be invoked with
+  'dispynode --certfile="mycert" --keyfile="mykey"'<br/>
 
     If both certificate and key are stored in same file, say,
     'mycertkey', they are expected to be in certfile:<br />
       <tt>cluster = dispy.JobCluster(compute, certfile='mycertkey')</tt></li>
 
   <li><tt>cluster1 = dispy.JobCluster(compute1, nodes=['192.168.3.2', '192.168.3.5'])</tt><br/>
-<tt>cluster2 = dispy.JobCluster(compute2, nodes=['192.168.3.10', '192.168.3.11'])</tt><br />
-    distributes 'compute1'
-    to nodes 192.168.3.2 and 192.168.3.5, and 'compute2' to nodes
-    192.168.3.10 and 192.168.3.11. With this setup, specific
-    computations can be scheduled on certain node(s). As mentioned
-    above, with JobCluster, the set of nodes for one cluster must be
-    disjoint with set of nodes in any other cluster. Otherwise,
+<tt>cluster2 = dispy.JobCluster(compute2, nodes=['192.168.3.10',
+    '192.168.3.11'])</tt><br /> distributes 'compute1' to nodes
+    192.168.3.2 and 192.168.3.5, and 'compute2' to nodes 192.168.3.10
+    and 192.168.3.11. With this setup, specific computations can be
+    scheduled on certain node(s). As mentioned above, with JobCluster,
+    the set of nodes for one cluster must be disjoint with set of
+    nodes in any other cluster running at the same time. Otherwise,
     <a href="dispy.html">SharedJobCluster</a> must be used.</li>
 </ul>
 
