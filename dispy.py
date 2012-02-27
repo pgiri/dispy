@@ -57,7 +57,7 @@ else:
     def shelve_repr(s):
         return s
 
-_dispy_version = '1.7-coro'
+_dispy_version = '1.8-coro'
 
 class DispyJob(object):
     """Job scheduled for execution with dispy.
@@ -453,7 +453,7 @@ class _Cluster(object):
     __metaclass__ = MetaSingleton
 
     def __init__(self, ip_addr=None, port=None, node_port=None, secret='',
-                 keyfile=None, certfile=None, shared=False, fault_recover_file=None):
+                 keyfile=None, certfile=None, shared=False):
         if not hasattr(self, 'ip_addr'):
             self.asyncoro = AsynCoro()
             atexit.register(self.shutdown)
@@ -478,15 +478,6 @@ class _Cluster(object):
             self.ping_interval = None
 
             self.fault_recover_lock = CoroLock()
-            if fault_recover_file:
-                try:
-                    shelf = shelve.open(fault_recover_file, flag='r')
-                except:
-                    shelf = None
-                if shelf is not None:
-                    shelf.close()
-                    # raise Exception('fault_recover file "%s" exists; remove it' % \
-                    #                 fault_recover_file)
             self._clusters = {}
             self.unsched_jobs = 0
             self.job_uid = 1
@@ -1489,10 +1480,6 @@ class JobCluster(object):
         else:
             self.fault_recover_file = None
 
-        self._cluster = _Cluster(ip_addr=ip_addr, port=port, node_port=node_port,
-                                 secret=secret, keyfile=keyfile, certfile=certfile,
-                                 shared=shared, fault_recover_file=self.fault_recover_file)
-
         if self.fault_recover_file:
             try:
                 shelf = shelve.open(self.fault_recover_file, flag='c')
@@ -1507,6 +1494,10 @@ class JobCluster(object):
             # must not be used when a cluster using the same file is
             # also active
             logging.info('Storing fault recovery information in "%s"', self.fault_recover_file)
+
+        self._cluster = _Cluster(ip_addr=ip_addr, port=port, node_port=node_port,
+                                 secret=secret, keyfile=keyfile, certfile=certfile,
+                                 shared=shared)
 
         self.ip_addr = self._cluster.ip_addr
 
