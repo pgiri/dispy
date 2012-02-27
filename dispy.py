@@ -28,12 +28,9 @@ import inspect
 import stat
 import cPickle
 import threading
-import functools
-import select
 import struct
 import base64
 import logging
-import weakref
 import re
 import ssl
 import hashlib
@@ -44,10 +41,23 @@ import Queue
 import shelve
 import datetime
 import atexit
+import platform
 
 from asyncoro import Coro, AsynCoro, CoroLock, CoroCondition, AsynCoroSocket, MetaSingleton
 
-_dispy_version = '1.6-coro'
+if platform.system() == 'Windows':
+    # with Windows XP (at least) shelve does not seem to work: When
+    # opened during fault recovery, it bails with 'unsupported hash
+    # version 9', so use dumbdbm instead.
+    import dumbdbm
+    shelve = dumbdbm
+    def shelve_repr(s):
+        return cPickle.dumps(s)
+else:
+    def shelve_repr(s):
+        return s
+
+_dispy_version = '1.7-coro'
 
 class DispyJob(object):
     """Job scheduled for execution with dispy.
@@ -475,8 +485,8 @@ class _Cluster(object):
                     shelf = None
                 if shelf is not None:
                     shelf.close()
-                    raise Exception('fault_recover file "%s" exists; remove it' % \
-                                    fault_recover_file)
+                    # raise Exception('fault_recover file "%s" exists; remove it' % \
+                    #                 fault_recover_file)
             self._clusters = {}
             self.unsched_jobs = 0
             self.job_uid = 1
@@ -1174,7 +1184,7 @@ class _Cluster(object):
         state = {'id':_job.job.id, 'hash':_job.hash, 'compute_id':_job.compute_id,
                  'args':_job.args, 'kwargs':_job.kwargs,
                  'ip_addr':_job.node.ip_addr, 'port':_job.node.port}
-        shelf[str(_job.uid)] = state
+        shelf[str(_job.uid)] = shelve_repr(state)
         shelf.close()
         self.fault_recover_lock.release()
         return
@@ -1869,7 +1879,7 @@ class SharedJobCluster(JobCluster):
         state = {'id':_job.job.id, 'hash':_job.hash, 'compute_id':_job.compute_id,
                  'args':_job.args, 'kwargs':_job.kwargs,
                  'ip_addr':self.scheduler_ip_addr, 'port':self.scheduler_port}
-        shelf[str(_job.uid)] = state
+        shelf[str(_job.uid)] = shelve_repr(state)
         shelf.close()
         self._cluster.fault_recover_lock.release()
         return
@@ -2008,8 +2018,7 @@ def fault_recover_jobs(fault_recover_file, port=51348,
                                                    'compute_id':job_info['compute_id']})
             sock.write(node_info['auth_code'])
             sock.write_msg(req)
-            ruid, resp = sock.read_msg()
-            assert ruid == int(uid)
+            resp = sock.read_msg()
             sock.write_msg('ACK')
             reply = cPickle.loads(resp)
             if not isinstance(reply, _JobReply):
@@ -2043,7 +2052,8 @@ def fault_recover_jobs(fault_recover_file, port=51348,
         try:
             os.remove(fault_recover_file)
         except:
-            print 'Could not remove file "%s"' % fault_recover_file
+            pass
+            # print 'Could not remove file "%s"' % fault_recover_file
     return jobs
 
 if __name__ == '__main__':

@@ -167,7 +167,7 @@ class _DispyNode(object):
             self.dest_path_prefix = os.path.join(os.sep, 'tmp', 'dispy')
         if not os.path.isdir(self.dest_path_prefix):
             os.makedirs(self.dest_path_prefix)
-            os.chmod(self.dest_path_prefix, stat.S_IWUSR | stat.S_IXUSR)
+            os.chmod(self.dest_path_prefix, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
         if max_file_size is None:
             max_file_size = MaxFileSize
         self.max_file_size = max_file_size
