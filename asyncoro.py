@@ -40,10 +40,12 @@ from bisect import bisect_left
 
 if platform.system() == 'Windows':
     from errno import WSAEINPROGRESS as EINPROGRESS
+    from errno import WSAEWOULDBLOCK as EWOULDBLOCK
     from time import clock as _time
     _time()
 else:
     from errno import EINPROGRESS
+    from errno import EWOULDBLOCK
     from time import time as _time
 
 """
@@ -556,7 +558,7 @@ class AsynCoroSocket(socket.socket):
         try:
             self._rsock.connect(*args)
         except socket.error, e:
-            if e.args[0] != EINPROGRESS:
+            if e.args[0] != EINPROGRESS and e.args[0] != EWOULDBLOCK:
                 logging.debug('connect error: %s', e.args[0])
 
     def async_write_msg(self, data):
@@ -815,10 +817,8 @@ class AsynCoro(object):
     _Scheduled = 1
     # in _running, currently executing
     _Running = 2
-    # in _suspended, but executing
+    # in _suspended
     _Suspended = 3
-    # in _suspended, not executing
-    _Stopped = 4
 
     _coro_id = 1
 
@@ -1207,6 +1207,7 @@ class _AsyncNotifier(object):
             self._timeouts = []
             self._timeout_fds = []
             self._lock = threading.Lock()
+            self._complete = threading.Event()
             self._notifier_thread = threading.Thread(target=self._notifier, args=(poll_interval,))
             self._notifier_thread.daemon = True
             self._notifier_thread.start()
@@ -1273,6 +1274,7 @@ class _AsyncNotifier(object):
             else:
                 timeout = poll_interval
             self._lock.release()
+        self._complete.set()
         logging.debug('AsyncNotifier terminated')
 
     def _add_timeout(self, fd):
@@ -1357,6 +1359,7 @@ class _AsyncNotifier(object):
         self._lock.release()
         if hasattr(self._poller, 'terminate'):
             self._poller.terminate()
+        self._complete.wait()
 
 class _KQueueNotifier(object):
     """Internal use only.
@@ -1406,18 +1409,33 @@ class _SelectNotifier(object):
 
     def __init__(self):
         if not hasattr(self, 'poller'):
+            def _socket_pair():
+                srv_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                srv_sock.bind(('127.0.0.1', 0))
+                srv_sock.listen(1)
+                addr, port = srv_sock.getsockname()
+
+                write_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                conn_thread = threading.Thread(target=_connect, args=(write_sock, addr, port))
+                conn_thread.daemon = True
+                conn_thread.start()
+                read_sock, caddr = srv_sock.accept()
+                srv_sock.close()
+                read_sock.setblocking(0)
+                write_sock.setblocking(0)
+                return (read_sock, write_sock)
+
+            def _connect(sock, addr, port):
+                sock.connect((addr, port))
+
             self.poller = select.select
             self.rset = set()
             self.wset = set()
             self.xset = set()
 
-            self.cmd_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.cmd_sock.setblocking(0)
-            self.cmd_sock.bind(('', 0))
-            self.cmd_addr = self.cmd_sock.getsockname()
-            self.cmd_fd = self.cmd_sock.fileno()
-            self.update_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.rset.add(self.cmd_fd)
+            self.read_sock, self.write_sock = _socket_pair()
+            self.read_fd = self.read_sock.fileno()
+            self.rset.add(self.read_fd)
 
     def register(self, fid, event):
         if event == _AsyncNotifier._Readable:
@@ -1426,18 +1444,18 @@ class _SelectNotifier(object):
             self.wset.add(fid)
         elif event & _AsyncNotifier._Error:
             self.xset.add(fid)
-        self.update_sock.sendto('update', self.cmd_addr)
+        self.write_sock.send('u')
 
     def unregister(self, fid):
         self.rset.discard(fid)
         self.wset.discard(fid)
         self.xset.discard(fid)
-        self.update_sock.sendto('update', self.cmd_addr)
+        self.write_sock.send('u')
 
     def modify(self, fid, event):
         self.unregister(fid)
         self.register(fid, event)
-        self.update_sock.sendto('update', self.cmd_addr)
+        self.write_sock.send('u')
 
     def poll(self, timeout):
         rlist, wlist, xlist = self.poller(self.rset, self.wset, self.xset, timeout)
@@ -1449,14 +1467,19 @@ class _SelectNotifier(object):
         for fid in xlist:
             events[fid] = _AsyncNotifier._Error
 
-        if events.pop(self.cmd_fd, None) == self.cmd_fd:
-            cmd, addr = self.cmd_sock.recvfrom(128)
-            # assert addr[1] == self.update_sock.getsockname()[1]
+        if events.pop(self.read_fd, None) == _AsyncNotifier._Readable:
+            cmd = self.read_sock.recv(1)
         return events.iteritems()
 
     def terminate(self):
-        self.update_sock.close()
-        self.cmd_sock.close()
+        self.rset.discard(self.read_fd)
+        self.write_sock.send('u')
+        self.write_sock.close()
+        try:
+            cmd = self.read_sock.recv(1)
+        except:
+            pass
+        self.read_sock.close()
         self.rset = self.wset = self.xset = None
 
 class RepeatTimer(threading.Thread):
