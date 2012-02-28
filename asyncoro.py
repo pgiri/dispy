@@ -521,32 +521,34 @@ class AsynCoroSocket(socket.socket):
             if not err:
                 self._task = None
                 self._notifier.modify(self, 0)
-                coro, self._coro = self._coro, None
 
                 if self._certfile:
-                    def _ssl_handshake(conn, coro):
+                    def _ssl_handshake(self):
                         try:
-                            conn._rsock.do_handshake()
+                            self._rsock.do_handshake()
                         except ssl.SSLError, err:
                             if err.args[0] == ssl.SSL_ERROR_WANT_READ:
-                                conn._notifier.modify(conn, _AsyncNotifier._Readable)
+                                self._notifier.modify(self, _AsyncNotifier._Readable)
                             elif err.args[0] == ssl.SSL_ERROR_WANT_WRITE:
-                                conn._notifier.modify(conn, _AsyncNotifier._Writable)
+                                self._notifier.modify(self, _AsyncNotifier._Writable)
                             else:
-                                conn._task = None
-                                conn._notifier.unregister(conn)
-                                conn.close()
+                                self._task = None
+                                self._notifier.unregister(self)
+                                self.close()
+                                coro, self._coro = self._coro, None
                                 coro.throw(*sys.exc_info())
                         else:
-                            conn._notifier.modify(conn, 0)
+                            coro, self._coro = self._coro, None
+                            self._notifier.modify(self, 0)
                             coro.resume(0)
 
                     self._rsock = ssl.wrap_socket(self._rsock, keyfile=self._keyfile,
                                                   certfile=self._certfile, server_side=False,
                                                   do_handshake_on_connect=False)
-                    self._task = functools.partial(_ssl_handshake, self, coro)
+                    self._task = functools.partial(_ssl_handshake, self)
                     self._task()
                 else:
+                    coro, self._coro = self._coro, None
                     coro.resume(0)
             else:
                 logging.debug('connect error: %s', err)
