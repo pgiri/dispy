@@ -904,7 +904,7 @@ class AsynCoro(object):
             logging.warning('invalid coroutine %s to resume', cid)
             return -1
         elif coro._state == AsynCoro._Scheduled:
-            if coro._exception:
+            if coro._exception and coro._exception[0] != GeneratorExit:
                 # this can happen with sockets with timeouts:
                 # _AsyncNotifier may throw timeout exception, but
                 # before exception is thrown to coro, I/O operation
@@ -1433,25 +1433,27 @@ class _SelectNotifier(object):
             self.read_fd = self.read_sock.fileno()
             self.rset.add(self.read_fd)
 
-    def register(self, fid, event):
+    def register(self, fid, event, update=True):
         if event == _AsyncNotifier._Readable:
             self.rset.add(fid)
         elif event == _AsyncNotifier._Writable:
             self.wset.add(fid)
         elif event & _AsyncNotifier._Error:
             self.xset.add(fid)
-        self.write_sock.send('u')
+        if update:
+            self.write_sock.send('r')
 
-    def unregister(self, fid):
+    def unregister(self, fid, update=True):
         self.rset.discard(fid)
         self.wset.discard(fid)
         self.xset.discard(fid)
-        self.write_sock.send('u')
+        if update:
+            self.write_sock.send('u')
 
     def modify(self, fid, event):
-        self.unregister(fid)
-        self.register(fid, event)
-        self.write_sock.send('u')
+        self.unregister(fid, update=False)
+        self.register(fid, event, update=False)
+        self.write_sock.send('m')
 
     def poll(self, timeout):
         rlist, wlist, xlist = self.poller(self.rset, self.wset, self.xset, timeout)
