@@ -45,18 +45,6 @@ import platform
 
 from asyncoro import Coro, AsynCoro, CoroLock, CoroCondition, AsynCoroSocket, MetaSingleton
 
-if platform.system() == 'Windows':
-    # with Windows XP (at least) shelve does not seem to work: When
-    # opened during fault recovery, it bails with 'unsupported hash
-    # version 9', so use dumbdbm instead.
-    import dumbdbm
-    shelve = dumbdbm
-    def shelve_repr(s):
-        return cPickle.dumps(s)
-else:
-    def shelve_repr(s):
-        return s
-
 _dispy_version = '1.8-coro'
 
 class DispyJob(object):
@@ -1175,7 +1163,7 @@ class _Cluster(object):
         state = {'id':_job.job.id, 'hash':_job.hash, 'compute_id':_job.compute_id,
                  'args':_job.args, 'kwargs':_job.kwargs,
                  'ip_addr':_job.node.ip_addr, 'port':_job.node.port}
-        shelf[str(_job.uid)] = shelve_repr(state)
+        shelf[str(_job.uid)] = state
         shelf.close()
         self.fault_recover_lock.release()
         return
@@ -1482,12 +1470,26 @@ class JobCluster(object):
             self.fault_recover_file = None
 
         if self.fault_recover_file:
-            try:
-                shelf = shelve.open(self.fault_recover_file, flag='c')
-                shelf.close()
-            except:
+            if platform.system() == 'Windows':
+                # with Windows XP (at least) shelve does not seem to
+                # work: When opened during fault recovery, it bails
+                # with 'unsupported hash version 9', so force dumbdbm
+                import dumbdbm
+                try:
+                    shelf = shelve.Shelf(dumbdbm.open(self.fault_recover_file, flag='c'))
+                except:
+                    shelf = None
+            else:
+                try:
+                    shelf = shelve.open(self.fault_recover_file, flag='c')
+                except:
+                    shelf = None
+
+            if shelf is None:
                 raise Exception('Could not create fault recover file "%s"' % \
                                 self.fault_recover_file)
+            else:
+                shelf.close()
 
             # TODO?: it is safer to use file locking instead of thread
             # locking, but it is more efficient to use thread locking
@@ -1871,7 +1873,7 @@ class SharedJobCluster(JobCluster):
         state = {'id':_job.job.id, 'hash':_job.hash, 'compute_id':_job.compute_id,
                  'args':_job.args, 'kwargs':_job.kwargs,
                  'ip_addr':self.scheduler_ip_addr, 'port':self.scheduler_port}
-        shelf[str(_job.uid)] = shelve_repr(state)
+        shelf[str(_job.uid)] = state
         shelf.close()
         self._cluster.fault_recover_lock.release()
         return
