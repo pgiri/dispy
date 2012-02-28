@@ -1474,12 +1474,12 @@ class _SelectNotifier(object):
             events[fid] = _AsyncNotifier._Error
 
         if events.pop(self.read_fd, None) == _AsyncNotifier._Readable:
-            cmd = self.read_sock.recv(1)
+            cmd = self.read_sock.recv(20)
         return events.iteritems()
 
     def terminate(self):
         self.rset.discard(self.read_fd)
-        self.write_sock.send('u')
+        self.write_sock.send('x')
         self.write_sock.close()
         try:
             cmd = self.read_sock.recv(1)
