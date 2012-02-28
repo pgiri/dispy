@@ -1277,14 +1277,15 @@ class _Cluster(object):
                 self.worker_Q.put((99, None, None))
             else:
                 self._sched_cv.release()
+
+            self.timer_coro.terminate()
+            self.job_result_coro.terminate()
+            if self.udp_coro:
+                self.udp_coro.terminate()
             yield None
         Coro(_shutdown, self).value()
         self._scheduler.value()
         self.worker_Q.join()
-        self.timer_coro.terminate()
-        self.job_result_coro.terminate()
-        if self.udp_coro:
-            self.udp_coro.terminate()
         self.asyncoro.join()
         self.asyncoro.terminate()
         logging.debug('shutdown complete')

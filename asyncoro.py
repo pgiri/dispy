@@ -710,6 +710,11 @@ class Coro(object):
 
     def terminate(self):
         """Terminate coro.
+
+        This method should be called by a coro (on some other
+        coro). Otherwise, there is a chance that coro being terminated
+        is currently running and can interfere with GenratorExit
+        exception that will be thrown to coro.
         """
         if self._asyncoro:
             return self._asyncoro._terminate_coro(self._id)
@@ -968,10 +973,13 @@ class AsynCoro(object):
         """
         self._sched_cv.acquire()
         coro = self._coros.get(cid, None)
-        if coro is None or coro._state not in [AsynCoro._Scheduled, AsynCoro._Suspended]:
+        if coro is None:
             logging.warning('invalid coroutine %s to terminate', cid)
             self._sched_cv.release()
             return -1
+        if coro._state == AsynCoro._Running:
+            logging.warning('coroutine to terminate %s/%s is running', coro.name, cid)
+            # if coro raises exception during current run, this exception will be ignored!
         coro._exception = (GeneratorExit, GeneratorExit('close'))
         coro._timeout = None
         self._suspended.discard(cid)

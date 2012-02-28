@@ -1123,11 +1123,13 @@ class _Scheduler(object):
                         yield node.close(compute, coro=coro)
                 for coro in coros:
                     coro.value()
+
+            self.timer_coro.terminate()
+            self.request_coro.terminate()
+            self.job_result_coro.terminate()
+            self.udp_coro.terminate()
+
         Coro(_shutdown, self).value()
-        self.timer_coro.terminate()
-        self.request_coro.terminate()
-        self.job_result_coro.terminate()
-        self.udp_coro.terminate()
         self.asyncoro.join()
         self.asyncoro.terminate()
 
