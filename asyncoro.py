@@ -477,7 +477,7 @@ class AsynCoroSocket(socket.socket):
             self._notifier.modify(self, 0)
 
             if self._certfile:
-                def _ssl_handshake(conn, addr, coro):
+                def _ssl_handshake(self, conn, addr):
                     try:
                         conn._rsock.do_handshake()
                     except ssl.SSLError, err:
@@ -502,7 +502,7 @@ class AsynCoroSocket(socket.socket):
                                               server_side=True, do_handshake_on_connect=False,
                                               ssl_version=self._ssl_version)
 
-                conn._task = functools.partial(_ssl_handshake, conn, addr, self._coro)
+                conn._task = functools.partial(_ssl_handshake, self, conn, addr)
                 conn._task()
             else:
                 coro, self._coro = self._coro, None
