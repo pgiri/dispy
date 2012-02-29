@@ -583,17 +583,7 @@ class _Cluster(object):
         yield self._sched_cv.release()
 
         for node in compute_nodes:
-            r = yield node.setup(compute, coro=coro)
-            if r:
-                logging.warning('Failed to setup %s for compute "%s"',
-                                node.ip_addr, compute)
-            else:
-                self._sched_cv.acquire()
-                if node.ip_addr not in compute.nodes:
-                    compute.nodes[node.ip_addr] = node
-                    node.clusters.append(compute.id)
-                    self._sched_cv.notify()
-                yield self._sched_cv.release()
+            yield self.setup_node(node, [compute], coro=coro)
 
     def del_cluster(self, cluster, coro=None):
         # generator
@@ -720,6 +710,11 @@ class _Cluster(object):
         # generator
         assert coro is not None
         for compute in computations:
+            self._sched_cv.acquire()
+            if node.ip_addr in compute.nodes:
+                self._sched_cv.release()
+                continue
+            self._sched_cv.release()
             r = yield node.setup(compute, coro=coro)
             if r:
                 logging.warning('Failed to setup %s for compute "%s"',
@@ -915,6 +910,7 @@ class _Cluster(object):
             self._sched_cv.release()
             raise StopIteration
         compute = cluster._compute
+        self._sched_cv.release()
         job = _job.job
         try:
             assert reply.hash == _job.hash
@@ -931,18 +927,19 @@ class _Cluster(object):
                 assert reply.ip_addr == node.ip_addr
                 job.ip_addr = node.ip_addr
                 node.last_pulse = time.time()
-            if reply.status == DispyJob.ProvisionalResult:
-                self.finish_job(_job, DispyJob.ProvisionalResult, cluster)
-                self._sched_cv.release()
-                raise StopIteration
-            else:
-                del self._sched_jobs[_job.uid]
         except:
-            self._sched_cv.release()
             logging.warning('Invalid job result for %s from %s',
                             _job.uid, addr[0])
             logging.debug('%s, %s', str(reply), traceback.format_exc())
             raise StopIteration
+
+        self._sched_cv.acquire()
+        if reply.status == DispyJob.ProvisionalResult:
+            self.finish_job(_job, DispyJob.ProvisionalResult, cluster)
+            self._sched_cv.release()
+            raise StopIteration
+        else:
+            del self._sched_jobs[_job.uid]
 
         if self.shared is False:
             if reply.status == DispyJob.Terminated:
@@ -1175,9 +1172,6 @@ class _Cluster(object):
         #_job.uid = id(_job)
         _job.uid = self.job_uid
         self.job_uid += 1
-        if self.job_uid == sys.maxint:
-            # TODO: check if it is okay to reset
-            self.job_uid = 1
         cluster = self._clusters[_job.compute_id]
         cluster._jobs.append(_job)
         self.unsched_jobs += 1
@@ -1303,7 +1297,7 @@ class _Cluster(object):
         print
 
 class JobCluster(object):
-    """Create an instance of cluster for a specific job.
+    """Create an instance of cluster for a specific computation.
     """
 
     def __init__(self, computation, nodes=['*'], depends=[], callback=None, max_cpus=None,

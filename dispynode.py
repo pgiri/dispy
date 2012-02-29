@@ -57,23 +57,25 @@ def dispy_provisional_result(result):
     necessary. The computations can use this function in such cases
     with the current result of computation as argument.
     """
+
+    import asyncoro
+
     __dispy_job_reply = __dispy_job_info.job_reply
     logging.debug('Sending provisional result for job %s to %s',
                   __dispy_job_reply.uid, __dispy_job_info.reply_addr)
     __dispy_job_reply.status = DispyJob.ProvisionalResult
     __dispy_job_reply.result = result
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock = AsynCoroSocket(sock, blocking=True,
-                          certfile=__dispy_job_certfile, keyfile=__dispy_job_keyfile)
+    sock = ssl.wrap_socket(sock, keyfile=__dispy_job_keyfile, certfile=__dispy_job_certfile)
     sock.settimeout(2)
     try:
         sock.connect(__dispy_job_info.reply_addr)
-        sock.write_msg(cPickle.dumps(__dispy_job_reply))
+        asyncoro.sock_write_msg(sock, cPickle.dumps(__dispy_job_reply))
+        ack = asyncoro.sock_read_msg(sock)
     except:
         logging.warning("Couldn't send provisional results %s:\n%s",
                         str(result), traceback.format_exc())
-    finally:
-        sock.close()
+    sock.close()
 
 class _DispyJobInfo(object):
     """Internal use only.
@@ -350,7 +352,7 @@ class _DispyNode(object):
             if compute.type == _Compute.func_type:
                 reply = _JobReply(_job, self.ip_addr)
                 job_info = _DispyJobInfo(reply, reply_addr, compute)
-                args = (job_info, self.certfile, self.keyfile,
+                args = (job_info, os.path.abspath(self.certfile), os.path.abspath(self.keyfile),
                         _job.args, _job.kwargs, self.reply_Q,
                         compute.env, compute.name, compute.code, compute.dest_path, _job.files)
                 try:
@@ -869,7 +871,7 @@ class _DispyNode(object):
         assert coro is not None
         job_reply = job_info.job_reply
         logging.debug('Sending result for job %s (%s) to %s',
-                      job_reply.uid, job_reply.status, job_info.reply_addr[0])
+                      job_reply.uid, job_reply.status, str(job_info.reply_addr))
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock = AsynCoroSocket(sock, blocking=False, certfile=self.certfile, keyfile=self.keyfile)
         sock.settimeout(2)

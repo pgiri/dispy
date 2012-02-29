@@ -501,7 +501,6 @@ class AsynCoroSocket(socket.socket):
                 conn._rsock = ssl.wrap_socket(conn, keyfile=self._keyfile, certfile=self._certfile,
                                               server_side=True, do_handshake_on_connect=False,
                                               ssl_version=self._ssl_version)
-
                 conn._task = functools.partial(_ssl_handshake, self, conn, addr)
                 conn._task()
             else:
@@ -606,6 +605,46 @@ class AsynCoroSocket(socket.socket):
             logging.error('Socket disconnected?(%s, %s)', len(data), n)
             return None
         return data
+
+def sock_read(sock, bufsize, *args):
+    """sync_read (see above) for regular sockets; useful for synchronous SSL sockets.
+    """
+    buf = bytearray()
+    while len(buf) < bufsize:
+        buf[len(buf):] = sock.recv(bufsize - len(buf), *args)
+    return str(buf)
+
+def sock_write(sock, data):
+    """sync_write (see above) for regular sockets; useful for synchronous SSL sockets.
+    """
+    # TODO: is sendall better?
+    buf = buffer(data, 0)
+    while len(buf) > 0:
+        n = sock.send(buf)
+        if n > 0:
+            buf = buffer(buf, n)
+    return 0
+
+def sock_write_msg(sock, data):
+    """sync_write_msg (see above) for regular sockets; useful for synchronous SSL sockets.
+    """
+    return sock_write(sock, struct.pack('>L', len(data)) + data)
+
+def sock_read_msg(sock):
+    """sync_read_msg (see above) for regular sockets; useful for synchronous SSL sockets.
+    """
+    n = struct.calcsize('>L')
+    data = sock_read(sock, n)
+    if len(data) < n:
+        logging.error('Socket disconnected?(%s, %s)', len(data), n)
+        return None
+    n = struct.unpack('>L', data)[0]
+    assert n > 0
+    data = sock_read(sock, n)
+    if len(data) < n:
+        logging.error('Socket disconnected?(%s, %s)', len(data), n)
+        return None
+    return data
 
 class Coro(object):
     """'Coroutine' factory to build coroutines to be scheduled with
@@ -1481,12 +1520,12 @@ class _SelectNotifier(object):
         self.rset.discard(self.read_fd)
         self.write_sock.send('x')
         self.write_sock.close()
-        try:
-            cmd = self.read_sock.recv(1)
-        except:
-            pass
         # hack: give time for poll method to quit before closing read_sock
         time.sleep(0.001)
+        try:
+            cmd = self.read_sock.recv(20)
+        except:
+            pass
         self.read_sock.close()
         self.rset = self.wset = self.xset = None
 

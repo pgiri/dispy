@@ -511,9 +511,6 @@ class _Scheduler(object):
             self._sched_cv.acquire()
             _job.uid = self.job_uid
             self.job_uid += 1
-            if self.job_uid == sys.maxint:
-                # TODO: check if it is okay to reset
-                self.job_uid = 1
             yield self._sched_cv.release()
             setattr(_job, 'node', None)
             job = type('DispyJob', (), {'status':DispyJob.Created,
