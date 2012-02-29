@@ -151,8 +151,12 @@ class _DispyNode(object):
         self.ip_addr = ip_addr
         self.scheduler_port = scheduler_port
         self.pulse_interval = None
-        self.certfile = certfile
         self.keyfile = keyfile
+        self.certfile = certfile
+        if self.keyfile:
+            self.keyfile = os.path.abspath(self.keyfile)
+        if self.certfile:
+            self.certfile = os.path.abspath(self.certfile)
 
         self.asyncoro = AsynCoro()
 
@@ -352,7 +356,7 @@ class _DispyNode(object):
             if compute.type == _Compute.func_type:
                 reply = _JobReply(_job, self.ip_addr)
                 job_info = _DispyJobInfo(reply, reply_addr, compute)
-                args = (job_info, os.path.abspath(self.certfile), os.path.abspath(self.keyfile),
+                args = (job_info, self.certfile, self.keyfile,
                         _job.args, _job.kwargs, self.reply_Q,
                         compute.env, compute.name, compute.code, compute.dest_path, _job.files)
                 try:
