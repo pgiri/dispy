@@ -43,6 +43,7 @@ import datetime
 import atexit
 import platform
 
+import asyncoro
 from asyncoro import Coro, AsynCoro, CoroLock, CoroCondition, AsynCoroSocket, MetaSingleton
 
 _dispy_version = '1.8-coro'
@@ -1998,16 +1999,25 @@ def fault_recover_jobs(fault_recover_file, port=51348,
         if node_info is None:
             continue
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock = AsynCoroSocket(sock, blocking=True, keyfile=keyfile, certfile=certfile)
+        if certfile:
+            sock = ssl.wrap_socket(sock, keyfile=keyfile, certfile=certfile)
+        else:
+            sock = AsynCoroSocket(sock, blocking=True)
         sock.settimeout(2)
         try:
             sock.connect((job_info['ip_addr'], node_info['port']))
             req = 'RETRIEVE_JOB:' + cPickle.dumps({'uid':int(uid), 'hash':job_info['hash'],
                                                    'compute_id':job_info['compute_id']})
-            sock.write(node_info['auth_code'])
-            sock.write_msg(req)
-            resp = sock.read_msg()
-            sock.write_msg('ACK')
+            if certfile:
+                asyncoro.sock_write(sock, node_info['auth_code'])
+                asyncoro.sock_write_msg(sock, req)
+                resp = asyncoro.sock_read_msg(sock, )
+                asyncoro.sock_write_msg(sock, 'ACK')
+            else:
+                sock.write(node_info['auth_code'])
+                sock.write_msg(req)
+                resp = sock.read_msg()
+                sock.write_msg('ACK')
             reply = cPickle.loads(resp)
             if not isinstance(reply, _JobReply):
                 print 'Failed to get reply for %s: %s' % (uid, reply)

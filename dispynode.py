@@ -66,7 +66,8 @@ def dispy_provisional_result(result):
     __dispy_job_reply.status = DispyJob.ProvisionalResult
     __dispy_job_reply.result = result
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock = ssl.wrap_socket(sock, keyfile=__dispy_job_keyfile, certfile=__dispy_job_certfile)
+    if __dispy_job_certfile:
+        sock = ssl.wrap_socket(sock, keyfile=__dispy_job_keyfile, certfile=__dispy_job_certfile)
     sock.settimeout(2)
     try:
         sock.connect(__dispy_job_info.reply_addr)
