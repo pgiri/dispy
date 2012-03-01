@@ -16,37 +16,28 @@
     <small><a href="http://sourceforge.net/projects/dispy/">dispy</a>:  Project Web Hosting - Open Source Software</small> 
     <h1>dispy</h1> 
     <div id="projectinfo"> 
-      <div class="left"> 
-        <p><strong> 
-          <a href="http://dispy.sourceforge.net/index.html"> 
-            Project Page</a> 
-        </strong></p> 
-        <p><strong> 
-          <a href="http://sourceforge.net/projects/dispy/files"> 
-            Download dispy</a> 
-        </strong></p> 
-        <p><strong> 
-          <a href="http://sourceforge.net/projects/dispy/"> 
-            Project detail</a> 
-        </strong></p> 
-        <p><strong> 
-          <a href="http://sourceforge.net/projects/dispy/support"> 
-            Get support</a> 
-	      </strong></p> 
+      <div id="menu">
+	<ul>
+        <li><a href="index.html">Project Page</a></li> 
+        <li><a href="dispy.html">dispy</a></li> 
+        <li><a href="dispyscheduler.html">dispyscheduler</a></li> 
+        <li><a href="dispynetrelay.html">dispynetrelay</a></li>
+        <li><a href="asyncoro.html">Async Framework</a></li>
+	</ul>
+	<hr />
+	<ul>
+        <li><a href="http://sourceforge.net/projects/dispy/files">Download dispy</a></li> 
+        <li><a href="http://sourceforge.net/projects/dispy/">Project details</a></li> 
+        <li><a href="http://sourceforge.net/projects/dispy/support">Get support</a></li>
+	</ul>
       </div> 
-      <div class="middle"> 
+      <div id="content"> 
         <h2> 
           dispynode
         </h2> 
 <p>
   dispynode runs on each of the nodes in a cluster and executes jobs
-  for dispy. Normally, it is expected that the nodes run this program
-  always. However, if dispynode is started on a node and jobs are
-  already submitted to a cluster to which this node belongs, then
-  dispy will find out the node and will submit jobs to it as
-  appropriate. However, dispy is not yet fault tolerant and the node
-  is expected to keep running dispynode until all the clusters that
-  use the node have terminated.
+  for dispy clients (and dispyscheduler in case of SharedJobCluster).
 </p>
 
 <p>Below are various options to invoking dispynode:

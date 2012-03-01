@@ -17,27 +17,33 @@
     Project Web Hosting - Open Source Software</small>
     <h1>dispy</h1> 
     <div id="projectinfo"> 
-      <div class="left"> 
-        <p><strong><a href="dispy.html">dispy</a></strong></p> 
-        <p><strong><a href="dispynode.html">dispynode</a></strong></p> 
-        <p><strong><a href="dispyscheduler.html">dispyscheduler</a></strong></p> 
-        <p><strong><a href="dispynetrelay.html">dispynetrelay</a></strong></p>
+      <div id="menu">
+	<ul>
+        <li><a href="dispy.html">dispy</a></li> 
+        <li><a href="dispynode.html">dispynode</a></li> 
+        <li><a href="dispyscheduler.html">dispyscheduler</a></li> 
+        <li><a href="dispynetrelay.html">dispynetrelay</a></li>
+        <li><a href="asyncoro.html">Async Framework</a></li>
+	</ul>
 	<hr />
-        <p><strong><a href="http://sourceforge.net/projects/dispy/files">Download dispy</a></strong></p> 
-        <p><strong><a href="http://sourceforge.net/projects/dispy/">Project details</a></strong></p> 
-        <p><strong><a href="http://sourceforge.net/projects/dispy/support">Get support</a></strong></p> 
+	<ul>
+        <li><a href="http://sourceforge.net/projects/dispy/files">Download dispy</a></li> 
+        <li><a href="http://sourceforge.net/projects/dispy/">Project details</a></li> 
+        <li><a href="http://sourceforge.net/projects/dispy/support">Get support</a></li>
+	</ul>
       </div> 
-      <div class="middle"> 
+      <div id="content"> 
 <h3>
 dispy
 </h3>
 <p>
-dispy is a Python module for distributing computations across multiple
-processors on a single machine, among many machines in a cluster, grid
-or cloud for parallel execution. dispy is well suited for data
-parallellism (SIMD paradigm) where a computation is evaluated with
-different (large) datasets independently. Salient features of dispy
-are:
+dispy is a framework, developed
+in <a href="http://www.python.org">Python</a>, for distributing computations
+across multiple processors on a single machine, among many machines in
+a cluster, grid or cloud for parallel execution. dispy is well suited
+for data parallellism (SIMD paradigm) where a computation is evaluated
+with different (large) datasets independently. Salient features of
+dispy are:
 <ul>
 <li>Computations (Python functions or standalone programs) and its
     dependencies (files, Python functions, classes, modules) are
@@ -59,7 +65,7 @@ are:
 
 <li>If callback function is provided, dispy executes that function
     when a job is finished; this feature is useful for further
-    processing of job results</li>
+    processing of job results.</li>
 
 <li>Client-side and server-side fault recovery are supported:<br/>
 
@@ -69,7 +75,7 @@ are:
     cluster, the results of the scheduled (but unfinished at the time
     of crash) jobs for that cluster can be retrieved later.<br />
 
-    If a computation is marked reentrant (with 'resubmit=True' option)
+    If a computation is marked reentrant (with 'reentrant=True' option)
     when a cluster is created and a node (server) executing jobs for
     that computation fails, dispy automatically resubmits those jobs
     to other available nodes.</li>
@@ -80,6 +86,16 @@ are:
     (with <tt>ShareJobCluster</tt>
     and <a href="dispyscheduler.html">dispyscheduler</a>).</li>
 
+<li>Although not exactly a feature, there is now an implementation of
+dispy with <a href="asyncoro.html">asyncoro</a>, a framework for
+asynchronous sockets and coroutines (without threads). This version is
+released
+as <a href="http://sourceforge.net/projects/dispy/files/discopy">discopy</a>
+to avoid confusion with dispy releases. Usage of discopy is same as
+that of dispy. discopy has been tested with Linux and OS
+X. <a href="asyncoro.html">asyncoro</a> framework can be used
+independently of dispy/discopy to develop programs with asynchronous
+sockets and coroutines.</li>
   </ul>
 <p>
 dispy consists of 4 components:
@@ -126,10 +142,10 @@ execution.
 
 <p>
 As a tutorial, consider the following program, in which 'compute' is
-distributed across the nodes on a local network that are running
-'dispynode' program (it is possible to start 'dispynode' later, too,
-as and when necessary, and the scheduler will use the nodes as they
-become available).
+distributed to nodes on a local network for parallel execution. First,
+run 'dispynode' program on each of the nodes on the network. If
+parallelizing on an SMP (single node with multiple cores), then start
+'dispynode' on that node (which also runs dispy client).
 </p>
 
 </p>
@@ -160,14 +176,16 @@ if __name__ == '__main__':
 </code>
 
 <p>
-In this program, a cluster is created with function 'compute'. This
-computation is then scheduled for execution with various
-arguments. dispy's scheduler schedules the jobs to all the nods
-on local network running 'dispynode'. The nodes
+Now run the above program, which creates a cluster with function
+'compute'. dispy schedules this computation with various arguments to
+all the nodes running 'dispynode'; each time computation is submitted,
+dispy returns an instnce of DispyJob, or job for short. The nodes
 execute the computation with the job's arguments in isolation -
 computations shouldn't depend on global state, such as modules
 imported outside of computations, global variables etc. In this case,
-'compute' needs modules 'time' and 'socket', so it must import them.
+'compute' needs modules 'time' and 'socket', so it must import
+them. The program then retrieves results of execution for each job
+with 'job()'.
 </p>
 
 <p>
@@ -177,8 +195,10 @@ SharedJobCluster is similar):
 
 <ul>
   <li>
-  <tt>cluster = dispy.JobCluster('/some/program', nodes=['192.168.3.*'])</tt><br />
-    distributes '/some/program' to all nodes whose IP address starts with '192.168.3'.</li>
+  <tt>cluster = dispy.JobCluster('/some/program',
+    nodes=['192.168.3.*'])</tt><br /> distributes '/some/program' (an
+    executable program, instead of python function) to all nodes whose
+    IP address starts with '192.168.3'.</li>
 
   <li><tt>cluster = dispy.JobCluster(compute, depends=[ClassA, moduleB, 'file1'])</tt><br />
     distributes 'compute' along with ClassA (python object), moduleB (python object) and
@@ -190,25 +210,27 @@ SharedJobCluster is similar):
     used only for establishing communication initially, but not used
     to encrypt programs or code for python objects. This can be useful
     to prevent other users from (inadvertantly) using the nodes. If
-    encryption is needed, use SSL, see below.</li>
+    encryption is needed, use SSL; see below.</li>
 
-  <li><tt>cluster = dispy.JobCluster(compute, certfile='mycert', keyfile='mykey')</tt><br />
-  distributes 'compute' and encrypts all
-    communication using SSL certificate stored in 'mycert' file and
-    key stored in 'mykey' file.
+  <li><tt>cluster = dispy.JobCluster(compute, certfile='mycert',
+  keyfile='mykey')</tt><br /> distributes 'compute' and encrypts all
+  communication using SSL certificate stored in 'mycert' file and key
+  stored in 'mykey' file. In this case, dispynode must also use same
+  certificate and key; i.e., each dispynode must be invoked with
+  'dispynode --certfile="mycert" --keyfile="mykey"'<br/>
 
     If both certificate and key are stored in same file, say,
     'mycertkey', they are expected to be in certfile:<br />
       <tt>cluster = dispy.JobCluster(compute, certfile='mycertkey')</tt></li>
 
   <li><tt>cluster1 = dispy.JobCluster(compute1, nodes=['192.168.3.2', '192.168.3.5'])</tt><br/>
-<tt>cluster2 = dispy.JobCluster(compute2, nodes=['192.168.3.10', '192.168.3.11'])</tt><br />
-    distributes 'compute1'
-    to nodes 192.168.3.2 and 192.168.3.5, and 'compute2' to nodes
-    192.168.3.10 and 192.168.3.11. With this setup, specific
-    computations can be scheduled on certain node(s). As mentioned
-    above, with JobCluster, the set of nodes for one cluster must be
-    disjoint with set of nodes in any other cluster. Otherwise,
+<tt>cluster2 = dispy.JobCluster(compute2, nodes=['192.168.3.10',
+    '192.168.3.11'])</tt><br /> distributes 'compute1' to nodes
+    192.168.3.2 and 192.168.3.5, and 'compute2' to nodes 192.168.3.10
+    and 192.168.3.11. With this setup, specific computations can be
+    scheduled on certain node(s). As mentioned above, with JobCluster,
+    the set of nodes for one cluster must be disjoint with set of
+    nodes in any other cluster running at the same time. Otherwise,
     <a href="dispy.html">SharedJobCluster</a> must be used.</li>
 </ul>
 

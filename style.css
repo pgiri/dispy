@@ -56,21 +56,43 @@
  
   .host a { text-decoration: none; }
  
-  div.left
+  #menu
   {
     float: left;
-    width: 12%;
-    margin: 0 1% 0 30px;
+    width: 14%;
+    line-height: 2em;
+    margin: 0px 5px 0px 20px;
+    padding: 4px;
+    border: 1px solid #4e460f;
+    -moz-border-radius: 8px; -webkit-border-radius: 8px;
+    border-radius: 8px;
+    font-weight: bold;
   }
  
-  div.middle
+  #menu ul {
+      list-style-type: none;
+      margin-left: 0;
+      padding-left: 0;
+      }
+
+  #menu ul li {
+      margin-left: 1em;
+      }
+
+  #menu li:before {
+    content: "\0020 \00BB \0020";
+      }
+
+  #content
   {
     float: left;
     width: 75%;
-    padding: 0 2%;
+    padding: 0 20px;
     margin: 0;
-    border: #000 solid 1px;
     min-width: 300px;
+    border: #000 solid 1px;
+    -moz-border-radius: 8px; -webkit-border-radius: 8px;
+    border-radius: 8px;
   }
  
  
