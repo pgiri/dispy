@@ -683,9 +683,9 @@ class Coro(object):
         AsyncNotifier in the case of AsynCoroSockets).
 
         If timeout is a (floating point) number, this coro is
-        suspended till that many seconds (or fractions of
-        second). This method should be used with 'yield'; e.g., as
-        'x = yield coro.suspend(2.5)' to suspend execution of coro for 2.5
+        suspended for that many seconds (or fractions of second). This
+        method should be used with 'yield'; e.g., as 'x = yield
+        coro.suspend(2.5)' to suspend execution of coro for 2.5
         seconds; in that time other coroutines can execute.
         """
         if self._asyncoro:
@@ -697,20 +697,20 @@ class Coro(object):
     sleep = suspend
 
     def resume(self, update=None):
-        """Resume/wake up this coro and send 'update' to it.
+        """Resume/wakeup this coro and send 'update' to it.
 
         The resuming coro gets 'update' for the 'yield' that caused it
         to suspend. Thus, if coro1 resumes coro2 with
-        'coro2.resume({'a':1, 'b':2})' will cause coro2 to resume from
-        where it suspended itself and set the value of 'x' in above
-        suspend example to dictionary with keys 'a' and 'b'.
+        'coro2.resume({'a':1, 'b':2})', coro2 resumes from where it
+        suspended itself and will have the dictionary with keys 'a'
+        and 'b' for 'x' in the example above.
         """
         if self._asyncoro:
             return self._asyncoro._resume(self._id, update)
         else:
             logging.warning('resume: coroutine %s removed?', self.name)
             return -1
-      
+
     wakeup = resume
 
     def throw(self, *args):
@@ -858,9 +858,9 @@ class AsynCoro(object):
     __metaclass__ = MetaSingleton
     __instance = None
 
-    # in _running set, waiting for turn to execute
+    # in _scheduled set, waiting for turn to execute
     _Scheduled = 1
-    # in _running, currently executing
+    # in _scheduled, currently executing
     _Running = 2
     # in _suspended
     _Suspended = 3
@@ -872,7 +872,7 @@ class AsynCoro(object):
             self.__class__.__instance = self
             self._coros = {}
             self._cur_coro = None
-            self._running = set()
+            self._scheduled = set()
             self._suspended = set()
             self._timeouts = []
             # because AsyncNotifier runs in a separate thread and
@@ -908,7 +908,7 @@ class AsynCoro(object):
         self._coros[coro._id] = coro
         self._complete.clear()
         coro._state = AsynCoro._Scheduled
-        self._running.add(coro._id)
+        self._scheduled.add(coro._id)
         self._sched_cv.notify()
         self._sched_cv.release()
 
@@ -925,16 +925,16 @@ class AsynCoro(object):
             self._sched_cv.release()
             logging.warning('invalid coroutine %s to suspend', cid)
             return -1
-        self._running.discard(cid)
-        coro._state = AsynCoro._Suspended
+        self._scheduled.discard(cid)
         self._suspended.add(cid)
-        if timeout is not None:
+        coro._state = AsynCoro._Suspended
+        if timeout is None:
+            coro._timeout = None
+        else:
             timeout = _time() + timeout
             heappush(self._timeouts, (timeout, cid))
             coro._timeout = timeout
             self._sched_cv.notify()
-        else:
-            coro._timeout = None
         self._sched_cv.release()
         return 0
 
@@ -953,7 +953,7 @@ class AsynCoro(object):
                 # _AsyncNotifier may throw timeout exception, but
                 # before exception is thrown to coro, I/O operation
                 # may complete
-                logging.debug('throwing away exception for %s/%s', coro.name, cid)
+                logging.debug('discarding exception for %s/%s', coro.name, cid)
                 coro._exception = None
                 coro._value = update
                 self._sched_cv.release()
@@ -965,28 +965,11 @@ class AsynCoro(object):
         coro._timeout = None
         coro._value = update
         self._suspended.discard(cid)
-        self._running.add(cid)
+        self._scheduled.add(cid)
         coro._state = AsynCoro._Scheduled
         self._sched_cv.notify()
         self._sched_cv.release()
         return 0
-
-    def _delete(self, coro):
-        """Internal use only.
-        """
-        # called with _sched_cv locked
-        cid = self._coros.pop(coro._id, None)
-        if cid is None:
-            logging.debug('%s/%s is already removed', coro.name, coro._id)
-        else:
-            self._running.discard(coro._id)
-            self._suspended.discard(coro._id)
-            coro._asyncoro = None
-            assert not coro._callers
-            coro._complete.set()
-            coro._state = None
-            if not self._coros:
-                self._complete.set()
 
     def _throw(self, cid, *args):
         """Internal use only. See throw in Coro.
@@ -1000,8 +983,9 @@ class AsynCoro(object):
         # prevent throwing more than once?
         coro._timeout = None
         coro._exception = args
-        self._suspended.discard(coro._id)
-        self._running.add(coro._id)
+        if coro._state == AsynCoro._Suspended:
+            self._suspended.discard(coro._id)
+            self._scheduled.add(coro._id)
         coro._state = AsynCoro._Scheduled
         self._sched_cv.notify()
         self._sched_cv.release()
@@ -1021,8 +1005,9 @@ class AsynCoro(object):
             # if coro raises exception during current run, this exception will be ignored!
         coro._exception = (GeneratorExit, GeneratorExit('close'))
         coro._timeout = None
-        self._suspended.discard(cid)
-        self._running.add(cid)
+        if coro._state == AsynCoro._Suspended:
+            self._suspended.discard(cid)
+            self._scheduled.add(cid)
         coro._state = AsynCoro._Scheduled
         self._sched_cv.notify()
         self._sched_cv.release()
@@ -1042,12 +1027,12 @@ class AsynCoro(object):
                     timeout = 0
             else:
                 timeout = None
-            while (not self._running) and (not self._terminate):
+            while (not self._scheduled) and (not self._terminate):
                 self._sched_cv.wait(timeout)
                 if timeout is not None:
                     break
             if self._terminate:
-                for cid in self._running.union(self._suspended):
+                for cid in self._scheduled.union(self._suspended):
                     coro = self._coros.get(cid, None)
                     if coro is None:
                         continue
@@ -1065,7 +1050,7 @@ class AsynCoro(object):
                         else:
                             coro._generator = None
                     coro._complete.set()
-                self._running = self._suspended = set()
+                self._scheduled = self._suspended = set()
                 self._timeouts = []
                 self._coros = {}
                 self._sched_cv.release()
@@ -1086,14 +1071,14 @@ class AsynCoro(object):
                         continue
                     coro._timeout = None
                     self._suspended.discard(coro._id)
-                    self._running.add(coro._id)
+                    self._scheduled.add(coro._id)
                     coro._state = AsynCoro._Scheduled
                     coro._value = None
-            running = [self._coros.get(cid, None) for cid in self._running]
+            scheduled = [self._coros.get(cid, None) for cid in self._scheduled]
             # random.shuffle(running)
             self._sched_cv.release()
 
-            for coro in running:
+            for coro in scheduled:
                 if coro is None:
                     continue
                 self._sched_cv.acquire()
@@ -1127,11 +1112,9 @@ class AsynCoro(object):
                     if coro._callers:
                         # return to caller
                         caller = coro._callers.pop(-1)
-                        assert len(caller) == 2
-                        assert isinstance(caller[0], types.GeneratorType)
                         coro._generator = caller[0]
-                        if isinstance(coro._exception, tuple) and \
-                               coro._exception[0] != StopIteration:
+                        if coro._exception:
+                            # callee raised exception, restore saved value
                             coro._value = caller[1]
                         coro._state = AsynCoro._Scheduled
                     else:
@@ -1142,7 +1125,21 @@ class AsynCoro(object):
                             else:
                                 exc = ''.join(traceback.format_exception(*coro._exception))
                             logging.warning('uncaught exception in %s:\n%s', coro.name, exc)
-                        self._delete(coro)
+
+                        # delete this coro
+                        if self._coros.pop(coro._id, None) == coro:
+                            if coro._state == AsynCoro._Suspended:
+                                self._suspended.discard(coro._id)
+                            else:
+                                assert coro._state in [AsynCoro._Scheduled, AsynCoro._Running]
+                                self._scheduled.discard(coro._id)
+                            coro._asyncoro = None
+                            coro._complete.set()
+                            coro._state = None
+                            if not self._coros:
+                                self._complete.set()
+                        else:
+                            logging.warning('coro %s/%s already removed?', coro.name, coro._id)
                     self._sched_cv.release()
                 else:
                     self._sched_cv.acquire()
@@ -1277,7 +1274,7 @@ class _AsyncNotifier(object):
             events = [(self._fds.get(fileno, None), event) for fileno, event in events]
             self._lock.release()
             try:
-                for fd, evnt in events:
+                for fd, event in events:
                     if fd is None:
                         logging.debug('Invalid fd for event %s!', event)
                         continue
