@@ -15,7 +15,7 @@
   <body> 
     <small><a href="http://sourceforge.net/projects/dispy/">dispy</a>:
     Project Web Hosting - Open Source Software</small>
-    <h1>dispy</h1> 
+    <center><h1>dispy</h1></center>
     <div id="projectinfo"> 
       <div id="menu">
 	<ul>
@@ -38,12 +38,12 @@ dispy
 </h3>
 <p>
 dispy is a framework, developed
-in <a href="http://www.python.org">Python</a>, for distributing computations
-across multiple processors on a single machine, among many machines in
-a cluster, grid or cloud for parallel execution. dispy is well suited
-for data parallellism (SIMD paradigm) where a computation is evaluated
-with different (large) datasets independently. Salient features of
-dispy are:
+in <a href="http://www.python.org">Python</a>, for distributing
+computations across multiple processors on a single machine (SMP),
+among many machines in a cluster, grid or cloud for parallel
+execution. dispy is well suited for data parallellism (SIMD paradigm)
+where a computation is evaluated with different (large) datasets
+independently. Salient features of dispy are:
 <ul>
 <li>Computations (Python functions or standalone programs) and its
     dependencies (files, Python functions, classes, modules) are
@@ -86,16 +86,14 @@ dispy are:
     (with <tt>ShareJobCluster</tt>
     and <a href="dispyscheduler.html">dispyscheduler</a>).</li>
 
-<li>Although not exactly a feature, there is now an implementation of
-dispy with <a href="asyncoro.html">asyncoro</a>, a framework for
-asynchronous sockets and coroutines (without threads). This version is
-released
-as <a href="http://sourceforge.net/projects/dispy/files/discopy">discopy</a>
-to avoid confusion with dispy releases. Usage of discopy is same as
-that of dispy. discopy has been tested with Linux and OS
-X. <a href="asyncoro.html">asyncoro</a> framework can be used
-independently of dispy/discopy to develop programs with asynchronous
-sockets and coroutines.</li>
+<li>dispy is implemented with <a href="asyncoro.html">asyncoro</a>, a
+framework for asynchronous sockets and coroutines (without threads),
+using polling mechanisms epoll, kqueue and poll, and Windows I/O
+Completion Ports (IOCP) for high performance and scalability, so dispy
+scales well from a single node to large cluster(s) of
+nodes. <a href="asyncoro.html">asyncoro</a> framework can be used
+independently of dispy to develop programs with asynchronous sockets
+and coroutines.</li>
   </ul>
 <p>
 dispy consists of 4 components:

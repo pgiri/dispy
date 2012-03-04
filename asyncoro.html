@@ -34,21 +34,17 @@
       <div id="content"> 
 	<center><h2>asyncoro</h2></center>
 <p>
-  asyncoro, available
-  in <a href="http://sourceforge.net/projects/dispy/files/discopy">discopy</a>
+  asyncoro, part of
+  <a href="http://sourceforge.net/projects/dispy/files">dispy</a>
   package, is a framework for developing (concurrent) programs with
   asynchronous sockets and coroutines. The coroutines should use
   'yield' with tasks that take time to complete, such as waiting for
   I/O completion, or sleep. Each yield statement gives control to
   asyncoro's scheduler, which interleaves executions of coroutines,
   similar to the way an operating system executes multiple
-  processes. asyncoro includes polling mechanisms epoll,
-  kqueue and poll for high performance and scalability.</p>
-
-<p>
-  discopy is an implementation of dispy using asyncoro
-  framework. asyncoro can be used independently of dispy/discopy.
-  </p>
+  processes. asyncoro includes polling mechanisms epoll, kqueue and
+  poll, and Windows I/O Completion Ports (IOCP) for high performance
+  and scalability.  asyncoro can be used independently of dispy.</p>
 
 <h4>Details</h4>
 <p>
@@ -157,7 +153,7 @@ execution (play relay race).
 </p>
 
 <p>
-See discopy files for details/examples on how to use asyncoro.
+See dispy files for details/examples on how to use asyncoro.
 </p>
 
       </div> 
