@@ -674,10 +674,9 @@ if platform.system() == 'Windows':
             instead of patching _AsynCoroSocket and _AsyncNotifier.
             """
             def __init__(self, *args, **kwargs):
-                _AsynCoroSocket.__init__(self, *args, **kwargs)
                 self._IOCPNotifier = None
                 self._overlap = None
-                self._setblocking()
+                _AsynCoroSocket.__init__(self, *args, **kwargs)
 
             def close(self):
                 if self._IOCPNotifier:
@@ -701,17 +700,15 @@ if platform.system() == 'Windows':
 
             def setblocking(self, blocking):
                 _AsynCoroSocket.setblocking(self, blocking)
-                self._setblocking()
-
-            def _setblocking(self):
                 if self._blocking:
                     self._overlap = None
                     self._IOCPNotifier = None
                     # no need to unregister
                 else:
-                    self._overlap = pywintypes.OVERLAPPED()
-                    self._IOCPNotifier = _IOCPNotifier.instance()
-                    self._IOCPNotifier.register(self)
+                    if not self._overlap:
+                        self._overlap = pywintypes.OVERLAPPED()
+                        self._IOCPNotifier = _IOCPNotifier.instance()
+                        self._IOCPNotifier.register(self)
                     self.recv = self.iocp_recv
                     self.send = self.iocp_send
                     self.read = self.iocp_read
