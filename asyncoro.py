@@ -163,39 +163,48 @@ class _AsynCoroSocket(socket.socket):
             if self._certfile:
                 raise Exception('SSL is not supported for blocking sockets')
             self._rsock.setblocking(1)
-            self.read = self.sync_read
-            self.write = self.sync_write
-            self.read_msg = self.sync_read_msg
-            self.write_msg = self.sync_write_msg
+            if self._rsock.type == socket.SOCK_STREAM:
+                self.read = self.sync_read
+                self.write = self.sync_write
+                self.read_msg = self.sync_read_msg
+                self.write_msg = self.sync_write_msg
             self._asyncoro = None
-            if self._notifier:
-                self._notifier.unregister(self)
-            self._notifier = None
+            self._unregister()
         else:
             self._rsock.setblocking(0)
 
             self.recv = self.async_recv
             self.send = self.async_send
-            self.read = self.async_read
-            self.write = self.async_write
             self.recvfrom = self.async_recvfrom
             self.sendto = self.async_sendto
             self.accept = self.async_accept
             self.connect = self.async_connect
-            self.read_msg = self.async_read_msg
-            self.write_msg = self.async_write_msg
+            if self._rsock.type == socket.SOCK_STREAM:
+                self.read = self.async_read
+                self.write = self.async_write
+                self.read_msg = self.async_read_msg
+                self.write_msg = self.async_write_msg
 
             self._asyncoro = AsynCoro.instance()
+            # for timeouts we need _notifier even for IOCP sockets
             self._notifier = _AsyncNotifier.instance()
-            self._notifier.register(self)
+            self._register()
+
+    def _register(self):
+        self._notifier.register(self)
+
+    def _unregister(self):
+        if self._notifier:
+            self._notifier.unregister(self)
+            self._notifier = None
 
     def close(self):
         """'close' must be called when done with socket.
         """
+        self._unregister()
         if self._notifier:
             if self._timeout_id:
                 self._notifier._del_timeout(self)
-            self._notifier.unregister(self)
             self._notifier = None
         if self._rsock:
             self._rsock.close()
@@ -364,10 +373,16 @@ class _AsynCoroSocket(socket.socket):
     def sync_read(self, bufsize, *args):
         """Synchronous version of async_read.
         """
-        self._result = bytearray()
-        while len(self._result) < bufsize:
-            self._result[len(self._result):] = self._rsock.recv(bufsize - len(self._result), *args)
-        return str(self._result)
+        self._result = []
+        while bufsize:
+            buf = self._rsock.recv(bufsize, *args)
+            if not buf:
+                raise socket.error('read error')
+            bufsize -= len(buf)
+            self._result.append(buf)
+        buf = ''.join(self._result)
+        self._result = None
+        return buf
 
     def async_recvfrom(self, *args):
         """Asynchronous version of socket recvfrom method.
@@ -615,13 +630,15 @@ class _AsynCoroSocket(socket.socket):
         return data
 
 if platform.system() == 'Windows':
-    # if pywin32 (http://pywin32.sf.net) is installed, use IOCP
+    # use IOCP if pywin32 (http://pywin32.sf.net) is installed
     try:
         import win32file
         import win32event
         import pywintypes
         import winerror
     except:
+        print traceback.format_exc()
+        print 'Could not load pywin32 for I/O Completion Ports; using inefficient polling for sockets'
         AsynCoroSocket = _AsynCoroSocket
     else:
         class _IOCPNotifier(object):
@@ -679,16 +696,7 @@ if platform.system() == 'Windows':
                 _AsynCoroSocket.__init__(self, *args, **kwargs)
 
             def close(self):
-                if self._IOCPNotifier:
-                    self._IOCPNotifier.unregister(self)
-                    self._IOCPNotifier = None
-                    # TODO: is there a race condition here?
-                    if self._overlap.object:
-                        win32file.CancelIo(self._fileno)
-                    else:
-                        _AsynCoroSocket.close(self)
-                else:
-                    _AsynCoroSocket.close(self)
+                _AsynCoroSocket.close(self)
 
             def unwrap(self):
                 if self._IOCPNotifier:
@@ -698,17 +706,27 @@ if platform.system() == 'Windows':
                     self._IOCPNotifier = None
                 return _AsynCoroSocket.unwrap(self)
 
+            def _register(self):
+                if not self._blocking and self._rsock.type == socket.SOCK_STREAM:
+                    self._overlap = pywintypes.OVERLAPPED()
+                    self._IOCPNotifier = _IOCPNotifier.instance()
+                    self._IOCPNotifier.register(self)
+                else:
+                    _AsynCoroSocket._register(self)
+
+            def _unregister(self):
+                if self._IOCPNotifier:
+                    self._IOCPNotifier.unregister(self)
+                    self._IOCPNotifier = None
+                    # TODO: is there a race condition here?
+                    if self._overlap.object:
+                        win32file.CancelIo(self._fileno)
+                else:
+                    _AsynCoroSocket._unregister(self)
+
             def setblocking(self, blocking):
                 _AsynCoroSocket.setblocking(self, blocking)
-                if self._blocking:
-                    self._overlap = None
-                    self._IOCPNotifier = None
-                    # no need to unregister
-                else:
-                    if not self._overlap:
-                        self._overlap = pywintypes.OVERLAPPED()
-                        self._IOCPNotifier = _IOCPNotifier.instance()
-                        self._IOCPNotifier.register(self)
+                if not self._blocking and self._rsock.type == socket.SOCK_STREAM:
                     self.recv = self.iocp_recv
                     self.send = self.iocp_send
                     self.read = self.iocp_read
@@ -723,8 +741,6 @@ if platform.system() == 'Windows':
                     # win32file.CancelIo(self._fileno)
 
             def iocp_recv(self, bufsize, *args):
-                """Asynchronous version of socket recv method.
-                """
                 def _recv(self, err, n):
                     if self._timeout and self._notifier:
                         self._notifier._del_timeout(self)
@@ -832,7 +848,7 @@ if platform.system() == 'Windows':
                         if len(self._result) == 0:
                             self._overlap.object = self._result = None
                             coro, self._coro = self._coro, None
-                            if self._timeout and self._timeout:
+                            if self._timeout and self._notifier:
                                 self._notifier._del_timeout(self)
                             coro.resume(0)
                         else:
@@ -865,7 +881,7 @@ if platform.system() == 'Windows':
                                 self.close()
                                 coro.throw(*sys.exc_info())
                         else:
-                            if self._timeout and self._timeout:
+                            if self._timeout and self._notifier:
                                 self._notifier._del_timeout(self)
                             self._overlap.object = self._result = None
                             coro, self._coro = self._coro, None
@@ -889,7 +905,7 @@ if platform.system() == 'Windows':
                             self._overlap.object = functools.partial(_ssl_handshake, self)
                             self._overlap.object(None, 0)
                         else:
-                            if self._timeout and self._timeout:
+                            if self._timeout and self._notifier:
                                 self._notifier._del_timeout(self)
                             self._overlap.object = self._result = None
                             coro, self._coro = self._coro, None
@@ -927,7 +943,7 @@ if platform.system() == 'Windows':
                                 conn.close()
                                 coro.throw(*sys.exc_info())
                         else:
-                            if self._timeout and self._timeout:
+                            if self._timeout and self._notifier:
                                 self._notifier._del_timeout(self)
                             self._overlap.object = self._result = None
                             coro, self._coro = self._coro, None
@@ -955,7 +971,7 @@ if platform.system() == 'Windows':
                             self._overlap.object = functools.partial(_ssl_handshake, self, conn, raddr)
                             self._overlap.object(None, 0)
                         else:
-                            if self._timeout and self._timeout:
+                            if self._timeout and self._notifier:
                                 self._notifier._del_timeout(self)
                             coro, self._coro = self._coro, None
                             coro.resume((conn, raddr))
@@ -977,10 +993,14 @@ else:
 def sock_read(sock, bufsize, *args):
     """sync_read (see above) for regular sockets; useful for synchronous SSL sockets.
     """
-    buf = bytearray()
-    while len(buf) < bufsize:
-        buf[len(buf):] = sock.recv(bufsize - len(buf), *args)
-    return str(buf)
+    res = []
+    while bufsize:
+        buf = sock.recv(bufsize, *args)
+        if not buf:
+            raise socket.error('read error')
+        bufsize -= len(buf)
+        res.append(buf)
+    return ''.join(res)
 
 def sock_write(sock, data):
     """sync_write (see above) for regular sockets; useful for synchronous SSL sockets.
@@ -1733,7 +1753,7 @@ class _AsyncNotifier(object):
         self._lock.acquire()
         if self._fds.pop(fd._fileno, None) is None:
             self._lock.release()
-            logging.debug('fd %s is already unregistered', fd._fileno)
+            logging.debug('fd %s is not registered', fd._fileno)
             return
         self._lock.release()
         self._del_timeout(fd)
