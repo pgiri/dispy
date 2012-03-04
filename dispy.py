@@ -46,7 +46,7 @@ import platform
 import asyncoro
 from asyncoro import Coro, AsynCoro, CoroLock, CoroCondition, AsynCoroSocket, MetaSingleton
 
-_dispy_version = '1.8-coro'
+_dispy_version = '2.1'
 
 class DispyJob(object):
     """Job scheduled for execution with dispy.
@@ -1465,26 +1465,12 @@ class JobCluster(object):
             self.fault_recover_file = None
 
         if self.fault_recover_file:
-            if platform.system() == 'Windows':
-                # with Windows XP (at least) shelve does not seem to
-                # work: When opened during fault recovery, it bails
-                # with 'unsupported hash version 9', so force dumbdbm
-                import dumbdbm
-                try:
-                    shelf = shelve.Shelf(dumbdbm.open(self.fault_recover_file, flag='c'))
-                except:
-                    shelf = None
-            else:
-                try:
-                    shelf = shelve.open(self.fault_recover_file, flag='c')
-                except:
-                    shelf = None
-
-            if shelf is None:
-                raise Exception('Could not create fault recover file "%s"' % \
-                                self.fault_recover_file)
-            else:
+            try:
+                shelf = shelve.open(self.fault_recover_file, flag='c')
                 shelf.close()
+            except:
+                raise Exception('Could not create fault recover file "%s"' % \
+                                    self.fault_recover_file)
 
             # TODO?: it is safer to use file locking instead of thread
             # locking, but it is more efficient to use thread locking

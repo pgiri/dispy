@@ -43,7 +43,8 @@ import shelve
 from dispy import _DispyJob_, _JobReply, DispyJob, \
      _Compute, _XferFile, _xor_string, _node_name_ipaddr, _dispy_version
 
-from asyncoro import Coro, CoroLock, AsynCoro, AsynCoroSocket, MetaSingleton
+from asyncoro import Coro, CoroLock, AsynCoro, AsynCoroSocket, MetaSingleton, \
+     sock_read_msg, sock_write_msg
 
 MaxFileSize = 102400000
 
@@ -58,8 +59,6 @@ def dispy_provisional_result(result):
     with the current result of computation as argument.
     """
 
-    import asyncoro
-
     __dispy_job_reply = __dispy_job_info.job_reply
     logging.debug('Sending provisional result for job %s to %s',
                   __dispy_job_reply.uid, __dispy_job_info.reply_addr)
@@ -71,8 +70,8 @@ def dispy_provisional_result(result):
     sock.settimeout(2)
     try:
         sock.connect(__dispy_job_info.reply_addr)
-        asyncoro.sock_write_msg(sock, cPickle.dumps(__dispy_job_reply))
-        ack = asyncoro.sock_read_msg(sock)
+        sock_write_msg(sock, cPickle.dumps(__dispy_job_reply))
+        ack = sock_read_msg(sock)
     except:
         logging.warning("Couldn't send provisional results %s:\n%s",
                         str(result), traceback.format_exc())
