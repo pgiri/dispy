@@ -195,6 +195,8 @@ class _AsynCoroSocket(socket.socket):
 
     def _unregister(self):
         if self._notifier:
+            if self._timeout_id:
+                self._notifier._del_timeout(self)
             self._notifier.unregister(self)
             self._notifier = None
 
@@ -202,10 +204,6 @@ class _AsynCoroSocket(socket.socket):
         """'close' must be called when done with socket.
         """
         self._unregister()
-        if self._notifier:
-            if self._timeout_id:
-                self._notifier._del_timeout(self)
-            self._notifier = None
         if self._rsock:
             self._rsock.close()
             self._rsock = None
@@ -219,10 +217,9 @@ class _AsynCoroSocket(socket.socket):
     #     self._rsock.shutdown(flags)
 
     def unwrap(self):
-        """Get rid of _AsynCoroSocket setup and return underlying socket object.
+        """Get rid of AsynCoroSocket setup and return underlying socket object.
         """
-        if self._notifier:
-            self._notifier.unregister(self)
+        self._unregister()
         self._asyncoro = None
         self._notifier = None
         self._coro = None
@@ -695,17 +692,6 @@ if platform.system() == 'Windows':
                 self._overlap = None
                 _AsynCoroSocket.__init__(self, *args, **kwargs)
 
-            def close(self):
-                _AsynCoroSocket.close(self)
-
-            def unwrap(self):
-                if self._IOCPNotifier:
-                    if self._overlap.object:
-                        win32file.CancelIo(self._fileno)
-                    self._IOCPNotifier.unregister(self)
-                    self._IOCPNotifier = None
-                return _AsynCoroSocket.unwrap(self)
-
             def _register(self):
                 if not self._blocking and self._rsock.type == socket.SOCK_STREAM:
                     self._overlap = pywintypes.OVERLAPPED()
@@ -747,9 +733,7 @@ if platform.system() == 'Windows':
                     if err:
                         self._overlap.object = self._result = None
                         coro, self._coro = self._coro, None
-                        if err == winerror.ERROR_OPERATION_ABORTED:
-                            _AsynCoroSocket.close(self)
-                        else:
+                        if err != winerror.ERROR_OPERATION_ABORTED:
                             coro.throw(socket.error, socket.error(err))
                     else:
                         buf = self._result[:n]
@@ -771,12 +755,12 @@ if platform.system() == 'Windows':
                 def _send(self, err, n):
                     if self._timeout and self._notifier:
                         self._notifier._del_timeout(self)
-                    if err:
+                    if err or n == 0:
                         self._overlap.object = self._result = None
                         coro, self._coro = self._coro, None
-                        if err == winerror.ERROR_OPERATION_ABORTED:
-                            _AsynCoroSocket.close(self)
-                        else:
+                        if not err:
+                            err = winerror.ERROR_CONNECTION_INVALID
+                        if err != winerror.ERROR_OPERATION_ABORTED:
                             coro.throw(socket.error, socket.error(err))
                     else:
                         self._overlap.object = self._result = None
@@ -794,14 +778,14 @@ if platform.system() == 'Windows':
 
             def iocp_read(self, bufsize, *args):
                 def _read(self, pending, buf, err, n):
-                    if err:
+                    if err or n == 0:
                         self._overlap.object = self._result = None
                         coro, self._coro = self._coro, None
                         if self._timeout and self._notifier:
                             self._notifier._del_timeout(self)
-                        if err == winerror.ERROR_OPERATION_ABORTED:
-                            _AsynCoroSocket.close(self)
-                        else:
+                        if not err:
+                            err = winerror.ERROR_CONNECTION_INVALID
+                        if err != winerror.ERROR_OPERATION_ABORTED:
                             coro.throw(socket.error, socket.error(err))
                     else:
                         self._result.append(buf[:n])
@@ -834,14 +818,14 @@ if platform.system() == 'Windows':
 
             def iocp_write(self, data):
                 def _write(self, err, n):
-                    if err:
+                    if err or n == 0:
                         self._overlap.object = self._result = None
                         coro, self._coro = self._coro, None
                         if self._timeout and self._notifier:
                             self._notifier._del_timeout(self)
-                        if err == winerror.ERROR_OPERATION_ABORTED:
-                            _AsynCoroSocket.close(self)
-                        else:
+                        if not err:
+                            err = winerror.ERROR_CONNECTION_INVALID
+                        if err != winerror.ERROR_OPERATION_ABORTED:
                             coro.throw(socket.error, socket.error(err))
                     else:
                         self._result = buffer(self._result, n)
@@ -892,9 +876,7 @@ if platform.system() == 'Windows':
                         coro, self._coro = self._coro, None
                         if self._timeout and self._notifier:
                             self._notifier._del_timeout(self)
-                        if err == winerror.ERROR_OPERATION_ABORTED:
-                            _AsynCoroSocket.close(self)
-                        else:
+                        if err != winerror.ERROR_OPERATION_ABORTED:
                             coro.throw(socket.error, socket.error(err))
                     else:
                         self._rsock.setsockopt(socket.SOL_SOCKET, win32file.SO_UPDATE_CONNECT_CONTEXT, '')
@@ -954,9 +936,7 @@ if platform.system() == 'Windows':
                         coro, self._coro = self._coro, None
                         if self._timeout and self._notifier:
                             self._notifier._del_timeout(self)
-                        if err == winerror.ERROR_OPERATION_ABORTED:
-                            _AsynCoroSocket.close(self)
-                        else:
+                        if err != winerror.ERROR_OPERATION_ABORTED:
                             coro.throw(socket.error, socket.error(err))
                     else:
                         family, laddr, raddr = win32file.GetAcceptExSockaddrs(conn, self._result)
@@ -1870,8 +1850,6 @@ class _SelectNotifier(object):
             self.wset.add(fid)
         elif event & _AsyncNotifier._Error:
             self.xset.add(fid)
-        if len(self.rset) + len(self.wset) > 128:
-            logging.warning('too many fds in select: %s, %s', len(self.rset), len(self.wset))
         if update:
             self.write_sock.send('r')
 
