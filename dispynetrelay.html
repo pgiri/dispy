@@ -15,26 +15,29 @@
   <body> 
     <small><a href="http://sourceforge.net/projects/dispy/">dispy</a>:  Project Web Hosting - Open Source Software</small> 
     <h1>dispy</h1> 
-    <div id="projectinfo"> 
-      <div id="menu">
-	<ul>
-        <li><a href="index.html">Project Page</a></li> 
-        <li><a href="dispy.html">dispy</a></li> 
-        <li><a href="dispynode.html">dispynode</a></li> 
-        <li><a href="dispyscheduler.html">dispyscheduler</a></li> 
-        <li><a href="asyncoro.html">Async Framework</a></li>
-	</ul>
-	<hr />
-	<ul>
-        <li><a href="http://sourceforge.net/projects/dispy/files">Download dispy</a></li> 
-        <li><a href="http://sourceforge.net/projects/dispy/">Project details</a></li> 
-        <li><a href="http://sourceforge.net/projects/dispy/support">Get support</a></li>
-	</ul>
-      </div> 
-      <div id="content"> 
-        <h2> 
-          dispynetrelay
-        </h2> 
+    <div id="content-mask">
+      <div id="content-container"> 
+	<div id="content-menu">
+	  <ul>
+            <li><a href="index.html">Project Page</a></li> 
+            <li><a href="dispy.html">dispy</a></li> 
+            <li><a href="dispynode.html">dispynode</a></li> 
+            <li><a href="dispyscheduler.html">dispyscheduler</a></li> 
+            <li><a href="asyncoro.html">asyncoro</a></li>
+	  </ul>
+	  <hr />
+	  <ul>
+            <li><a href="http://sourceforge.net/projects/dispy/files">Download dispy</a></li> 
+            <li><a href="http://sourceforge.net/projects/dispy/">Project details</a></li> 
+            <li><a href="http://sourceforge.net/projects/dispy/support">Get support</a></li>
+	  </ul>
+	</div>
+
+	<div id="content-wrap"> 
+	  <div id="content"> 
+<h2> 
+  dispynetrelay
+</h2> 
 <p>
   dispynetrelay relays information about nodes on its network to the scheduler.
   </p>
@@ -43,6 +46,7 @@
   If scheduler and nodes are on same network, dispynetrelay is not
   needed. If they are not, then there are two choices to use nodes on
   a different network:
+  </p>
   <ul>
     <li>When cluster is created, 'nodes' option must specify all the
     nodes (either IP addresses or host names) explicitly. This can be
@@ -51,9 +55,9 @@
     case, dispynetrelay recognizes nodes on its network and relays
     that information to scheduler.</li>
   </ul>
-</p>
 
 <p>Below are various options to invoking dispynetrelay:
+  </p>
   <ul>
     <li><tt>--ip_addr addr</tt> directs dispynetrelay to use
     given <tt>addr</tt> for communication, instead of the IP address
@@ -62,35 +66,22 @@
     nodes on its network to handshake with scheduler running
     at <tt>addr</tt>. If this option is not used, the IP address where
     dispynetrelay is running should be added to the 'nodes' argument
-    when creating cluster (with JobCluster or SharedJobCluster).
+    when creating cluster (with JobCluster or SharedJobCluster).</li>
     <li><tt>--scheduler_port n</tt> directs dispynetrelay to
     communicate with scheduler with given port <tt>n</tt> instead of
-    default port 51349.
+    default port 51349.</li>
     <li><tt>--node_port n</tt> directs dispynetrelay to communicate
     with nodes in its network with port <tt>n</tt> instead of default
-    port 51348.
+    port 51348.</li>
     <li><tt>-d</tt> enables debug messages that show trace of
     execution. This may not be very useful to end users.</li>
 </ul>
 
+	  </div> 
+	</div> 
       </div> 
     </div> 
-    <div id="ft"> 
-<p>
-<!-- Piwik -->
-<script type="text/javascript">
-  var pkBaseURL = (("https:" == document.location.protocol) ? "https://sourceforge.net/apps/piwik/dispy/" : "http://sourceforge.net/apps/piwik/dispy/");
-  document.write(unescape("%3Cscript src='" + pkBaseURL + "piwik.js' type='text/javascript'%3E%3C/script%3E"));
-  </script><script type="text/javascript">
-  try {
-  var piwikTracker = Piwik.getTracker(pkBaseURL + "piwik.php", 1);
-  piwikTracker.trackPageView();
-  piwikTracker.enableLinkTracking();
-  } catch( err ) {}
-  </script><noscript><p><img src="http://sourceforge.net/apps/piwik/dispy/piwik.php?idsite=1" style="border:0" alt=""/></p></noscript>
-<!-- End Piwik Tag -->
-</p>
-
+    <div id="footer"> 
       <p> 
         <a href="http://sourceforge.net/"> 
           Project Web Hosted by <img src="http://sflogo.sourceforge.net/sflogo.php?group_id=539226&amp;type=3" alt="SourceForge.net" /> 

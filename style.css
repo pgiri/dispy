@@ -1,10 +1,15 @@
-  body
-  {
-    background: url("prweb-sidebar.png") top left fixed no-repeat;
-    font-family: sans-serif;
-    line-height: 140%;
-    font-size: 90%;
-  }
+    body {
+	font-family: sans-serif;
+        margin:0;
+        padding:0;
+        border:0;
+        width:100%;
+        background:#fff;
+        min-width:600px;
+	font-size:90%;
+	line-height: 140%;
+	font-size: 90%;
+    }
  
   a img
   {
@@ -56,54 +61,72 @@
  
   .host a { text-decoration: none; }
  
-  #menu
-  {
-    float: left;
-    width: 14%;
-    line-height: 2em;
-    margin: 0px 5px 0px 20px;
-    padding: 4px;
-    border: 1px solid #4e460f;
-    -moz-border-radius: 8px; -webkit-border-radius: 8px;
-    border-radius: 8px;
-    font-weight: bold;
+  #content-mask {
+      background: url("prweb-sidebar.png") 0 60px fixed no-repeat;
+      position:relative;
+      clear:both;
+      float:left;
+      width:100%;
+      overflow:hidden;
   }
- 
-  #menu ul {
+
+  #content-container {
+      float:left;
+      width:200%;
+      position:relative;
+      left:10.2em;
+      background:#fff;
+  }
+  #content-menu {
+      float:left;
+      width:8em;
+      position:relative;
+      right:8em;
+      padding: 4px;
+      border: 1px solid #4e460f;
+      -moz-border-radius: 8px; -webkit-border-radius: 8px;
+      border-radius: 8px;
+      font-weight: bold;
+  }
+  #content-wrap {
+      float:right;
+      width:50%;
+      position:relative;
+      right:9em;
+      padding-bottom:1em;
+      margin-right: 0.4em;
+  }
+  #content {
+      margin:0 1em 0 10.6em;
+      position:relative;
+      right:100%;
+      padding: 8px;
+      overflow:hidden;
+      border: 1px solid #4e460f;
+      -moz-border-radius: 8px; -webkit-border-radius: 8px;
+      border-radius: 8px;
+  }
+
+  #content-menu ul {
       list-style-type: none;
       margin-left: 0;
       padding-left: 0;
-      }
-
-  #menu ul li {
-      margin-left: 1em;
-      }
-
-  #menu li:before {
-    content: "\0020 \00BB \0020";
-      }
-
-  #content
-  {
-    float: left;
-    width: 75%;
-    padding: 0 20px;
-    margin: 0;
-    min-width: 300px;
-    border: #000 solid 1px;
-    -moz-border-radius: 8px; -webkit-border-radius: 8px;
-    border-radius: 8px;
   }
- 
- 
-  /* footer */
-  #ft
-  {
-    clear: both;
-    display: block;
-    padding: 1em;
-    margin-left: -5%;
-    font-size: 80%;
-    text-align: center;
+
+  #content-menu ul li {
+      margin-left: 0.5em;
+  }
+
+  #content-menu li:before {
+      content: "\0020 \00BB \0020";
+  }
+
+  #footer {
+      clear: both;
+      display: block;
+      padding: 1em;
+      margin-left: -5%;
+      font-size: 80%;
+      text-align: center;
   }
  

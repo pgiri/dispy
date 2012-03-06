@@ -15,23 +15,26 @@
   <body> 
     <small><a href="http://sourceforge.net/projects/dispy/">dispy</a>:  Project Web Hosting - Open Source Software</small> 
     <h1>dispy</h1> 
-    <div id="projectinfo"> 
-      <div id="menu">
-	<ul>
-        <li><a href="index.html">Project Page</a></li> 
-        <li><a href="dispy.html">dispy</a></li> 
-        <li><a href="dispyscheduler.html">dispyscheduler</a></li> 
-        <li><a href="dispynetrelay.html">dispynetrelay</a></li>
-        <li><a href="asyncoro.html">Async Framework</a></li>
-	</ul>
-	<hr />
-	<ul>
-        <li><a href="http://sourceforge.net/projects/dispy/files">Download dispy</a></li> 
-        <li><a href="http://sourceforge.net/projects/dispy/">Project details</a></li> 
-        <li><a href="http://sourceforge.net/projects/dispy/support">Get support</a></li>
-	</ul>
-      </div> 
-      <div id="content"> 
+    <div id="content-mask">
+      <div id="content-container"> 
+	<div id="content-menu">
+	  <ul>
+            <li><a href="index.html">Project Page</a></li> 
+            <li><a href="dispy.html">dispy</a></li> 
+            <li><a href="dispyscheduler.html">dispyscheduler</a></li> 
+            <li><a href="dispynetrelay.html">dispynetrelay</a></li>
+            <li><a href="asyncoro.html">asyncoro</a></li>
+	  </ul>
+	  <hr />
+	  <ul>
+            <li><a href="http://sourceforge.net/projects/dispy/files">Download dispy</a></li> 
+            <li><a href="http://sourceforge.net/projects/dispy/">Project details</a></li> 
+            <li><a href="http://sourceforge.net/projects/dispy/support">Get support</a></li>
+	  </ul>
+	</div> 
+
+	<div id="content-wrap"> 
+	  <div id="content"> 
         <h2> 
           dispynode
         </h2> 
@@ -41,6 +44,7 @@
 </p>
 
 <p>Below are various options to invoking dispynode:
+  </p>
   <ul>
     <li><tt>-c n</tt> or <tt>--cpus=n</tt> sets the number of
     processing units to <tt>n</tt>. Without this option, dispynode
@@ -92,9 +96,11 @@
     execution. This may not be very useful to end users.</li>
 </ul>
 
+	  </div> 
+	</div> 
       </div> 
     </div> 
-    <div id="ft"> 
+    <div id="footer"> 
       <p> 
         <a href="http://sourceforge.net/"> 
           Project Web Hosted by <img src="http://sflogo.sourceforge.net/sflogo.php?group_id=539226&amp;type=3" alt="SourceForge.net" /> 

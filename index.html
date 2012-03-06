@@ -14,27 +14,30 @@
   </head> 
   <body> 
     <small><a href="http://sourceforge.net/projects/dispy/">dispy</a>:
-    Project Web Hosting - Open Source Software</small>
+      Project Web Hosting - Open Source Software</small>
     <center><h1>dispy</h1></center>
-    <div id="projectinfo"> 
-      <div id="menu">
-	<ul>
-        <li><a href="dispy.html">dispy</a></li> 
-        <li><a href="dispynode.html">dispynode</a></li> 
-        <li><a href="dispyscheduler.html">dispyscheduler</a></li> 
-        <li><a href="dispynetrelay.html">dispynetrelay</a></li>
-        <li><a href="asyncoro.html">Async Framework</a></li>
-	</ul>
-	<hr />
-	<ul>
-        <li><a href="http://sourceforge.net/projects/dispy/files">Download dispy</a></li> 
-        <li><a href="http://sourceforge.net/projects/dispy/">Project details</a></li> 
-        <li><a href="http://sourceforge.net/projects/dispy/support">Get support</a></li>
-	</ul>
-      </div> 
-      <div id="content"> 
+    <div id="content-mask">
+      <div id="content-container"> 
+	<div id="content-menu">
+	  <ul>
+            <li><a href="dispy.html">dispy</a></li> 
+            <li><a href="dispynode.html">dispynode</a></li> 
+            <li><a href="dispyscheduler.html">dispyscheduler</a></li> 
+            <li><a href="dispynetrelay.html">dispynetrelay</a></li>
+            <li><a href="asyncoro.html">asyncoro</a></li>
+	  </ul>
+	  <hr />
+	  <ul>
+            <li><a href="http://sourceforge.net/projects/dispy/files">Download dispy</a></li> 
+            <li><a href="http://sourceforge.net/projects/dispy/">Project details</a></li> 
+            <li><a href="http://sourceforge.net/projects/dispy/support">Get support</a></li>
+	  </ul>
+	</div> 
+
+	<div id="content-wrap"> 
+	  <div id="content"> 
 <h3>
-dispy
+  dispy
 </h3>
 <p>
 dispy is a framework, developed
@@ -44,6 +47,7 @@ among many machines in a cluster, grid or cloud for parallel
 execution. dispy is well suited for data parallellism (SIMD paradigm)
 where a computation is evaluated with different (large) datasets
 independently. Salient features of dispy are:
+</p>
 <ul>
 <li>Computations (Python functions or standalone programs) and its
     dependencies (files, Python functions, classes, modules) are
@@ -97,6 +101,7 @@ and coroutines.</li>
   </ul>
 <p>
 dispy consists of 4 components:
+</p>
 <ol>
   <li><a href="dispy.html">dispy.py</a> (client) provides two ways of
   creating "clusters": <tt>JobCluster</tt> when only one
@@ -120,9 +125,7 @@ dispy consists of 4 components:
 </ol>
  dispy has been tested with Python 2.7 on Linux and OS X. It is also
  known to work on Windows, but not well tested.
-</p>  
 
-        </p>
         <h3> 
           Quick Guide
         </h3> 
@@ -146,7 +149,6 @@ parallelizing on an SMP (single node with multiple cores), then start
 'dispynode' on that node (which also runs dispy client).
 </p>
 
-</p>
 <code>#!/usr/bin/env python
 
 def compute(n):
@@ -257,7 +259,9 @@ to Running when job is actually running.
 <p>
 When a submitted job is called with job(), it returns that job's
 execution result, possibly waiting until the job is finished. After a
-job is complete,<ul>
+job is complete,
+</p>
+<ul>
   <li>job.result will have function's return value (job.result is same
   as return value of job()) </li>
   <li>job.stdout and job.stderr will have stdout and stderr strings</li>
@@ -272,7 +276,6 @@ hence will consume memory (not stored on disk). Moreover, like args
 and kwargs, result should be serializable (picklable object). If
 result is (or has) an instance of python class, that class may have to
 provide __getstate__ function to serialize the object.
-</p>
 
 <p>
 After jobs are submitted, cluster.wait() can be used to wait until all
@@ -293,10 +296,11 @@ and dependencies should only be files.
   arguments to the program), arg21 and arg22 (two arguments), and arg3
   (one argument).
 
-        </p> 
+	  </div>
+	</div> 
       </div> 
     </div> 
-    <div id="ft"> 
+    <div id="footer"> 
       <p> 
         <a href="http://sourceforge.net/"> 
           Project Web Hosted by <img src="http://sflogo.sourceforge.net/sflogo.php?group_id=539226&amp;type=3" alt="SourceForge.net" /> 
