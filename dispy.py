@@ -29,7 +29,6 @@ import stat
 import cPickle
 import threading
 import struct
-import base64
 import logging
 import re
 import ssl
@@ -866,7 +865,7 @@ class _Cluster(object):
         assert coro is not None
         while True:
             try:
-                new_sock, addr = yield self.job_result_sock.accept()
+                conn, addr = yield self.job_result_sock.accept()
             except ssl.SSLError, err:
                 logging.debug('SSL connection failed: %s', str(err))
                 continue
@@ -876,8 +875,8 @@ class _Cluster(object):
                 logging.debug(traceback.format_exc())
                 continue
             # logging.debug('received job result from %s', str(addr))
-            new_sock.settimeout(2)
-            Coro(self.job_result_task, new_sock, addr)
+            conn.settimeout(2)
+            Coro(self.job_result_task, conn, addr)
 
     def job_result_task(self, sock, addr, coro=None):
         # generator
@@ -1548,7 +1547,6 @@ class JobCluster(object):
             # make sure code can be compiled
             code = compile(compute.code, '<string>', 'exec')
             del code
-            compute.code = base64.b64encode(compute.code)
         if dest_path:
             if not isinstance(dest_path, str):
                 raise Exception('Invalid dest_path: it must be a string')

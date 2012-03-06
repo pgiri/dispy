@@ -33,7 +33,6 @@ import signal
 import cStringIO
 import ssl
 import traceback
-import base64
 import hashlib
 import atexit
 import logging
@@ -464,7 +463,7 @@ class _DispyNode(object):
                 if compute.env and 'PYTHONPATH' in compute.env:
                     self.computations[compute.id].env = compute.env['PYTHONPATH']
                 try:
-                    code = compile(base64.b64decode(compute.code), '<string>', 'exec')
+                    code = compile(compute.code, '<string>', 'exec')
                 except:
                     logging.warning('Computation "%s" could not be compiled', compute.name)
                     if os.path.isdir(compute.dest_path):
