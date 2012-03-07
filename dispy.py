@@ -118,26 +118,22 @@ def _xor_string(data, key):
         return data
     return ''.join(hex(ord(x) ^ ord(y))[2:] for (x, y) in itertools.izip(data, itertools.cycle(key)))
 
-def _node_name_ipaddr(node):
+def _node_ipaddr(node):
     """Internal use only.
     """
     if not node:
-        return (None, None)
+        return None
     if node.find('*') >= 0:
-        return (node, node)
+        return node
     try:
         socket.inet_pton(socket.AF_INET, node)
-        try:
-            name = socket.gethostbyaddr(node)[0]
-        except:
-            name = node
-        return (name, node)
+        return node
     except:
         try:
             ip_addr = socket.gethostbyname(node)
-            return (node, ip_addr)
+            return ip_addr
         except:
-            return (None, None)
+            return None
 
 def _parse_nodes(nodes):
     """Internal use only.
@@ -146,23 +142,17 @@ def _parse_nodes(nodes):
     for node in nodes:
         node_port = None
         if isinstance(node, str):
-            name, ip_addr = _node_name_ipaddr(node)
+            ip_addr = _node_ipaddr(node)
             if not ip_addr:
-                if node.find('*') >= 0:
-                    name, ip_addr = node, node
-                else:
-                    logging.warning('Node "%s" is invalid; ignoring it.', str(node))
-                    continue
+                logging.warning('Node "%s" is invalid; ignoring it.', str(node))
+                continue
             match_re = ip_addr.replace('.', '\\.').replace('*', '.*')
             node_port = None
         elif isinstance(node, tuple):
-            name, ip_addr = _node_name_ipaddr(node[0])
+            ip_addr = _node_ipaddr(node[0])
             if not ip_addr:
-                if node[0].find('*') >= 0:
-                    name, ip_addr = node[0], node[0]
-                else:
-                    logging.warning('Node "%s" is invalid; ignoring it.')
-                    continue
+                logging.warning('Node "%s" is invalid; ignoring it.')
+                continue
             match_re = ip_addr.replace('.', '\\.').replace('*', '.*')
             if len(node) == 2:
                 node_port = node[1]
@@ -172,7 +162,7 @@ def _parse_nodes(nodes):
         else:
             logging.warning('Node "%s" is invalid; ignoring it', str(node))
             continue
-        node_spec[match_re] = {'port':node_port, 'ip_addr':ip_addr, 'name':name}
+        node_spec[match_re] = {'port':node_port, 'ip_addr':ip_addr}
     return node_spec
 
 class _Compute(object):
@@ -446,7 +436,7 @@ class _Cluster(object):
             self.asyncoro = AsynCoro()
             atexit.register(self.shutdown)
             if ip_addr:
-                ip_addr = _node_name_ipaddr(ip_addr)[1]
+                ip_addr = _node_ipaddr(ip_addr)
             else:
                 ip_addr = socket.gethostbyname(socket.gethostname())
             if port is None:
@@ -806,6 +796,7 @@ class _Cluster(object):
                                  status['cpus'], status['sign'],
                                  self._secret, keyfile=self.keyfile, certfile=self.certfile)
                     self._nodes[node.ip_addr] = node
+                    node.name = status['name']
                 else:
                     node.last_pulse = time.time()
                     h = _xor_string(status['sign'], self._secret)
@@ -822,10 +813,6 @@ class _Cluster(object):
                         continue
                     for node_spec, host in compute.node_spec.iteritems():
                         if re.match(node_spec, node.ip_addr):
-                            if host['name'].find('*') >= 0:
-                                node.name = node.ip_addr
-                            else:
-                                node.name = host['name']
                             node_computations.append(compute)
                             break
                 yield self._sched_cv.release()
@@ -1274,7 +1261,7 @@ class _Cluster(object):
 
     def stats(self, compute, wall_time=None):
         print
-        heading = '%020s  |  %05s  |  %05s  |  %010s  |  %13s' % \
+        heading = ' %30s | %5s | %7s | %10s | %13s' % \
                   ('Node', 'CPUs', 'Jobs', 'Sec/Job', 'Node Time Sec')
         print heading
         print '-' * len(heading)
@@ -1287,8 +1274,12 @@ class _Cluster(object):
             else:
                 secs_per_job = 0
             cpu_time += node.cpu_time
-            print '%020s  |  %05s  |  %05s  |  %10.3f  |  %13.3f' % \
-                  (ip_addr, node.cpus, node.jobs, secs_per_job, node.cpu_time)
+            if node.name:
+                name = ip_addr + ' (' + node.name + ')'
+            else:
+                name = ip_addr
+            print ' %30.30s | %5s | %7s | %10.3f | %13.3f' % \
+                  (name, node.cpus, node.jobs, secs_per_job, node.cpu_time)
         print
         msg = 'Total job time: %.3f sec' % cpu_time
         if wall_time:
@@ -1314,7 +1305,7 @@ class JobCluster(object):
           a tuple with up to 3 elements.  The tuple's first element
           must be IP address or name of server node, second element,
           if present, must be port number where that node is listening
-          for ping from clients, the third element, if present, must
+           for ping from clients, the third element, if present, must
           be number of CPUs to use on that node.
 
         @depends is a list. Each element of @depends is either

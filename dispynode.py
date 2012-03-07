@@ -40,7 +40,7 @@ import marshal
 import shelve
 
 from dispy import _DispyJob_, _JobReply, DispyJob, \
-     _Compute, _XferFile, _xor_string, _node_name_ipaddr, _dispy_version
+     _Compute, _XferFile, _xor_string, _node_ipaddr, _dispy_version
 
 from asyncoro import Coro, CoroLock, AsynCoro, AsynCoroSocket, MetaSingleton, \
      sock_read_msg, sock_write_msg
@@ -142,9 +142,9 @@ class _DispyNode(object):
                  secret='', keyfile=None, certfile=None, max_file_size=None,
                  zombie_interval=60):
         self.cpus = cpus
-        self.fqdn = socket.getfqdn()
+        self.name = socket.gethostname()
         if ip_addr:
-            ip_addr = _node_name_ipaddr(ip_addr)[1]
+            ip_addr = _node_ipaddr(ip_addr)
         else:
             ip_addr = socket.gethostbyname(socket.gethostname())
         self.ip_addr = ip_addr
@@ -198,7 +198,7 @@ class _DispyNode(object):
         logging.debug('tcp server at %s:%s', self.address[0], self.address[1])
         self.udp_sock = AsynCoroSocket(self.udp_sock, blocking=False)
 
-        scheduler_ip_addr = _node_name_ipaddr(scheduler_node)[1]
+        scheduler_ip_addr = _node_ipaddr(scheduler_node)
 
         self.reply_Q = multiprocessing.Queue()
         self.reply_Q_thread = threading.Thread(target=self.__reply_Q)
@@ -212,7 +212,7 @@ class _DispyNode(object):
         ping_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         ping_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         ping_sock = AsynCoroSocket(ping_sock, blocking=False)
-        pong_msg = {'ip_addr':self.ip_addr, 'fqdn':self.fqdn, 'port':self.address[1],
+        pong_msg = {'ip_addr':self.ip_addr, 'name':self.name, 'port':self.address[1],
                     'cpus':self.cpus, 'sign':self.signature, 'version':_dispy_version}
         pong_msg = 'PONG:' + cPickle.dumps(pong_msg)
         yield ping_sock.sendto(pong_msg, ('<broadcast>', self.scheduler_port))
@@ -223,7 +223,7 @@ class _DispyNode(object):
         
         if self.avail_cpus == self.cpus:
             yield self.send_pong_msg(coro=coro)
-        pong_msg = {'ip_addr':self.ip_addr, 'fqdn':self.fqdn, 'port':self.address[1],
+        pong_msg = {'ip_addr':self.ip_addr, 'name':self.name, 'port':self.address[1],
                     'cpus':self.cpus, 'sign':self.signature, 'version':_dispy_version}
         pong_msg = 'PONG:' + cPickle.dumps(pong_msg)
 
@@ -471,7 +471,6 @@ class _DispyNode(object):
                     self.lock.release()
                     try:
                         yield conn.write_msg('NACK (Compilation failed)')
-
                     except:
                         logging.warning('Failed to send reply to %s', str(addr))
                     raise StopIteration

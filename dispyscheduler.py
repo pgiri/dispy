@@ -37,7 +37,7 @@ import atexit
 import traceback
 
 from dispy import _Compute, DispyJob, _DispyJob_, _Node, _JobReply, \
-     _xor_string, _parse_nodes, _node_name_ipaddr, _XferFile, _dispy_version
+     _xor_string, _parse_nodes, _node_ipaddr, _XferFile, _dispy_version
 
 from asyncoro import Coro, AsynCoro, CoroCondition, AsynCoroSocket, MetaSingleton
 
@@ -82,7 +82,7 @@ class _Scheduler(object):
                 loglevel = logging.WARNING
             logging.basicConfig(format='%(asctime)s %(message)s', level=loglevel)
             if ip_addr:
-                ip_addr = _node_name_ipaddr(ip_addr)[1]
+                ip_addr = _node_ipaddr(ip_addr)
             else:
                 ip_addr = socket.gethostbyname(socket.gethostname())
             if port is None:

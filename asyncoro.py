@@ -283,7 +283,7 @@ class _AsynCoroSocket(socket.socket):
         """
         def _recv(self, bufsize, *args):
             try:
-                res = self._rsock.recv(bufsize, *args)
+                buf = self._rsock.recv(bufsize, *args)
             except ssl.SSLError, err:
                 if err.args[0] != ssl.SSL_ERROR_WANT_READ:
                     raise socket.error(err)
@@ -296,17 +296,17 @@ class _AsynCoroSocket(socket.socket):
                 self._notifier.modify(self, 0)
                 self._task = self._result = None
                 coro, self._coro = self._coro, None
-                coro.resume(res)
+                coro.resume(buf)
 
         if self._certfile:
             # in case of SSL, attempt read first
             try:
-                res = self._rsock.recv(bufsize)
+                buf = self._rsock.recv(bufsize)
             except ssl.SSLError, err:
                 if err.args[0] != ssl.SSL_ERROR_WANT_READ:
                     raise socket.error(err)
-                elif len(res) > 0:
-                    return res
+                elif buf:
+                    return buf
 
         self._task = functools.partial(_recv, self, bufsize, *args)
         self._coro = self._asyncoro.cur_coro()
@@ -333,10 +333,10 @@ class _AsynCoroSocket(socket.socket):
                     pending -= len(buf)
                     if pending == 0:
                         self._notifier.modify(self, 0)
-                        res = ''.join(self._result)
+                        buf = ''.join(self._result)
                         self._task = self._result = None
                         coro, self._coro = self._coro, None
-                        coro.resume(res)
+                        coro.resume(buf)
                     else:
                         self._task = functools.partial(_read, self, pending, *args)
                 else:
@@ -386,7 +386,7 @@ class _AsynCoroSocket(socket.socket):
         """
         def _recvfrom(self, *args):
             try:
-                res = self._rsock.recvfrom(*args)
+                buf = self._rsock.recvfrom(*args)
             except:
                 self._notifier.modify(self, 0)
                 self._task = self._result = None
@@ -396,7 +396,7 @@ class _AsynCoroSocket(socket.socket):
                 self._notifier.modify(self, 0)
                 self._task = self._result = None
                 coro, self._coro = self._coro, None
-                coro.resume(res)
+                coro.resume(buf)
 
         self._task = functools.partial(_recvfrom, self, *args)
         self._coro = self._asyncoro.cur_coro()
@@ -410,7 +410,7 @@ class _AsynCoroSocket(socket.socket):
         # sending all the data, as done in write/write_msg
         def _send(self, *args):
             try:
-                res = self._rsock.send(*args)
+                sent = self._rsock.send(*args)
             except:
                 self._notifier.modify(self, 0)
                 self._task = self._result = None
@@ -420,7 +420,7 @@ class _AsynCoroSocket(socket.socket):
                 self._notifier.modify(self, 0)
                 self._task = self._result = None
                 coro, self._coro = self._coro, None
-                coro.resume(res)
+                coro.resume(sent)
 
         self._task = functools.partial(_send, self, *args)
         self._coro = self._asyncoro.cur_coro()
@@ -435,7 +435,7 @@ class _AsynCoroSocket(socket.socket):
         # sending all the data, as done in write/write_msg
         def _sendto(self, *args):
             try:
-                res = self._rsock.sendto(*args)
+                sent = self._rsock.sendto(*args)
             except:
                 self._notifier.modify(self, 0)
                 self._task = self._result = None
@@ -445,7 +445,7 @@ class _AsynCoroSocket(socket.socket):
                 self._notifier.modify(self, 0)
                 self._task = self._result = None
                 coro, self._coro = self._coro, None
-                coro.resume(res)
+                coro.resume(sent)
 
         self._task = functools.partial(_sendto, self, *args)
         self._coro = self._asyncoro.cur_coro()
@@ -457,15 +457,15 @@ class _AsynCoroSocket(socket.socket):
         """
         def _write(self):
             try:
-                n = self._rsock.send(self._result)
+                sent = self._rsock.send(self._result)
             except:
                 self._notifier.modify(self, 0)
                 self._task = self._result = None
                 coro, self._coro = self._coro, None
                 coro.throw(*sys.exc_info())
             else:
-                if n > 0:
-                    self._result = buffer(self._result, n)
+                if sent > 0:
+                    self._result = buffer(self._result, sent)
                     if len(self._result) == 0:
                         self._notifier.modify(self, 0)
                         self._task = self._result = None
@@ -484,9 +484,9 @@ class _AsynCoroSocket(socket.socket):
         # TODO: is sendall better?
         self._result = buffer(data, 0)
         while len(self._result) > 0:
-            n = self._rsock.send(self._result)
-            if n > 0:
-                self._result = buffer(self._result, n)
+            sent = self._rsock.send(self._result)
+            if sent > 0:
+                self._result = buffer(self._result, sent)
         return 0
 
     def async_accept(self):
@@ -658,9 +658,6 @@ if platform.system() == 'Windows':
                     self.poller.daemon = True
                     self.poller.start()
 
-            def __del__(self):
-                win32file.CloseHandle(self.iocp)
-
             def register(self, fd, event=0):
                 win32file.CreateIoCompletionPort(fd._fileno, self.iocp, 1, 0)
 
@@ -673,10 +670,18 @@ if platform.system() == 'Windows':
             def poll(self):
                 while True:
                     err, n, key, overlap = win32file.GetQueuedCompletionStatus(self.iocp, win32event.INFINITE)
+                    if not key:
+                        break
                     if overlap and overlap.object:
                         overlap.object(err, n)
                     else:
                         logging.warning('no overlap!')
+                win32file.CloseHandle(self.iocp)
+                self.iocp = None
+
+            def terminate(self):
+                win32file.PostQueuedCompletionStatus(self.iocp, 0, 0, None)
+                self.poller.join()
 
         class AsynCoroSocket(_AsynCoroSocket):
             """AsynCoroSocket with I/O Completion Ports (under
@@ -990,9 +995,9 @@ def sock_write(sock, data):
     # TODO: is sendall better?
     buf = buffer(data, 0)
     while len(buf) > 0:
-        n = sock.send(buf)
-        if n > 0:
-            buf = buffer(buf, n)
+        sent = sock.send(buf)
+        if sent > 0:
+            buf = buffer(buf, sent)
     return 0
 
 def sock_write_msg(sock, data):
@@ -1703,6 +1708,9 @@ class _AsyncNotifier(object):
                                     fd._fileno, traceback.format_exc())
             self._lock.release()
         self._poller = None
+        iocp = getattr(sys.modules[__name__], '_IOCPNotifier', None)
+        if isinstance(iocp, MetaSingleton):
+            iocp.instance().terminate()
         self._complete.set()
         logging.debug('AsyncNotifier terminated')
 
@@ -1891,7 +1899,7 @@ class _SelectNotifier(object):
         return events.iteritems()
 
     def terminate(self):
-        self.rset = self.wset = self.xset = set()
+        self.rset = self.wset = self.xset = None
 
 class RepeatTimer(threading.Thread):
     """Timer that calls given function every 'interval' seconds. The
