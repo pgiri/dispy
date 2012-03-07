@@ -107,7 +107,7 @@ class MetaSingleton(type):
             cls.__instance = super(MetaSingleton, cls).__call__(*args, **kwargs)
         return cls.__instance
 
-class _AsynCoroSocket(socket.socket):
+class _AsynCoroSocket(object):
     """Base class socket for use with AsynCoro, for asynchronous I/O
     completion and coroutines. This class is for internal use
     only. Use AsnyCoroSocket, defined below, instead.
@@ -131,8 +131,6 @@ class _AsynCoroSocket(socket.socket):
             logging.warning('Socket %s is already AsynCoroSocket', sock._fileno)
             self.__dict__ = sock.__dict__
         else:
-            socket.socket.__init__(self, _sock=sock._sock)
-            self._blocking = blocking == True
             self._rsock = sock
             self._keyfile = keyfile
             self._certfile = certfile
@@ -151,28 +149,42 @@ class _AsynCoroSocket(socket.socket):
             self.read_msg = None
             self.write_msg = None
 
-            self.setblocking(self._blocking)
+            self._blocking = None
+            self.setblocking(blocking)
             # technically, we should set socket to blocking if
             # _default_timeout is None, but ignore this case
             if _AsynCoroSocket._default_timeout:
                 self.settimeout(_AsynCoroSocket._default_timeout)
 
+    def __getattr__(self, name):
+        return getattr(self._rsock, name)
+
     def setblocking(self, blocking):
-        self._blocking = blocking
         if blocking:
-            if self._certfile:
-                raise Exception('SSL is not supported for blocking sockets')
+            blocking = True
+        else:
+            blocking = False
+        if self._blocking == blocking:
+            return
+        self._blocking = blocking
+        if self._blocking:
+            self._unregister()
             self._rsock.setblocking(1)
+            if self._certfile:
+                self._rsock = ssl.wrap_socket(self._rsock, keyfile=self._keyfile,
+                                              certfile=self._certfile,
+                                              ssl_version=self._ssl_version)
+            for name in ['recv', 'send', 'recvfrom', 'sendto', 'accept', 'connect']:
+                setattr(self, name, getattr(self._rsock, name))
             if self._rsock.type == socket.SOCK_STREAM:
                 self.read = self.sync_read
                 self.write = self.sync_write
                 self.read_msg = self.sync_read_msg
                 self.write_msg = self.sync_write_msg
             self._asyncoro = None
-            self._unregister()
+            self._notifier = None
         else:
             self._rsock.setblocking(0)
-
             self.recv = self.async_recv
             self.send = self.async_send
             self.recvfrom = self.async_recvfrom
@@ -184,7 +196,6 @@ class _AsynCoroSocket(socket.socket):
                 self.write = self.async_write
                 self.read_msg = self.async_read_msg
                 self.write_msg = self.async_write_msg
-
             self._asyncoro = AsynCoro.instance()
             # for timeouts we need _notifier even for IOCP sockets
             self._notifier = _AsyncNotifier.instance()
@@ -519,7 +530,7 @@ class _AsynCoroSocket(socket.socket):
                         coro.resume((conn, addr))
                 conn = AsynCoroSocket(conn, blocking=False, keyfile=self._keyfile,
                                       certfile=self._certfile, ssl_version=self._ssl_version)
-                conn._rsock = ssl.wrap_socket(conn, keyfile=self._keyfile, certfile=self._certfile,
+                conn._rsock = ssl.wrap_socket(conn._rsock, keyfile=self._keyfile, certfile=self._certfile,
                                               server_side=True, do_handshake_on_connect=False,
                                               ssl_version=self._ssl_version)
                 conn._task = functools.partial(_ssl_handshake, self, conn, addr)
@@ -952,7 +963,7 @@ if platform.system() == 'Windows':
                                                struct.pack('I', conn._fileno))
                         self._overlap.object = self._result = None
                         if self._certfile:
-                            conn._rsock = ssl.wrap_socket(conn, keyfile=self._keyfile, certfile=self._certfile,
+                            conn._rsock = ssl.wrap_socket(conn._rsock, keyfile=self._keyfile, certfile=self._certfile,
                                                           server_side=True, do_handshake_on_connect=False,
                                                           ssl_version=self._ssl_version)
                             self._overlap.object = functools.partial(_ssl_handshake, self, conn, raddr)
@@ -976,50 +987,6 @@ if platform.system() == 'Windows':
         # end of Windows specific setup
 else:
     AsynCoroSocket = _AsynCoroSocket
-
-def sock_read(sock, bufsize, *args):
-    """sync_read (see above) for regular sockets; useful for synchronous SSL sockets.
-    """
-    res = []
-    while bufsize:
-        buf = sock.recv(bufsize, *args)
-        if not buf:
-            raise socket.error('read error')
-        bufsize -= len(buf)
-        res.append(buf)
-    return ''.join(res)
-
-def sock_write(sock, data):
-    """sync_write (see above) for regular sockets; useful for synchronous SSL sockets.
-    """
-    # TODO: is sendall better?
-    buf = buffer(data, 0)
-    while len(buf) > 0:
-        sent = sock.send(buf)
-        if sent > 0:
-            buf = buffer(buf, sent)
-    return 0
-
-def sock_write_msg(sock, data):
-    """sync_write_msg (see above) for regular sockets; useful for synchronous SSL sockets.
-    """
-    return sock_write(sock, struct.pack('>L', len(data)) + data)
-
-def sock_read_msg(sock):
-    """sync_read_msg (see above) for regular sockets; useful for synchronous SSL sockets.
-    """
-    n = struct.calcsize('>L')
-    data = sock_read(sock, n)
-    if len(data) < n:
-        logging.error('Socket disconnected?(%s, %s)', len(data), n)
-        return None
-    n = struct.unpack('>L', data)[0]
-    assert n > 0
-    data = sock_read(sock, n)
-    if len(data) < n:
-        logging.error('Socket disconnected?(%s, %s)', len(data), n)
-        return None
-    return data
 
 class Coro(object):
     """'Coroutine' factory to build coroutines to be scheduled with

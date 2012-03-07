@@ -45,7 +45,7 @@ import platform
 import asyncoro
 from asyncoro import Coro, AsynCoro, CoroLock, CoroCondition, AsynCoroSocket, MetaSingleton
 
-_dispy_version = '2.1'
+_dispy_version = '2.3'
 
 class DispyJob(object):
     """Job scheduled for execution with dispy.
@@ -126,28 +126,23 @@ def _node_ipaddr(node):
     if node.find('*') >= 0:
         return node
     try:
-        socket.inet_pton(socket.AF_INET, node)
-        return node
+        ip_addr = socket.gethostbyname(node)
+        return ip_addr
     except:
-        try:
-            ip_addr = socket.gethostbyname(node)
-            return ip_addr
-        except:
-            return None
+        return None
 
 def _parse_nodes(nodes):
     """Internal use only.
     """
     node_spec = {}
     for node in nodes:
-        node_port = None
         if isinstance(node, str):
             ip_addr = _node_ipaddr(node)
             if not ip_addr:
                 logging.warning('Node "%s" is invalid; ignoring it.', str(node))
                 continue
             match_re = ip_addr.replace('.', '\\.').replace('*', '.*')
-            node_port = None
+            port = None
         elif isinstance(node, tuple):
             ip_addr = _node_ipaddr(node[0])
             if not ip_addr:
@@ -155,14 +150,14 @@ def _parse_nodes(nodes):
                 continue
             match_re = ip_addr.replace('.', '\\.').replace('*', '.*')
             if len(node) == 2:
-                node_port = node[1]
+                port = node[1]
             else:
                 logging.warning('Node "%s" is invalid; ignoring it', str(node))
                 continue
         else:
             logging.warning('Node "%s" is invalid; ignoring it', str(node))
             continue
-        node_spec[match_re] = {'port':node_port, 'ip_addr':ip_addr}
+        node_spec[match_re] = {'ip_addr':ip_addr, 'port':port}
     return node_spec
 
 class _Compute(object):
@@ -1685,7 +1680,7 @@ class SharedJobCluster(JobCluster):
         self._cluster._sched_cv.notify()
         self._compute.node_spec = nodes
         if scheduler_node:
-            self.scheduler_ip_addr = _node_name_ipaddr(scheduler_node)[1]
+            self.scheduler_ip_addr = _node_ipaddr(scheduler_node)
         else:
             self.scheduler_ip_addr = self.ip_addr
 
@@ -1716,73 +1711,71 @@ class SharedJobCluster(JobCluster):
             raise Exception('Could not connect to scheduler at %s:%s',
                             self.scheduler_ip_addr, self.scheduler_udp_port)
         srv_sock.close()
-        def _add_compute(self, coro=None):
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock = AsynCoroSocket(sock, blocking=False,
-                                  keyfile=self.keyfile, certfile=self.certfile)
-            sock.settimeout(3)
-            try:
-                yield sock.connect((self.scheduler_ip_addr, self.scheduler_port))
-                req = 'COMPUTE:' + cPickle.dumps(self._compute)
-                yield sock.write(self.auth_code)
-                yield sock.write_msg(req)
-                msg = yield sock.read_msg()
-                sock.close()
-                resp = cPickle.loads(msg)
-                self._compute.id = resp['ID']
-                assert self._compute.id is not None
-            except:
-                logging.debug(traceback.format_exc())
-                raise Exception("Couldn't connect to scheduler at %s:%s" % \
-                                (self.scheduler_ip_addr, self.scheduler_port))
-            if resp['pulse_interval'] and self._cluster.pulse_interval:
-                self._cluster.pulse_interval = min(self._cluster.pulse_interval, resp['pulse_interval'])
-            else:
-                self._cluster.pulse_interval = max(self._cluster.pulse_interval, resp['pulse_interval'])
-
-            for xf in self._compute.xfer_files:
-                xf.compute_id = self._compute.id
-                logging.debug('Sending file "%s"', xf.name)
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock = AsynCoroSocket(sock, blocking=False,
-                                      keyfile=self.keyfile, certfile=self.certfile)
-                sock.settimeout(5)
-                try:
-                    yield sock.connect((self.scheduler_ip_addr, self.scheduler_port))
-                    msg = 'FILEXFER:' + cPickle.dumps(xf)
-                    yield sock.write(self.auth_code)
-                    yield sock.write_msg(msg)
-                    fd = open(xf.name, 'rb')
-                    while True:
-                        data = fd.read(10240000)
-                        if not data:
-                            break
-                        yield sock.write(data)
-                    fd.close()
-                    resp = yield sock.read_msg()
-                    assert resp == 'ACK'
-                except:
-                    logging.error("Couldn't transfer %s to %s", xf.name, self.ip_addr)
-                    # TODO: delete computation?
-                sock.close()
-
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock = AsynCoroSocket(sock, blocking=False,
-                                  keyfile=self.keyfile, certfile=self.certfile)
-            sock.settimeout(3)
-            yield sock.connect((self.scheduler_ip_addr, self.scheduler_port))
-            req = 'ADD_COMPUTE:' + cPickle.dumps({'ID':self._compute.id})
-            yield sock.write(self.auth_code)
-            yield sock.write_msg(req)
-            msg = yield sock.read_msg()
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock = AsynCoroSocket(sock, blocking=True,
+                              keyfile=self.keyfile, certfile=self.certfile)
+        sock.settimeout(3)
+        try:
+            sock.connect((self.scheduler_ip_addr, self.scheduler_port))
+            req = 'COMPUTE:' + cPickle.dumps(self._compute)
+            sock.write(self.auth_code)
+            sock.write_msg(req)
+            msg = sock.read_msg()
             sock.close()
             resp = cPickle.loads(msg)
-            if resp == self._compute.id:
-                logging.debug('Computation %s created with %s', self._compute.name, self._compute.id)
-                yield self._cluster.add_cluster(self, coro=coro)
-            else:
-                raise Exception('Computation "%s" could not be sent to scheduler' % self._compute.name)
-        Coro(_add_compute, self).value()
+            self._compute.id = resp['ID']
+            assert self._compute.id is not None
+        except:
+            logging.debug(traceback.format_exc())
+            raise Exception("Couldn't connect to scheduler at %s:%s" % \
+                            (self.scheduler_ip_addr, self.scheduler_port))
+        if resp['pulse_interval'] and self._cluster.pulse_interval:
+            self._cluster.pulse_interval = min(self._cluster.pulse_interval, resp['pulse_interval'])
+        else:
+            self._cluster.pulse_interval = max(self._cluster.pulse_interval, resp['pulse_interval'])
+
+        for xf in self._compute.xfer_files:
+            xf.compute_id = self._compute.id
+            logging.debug('Sending file "%s"', xf.name)
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock = AsynCoroSocket(sock, blocking=True,
+                                  keyfile=self.keyfile, certfile=self.certfile)
+            sock.settimeout(5)
+            try:
+                sock.connect((self.scheduler_ip_addr, self.scheduler_port))
+                msg = 'FILEXFER:' + cPickle.dumps(xf)
+                sock.write(self.auth_code)
+                sock.write_msg(msg)
+                fd = open(xf.name, 'rb')
+                while True:
+                    data = fd.read(10240000)
+                    if not data:
+                        break
+                    sock.write(data)
+                fd.close()
+                resp = sock.read_msg()
+                assert resp == 'ACK'
+            except:
+                logging.error("Couldn't transfer %s to %s", xf.name, self.ip_addr)
+                # TODO: delete computation?
+            sock.close()
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock = AsynCoroSocket(sock, blocking=True,
+                              keyfile=self.keyfile, certfile=self.certfile)
+        sock.settimeout(3)
+        sock.connect((self.scheduler_ip_addr, self.scheduler_port))
+        req = 'ADD_COMPUTE:' + cPickle.dumps({'ID':self._compute.id})
+        sock.write(self.auth_code)
+        sock.write_msg(req)
+        msg = sock.read_msg()
+        sock.close()
+        resp = cPickle.loads(msg)
+        if resp == self._compute.id:
+            logging.debug('Computation %s created with %s', self._compute.name, self._compute.id)
+            Coro(self._cluster.add_cluster, self).value()
+        else:
+            raise Exception('Computation "%s" could not be sent to scheduler' % self._compute.name)
 
     def submit(self, *args, **kwargs):
         """Submit a job for execution with the given arguments.
@@ -1802,32 +1795,28 @@ class SharedJobCluster(JobCluster):
                             str(args), str(kwargs), traceback.format_exc())
             return None
 
-        def _submit(self, _job, coro=None):
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock = AsynCoroSocket(sock, blocking=False,
-                                  keyfile=self.keyfile, certfile=self.certfile)
-            sock.settimeout(5)
-            yield sock.connect((self.scheduler_ip_addr, self.scheduler_port))
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock = AsynCoroSocket(sock, blocking=True,
+                              keyfile=self.keyfile, certfile=self.certfile)
+        sock.settimeout(5)
+        try:
+            sock.connect((self.scheduler_ip_addr, self.scheduler_port))
             req = 'JOB:' + cPickle.dumps(_job)
-            yield sock.write(self.auth_code)
-            yield sock.write_msg(req)
-            msg = yield sock.read_msg()
+            sock.write(self.auth_code)
+            sock.write_msg(req)
+            msg = sock.read_msg()
             _job.uid = cPickle.loads(msg)
             self._cluster._sched_cv.acquire()
             self._cluster._sched_jobs[_job.uid] = _job
             self._pending_jobs += 1
             self._complete.clear()
             self._cluster._sched_cv.release()
-            yield sock.write_msg('ACK')
+            sock.write_msg('ACK')
             sock.close()
             if self.fault_recover_file:
                 # TODO: reply may come back before we store it!
                 self.store_job_info(_job)
-            yield _job.job
-
-        try:
-            job = Coro(_submit, self, _job).value()
-            return job
+            return _job.job
         except:
             logging.warning('Creating job for "%s", "%s" failed with "%s"',
                             str(args), str(kwargs), traceback.format_exc())
@@ -1849,40 +1838,36 @@ class SharedJobCluster(JobCluster):
         return
 
     def cancel(self, job):
-        def _cancel(self, job, coro=None):
-            self._cluster._sched_cv.acquire()
-            _job = job._dispy_job_
-            if _job is None or self._cluster._clusters.get(_job.compute_id, None) != self:
-                logging.warning('Invalid job %s for cluster "%s"!', job.id, self._compute.name)
-                self._cluster._sched_cv.release()
-                yield -1; raise StopIteration
-            if job.status not in [DispyJob.Created, DispyJob.ProvisionalResult]:
-                logging.warning('Job %s is not valid for cancel (%s)', job.id, job.status)
-                self._cluster._sched_cv.release()
-                yield -1; raise StopIteration
+        self._cluster._sched_cv.acquire()
+        _job = job._dispy_job_
+        if _job is None or self._cluster._clusters.get(_job.compute_id, None) != self:
+            logging.warning('Invalid job %s for cluster "%s"!', job.id, self._compute.name)
+            self._cluster._sched_cv.release()
+            return -1
+        if job.status not in [DispyJob.Created, DispyJob.ProvisionalResult]:
+            logging.warning('Job %s is not valid for cancel (%s)', job.id, job.status)
+            self._cluster._sched_cv.release()
+            return -1
 
-            job.status = DispyJob.Cancelled
-            assert self._pending_jobs >= 1
-            yield self._cluster._sched_cv.release()
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock = AsynCoroSocket(sock, blocking=False,
-                                  keyfile=self.keyfile, certfile=self.certfile)
-            sock.settimeout(5)
-            try:
-                yield sock.connect((self.scheduler_ip_addr, self.scheduler_port))
-                req = 'TERMINATE_JOB:' + cPickle.dumps(_job)
-                yield sock.write(self.auth_code)
-                yield sock.write_msg(req)
-                logging.debug('Job %s is cancelled', _job.uid)
-            except:
-                logging.warning('Connection to scheduler failed: %s', traceback.format_exc())
-                yield -1; raise StopIteration
-            finally:
-                sock.close()
-
-            yield 0
-
-        return Coro(_cancel, self, job).value()
+        job.status = DispyJob.Cancelled
+        assert self._pending_jobs >= 1
+        self._cluster._sched_cv.release()
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock = AsynCoroSocket(sock, blocking=True,
+                              keyfile=self.keyfile, certfile=self.certfile)
+        sock.settimeout(5)
+        try:
+            sock.connect((self.scheduler_ip_addr, self.scheduler_port))
+            req = 'TERMINATE_JOB:' + cPickle.dumps(_job)
+            sock.write(self.auth_code)
+            sock.write_msg(req)
+            logging.debug('Job %s is cancelled', _job.uid)
+        except:
+            logging.warning('Connection to scheduler failed: %s', traceback.format_exc())
+            return -1
+        finally:
+            sock.close()
+        return 0
 
     def close(self):
         self._complete.wait()
@@ -1974,10 +1959,7 @@ def fault_recover_jobs(fault_recover_file, port=51348,
         if node_info is None:
             continue
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        if certfile:
-            sock = ssl.wrap_socket(sock, keyfile=keyfile, certfile=certfile)
-        else:
-            sock = AsynCoroSocket(sock, blocking=True)
+        sock = AsynCoroSocket(sock, blocking=True, keyfile=keyfile, certfile=certfile)
         sock.settimeout(2)
         try:
             sock.connect((job_info['ip_addr'], node_info['port']))

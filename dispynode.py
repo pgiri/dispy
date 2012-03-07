@@ -42,8 +42,7 @@ import shelve
 from dispy import _DispyJob_, _JobReply, DispyJob, \
      _Compute, _XferFile, _xor_string, _node_ipaddr, _dispy_version
 
-from asyncoro import Coro, CoroLock, AsynCoro, AsynCoroSocket, MetaSingleton, \
-     sock_read_msg, sock_write_msg
+from asyncoro import Coro, CoroLock, AsynCoro, AsynCoroSocket, MetaSingleton
 
 MaxFileSize = 102400000
 
@@ -64,13 +63,13 @@ def dispy_provisional_result(result):
     __dispy_job_reply.status = DispyJob.ProvisionalResult
     __dispy_job_reply.result = result
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    if __dispy_job_certfile:
-        sock = ssl.wrap_socket(sock, keyfile=__dispy_job_keyfile, certfile=__dispy_job_certfile)
+    sock = AsynCoroSocket(sock, blocking=True, keyfile=__dispy_job_keyfile,
+                          certfile=__dispy_job_certfile)
     sock.settimeout(2)
     try:
         sock.connect(__dispy_job_info.reply_addr)
-        sock_write_msg(sock, cPickle.dumps(__dispy_job_reply))
-        ack = sock_read_msg(sock)
+        sock.write_msg(cPickle.dumps(__dispy_job_reply))
+        ack = sock.read_msg()
     except:
         logging.warning("Couldn't send provisional results %s:\n%s",
                         str(result), traceback.format_exc())
@@ -137,16 +136,22 @@ def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
 class _DispyNode(object):
     """Internal use only.
     """
-    def __init__(self, cpus, ip_addr='', node_port=51348, dest_path_prefix='',
-                 scheduler_node=None, scheduler_port=51347,
-                 secret='', keyfile=None, certfile=None, max_file_size=None,
-                 zombie_interval=60):
+    def __init__(self, cpus, ip_addr='', node_port=51348, scheduler_node=None, scheduler_port=51347,
+                  dest_path_prefix='', secret='', keyfile=None, certfile=None,
+                 max_file_size=None, zombie_interval=60):
+        assert 0 < cpus <= multiprocessing.cpu_count()
         self.cpus = cpus
-        self.name = socket.gethostname()
         if ip_addr:
             ip_addr = _node_ipaddr(ip_addr)
+            if not ip_addr:
+                raise Exception('invalid ip_addr')
+            try:
+                self.name = socket.gethostbyaddr(ip_addr)[0]
+            except:
+                self.name = None
         else:
-            ip_addr = socket.gethostbyname(socket.gethostname())
+            self.name = socket.gethostname()
+            ip_addr = socket.gethostbyname(self.name)
         self.ip_addr = ip_addr
         self.scheduler_port = scheduler_port
         self.pulse_interval = None

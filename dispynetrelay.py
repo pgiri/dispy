@@ -29,7 +29,7 @@ import cPickle
 import select
 import logging
 
-from dispy import _node_name_ipaddr, _dispy_version
+from dispy import _node_ipaddr, _dispy_version
 
 class DispyNetRelay(object):
     """Internal use only.
@@ -75,7 +75,7 @@ class DispyNetRelay(object):
         bc_sock.bind(('', 0))
         bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
-        scheduler_ip_addr = _node_name_ipaddr(scheduler_node)[1]
+        scheduler_ip_addr = _node_ipaddr(scheduler_node)
         if scheduler_ip_addr and scheduler_port:
             relay_request = cPickle.dumps({'scheduler_ip_addr':scheduler_ip_addr,
                                            'scheduler_port':scheduler_port,
