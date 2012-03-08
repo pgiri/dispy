@@ -871,6 +871,7 @@ class _Scheduler(object):
                 yield self._sched_cv.release()
 
     def load_balance_schedule(self):
+        # TODO: maintain "available" sequence of nodes for better performance
         node = None
         load = None
         for ip_addr, host in self._nodes.iteritems():
@@ -926,34 +927,26 @@ class _Scheduler(object):
             setattr(reply, 'cpus', node.cpus)
             setattr(reply, 'start_time', _job.job.start_time)
             setattr(reply, 'end_time', _job.job.end_time)
-            if reply.status == DispyJob.ProvisionalResult:
-                logging.debug('Receveid provisional result for %s', reply.uid)
-                Coro(self.send_job_result,
-                     _job.uid, compute.id, cluster.client_scheduler_ip_addr,
-                     cluster.client_job_result_port, reply)
-                self._sched_cv.release()
-                raise StopIteration
-            else:
-                del self._sched_jobs[_job.uid]
         except:
             self._sched_cv.release()
             logging.warning('Invalid job result for %s from %s', reply.uid, addr[0])
             logging.debug(traceback.format_exc())
             raise StopIteration
 
-        _job.node.busy -= 1
-        assert compute.nodes[addr[0]] == _job.node
         if reply.status != DispyJob.ProvisionalResult:
+            del self._sched_jobs[_job.uid]
+            _job.node.busy -= 1
+            assert compute.nodes[addr[0]] == _job.node
             if reply.status != DispyJob.Terminated:
                 _job.node.jobs += 1
             _job.node.cpu_time += _job.job.end_time - _job.job.start_time
             cluster._pending_jobs -= 1
             if cluster._pending_jobs == 0:
                 cluster.end_time = time.time()
+            self._sched_cv.notify()
+        self._sched_cv.release()
         Coro(self.send_job_result, _job.uid, compute.id, cluster.client_scheduler_ip_addr,
              cluster.client_job_result_port, reply)
-        self._sched_cv.notify()
-        self._sched_cv.release()
 
     def job_result_server(self, coro=None):
         # generator

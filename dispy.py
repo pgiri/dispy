@@ -716,7 +716,14 @@ class _Cluster(object):
         # generator
         assert coro is not None
         if cluster.fault_recover_file:
-            self.store_job_info(_job, cluster)
+            self.fault_recover_lock.acquire()
+            shelf = shelve.open(cluster.fault_recover_file, flag='c')
+            state = {'id':_job.job.id, 'hash':_job.hash, 'compute_id':_job.compute_id,
+                     'args':_job.args, 'kwargs':_job.kwargs,
+                     'ip_addr':_job.node.ip_addr, 'port':_job.node.port}
+            shelf[str(_job.uid)] = state
+            shelf.close()
+            self.fault_recover_lock.release()
             # not really necessary to remove it in case of exception
         try:
             yield _job.run(coro=coro)
@@ -1133,20 +1140,6 @@ class _Cluster(object):
         yield self._sched_cv.release()
         logging.debug('scheduler quit')
 
-    def store_job_info(self, _job, cluster):
-        # non-generator
-        if not cluster.fault_recover_file:
-            return
-        self.fault_recover_lock.acquire()
-        shelf = shelve.open(cluster.fault_recover_file, flag='c')
-        state = {'id':_job.job.id, 'hash':_job.hash, 'compute_id':_job.compute_id,
-                 'args':_job.args, 'kwargs':_job.kwargs,
-                 'ip_addr':_job.node.ip_addr, 'port':_job.node.port}
-        shelf[str(_job.uid)] = state
-        shelf.close()
-        self.fault_recover_lock.release()
-        return
-
     def submit_job(self, _job, coro=None):
         # generator
         assert coro is not None
@@ -1161,8 +1154,7 @@ class _Cluster(object):
         cluster._complete.clear()
         logging.debug('adding job %s', _job.uid)
         self._sched_cv.notify()
-        self._sched_cv.release()
-        yield True
+        yield self._sched_cv.release()
 
     def cancel_job(self, job, coro=None):
         # generator
@@ -1286,7 +1278,7 @@ class JobCluster(object):
     """Create an instance of cluster for a specific computation.
     """
 
-    def __init__(self, computation, nodes=['*'], depends=[], callback=None, max_cpus=None,
+    def __init__(self, computation, nodes=['*'], depends=[], callback=None,
                  ip_addr=None, port=None, node_port=None, dest_path=None,
                  loglevel=logging.WARNING, cleanup=True, ping_interval=None, pulse_interval=None,
                  reentrant=False, secret='', keyfile=None, certfile=None, fault_recover=None):
@@ -1561,10 +1553,6 @@ class JobCluster(object):
                 raise Exception('"nodes" argument is invalid')
 
         self._compute = compute
-        if max_cpus is not None:
-            max_cpus = int(max_cpus)
-        self._max_cpus = max_cpus
-        self._cpus = 0
         self._pending_jobs = 0
         self._jobs = []
         self._complete = threading.Event()
@@ -1592,8 +1580,7 @@ class JobCluster(object):
             logging.warning('Creating job for "%s", "%s" failed with "%s"',
                             str(args), str(kwargs), traceback.format_exc())
             return None
-        v = Coro(self._cluster.submit_job, _job).value()
-        assert v is True
+        Coro(self._cluster.submit_job, _job).value()
         return _job.job
 
     def cancel(self, job):
@@ -1672,13 +1659,19 @@ class SharedJobCluster(JobCluster):
         if pulse_interval is not None:
             logging.warning('pulse_interval is not used in SharedJobCluster; ' \
                             'dispyscheduler should be started appropriately.')
+        def _terminate_scheduler(self, coro=None):
+            self._cluster._sched_cv.acquire()
+            self._cluster.terminate_scheduler = True
+            self._cluster._sched_cv.notify()
+            yield self._cluster._sched_cv.release()
+        Coro(_terminate_scheduler, self)
+        # wait for scheduler to terminate
+        self._cluster._scheduler.value()
+        self._cluster.job_uid = None
+        self._compute.node_spec = nodes
         self.pulse_interval = None
         self.keyfile = keyfile
         self.certfile = certfile
-        self._cluster.job_uid = None
-        self._cluster.terminate_scheduler = True
-        self._cluster._sched_cv.notify()
-        self._compute.node_spec = nodes
         if scheduler_node:
             self.scheduler_ip_addr = _node_ipaddr(scheduler_node)
         else:
@@ -1708,11 +1701,11 @@ class SharedJobCluster(JobCluster):
             finally:
                 sock.close()
         else:
+            srv_sock.close()
             raise Exception('Could not connect to scheduler at %s:%s',
                             self.scheduler_ip_addr, self.scheduler_udp_port)
         srv_sock.close()
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock = AsynCoroSocket(sock, blocking=True,
+        sock = AsynCoroSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), blocking=True,
                               keyfile=self.keyfile, certfile=self.certfile)
         sock.settimeout(3)
         try:
@@ -1760,8 +1753,7 @@ class SharedJobCluster(JobCluster):
                 # TODO: delete computation?
             sock.close()
 
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock = AsynCoroSocket(sock, blocking=True,
+        sock = AsynCoroSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), blocking=True,
                               keyfile=self.keyfile, certfile=self.certfile)
         sock.settimeout(3)
         sock.connect((self.scheduler_ip_addr, self.scheduler_port))
@@ -1795,79 +1787,76 @@ class SharedJobCluster(JobCluster):
                             str(args), str(kwargs), traceback.format_exc())
             return None
 
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock = AsynCoroSocket(sock, blocking=True,
-                              keyfile=self.keyfile, certfile=self.certfile)
-        sock.settimeout(5)
-        try:
-            sock.connect((self.scheduler_ip_addr, self.scheduler_port))
-            req = 'JOB:' + cPickle.dumps(_job)
-            sock.write(self.auth_code)
-            sock.write_msg(req)
-            msg = sock.read_msg()
-            _job.uid = cPickle.loads(msg)
-            self._cluster._sched_cv.acquire()
-            self._cluster._sched_jobs[_job.uid] = _job
-            self._pending_jobs += 1
-            self._complete.clear()
-            self._cluster._sched_cv.release()
-            sock.write_msg('ACK')
-            sock.close()
-            if self.fault_recover_file:
-                # TODO: reply may come back before we store it!
-                self.store_job_info(_job)
-            return _job.job
-        except:
-            logging.warning('Creating job for "%s", "%s" failed with "%s"',
-                            str(args), str(kwargs), traceback.format_exc())
-            _job.job._dispy_job_ = None
-            del _job.job
-            return None
-
-    def store_job_info(self, _job):
-        if not self.fault_recover_file:
-            return
-        self._cluster.fault_recover_lock.acquire()
-        shelf = shelve.open(self.fault_recover_file, flag='c')
-        state = {'id':_job.job.id, 'hash':_job.hash, 'compute_id':_job.compute_id,
-                 'args':_job.args, 'kwargs':_job.kwargs,
-                 'ip_addr':self.scheduler_ip_addr, 'port':self.scheduler_port}
-        shelf[str(_job.uid)] = state
-        shelf.close()
-        self._cluster.fault_recover_lock.release()
-        return
+        def _submit_job(self, _job, coro=None):
+            # due to _sched_cv, this part must be Coro
+            sock = AsynCoroSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), blocking=False,
+                                  keyfile=self.keyfile, certfile=self.certfile)
+            sock.settimeout(5)
+            try:
+                yield sock.connect((self.scheduler_ip_addr, self.scheduler_port))
+                req = 'JOB:' + cPickle.dumps(_job)
+                yield sock.write(self.auth_code)
+                yield sock.write_msg(req)
+                msg = yield sock.read_msg()
+                _job.uid = cPickle.loads(msg)
+                self._cluster._sched_cv.acquire()
+                self._cluster._sched_jobs[_job.uid] = _job
+                self._pending_jobs += 1
+                self._complete.clear()
+                yield self._cluster._sched_cv.release()
+                if self.fault_recover_file:
+                    self._cluster.fault_recover_lock.acquire()
+                    shelf = shelve.open(self.fault_recover_file, flag='c')
+                    state = {'id':_job.job.id, 'hash':_job.hash, 'compute_id':_job.compute_id,
+                             'args':_job.args, 'kwargs':_job.kwargs,
+                             'ip_addr':self.scheduler_ip_addr, 'port':self.scheduler_port}
+                    shelf[str(_job.uid)] = state
+                    shelf.close()
+                    self._cluster.fault_recover_lock.release()
+                yield sock.write_msg('ACK')
+                sock.close()
+                yield _job.job
+            except:
+                logging.warning('Creating job for "%s", "%s" failed with "%s"',
+                                str(args), str(kwargs), traceback.format_exc())
+                _job.job._dispy_job_ = None
+                del _job.job
+                yield None
+        return Coro(_submit_job, self, _job).value()
 
     def cancel(self, job):
-        self._cluster._sched_cv.acquire()
-        _job = job._dispy_job_
-        if _job is None or self._cluster._clusters.get(_job.compute_id, None) != self:
-            logging.warning('Invalid job %s for cluster "%s"!', job.id, self._compute.name)
-            self._cluster._sched_cv.release()
-            return -1
-        if job.status not in [DispyJob.Created, DispyJob.ProvisionalResult]:
-            logging.warning('Job %s is not valid for cancel (%s)', job.id, job.status)
-            self._cluster._sched_cv.release()
-            return -1
+        def _cancel_job(self, job, coro=None):
+            # due to _sched_cv, this part must be Coro
+            self._cluster._sched_cv.acquire()
+            _job = job._dispy_job_
+            if _job is None or self._cluster._clusters.get(_job.compute_id, None) != self:
+                logging.warning('Invalid job %s for cluster "%s"!', job.id, self._compute.name)
+                self._cluster._sched_cv.release()
+                yield -1; raise StopIteration
+            if job.status not in [DispyJob.Created, DispyJob.ProvisionalResult]:
+                logging.warning('Job %s is not valid for cancel (%s)', job.id, job.status)
+                self._cluster._sched_cv.release()
+                yield -1; raise StopIteration
 
-        job.status = DispyJob.Cancelled
-        assert self._pending_jobs >= 1
-        self._cluster._sched_cv.release()
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock = AsynCoroSocket(sock, blocking=True,
-                              keyfile=self.keyfile, certfile=self.certfile)
-        sock.settimeout(5)
-        try:
-            sock.connect((self.scheduler_ip_addr, self.scheduler_port))
-            req = 'TERMINATE_JOB:' + cPickle.dumps(_job)
-            sock.write(self.auth_code)
-            sock.write_msg(req)
-            logging.debug('Job %s is cancelled', _job.uid)
-        except:
-            logging.warning('Connection to scheduler failed: %s', traceback.format_exc())
-            return -1
-        finally:
-            sock.close()
-        return 0
+            job.status = DispyJob.Cancelled
+            assert self._pending_jobs >= 1
+            self._cluster._sched_cv.release()
+            sock = AsynCoroSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), blocking=False,
+                                  keyfile=self.keyfile, certfile=self.certfile)
+            sock.settimeout(5)
+            try:
+                yield sock.connect((self.scheduler_ip_addr, self.scheduler_port))
+                req = 'TERMINATE_JOB:' + cPickle.dumps(_job)
+                yield sock.write(self.auth_code)
+                yield sock.write_msg(req)
+                logging.debug('Job %s is cancelled', _job.uid)
+            except:
+                logging.warning('Connection to scheduler failed: %s', traceback.format_exc())
+                yield -1; raise StopIteration
+            finally:
+                sock.close()
+            yield 0; raise StopIteration
+        return Coro(_cancel_job, self, job).value()
 
     def close(self):
         self._complete.wait()

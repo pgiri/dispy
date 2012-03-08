@@ -108,9 +108,9 @@ class MetaSingleton(type):
         return cls.__instance
 
 class _AsynCoroSocket(object):
-    """Base class socket for use with AsynCoro, for asynchronous I/O
+    """Base class for use with AsynCoro, for asynchronous I/O
     completion and coroutines. This class is for internal use
-    only. Use AsnyCoroSocket, defined below, instead.
+    only. Use AsynCoroSocket, defined below, instead.
     """
 
     _default_timeout = None
@@ -1122,7 +1122,8 @@ class CoroLock(object):
 
     def release(self):
         owner = self._asyncoro.cur_coro()
-        assert self._owner == owner, '"%s"/%s: invalid lock release - owned by "%s"/%s' % \
+        assert self._owner == owner and owner is not None, \
+               '"%s"/%s: invalid lock release - owned by "%s"/%s' % \
                (owner.name, owner._id, self._owner.name, self._owner._id)
         self._owner = None
 
@@ -1148,13 +1149,15 @@ class CoroCondition(object):
 
     def release(self):
         owner = self._asyncoro.cur_coro()
-        assert self._owner == owner, '"%s"/%s: invalid condition variable release - owned by "%s"/%s' % \
+        assert self._owner == owner and owner is not None, \
+               '"%s"/%s: invalid condition variable release - owned by "%s"/%s' % \
                (owner.name, owner._id, self._owner.name, self._owner._id)
         self._owner = None
 
     def notify(self):
         owner = self._asyncoro.cur_coro()
-        assert self._owner == owner, '"%s"/%s: invalid condition variable notify - owned by "%s"/%s' % \
+        assert self._owner == owner and owner is not None, \
+               '"%s"/%s: invalid condition variable notify - owned by "%s"/%s' % \
                (owner.name, owner._id, self._owner.name, self._owner._id)
         self._notify = True
         if self._waitlist:
@@ -1175,7 +1178,8 @@ class CoroCondition(object):
         """
         coro = self._asyncoro.cur_coro()
         if self._owner is not None:
-            assert self._owner == coro, '"%s"/%s: invalid condition variable wait - owned by "%s"/%s' % \
+            assert self._owner == coro, \
+                   '"%s"/%s: invalid condition variable wait - owned by "%s"/%s' % \
                    (coro.name, coro._id, self._owner.name, self._owner._id)
         if self._notify:
             self._notify = False
@@ -1231,9 +1235,10 @@ class AsynCoro(object):
 
     @classmethod
     def instance(cls):
-        """Returns (singleton) instance of AsynCoro. This method
-        should be called only after initializing AsynCoro.
+        """Returns (singleton) instance of AsynCoro.
         """
+        if cls.__instance is None:
+            cls.__instance = cls()
         return cls.__instance
 
     def cur_coro(self):

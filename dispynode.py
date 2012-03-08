@@ -233,9 +233,9 @@ class _DispyNode(object):
         pong_msg = 'PONG:' + cPickle.dumps(pong_msg)
 
         if scheduler_ip_addr:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock = AsynCoroSocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
             try:
-                sock.sendto(pong_msg, (scheduler_ip_addr, self.scheduler_port))
+                yield sock.sendto(pong_msg, (scheduler_ip_addr, self.scheduler_port))
             except:
                 logging.warning("Couldn't send ping message to %s:%s",
                                 scheduler_ip_addr, self.scheduler_port)
