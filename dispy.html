@@ -338,7 +338,60 @@ if the program imported those modules before cluster is created.
 </p>
 
 <p>
+  'dispy_provisional_result' function can be used in computations
+  (python functions) to send provisional results back to the
+  client. For example, in optimization computations, there may be many
+  (sub) optimal results that the computations can inform the client
+  (program) that may cancel computations, or create additional
+  computations, etc. 'dispy_provisional_result' can be used to send
+  any information, any number of times, back to the client. As an
+  illustrative example, consider:
+  </p>
+<code>#!/usr/bin/env python
 
+import random, dispy
+
+def compute(n, threshold):
+    import random, time, socket
+    name = socket.gethostname()
+    for i in xrange(0, n):
+        r = random.uniform(0, 1)
+        if r <= threshold:
+            # possible result
+            dispy_provisional_result((name, r))
+        time.sleep(0.1)
+    # final result
+    return None
+
+def job_callback(job):
+    # callback is called for Terminated status, too, in which case
+    # job.result would be None
+    if job.result is not None:
+        if job.result[1] < 0.005:
+            print '%s computed: %s' % (job.result[0], job.result[1])
+            global jobs, cluster
+            for j in jobs:
+                if j.status == dispy.DispyJob.ProvisionalResult:
+                    cluster.cancel(j)
+
+if __name__ == '__main__':
+    cluster = dispy.JobCluster(compute, callback=job_callback)
+    jobs = []
+    for n in xrange(4):
+        job = cluster.submit(random.randint(50,100), 0.2)
+        if job is None:
+            print 'creating job %s failed!' % n
+            continue
+        job.id = n
+        jobs.append(job)
+    cluster.wait()
+    cluster.stats()
+    cluster.close()
+  </code>
+<p>
+  In the above example, computations send provisional result if
+  computed number is <= threshold (0.2). If the number computed is <
+  0.005, job_callback deems it acceptable and terminates computations.
   </p>
 
 <p>

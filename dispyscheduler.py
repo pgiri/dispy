@@ -1062,6 +1062,7 @@ class _Scheduler(object):
                 assert node.busy < node.cpus
                 # _job.ip_addr = node.ip_addr
                 self._sched_jobs[_job.uid] = _job
+                _job.job.status = DispyJob.Running
                 self.unsched_jobs -= 1
                 node.busy += 1
                 Coro(self.run_job, _job, cluster)

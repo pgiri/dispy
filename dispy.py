@@ -396,7 +396,6 @@ class _DispyJob_(object):
         if resp != 'ACK':
             logging.warning('Failed to run %s on %s', self.uid, self.node.ip_addr)
             raise Exception(str(resp))
-        self.job.status = DispyJob.Running
         yield resp
 
     def finish(self, status):
@@ -908,6 +907,7 @@ class _Cluster(object):
             job.stderr = reply.stderr
             job.exception = reply.exception
             if self.shared:
+                assert addr[0] == cluster.scheduler_ip_addr
                 job.ip_addr = reply.ip_addr
                 job.start_time = getattr(reply, 'start_time', None)
                 job.end_time = getattr(reply, 'end_time', None)
@@ -924,43 +924,29 @@ class _Cluster(object):
 
         self._sched_cv.acquire()
         if reply.status == DispyJob.ProvisionalResult:
-            self.finish_job(_job, DispyJob.ProvisionalResult, cluster)
-            self._sched_cv.release()
-            raise StopIteration
+            self.finish_job(_job, reply.status, cluster)
         else:
             del self._sched_jobs[_job.uid]
-
-        if self.shared is False:
-            if reply.status == DispyJob.Terminated:
-                assert job.status in [DispyJob.Running, DispyJob.Cancelled,
-                                      DispyJob.Terminated], \
-                       'invalid job status for %s: %s' % (_job.uid, job.status)
+            if self.shared:
+                node = self._nodes.get(job.ip_addr, None)
+                if node is None:
+                    node = _Node(job.ip_addr, 0, getattr(reply, 'cpus', 0), '', None,
+                                 keyfile=None, certfile=None)
+                    self._nodes[job.ip_addr] = node
+                    compute.nodes[job.ip_addr] = node
+                job.status = reply.status
+                if job.status == DispyJob.Finished:
+                    node.jobs += 1
+                if job.end_time is not None:
+                    node.cpu_time += job.end_time - job.start_time
             else:
-                assert job.status in [DispyJob.Running, DispyJob.ProvisionalResult], \
-                       'status of %s: %s, %s' % (_job.uid, job.status, reply.status)
-                node.jobs += 1
-            node.busy -= 1
-            node.cpu_time += job.end_time - job.start_time
-        else:
-            if addr[0] != cluster.scheduler_ip_addr:
-                logging.warning('Ignoring job reply from %s', addr[0])
-                self._sched_cv.release()
-                raise StopIteration
-            node = self._nodes.get(job.ip_addr, None)
-            if node is None:
-                node = _Node(job.ip_addr, 0, getattr(reply, 'cpus', 0), '', None,
-                             keyfile=None, certfile=None)
-                self._nodes[job.ip_addr] = node
-                compute.nodes[job.ip_addr] = node
-            job.status = reply.status
-            if job.status == DispyJob.Finished:
-                node.jobs += 1
-            if job.end_time is not None:
+                if reply.status == DispyJob.Finished:
+                    node.jobs += 1
+                node.busy -= 1
                 node.cpu_time += job.end_time - job.start_time
-        self.finish_job(_job, reply.status, cluster)
-        self._sched_cv.notify()
+            self.finish_job(_job, reply.status, cluster)
+            self._sched_cv.notify()
         self._sched_cv.release()
-        raise StopIteration # job_result_task
 
     def reschedule_jobs(self, dead_jobs, coro):
         # non-generator, called with _sched_cv locked
@@ -998,6 +984,7 @@ class _Cluster(object):
                     timeout = max(self.pulse_timeout, self.ping_interval)
 
             reset = yield coro.suspend(timeout)
+
             now = time.time()
             if self.pulse_timeout and (now - last_pulse_time) >= self.pulse_timeout:
                 last_pulse_time = now
@@ -1109,6 +1096,7 @@ class _Cluster(object):
                               _job.uid, node.ip_addr, float(node.busy) / node.cpus, node.busy)
                 assert node.busy < node.cpus
                 self._sched_jobs[_job.uid] = _job
+                _job.job.status = DispyJob.Running
                 self.unsched_jobs -= 1
                 node.busy += 1
                 Coro(self.run_job, _job, cluster)
@@ -1174,7 +1162,6 @@ class _Cluster(object):
             yield -1; raise StopIteration
         assert cluster._pending_jobs >= 1
         if _job.job.status == DispyJob.Created:
-            assert _job.uid not in self._sched_jobs
             cluster._jobs.remove(_job)
             self.unsched_jobs -= 1
             self.finish_job(_job, DispyJob.Cancelled, cluster)
