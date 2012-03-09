@@ -68,8 +68,8 @@ def dispy_provisional_result(result):
     sock.settimeout(2)
     try:
         sock.connect(__dispy_job_info.reply_addr)
-        sock.write_msg(cPickle.dumps(__dispy_job_reply))
-        ack = sock.read_msg()
+        sock.send_msg(cPickle.dumps(__dispy_job_reply))
+        ack = sock.recv_msg()
     except:
         logging.warning("Couldn't send provisional results %s:\n%s",
                         str(result), traceback.format_exc())
@@ -324,14 +324,14 @@ class _DispyNode(object):
             if self.avail_cpus == 0:
                 logging.warning('All cpus busy')
                 try:
-                    yield conn.write_msg('NAK (all cpus busy)')
+                    yield conn.send_msg('NAK (all cpus busy)')
                 except:
                     pass
                 raise StopIteration
             elif compute is None:
                 logging.warning('Invalid computation %s', _job.compute_id)
                 try:
-                    yield conn.write_msg('NAK (invalid computation %s)' % _job.compute_id)
+                    yield conn.send_msg('NAK (invalid computation %s)' % _job.compute_id)
                 except:
                     pass
                 raise StopIteration
@@ -364,7 +364,7 @@ class _DispyNode(object):
                         _job.args, _job.kwargs, self.reply_Q,
                         compute.env, compute.name, compute.code, compute.dest_path, _job.files)
                 try:
-                    yield conn.write_msg('ACK')
+                    yield conn.send_msg('ACK')
                 except:
                     logging.warning('Failed to send response for new job to %s',
                                     str(addr))
@@ -380,7 +380,7 @@ class _DispyNode(object):
                 raise StopIteration
             elif compute.type == _Compute.prog_type:
                 try:
-                    yield conn.write_msg('ACK')
+                    yield conn.send_msg('ACK')
                 except:
                     logging.warning('Failed to send response for new job to %s',
                                     str(addr))
@@ -398,7 +398,7 @@ class _DispyNode(object):
                 raise StopIteration
             else:
                 try:
-                    yield conn.write_msg('NAK (invalid computation type "%s")' % compute.type)
+                    yield conn.send_msg('NAK (invalid computation type "%s")' % compute.type)
                 except:
                     logging.warning('Failed to send response for new job to %s',
                                     str(addr))
@@ -410,7 +410,7 @@ class _DispyNode(object):
             except:
                 logging.debug('Ignoring computation request from %s', addr[0])
                 try:
-                    yield conn.write_msg('Invalid computation request')
+                    yield conn.send_msg('Invalid computation request')
                 except:
                     logging.warning('Failed to send reply to %s', str(addr))
                 raise StopIteration
@@ -423,7 +423,7 @@ class _DispyNode(object):
                               self.avail_cpus, self.cpus)
                 self.lock.release()
                 try:
-                    yield conn.write_msg('Busy')
+                    yield conn.send_msg('Busy')
                 except:
                     pass
                 raise StopIteration
@@ -451,7 +451,7 @@ class _DispyNode(object):
                     os.rmdir(compute.dest_path)
                 self.lock.release()
                 try:
-                    yield conn.write_msg('NACK (Invalid dest_path)')
+                    yield conn.send_msg('NACK (Invalid dest_path)')
                 except:
                     logging.warning('Failed to send reply to %s', str(addr))
                 raise StopIteration
@@ -475,7 +475,7 @@ class _DispyNode(object):
                         os.rmdir(compute.dest_path)
                     self.lock.release()
                     try:
-                        yield conn.write_msg('NACK (Compilation failed)')
+                        yield conn.send_msg('NACK (Compilation failed)')
                     except:
                         logging.warning('Failed to send reply to %s', str(addr))
                     raise StopIteration
@@ -506,7 +506,7 @@ class _DispyNode(object):
                 if xfer_files:
                     resp += ':XFER_FILES:' + cPickle.dumps(xfer_files)
                 try:
-                    yield conn.write_msg(resp)
+                    yield conn.send_msg(resp)
                 except:
                     pass
                 self.timer_coro.resume(True)
@@ -514,7 +514,7 @@ class _DispyNode(object):
                 if os.path.isdir(compute.dest_path):
                     os.rmdir(compute.dest_path)
                 try:
-                    yield conn.write_msg('Busy')
+                    yield conn.send_msg('Busy')
                 except:
                     pass
 
@@ -550,7 +550,7 @@ class _DispyNode(object):
                     fd = open(tgt, 'wb')
                     n = 0
                     while n < xf.stat_buf.st_size:
-                        data = yield conn.read(min(xf.stat_buf.st_size-n, 10240000))
+                        data = yield conn.recvall(min(xf.stat_buf.st_size-n, 10240000))
                         if not data:
                             break
                         fd.write(data)
@@ -573,7 +573,7 @@ class _DispyNode(object):
                                     xf.name, traceback.format_exc())
                     resp = 'NACK'
                 try:
-                    yield conn.write_msg(resp)
+                    yield conn.send_msg(resp)
                 except:
                     logging.debug('Could not send reply for "%s"', xf.name)
             raise StopIteration # xfer_file_task
@@ -639,7 +639,7 @@ class _DispyNode(object):
             except:
                 resp = cPickle.dumps('Invalid job')
                 try:
-                    yield conn.write_msg(resp)
+                    yield conn.send_msg(resp)
                 except:
                     pass
                 raise StopIteration
@@ -648,8 +648,8 @@ class _DispyNode(object):
             resp = None
             if job_info is not None:
                 try:
-                    yield conn.write_msg(cPickle.dumps(job_info.job_reply))
-                    ack = yield conn.read_msg()
+                    yield conn.send_msg(cPickle.dumps(job_info.job_reply))
+                    ack = yield conn.recv_msg()
                     # no need to check ack
                 except:
                     logging.debug('Could not send reply for job %s', req['uid'])
@@ -667,8 +667,8 @@ class _DispyNode(object):
                         job_reply = None
                     if hasattr(job_reply, 'hash') and job_reply.hash == req['hash']:
                         try:
-                            yield conn.write_msg(cPickle.dumps(job_reply))
-                            ack = yield conn.read_msg()
+                            yield conn.send_msg(cPickle.dumps(job_reply))
+                            ack = yield conn.recv_msg()
                             assert ack == 'ACK'
                         except:
                             logging.debug('Could not send reply for job %s', req['uid'])
@@ -694,19 +694,19 @@ class _DispyNode(object):
 
             if resp:
                 try:
-                    yield conn.write_msg(resp)
+                    yield conn.send_msg(resp)
                 except:
                     pass
 
         # tcp_serve_task starts
         try:
-            req = yield conn.read(len(self.auth_code))
+            req = yield conn.recvall(len(self.auth_code))
             assert req == self.auth_code
         except:
             logging.warning('Ignoring request; invalid client authentication?')
             conn.close()
             raise StopIteration
-        msg = yield conn.read_msg()
+        msg = yield conn.recv_msg()
         if not msg:
             conn.close()
             raise StopIteration
@@ -752,7 +752,7 @@ class _DispyNode(object):
                             msg[:min(10, len(msg))], addr[0])
             resp = 'NAK (invalid command: %s)' % (msg[:min(10, len(msg))])
             try:
-                yield conn.write_msg(resp)
+                yield conn.send_msg(resp)
             except:
                 logging.warning('Failed to send reply to %s', str(addr))
             conn.close()
@@ -884,8 +884,8 @@ class _DispyNode(object):
         sock.settimeout(2)
         try:
             yield sock.connect(job_info.reply_addr)
-            yield sock.write_msg(cPickle.dumps(job_reply))
-            ack = yield sock.read_msg()
+            yield sock.send_msg(cPickle.dumps(job_reply))
+            ack = yield sock.recv_msg()
             assert ack == 'ACK'
         except:
             logging.error("Couldn't send results for %s to %s",

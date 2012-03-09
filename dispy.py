@@ -42,7 +42,6 @@ import datetime
 import atexit
 import platform
 
-import asyncoro
 from asyncoro import Coro, AsynCoro, CoroLock, CoroCondition, AsynCoroSocket, MetaSingleton
 
 _dispy_version = '2.3'
@@ -263,10 +262,10 @@ class _Node(object):
         sock.settimeout(5)
         try:
             yield sock.connect((self.ip_addr, self.port))
-            yield sock.write(self.auth_code)
-            yield sock.write_msg(msg)
+            yield sock.sendall(self.auth_code)
+            yield sock.send_msg(msg)
             if reply:
-                resp = yield sock.read_msg()
+                resp = yield sock.recv_msg()
             else:
                 resp = None
         except:
@@ -289,16 +288,16 @@ class _Node(object):
         try:
             yield sock.connect((self.ip_addr, self.port))
             msg = 'FILEXFER:' + cPickle.dumps(xf)
-            yield sock.write(self.auth_code)
-            yield sock.write_msg(msg)
+            yield sock.sendall(self.auth_code)
+            yield sock.send_msg(msg)
             fd = open(xf.name, 'rb')
             while True:
                 data = fd.read(10240000)
                 if not data:
                     break
-                yield sock.write(data)
+                yield sock.sendall(data)
             fd.close()
-            resp = yield sock.read_msg()
+            resp = yield sock.recv_msg()
             assert resp == 'ACK'
         except:
             logging.error("Couldn't transfer %s to %s", xf.name, self.ip_addr)
@@ -591,8 +590,8 @@ class _Cluster(object):
             sock.settimeout(2)
             yield sock.connect((cluster.scheduler_ip_addr, cluster.scheduler_port))
             req = 'DEL_COMPUTE:' + cPickle.dumps({'ID':cluster._compute.id})
-            yield sock.write(cluster.auth_code)
-            yield sock.write_msg(req)
+            yield sock.sendall(cluster.auth_code)
+            yield sock.send_msg(req)
             sock.close()
         else:
             self._sched_cv.acquire()
@@ -736,6 +735,7 @@ class _Cluster(object):
             # this job might have been deleted already due to timeout
             if self._sched_jobs.pop(_job.uid, None) == _job:
                 cluster._jobs.insert(0, _job)
+                _job.job.status = DispyJob.Created
                 self.unsched_jobs += 1
                 _job.node.busy -= 1
             self._sched_cv.notify()
@@ -749,6 +749,7 @@ class _Cluster(object):
             # this job might have been deleted already due to timeout
             if self._sched_jobs.pop(_job.uid, None) == _job:
                 cluster._jobs.append(_job)
+                _job.job.status = DispyJob.Created
                 self.unsched_jobs += 1
                 _job.node.busy -= 1
             self._sched_cv.notify()
@@ -870,8 +871,8 @@ class _Cluster(object):
         # generator
         assert coro is not None
         try:
-            msg = yield sock.read_msg()
-            yield sock.write_msg('ACK')
+            msg = yield sock.recv_msg()
+            yield sock.send_msg('ACK')
             reply = cPickle.loads(msg)
         except:
             logging.warning('Failed to read job result from %s: %s',
@@ -1252,7 +1253,7 @@ class _Cluster(object):
                 name = ip_addr + ' (' + node.name + ')'
             else:
                 name = ip_addr
-            print ' %30.30s | %5s | %7s | %10.3f | %13.3f' % \
+            print ' %-30.30s | %5s | %7s | %10.3f | %13.3f' % \
                   (name, node.cpus, node.jobs, secs_per_job, node.cpu_time)
         print
         msg = 'Total job time: %.3f sec' % cpu_time
@@ -1698,9 +1699,9 @@ class SharedJobCluster(JobCluster):
         try:
             sock.connect((self.scheduler_ip_addr, self.scheduler_port))
             req = 'COMPUTE:' + cPickle.dumps(self._compute)
-            sock.write(self.auth_code)
-            sock.write_msg(req)
-            msg = sock.read_msg()
+            sock.sendall(self.auth_code)
+            sock.send_msg(req)
+            msg = sock.recv_msg()
             sock.close()
             resp = cPickle.loads(msg)
             self._compute.id = resp['ID']
@@ -1724,16 +1725,16 @@ class SharedJobCluster(JobCluster):
             try:
                 sock.connect((self.scheduler_ip_addr, self.scheduler_port))
                 msg = 'FILEXFER:' + cPickle.dumps(xf)
-                sock.write(self.auth_code)
-                sock.write_msg(msg)
+                sock.sendall(self.auth_code)
+                sock.send_msg(msg)
                 fd = open(xf.name, 'rb')
                 while True:
                     data = fd.read(10240000)
                     if not data:
                         break
-                    sock.write(data)
+                    sock.sendall(data)
                 fd.close()
-                resp = sock.read_msg()
+                resp = sock.recv_msg()
                 assert resp == 'ACK'
             except:
                 logging.error("Couldn't transfer %s to %s", xf.name, self.ip_addr)
@@ -1745,9 +1746,9 @@ class SharedJobCluster(JobCluster):
         sock.settimeout(3)
         sock.connect((self.scheduler_ip_addr, self.scheduler_port))
         req = 'ADD_COMPUTE:' + cPickle.dumps({'ID':self._compute.id})
-        sock.write(self.auth_code)
-        sock.write_msg(req)
-        msg = sock.read_msg()
+        sock.sendall(self.auth_code)
+        sock.send_msg(req)
+        msg = sock.recv_msg()
         sock.close()
         resp = cPickle.loads(msg)
         if resp == self._compute.id:
@@ -1782,9 +1783,9 @@ class SharedJobCluster(JobCluster):
             try:
                 yield sock.connect((self.scheduler_ip_addr, self.scheduler_port))
                 req = 'JOB:' + cPickle.dumps(_job)
-                yield sock.write(self.auth_code)
-                yield sock.write_msg(req)
-                msg = yield sock.read_msg()
+                yield sock.sendall(self.auth_code)
+                yield sock.send_msg(req)
+                msg = yield sock.recv_msg()
                 _job.uid = cPickle.loads(msg)
                 self._cluster._sched_cv.acquire()
                 self._cluster._sched_jobs[_job.uid] = _job
@@ -1800,7 +1801,7 @@ class SharedJobCluster(JobCluster):
                     shelf[str(_job.uid)] = state
                     shelf.close()
                     self._cluster.fault_recover_lock.release()
-                yield sock.write_msg('ACK')
+                yield sock.send_msg('ACK')
                 sock.close()
                 yield _job.job
             except:
@@ -1834,8 +1835,8 @@ class SharedJobCluster(JobCluster):
             try:
                 yield sock.connect((self.scheduler_ip_addr, self.scheduler_port))
                 req = 'TERMINATE_JOB:' + cPickle.dumps(_job)
-                yield sock.write(self.auth_code)
-                yield sock.write_msg(req)
+                yield sock.sendall(self.auth_code)
+                yield sock.send_msg(req)
                 logging.debug('Job %s is cancelled', _job.uid)
             except:
                 logging.warning('Connection to scheduler failed: %s', traceback.format_exc())
@@ -1941,16 +1942,10 @@ def fault_recover_jobs(fault_recover_file, port=51348,
             sock.connect((job_info['ip_addr'], node_info['port']))
             req = 'RETRIEVE_JOB:' + cPickle.dumps({'uid':int(uid), 'hash':job_info['hash'],
                                                    'compute_id':job_info['compute_id']})
-            if certfile:
-                asyncoro.sock_write(sock, node_info['auth_code'])
-                asyncoro.sock_write_msg(sock, req)
-                resp = asyncoro.sock_read_msg(sock, )
-                asyncoro.sock_write_msg(sock, 'ACK')
-            else:
-                sock.write(node_info['auth_code'])
-                sock.write_msg(req)
-                resp = sock.read_msg()
-                sock.write_msg('ACK')
+            sock.sendall(node_info['auth_code'])
+            sock.send_msg(req)
+            resp = sock.recv_msg()
+            sock.send_msg('ACK')
             reply = cPickle.loads(resp)
             if not isinstance(reply, _JobReply):
                 print 'Failed to get reply for %s: %s' % (uid, reply)

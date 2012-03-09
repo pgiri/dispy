@@ -432,8 +432,8 @@ class _Scheduler(object):
         sock.settimeout(2)
         try:
             yield sock.connect((ip, port))
-            yield sock.write_msg(cPickle.dumps(result))
-            ack = yield sock.read_msg()
+            yield sock.send_msg(cPickle.dumps(result))
+            ack = yield sock.recv_msg()
             assert ack == 'ACK'
         except:
             f = os.path.join(self.dest_path_prefix, str(cid), '_dispy_job_reply_%s' % uid)
@@ -518,13 +518,13 @@ class _Scheduler(object):
             setattr(_job, 'job', job)
             resp = cPickle.dumps(_job.uid)
             try:
-                yield conn.write_msg(resp)
+                yield conn.send_msg(resp)
             except:
                 logging.warning('Failed to send response to %s: %s',
                                 str(addr), traceback.format_exc())
                 raise StopIteration
             try:
-                msg = yield conn.read_msg()
+                msg = yield conn.recv_msg()
                 assert msg == 'ACK'
             except:
                 logging.warning('Invalid reply for job: %s, %s',
@@ -610,7 +610,7 @@ class _Scheduler(object):
                 fd = open(tgt, 'wb')
                 n = 0
                 while n < xf.stat_buf.st_size:
-                    data = yield conn.read(min(xf.stat_buf.st_size-n, 1024000))
+                    data = yield conn.recvall(min(xf.stat_buf.st_size-n, 1024000))
                     if not data:
                         break
                     fd.write(data)
@@ -633,19 +633,19 @@ class _Scheduler(object):
                 resp = 'NACK'
             if resp:
                 try:
-                    yield conn.write_msg(resp)
+                    yield conn.send_msg(resp)
                 except:
                     logging.debug('Could not send reply for "%s"', xf.name)
 
         # _request_task begins here
         resp = None
         try:
-            req = yield conn.read(len(self.auth_code))
+            req = yield conn.recvall(len(self.auth_code))
             if req != self.auth_code:
                 conn.close()
                 logging.warning('Invalid/unauthorized request ignored')
                 raise StopIteration
-            msg = yield conn.read_msg()
+            msg = yield conn.recv_msg()
             if not msg:
                 conn.close()
                 logging.info('Closing connection')
@@ -747,8 +747,8 @@ class _Scheduler(object):
                     job_reply = cPickle.load(fd)
                     fd.close()
                     if job_reply.hash == req['hash']:
-                        yield conn.write_msg(cPickle.dumps(job_reply))
-                        ack = yield conn.read_msg()
+                        yield conn.send_msg(cPickle.dumps(job_reply))
+                        ack = yield conn.recv_msg()
                         assert ack == 'ACK'
                         try:
                             os.remove(result_file)
@@ -774,7 +774,7 @@ class _Scheduler(object):
 
         if resp is not None:
             try:
-                yield conn.write_msg(resp)
+                yield conn.send_msg(resp)
             except:
                 logging.warning('Failed to send response to %s: %s',
                                 str(addr), traceback.format_exc())
@@ -890,8 +890,8 @@ class _Scheduler(object):
         assert coro is not None
 
         try:
-            msg = yield conn.read_msg()
-            yield conn.write_msg('ACK')
+            msg = yield conn.recv_msg()
+            yield conn.send_msg('ACK')
             reply = cPickle.loads(msg)
         except:
             logging.warning('Failed to read job results from %s', str(addr))
@@ -1012,6 +1012,7 @@ class _Scheduler(object):
             # this job might have been deleted already due to timeout
             if self._sched_jobs.pop(_job.uid, None) == _job:
                 cluster._jobs.append(_job)
+                _job.job.status = DispyJob.Created
                 self.unsched_jobs += 1
                 _job.node.busy -= 1
             self._sched_cv.notify()
@@ -1025,6 +1026,7 @@ class _Scheduler(object):
             # this job might have been deleted already due to timeout
             if self._sched_jobs.pop(_job.uid, None) == _job:
                 cluster._jobs.append(_job)
+                _job.job.status = DispyJob.Created
                 self.unsched_jobs += 1
                 _job.node.busy -= 1
             self._sched_cv.notify()

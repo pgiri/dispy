@@ -41,11 +41,13 @@ from bisect import bisect_left
 if platform.system() == 'Windows':
     from errno import WSAEINPROGRESS as EINPROGRESS
     from errno import WSAEWOULDBLOCK as EWOULDBLOCK
+    from errno import WSAEINVAL as EINVAL
     from time import clock as _time
     _time()
 else:
     from errno import EINPROGRESS
     from errno import EWOULDBLOCK
+    from errno import EINVAL
     from time import time as _time
 
 """
@@ -69,9 +71,9 @@ def process(sock, coro=None):
     sock = AsynCoroSocket(sock)
     # get (exactly) 4MB of data, for example, and let other coroutines
     # (process methods, in this case) execute in the meantime
-    data = yield sock.read(4096*1024)
+    data = yield sock.recvall(4096*1024)
     ...
-    yield sock.write(reply)
+    yield sock.sendall(reply)
     sock.close()
 
 if __name__ == '__main__':
@@ -144,10 +146,10 @@ class _AsynCoroSocket(object):
             self._asyncoro = None
             self._notifier = None
 
-            self.read = None
-            self.write = None
-            self.read_msg = None
-            self.write_msg = None
+            self.recvall = None
+            self.sendall = None
+            self.recv_msg = None
+            self.send_msg = None
 
             self._blocking = None
             self.setblocking(blocking)
@@ -177,10 +179,10 @@ class _AsynCoroSocket(object):
             for name in ['recv', 'send', 'recvfrom', 'sendto', 'accept', 'connect']:
                 setattr(self, name, getattr(self._rsock, name))
             if self._rsock.type == socket.SOCK_STREAM:
-                self.read = self.sync_read
-                self.write = self.sync_write
-                self.read_msg = self.sync_read_msg
-                self.write_msg = self.sync_write_msg
+                self.recvall = self.sync_recvall
+                self.sendall = self.sync_sendall
+                self.recv_msg = self.sync_recv_msg
+                self.send_msg = self.sync_send_msg
             self._asyncoro = None
             self._notifier = None
         else:
@@ -192,10 +194,10 @@ class _AsynCoroSocket(object):
             self.accept = self.async_accept
             self.connect = self.async_connect
             if self._rsock.type == socket.SOCK_STREAM:
-                self.read = self.async_read
-                self.write = self.async_write
-                self.read_msg = self.async_read_msg
-                self.write_msg = self.async_write_msg
+                self.recvall = self.async_recvall
+                self.sendall = self.async_sendall
+                self.recv_msg = self.async_recv_msg
+                self.send_msg = self.async_send_msg
             self._asyncoro = AsynCoro.instance()
             # for timeouts we need _notifier even for IOCP sockets
             self._notifier = _AsyncNotifier.instance()
@@ -316,7 +318,8 @@ class _AsynCoroSocket(object):
             except ssl.SSLError, err:
                 if err.args[0] != ssl.SSL_ERROR_WANT_READ:
                     raise socket.error(err)
-                elif buf:
+            else:
+                if buf:
                     return buf
 
         self._task = functools.partial(_recv, self, bufsize, *args)
@@ -324,10 +327,10 @@ class _AsynCoroSocket(object):
         self._coro.suspend()
         self._notifier.modify(self, _AsyncNotifier._Readable)
 
-    def async_read(self, bufsize, *args):
-        """Read exactly bufsize bytes.
+    def async_recvall(self, bufsize, *args):
+        """Receive exactly bufsize bytes.
         """
-        def _read(self, pending, *args):
+        def _recvall(self, pending, *args):
             try:
                 buf = self._rsock.recv(pending, *args)
             except ssl.SSLError, err:
@@ -349,19 +352,19 @@ class _AsynCoroSocket(object):
                         coro, self._coro = self._coro, None
                         coro.resume(buf)
                     else:
-                        self._task = functools.partial(_read, self, pending, *args)
+                        self._task = functools.partial(_recvall, self, pending, *args)
                 else:
                     # TODO: check for error and delete?
                     self._notifier.modify(self, 0)
                     self._task = self._result = None
                     coro, self._coro = self._coro, None
-                    coro.throw(socket.error, socket.error('read error'))
+                    coro.throw(socket.error, socket.error('recv error'))
 
         self._result = []
         if self._certfile:
-            # in case of SSL, attempt read first
+            # in case of SSL, attempt recv first
             try:
-                buf = self._rsock.read(bufsize)
+                buf = self._rsock.recv(bufsize)
             except ssl.SSLError, err:
                 if err.args[0] != ssl.SSL_ERROR_WANT_READ:
                     raise socket.error(err)
@@ -373,19 +376,19 @@ class _AsynCoroSocket(object):
                     self._result.append(buf)
                     bufsize -= len(buf)
 
-        self._task = functools.partial(_read, self, bufsize, *args)
+        self._task = functools.partial(_recvall, self, bufsize, *args)
         self._coro = self._asyncoro.cur_coro()
         self._coro.suspend()
         self._notifier.modify(self, _AsyncNotifier._Readable)
 
-    def sync_read(self, bufsize, *args):
-        """Synchronous version of async_read.
+    def sync_recvall(self, bufsize, *args):
+        """Synchronous version of async_recvall.
         """
         self._result = []
         while bufsize:
             buf = self._rsock.recv(bufsize, *args)
             if not buf:
-                raise socket.error('read error')
+                raise socket.error('recv error')
             bufsize -= len(buf)
             self._result.append(buf)
         buf = ''.join(self._result)
@@ -397,7 +400,7 @@ class _AsynCoroSocket(object):
         """
         def _recvfrom(self, *args):
             try:
-                buf = self._rsock.recvfrom(*args)
+                res = self._rsock.recvfrom(*args)
             except:
                 self._notifier.modify(self, 0)
                 self._task = self._result = None
@@ -407,7 +410,7 @@ class _AsynCoroSocket(object):
                 self._notifier.modify(self, 0)
                 self._task = self._result = None
                 coro, self._coro = self._coro, None
-                coro.resume(buf)
+                coro.resume(res)
 
         self._task = functools.partial(_recvfrom, self, *args)
         self._coro = self._asyncoro.cur_coro()
@@ -418,7 +421,7 @@ class _AsynCoroSocket(object):
         """Asynchronous version of socket send method.
         """
         # NB: send only what can be sent in one operation, instead of
-        # sending all the data, as done in write/write_msg
+        # sending all the data, as done in sendall/send_msg
         def _send(self, *args):
             try:
                 sent = self._rsock.send(*args)
@@ -443,7 +446,7 @@ class _AsynCoroSocket(object):
         """
 
         # NB: send only what can be sent in one operation, instead of
-        # sending all the data, as done in write/write_msg
+        # sending all the data, as done in sendall/send_msg
         def _sendto(self, *args):
             try:
                 sent = self._rsock.sendto(*args)
@@ -463,10 +466,10 @@ class _AsynCoroSocket(object):
         self._coro.suspend()
         self._notifier.modify(self, _AsyncNotifier._Writable)
 
-    def async_write(self, data):
-        """Send all the data (similar to sendall).
+    def async_sendall(self, data):
+        """Send all the data.
         """
-        def _write(self):
+        def _sendall(self):
             try:
                 sent = self._rsock.send(self._result)
             except:
@@ -484,15 +487,15 @@ class _AsynCoroSocket(object):
                         coro.resume(0)
 
         self._result = buffer(data, 0)
-        self._task = functools.partial(_write, self)
+        self._task = functools.partial(_sendall, self)
         self._coro = self._asyncoro.cur_coro()
         self._coro.suspend()
         self._notifier.modify(self, _AsyncNotifier._Writable)
 
-    def sync_write(self, data):
-        """Synchronous version of async_write.
+    def sync_sendall(self, data):
+        """Synchronous version of async_sendall.
         """
-        # TODO: is sendall better?
+        # TODO: is socket's sendall better?
         self._result = buffer(data, 0)
         while len(self._result) > 0:
             sent = self._rsock.send(self._result)
@@ -592,46 +595,46 @@ class _AsynCoroSocket(object):
             if e.args[0] not in [EINPROGRESS, EWOULDBLOCK]:
                 logging.debug('connect error: %s', e.args[0])
 
-    def async_write_msg(self, data):
+    def async_send_msg(self, data):
         """Messages are tagged with length of the data, so on the
-        receiving side, read_msg knows how much data to read.
+        receiving side, recv_msg knows how much data to receive.
         """
-        yield self.write(struct.pack('>L', len(data)) + data)
+        yield self.sendall(struct.pack('>L', len(data)) + data)
 
-    def sync_write_msg(self, data):
-        """Synchronous version of async_write_msg.
+    def sync_send_msg(self, data):
+        """Synchronous version of async_send_msg.
         """
-        return self.sync_write(struct.pack('>L', len(data)) + data)
+        return self.sync_sendall(struct.pack('>L', len(data)) + data)
 
-    def async_read_msg(self):
+    def async_recv_msg(self):
         """Message is tagged with length of the payload (data). This
-        method reads length of payload, then the payload and returns
-        the payload.
+        method receives length of payload, then the payload and
+        returns the payload.
         """
         n = struct.calcsize('>L')
-        data = yield self.read(n)
+        data = yield self.recvall(n)
         if len(data) < n:
             logging.error('Socket disconnected?(%s, %s)', len(data), n)
             yield None
         n = struct.unpack('>L', data)[0]
         assert n > 0
-        data = yield self.read(n)
+        data = yield self.recvall(n)
         if len(data) < n:
             logging.error('Socket disconnected?(%s, %s)', len(data), n)
             yield None
         yield data
 
-    def sync_read_msg(self):
-        """Synchronous version of async_read_msg.
+    def sync_recv_msg(self):
+        """Synchronous version of async_recv_msg.
         """
         n = struct.calcsize('>L')
-        data = self.sync_read(n)
+        data = self.sync_recvall(n)
         if len(data) < n:
             logging.error('Socket disconnected?(%s, %s)', len(data), n)
             return None
         n = struct.unpack('>L', data)[0]
         assert n > 0
-        data = self.sync_read(n)
+        data = self.sync_recvall(n)
         if len(data) < n:
             logging.error('Socket disconnected?(%s, %s)', len(data), n)
             return None
@@ -732,16 +735,14 @@ if platform.system() == 'Windows':
                 if not self._blocking and self._rsock.type == socket.SOCK_STREAM:
                     self.recv = self.iocp_recv
                     self.send = self.iocp_send
-                    self.read = self.iocp_read
-                    self.write = self.iocp_write
+                    self.recvall = self.iocp_recvall
+                    self.sendall = self.iocp_sendall
                     self.connect = self.iocp_connect
                     self.accept = self.iocp_accept
 
             def _timed_out(self):
                 if self._coro:
                     self._coro.throw(socket.timeout, socket.timeout('timed out'))
-                    # TODO: should we cancel pending IOs?
-                    # win32file.CancelIo(self._fileno)
 
             def iocp_recv(self, bufsize, *args):
                 def _recv(self, err, n):
@@ -795,8 +796,8 @@ if platform.system() == 'Windows':
                 if err and err != winerror.ERROR_IO_PENDING:
                     raise socket.error(err)
 
-            def iocp_read(self, bufsize, *args):
-                def _read(self, pending, buf, err, n):
+            def iocp_recvall(self, bufsize, *args):
+                def _recvall(self, pending, buf, err, n):
                     if err or n == 0:
                         self._overlap.object = self._result = None
                         coro, self._coro = self._coro, None
@@ -818,14 +819,14 @@ if platform.system() == 'Windows':
                             coro.resume(buf)
                         else:
                             buf = win32file.AllocateReadBuffer(min(pending, 4194304))
-                            self._overlap.object = functools.partial(_read, self, pending, buf)
+                            self._overlap.object = functools.partial(_recvall, self, pending, buf)
                             err, n = win32file.WSARecv(self._fileno, buf, self._overlap, 0)
                             if err and err != winerror.ERROR_IO_PENDING:
                                 self._coro.throw(socket.error, socket.error(err))
 
                 self._result = []
                 buf = win32file.AllocateReadBuffer(min(bufsize, 4194304))
-                self._overlap.object = functools.partial(_read, self, bufsize, buf)
+                self._overlap.object = functools.partial(_recvall, self, bufsize, buf)
                 self._coro = self._asyncoro.cur_coro()
                 self._coro.suspend()
                 if self._timeout:
@@ -834,8 +835,8 @@ if platform.system() == 'Windows':
                 if err and err != winerror.ERROR_IO_PENDING:
                     raise socket.error(err)
 
-            def iocp_write(self, data):
-                def _write(self, err, n):
+            def iocp_sendall(self, data):
+                def _sendall(self, err, n):
                     if err or n == 0:
                         self._overlap.object = self._result = None
                         coro, self._coro = self._coro, None
@@ -859,7 +860,7 @@ if platform.system() == 'Windows':
                                 self._coro.throw(socket.error, socket.error(err))
 
                 self._result = buffer(data, 0)
-                self._overlap.object = functools.partial(_write, self)
+                self._overlap.object = functools.partial(_sendall, self)
                 self._coro = self._asyncoro.cur_coro()
                 self._coro.suspend()
                 err, n = win32file.WSASend(self._fileno, self._result, self._overlap, 0)
@@ -873,7 +874,6 @@ if platform.system() == 'Windows':
                             self._rsock.do_handshake()
                         except ssl.SSLError, err:
                             if err.args[0] == ssl.SSL_ERROR_WANT_READ:
-                                self._result = win32file.AllocateReadBuffer(0)
                                 err, n = win32file.WSARecv(self._fileno, self._result, self._overlap, 0)
                             elif err.args[0] == ssl.SSL_ERROR_WANT_WRITE:
                                 err, n = win32file.WSASend(self._fileno, '', self._overlap, 0)
@@ -902,6 +902,7 @@ if platform.system() == 'Windows':
                             self._rsock = ssl.wrap_socket(self._rsock, keyfile=self._keyfile,
                                                           certfile=self._certfile, server_side=False,
                                                           do_handshake_on_connect=False)
+                            self._result = win32file.AllocateReadBuffer(0)
                             self._overlap.object = functools.partial(_ssl_handshake, self)
                             self._overlap.object(None, 0)
                         else:
@@ -915,7 +916,7 @@ if platform.system() == 'Windows':
                 try:
                     self._rsock.bind(('0.0.0.0', 0))
                 except socket.error, exc:
-                    if exc[0] not in [errno.EINVAL, errno.WSAEINVAL]:
+                    if exc[0] != EINVAL:
                         raise
                 self._overlap.object = functools.partial(_connect, self)
                 self._coro = self._asyncoro.cur_coro()
@@ -933,7 +934,6 @@ if platform.system() == 'Windows':
                             conn._rsock.do_handshake()
                         except ssl.SSLError, err:
                             if err.args[0] == ssl.SSL_ERROR_WANT_READ:
-                                self._result = win32file.AllocateReadBuffer(0)
                                 err, n = win32file.WSARecv(conn._fileno, self._result, self._overlap, 0)
                             elif err.args[0] == ssl.SSL_ERROR_WANT_WRITE:
                                 err, n = win32file.WSASend(conn._fileno, '', self._overlap, 0)
@@ -966,6 +966,7 @@ if platform.system() == 'Windows':
                             conn._rsock = ssl.wrap_socket(conn._rsock, keyfile=self._keyfile, certfile=self._certfile,
                                                           server_side=True, do_handshake_on_connect=False,
                                                           ssl_version=self._ssl_version)
+                            self._result = win32file.AllocateReadBuffer(0)
                             self._overlap.object = functools.partial(_ssl_handshake, self, conn, raddr)
                             self._overlap.object(None, 0)
                         else:
