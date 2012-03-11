@@ -2013,8 +2013,22 @@ if __name__ == '__main__':
 
     args = config.pop('args')
     cluster = JobCluster(**config)
+    jobs = []
     for arg in args:
-        cluster.submit(*arg)
+        jobs.append((cluster.submit(*arg), arg))
     cluster.wait()
+    for job, args in jobs:
+        sargs = ''.join(arg for arg in args)
+        if job.exception:
+            print 'Job "%s" failed with "%s"' % (sargs, job.exception)
+            continue
+        if job.result:
+            print 'Job "%s" exit code: "%s"' % (sargs, str(job.result))
+        if job.stdout:
+            print 'Job "%s" output: "%s"' % (sargs, job.stdout)
+        if job.stderr:
+            print 'Job "%s" error: "%s"' % (sargs, job.stderr)
+                
+
     cluster.stats()
     exit(0)
