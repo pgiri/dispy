@@ -76,9 +76,9 @@ For example, a simple tcp server with asyncoro looks like:
     sock = AsynCoroSocket(sock)
     # get (exactly) 4MB of data, for example, and let other coroutines
     # (process methods, in this case) execute in the meantime
-    data = yield sock.read(4096*1024)
+    data = yield sock.recvall(4096*1024)
     ...
-    yield sock.write(reply)
+    yield sock.sendall(reply)
     sock.close()
 
 if __name__ == '__main__':

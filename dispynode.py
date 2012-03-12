@@ -168,8 +168,6 @@ class _DispyNode(object):
         self.tcp_sock.bind((ip_addr, 0))
         self.address = self.tcp_sock.getsockname()
         self.tcp_sock.listen(30)
-        self.tcp_sock = AsynCoroSocket(self.tcp_sock, blocking=False,
-                                       keyfile=self.keyfile, certfile=self.certfile)
 
         if dest_path_prefix:
             self.dest_path_prefix = dest_path_prefix.strip().rstrip(os.sep)
@@ -210,7 +208,7 @@ class _DispyNode(object):
         self.reply_Q_thread.start()
 
         self.timer_coro = Coro(self.timer_task)
-        self.tcp_coro = Coro(self.tcp_server)
+        # self.tcp_coro = Coro(self.tcp_server)
         self.udp_coro = Coro(self.udp_server, scheduler_ip_addr)
 
     def send_pong_msg(self, coro=None):
@@ -288,22 +286,6 @@ class _DispyNode(object):
                     # pass
             else:
                 logging.warning('Ignoring ping message from %s', addr[0])
-
-    def tcp_server(self, coro=None):
-        while True:
-            try:
-                conn, addr = yield self.tcp_sock.accept()
-            except ssl.SSLError, err:
-                logging.debug('SSL connection failed: %s', str(err))
-                continue
-            except GeneratorExit:
-                break
-            except:
-                logging.debug(traceback.format_exc())
-                continue
-            # logging.debug('new tcp request from %s', str(addr))
-            conn.settimeout(3)
-            Coro(self.tcp_serve_task, conn, addr)
 
     def tcp_serve_task(self, conn, addr, coro=None):
         def job_request_task(msg):
@@ -699,6 +681,8 @@ class _DispyNode(object):
                     pass
 
         # tcp_serve_task starts
+        conn = AsynCoroSocket(conn, blocking=False,
+                              keyfile=self.keyfile, certfile=self.certfile)
         try:
             req = yield conn.recvall(len(self.auth_code))
             assert req == self.auth_code
@@ -1009,7 +993,7 @@ class _DispyNode(object):
 
         Coro(_shutdown, self).value()
         self.timer_coro.terminate()
-        self.tcp_coro.terminate()
+        # self.tcp_coro.terminate()
         self.udp_coro.terminate()
         self.asyncoro.join()
         self.asyncoro.terminate()
@@ -1075,18 +1059,13 @@ if __name__ == '__main__':
 
     while True:
         try:
-            node.asyncoro.join()
+            conn, addr = node.tcp_sock.accept()
         except KeyboardInterrupt:
+            # TODO: terminate even if jobs are scheduled?
             logging.info('Interrupted; terminating')
-            try:
-                Coro(node.shutdown).value()
-            except:
-                logging.debug(traceback.format_exc())
-                pass
-            time.sleep(1)
+            node.shutdown()
             break
         except:
-            logging.warning(traceback.print_exc())
-            logging.warning('Server terminated (possibly due to an error); restarting')
-            time.sleep(2)
-            break
+            logging.debug(traceback.format_exc())
+            continue
+        Coro(node.tcp_serve_task, conn, addr)

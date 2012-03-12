@@ -159,10 +159,6 @@ class _Scheduler(object):
             self.request_sock.bind((self.ip_addr, self.scheduler_port))
             self.scheduler_port = self.request_sock.getsockname()[1]
             self.request_sock.listen(32)
-            self.request_sock = AsynCoroSocket(self.request_sock, blocking=False,
-                                               keyfile=self.cluster_keyfile,
-                                               certfile=self.cluster_certfile)
-            self.request_coro = Coro(self.request_server)
 
             self.job_result_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
@@ -263,6 +259,7 @@ class _Scheduler(object):
                     node = _Node(status['ip_addr'], status['port'], status['cpus'],
                                  status['sign'], self.node_secret,
                                  keyfile=self.node_keyfile, certfile=self.node_certfile)
+                    node.name = status['name']
                     self._nodes[node.ip_addr] = node
                 else:
                     node.last_pulse = time.time()
@@ -480,25 +477,6 @@ class _Scheduler(object):
                 Coro(self.send_job_result, _job.uid, cluster._compute.id,
                      cluster.client_scheduler_ip_addr, cluster.client_job_result_port, reply)
 
-    def request_server(self, coro=None):
-        # generator
-        assert coro is not None
-        # request_server starts here
-        logging.info('scheduler running at %s:%s', self.ip_addr, self.port)
-        while True:
-            try:
-                conn, addr = yield self.request_sock.accept()
-            except ssl.SSLError, err:
-                logging.debug('SSL connection failed: %s', str(err))
-                continue
-            except GeneratorExit:
-                break
-            except:
-                logging.debug(traceback.format_exc())
-                continue
-            conn.settimeout(2)
-            Coro(self._request_task, conn, addr)
-
     def _request_task(self, conn, addr, coro=None):
         # generator
         def _job_request_task(self, msg):
@@ -638,6 +616,9 @@ class _Scheduler(object):
                     logging.debug('Could not send reply for "%s"', xf.name)
 
         # _request_task begins here
+        conn = AsynCoroSocket(conn, blocking=False,
+                              keyfile=self.cluster_keyfile, certfile=self.cluster_certfile)
+        conn.settimeout(2)
         resp = None
         try:
             req = yield conn.recvall(len(self.auth_code))
@@ -1117,19 +1098,21 @@ class _Scheduler(object):
                 for coro in coros:
                     coro.value()
 
-            self.timer_coro.terminate()
-            self.request_coro.terminate()
-            self.job_result_coro.terminate()
-            self.udp_coro.terminate()
+                self.timer_coro.terminate()
+                # self.request_coro.terminate()
+                self.job_result_coro.terminate()
+                self.udp_coro.terminate()
+            else:
+                self._sched_cv.release()
 
-        Coro(_shutdown, self).value()
-        self.asyncoro.join()
-        self.asyncoro.terminate()
+        if self.select_job_node:
+            Coro(_shutdown, self).value()
+            self.asyncoro.join()
+            self.asyncoro.terminate()
 
     def stats(self):
         print
-        heading = '%020s  |  %05s  |  %05s  |  %13s' % \
-                  ('Node', 'CPUs', 'Jobs', 'Node Time Sec')
+        heading = ' %30s | %5s | %7s | %13s' % ('Node', 'CPUs', 'Jobs', 'Node Time Sec')
         print heading
         print '-' * len(heading)
         tot_cpu_time = 0
@@ -1137,8 +1120,12 @@ class _Scheduler(object):
                               reverse=True):
             node = self._nodes[ip_addr]
             tot_cpu_time += node.cpu_time
-            print '%020s  |  %05s  |  %05s  |  %13.3f' % \
-                  (ip_addr, node.cpus, node.jobs, node.cpu_time)
+            if node.name:
+                name = ip_addr + ' (' + node.name + ')'
+            else:
+                name = ip_addr
+            print ' %-30.30s | %5s | %7s | %13.3f' % \
+                  (name, node.cpus, node.jobs, node.cpu_time)
         wall_time = time.time() - self.start_time
         print
         print 'Total job time: %.3f sec' % (tot_cpu_time)
@@ -1245,14 +1232,15 @@ if __name__ == '__main__':
     scheduler = _Scheduler(**config)
     while True:
         try:
-            scheduler.asyncoro.join()
+            conn, addr = scheduler.request_sock.accept()
         except KeyboardInterrupt:
+            # TODO: terminate even if jobs are scheduled?
             logging.info('Interrupted; terminating')
             scheduler.shutdown()
             break
         except:
-            logging.warning(traceback.format_exc())
-            logging.warning('Scheduler terminated (possibly due to an error); restarting')
-            time.sleep(2)
+            logging.debug(traceback.format_exc())
+            continue
+        Coro(scheduler._request_task, conn, addr)
     scheduler.stats()
     exit(0)

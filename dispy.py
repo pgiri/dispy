@@ -797,8 +797,8 @@ class _Cluster(object):
                     node = _Node(status['ip_addr'], status['port'],
                                  status['cpus'], status['sign'],
                                  self._secret, keyfile=self.keyfile, certfile=self.certfile)
-                    self._nodes[node.ip_addr] = node
                     node.name = status['name']
+                    self._nodes[node.ip_addr] = node
                 else:
                     node.last_pulse = time.time()
                     h = _xor_string(status['sign'], self._secret)
@@ -2014,21 +2014,23 @@ if __name__ == '__main__':
     args = config.pop('args')
     cluster = JobCluster(**config)
     jobs = []
-    for arg in args:
-        jobs.append((cluster.submit(*arg), arg))
-    cluster.wait()
+    for n, arg in enumerate(args):
+        job = cluster.submit(*arg)
+        job.id = n + 1
+        jobs.append((job, arg))
+
     for job, args in jobs:
+        job()
         sargs = ''.join(arg for arg in args)
         if job.exception:
-            print 'Job "%s" failed with "%s"' % (sargs, job.exception)
+            print 'Job %s with arguments "%s" failed with "%s"' % (job.id, sargs, job.exception)
             continue
         if job.result:
-            print 'Job "%s" exit code: "%s"' % (sargs, str(job.result))
+            print 'Job %s with arguments "%s" exited with: "%s"' % (job.id, sargs, str(job.result))
         if job.stdout:
-            print 'Job "%s" output: "%s"' % (sargs, job.stdout)
+            print 'Job %s with arguments "%s" produced output: "%s"' % (job.id, sargs, job.stdout)
         if job.stderr:
-            print 'Job "%s" error: "%s"' % (sargs, job.stderr)
-                
+            print 'Job %s with argumens "%s" produced error messages: "%s"' % (job.id, sargs, job.stderr)
 
     cluster.stats()
     exit(0)

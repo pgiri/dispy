@@ -818,14 +818,14 @@ if platform.system() == 'Windows':
                                 self._notifier._del_timeout(self)
                             coro.resume(buf)
                         else:
-                            buf = win32file.AllocateReadBuffer(min(pending, 4194304))
+                            buf = win32file.AllocateReadBuffer(min(pending, 1048576))
                             self._overlap.object = functools.partial(_recvall, self, pending, buf)
                             err, n = win32file.WSARecv(self._fileno, buf, self._overlap, 0)
                             if err and err != winerror.ERROR_IO_PENDING:
                                 self._coro.throw(socket.error, socket.error(err))
 
                 self._result = []
-                buf = win32file.AllocateReadBuffer(min(bufsize, 4194304))
+                buf = win32file.AllocateReadBuffer(min(bufsize, 1048576))
                 self._overlap.object = functools.partial(_recvall, self, bufsize, buf)
                 self._coro = self._asyncoro.cur_coro()
                 self._coro.suspend()
@@ -1549,8 +1549,8 @@ class _AsyncNotifier(object):
 
     @classmethod
     def instance(cls):
-        """Returns instance of AsynCoro. This method should be called
-        only after initializing AsynCoro.
+        """Returns instance of AsyncNotifier. This method should be
+        called only after initializing AsyncNotifier.
         """
         return cls.__instance
 
@@ -1684,6 +1684,9 @@ class _AsyncNotifier(object):
         iocp = getattr(sys.modules[__name__], '_IOCPNotifier', None)
         if isinstance(iocp, MetaSingleton):
             iocp.instance().terminate()
+        self._timeouts = []
+        self._timeout_fds = []
+        self._fds = {}
         self._complete.set()
         logging.debug('AsyncNotifier terminated')
 
@@ -1764,6 +1767,8 @@ class _AsyncNotifier(object):
 
     @staticmethod
     def _socketpair():
+        if hasattr(socket, 'socketpair'):
+            return socket.socketpair()
         srv_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv_sock.bind(('127.0.0.1', 0))
         srv_sock.listen(1)
