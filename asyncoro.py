@@ -1607,10 +1607,10 @@ class _AsyncNotifier(object):
         read/write event for it. Since coroutines can do only one
         thing at a time, only one of read/write tasks can be done.
         """
-        self._cmd_rsock = AsynCoroSocket(self._cmd_rsock)
-        self.modify(self._cmd_rsock, _AsyncNotifier._Readable)
-        setattr(self._cmd_rsock, '_task', lambda: None)
         self._cmd_wsock.setblocking(0)
+        self._cmd_rsock = AsynCoroSocket(self._cmd_rsock)
+        setattr(self._cmd_rsock, '_task', lambda: self._cmd_rsock._rsock.recv(128))
+        self.modify(self._cmd_rsock, _AsyncNotifier._Readable)
 
         timeout = poll_interval
         while not self._terminate:
@@ -1872,8 +1872,6 @@ class _SelectNotifier(object):
         for fid in xlist:
             events[fid] = _AsyncNotifier._Error
 
-        if events.pop(self.read_fd, None) == _AsyncNotifier._Readable:
-            cmd = self.cmd_rsock.recv(128)
         return events.iteritems()
 
     def terminate(self):
