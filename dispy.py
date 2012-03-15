@@ -44,7 +44,7 @@ import platform
 
 from asyncoro import Coro, AsynCoro, CoroLock, CoroCondition, AsynCoroSocket, MetaSingleton
 
-_dispy_version = '2.3'
+_dispy_version = '2.4'
 
 class DispyJob(object):
     """Job scheduled for execution with dispy.
@@ -1034,7 +1034,7 @@ class _Cluster(object):
         host = None
         load = None
         for node in self._nodes.itervalues():
-            if node.busy >= node.cpus:
+            if node.busy >= node.cpus or not node.clusters:
                 continue
             if all(not self._clusters[cluster_id]._jobs for cluster_id in node.clusters):
                 continue
@@ -1052,7 +1052,7 @@ class _Cluster(object):
         host = None
         secs_per_job = None
         for node in self._nodes.itervalues():
-            if node.busy >= node.cpus:
+            if node.busy >= node.cpus or not node.clusters:
                 continue
             if all(not self._clusters[cluster_id]._jobs for cluster_id in node.clusters):
                 continue
@@ -1988,7 +1988,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('computation', help='program to distribute and parallelize')
     parser.add_argument('-c', action='store_false', dest='cleanup', default=True,
-                        help='if True, nodes will remove any files transferred when this computation is over')
+                        help='if True, nodes will remove any files transferred when ' \
+                        'this computation is over')
     parser.add_argument('-d', action='store_true', dest='loglevel', default=False,
                         help='if True, debug messages are printed')
     parser.add_argument('-a', action='append', dest='args', default=[],
@@ -2003,6 +2004,9 @@ if __name__ == '__main__':
                         help='file containing SSL certificate')
     parser.add_argument('--keyfile', dest='keyfile', default=None,
                         help='file containing SSL key')
+    parser.add_argument('--scheduler_node', dest='scheduler_node', default=None,
+                        help='name or IP address where dispyscheduler is running to which ' \
+                        'jobs are submitted')
     config = vars(parser.parse_args(sys.argv[1:]))
     # print config
 
@@ -2012,7 +2016,14 @@ if __name__ == '__main__':
         config['loglevel'] = logging.INFO
 
     args = config.pop('args')
-    cluster = JobCluster(**config)
+
+    if config['scheduler_node']:
+        cluster = SharedJobCluster(**config)
+    else:
+        del config['scheduler_node']
+        cluster = JobCluster(**config)
+    if not config['nodes']:
+        config['nodes'] = ['*']
     jobs = []
     for n, arg in enumerate(args):
         job = cluster.submit(*arg)

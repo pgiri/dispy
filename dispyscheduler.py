@@ -851,21 +851,6 @@ class _Scheduler(object):
                             logging.debug('Could not remove "%s"', result_file)
                 yield self._sched_cv.release()
 
-    def load_balance_schedule(self):
-        # TODO: maintain "available" sequence of nodes for better performance
-        node = None
-        load = None
-        for ip_addr, host in self._nodes.iteritems():
-            if host.busy >= host.cpus:
-                continue
-            if all(not self._clusters[cluster_id]._jobs for cluster_id in host.clusters):
-                continue
-            logging.debug('load: %s, %s, %s' % (host.ip_addr, host.busy, host.cpus))
-            if (load is None) or ((float(host.busy) / host.cpus) < load):
-                node = host
-                load = float(node.busy) / node.cpus
-        return node
-
     def job_result_task(self, conn, addr, coro=None):
         # generator
         assert coro is not None
@@ -957,20 +942,35 @@ class _Scheduler(object):
         # (useful only when  we have data about all the nodes and more than one node
         # is currently available)
         # in addition, we assume all jobs take equal time to execute
-        node = None
+        host = None
         secs_per_job = None
+        for ip_addr, node in self._nodes.iteritems():
+            if node.busy >= node.cpus or not node.clusters:
+                continue
+            if all(not self._clusters[cluster_id]._jobs for cluster_id in node.clusters):
+                continue
+            if (secs_per_job is None) or (node.jobs == 0) or \
+                   ((node.cpu_time / node.jobs) <= secs_per_job):
+                host = node
+                if node.jobs == 0:
+                    secs_per_job = 0
+                else:
+                    secs_per_job = node.cpu_time / node.jobs
+        return host
+
+    def load_balance_schedule(self):
+        # TODO: maintain "available" sequence of nodes for better performance
+        node = None
+        load = None
         for ip_addr, host in self._nodes.iteritems():
-            if host.busy >= host.cpus:
+            if host.busy >= host.cpus or not host.clusters:
                 continue
             if all(not self._clusters[cluster_id]._jobs for cluster_id in host.clusters):
                 continue
-            if (secs_per_job is None) or (host.jobs == 0) or \
-                   ((host.cpu_time / host.jobs) <= secs_per_job):
+            logging.debug('load: %s, %s, %s' % (host.ip_addr, host.busy, host.cpus))
+            if (load is None) or ((float(host.busy) / host.cpus) < load):
                 node = host
-                if host.jobs == 0:
-                    secs_per_job = 0
-                else:
-                    secs_per_job = host.cpu_time / host.jobs
+                load = float(node.busy) / node.cpus
         return node
 
     def run_job(self, _job, cluster, coro=None):

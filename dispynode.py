@@ -464,6 +464,8 @@ class _DispyNode(object):
                 compute.code = marshal.dumps(code)
             elif compute.type == _Compute.prog_type:
                 assert not compute.code
+                compute.name = os.path.join(compute.dest_path, os.path.basename(compute.name))
+
             xfer_files = []
             for xf in compute.xfer_files:
                 tgt = os.path.join(compute.dest_path, os.path.basename(xf.name))
@@ -582,8 +584,9 @@ class _DispyNode(object):
                 job_info.proc.terminate()
                 if isinstance(job_info.proc, multiprocessing.Process):
                     for x in xrange(20):
-                        yield coro.sleep(0.1)
-                        if not job_info.proc.is_alive():
+                        if job_info.proc.is_alive():
+                            yield coro.sleep(0.1)
+                        else:
                             logging.debug('Process "%s" for job %s terminated',
                                           compute.name, _job.uid)
                             break
@@ -592,7 +595,6 @@ class _DispyNode(object):
                 else:
                     assert isinstance(job_info.proc, subprocess.Popen)
                     for x in xrange(20):
-                        yield coro.sleep(0.1)
                         rc = job_info.proc.poll()
                         logging.debug('Program "%s" for job %s terminated with %s',
                                       compute.name, _job.uid, rc)
@@ -601,6 +603,7 @@ class _DispyNode(object):
                         if x == 10:
                             logging.debug('Killing job %s', _job.uid)
                             job_info.proc.kill()
+                        yield coro.sleep(0.1)
                     else:
                         logging.warning('Could not kill process %s', compute.name)
             except:
@@ -829,8 +832,10 @@ class _DispyNode(object):
         reply = job_info.job_reply
         try:
             os.chdir(compute.dest_path)
-            job_info.proc = subprocess.Popen(program, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                             env={'PATH':compute.dest_path + ':' + compute.env.get('PATH')})
+            env = os.environ
+            env['PATH'] = compute.dest_path + ':' + compute.env.get('PATH')
+            job_info.proc = subprocess.Popen(program, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+
             assert isinstance(job_info.proc, subprocess.Popen)
             reply.stdout, reply.stderr = job_info.proc.communicate()
             reply.result = job_info.proc.returncode

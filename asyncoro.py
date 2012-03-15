@@ -1228,7 +1228,7 @@ class AsynCoro(object):
             self._sched_cv = threading.Condition()
             self._terminate = False
             self._complete = threading.Event()
-            self._scheduler = threading.Thread(target=self._scheduler)
+            self._scheduler = threading.Thread(target=self._schedule)
             self._scheduler.daemon = True
             self._scheduler.start()
 
@@ -1361,7 +1361,7 @@ class AsynCoro(object):
         self._sched_cv.release()
         return 0
 
-    def _scheduler(self):
+    def _schedule(self):
         """Internal use only.
         """
         while True:
@@ -1688,7 +1688,6 @@ class _AsyncNotifier(object):
         self._timeout_fds = []
         self._fds = {}
         self._complete.set()
-        logging.debug('AsyncNotifier terminated')
 
     def _add_timeout(self, fd):
         if fd._timeout:
@@ -1876,69 +1875,3 @@ class _SelectNotifier(object):
 
     def terminate(self):
         self.rset = self.wset = self.xset = None
-
-class RepeatTimer(threading.Thread):
-    """Timer that calls given function every 'interval' seconds. The
-    timer can be stopped, (re)started, reset to different interval
-    etc. until terminated.
-
-    This is not used in AsynCoro or dispy, so likely to be discarded.
-    """
-    def __init__(self, interval, function, args=(), kwargs={}):
-        threading.Thread.__init__(self)
-        if interval is not None:
-            interval = float(interval)
-            assert interval > 0
-        self._interval = None
-        self._func = function
-        self._args = args
-        self._kwargs = kwargs
-        self._terminate = False
-        self._tick = threading.Event()
-        self._active = threading.Event()
-        self._active.clear()
-        self.daemon = True
-        self.start(interval)
-
-    def start(self, _interval=None):
-        if self._interval is None and _interval is not None:
-            self._interval = _interval
-            self._active.set()
-            super(RepeatTimer, self).start()
-        elif self._interval is not None:
-            self._active.set()
-
-    def stop(self):
-        self._active.clear()
-        self._tick.set()
-        self._tick.clear()
-
-    def set_interval(self, interval):
-        try:
-            interval = float(interval)
-            assert interval > 0
-        except:
-            return
-        if self._interval is None:
-            self.start(interval)
-        else:
-            self._interval = interval
-            self._active.clear()
-            self._tick.set()
-            self._tick.clear()
-            self._active.set()
-
-    def terminate(self):
-        self._terminate = True
-        self._active.set()
-
-    def run(self):
-        while not self._terminate:
-            self._tick.wait(self._interval)
-            if not self._active.is_set():
-                self._active.wait()
-                continue
-            try:
-                self._func(*self._args, **self._kwargs)
-            except:
-                pass
