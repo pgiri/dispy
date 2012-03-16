@@ -1423,7 +1423,7 @@ class AsynCoro(object):
                     coro._state = AsynCoro._Scheduled
                     coro._value = None
             scheduled = [self._coros.get(cid, None) for cid in self._scheduled]
-            # random.shuffle(running)
+            # random.shuffle(scheduled)
             self._sched_cv.release()
 
             for coro in scheduled:
@@ -1562,9 +1562,11 @@ class _AsyncNotifier(object):
             elif poll_interval > 10:
                 logging.warning('invalid poll_interval; using 10 as poll_interval')
                 poll_interval = 10
-            self.__class__.__instance = self
 
+            self.__class__.__instance = self
+            self.poll_interval = poll_interval
             self._cmd_rsock, self._cmd_wsock = _AsyncNotifier._socketpair()
+            timeout_multiplier = 1
 
             if hasattr(select, 'epoll'):
                 self._poller = select.epoll()
@@ -1584,6 +1586,7 @@ class _AsyncNotifier(object):
                 self.__class__._Writable = select.POLLOUT
                 self.__class__._Hangup = select.POLLHUP
                 self.__class__._Error = select.POLLHUP | select.POLLERR
+                timeout_multiplier = 1000
             else:
                 self._poller = _SelectNotifier(self._cmd_rsock, self._cmd_wsock)
                 self.__class__._Readable = 0x01
@@ -1598,11 +1601,11 @@ class _AsyncNotifier(object):
             self._lock = threading.Lock()
             self._complete = threading.Event()
 
-            self._notifier_thread = threading.Thread(target=self._notifier, args=(poll_interval,))
+            self._notifier_thread = threading.Thread(target=self._notifier, args=(timeout_multiplier,))
             self._notifier_thread.daemon = True
             self._notifier_thread.start()
 
-    def _notifier(self, poll_interval):
+    def _notifier(self, timeout_multiplier):
         """Calls 'task' method of registered fds when there is a
         read/write event for it. Since coroutines can do only one
         thing at a time, only one of read/write tasks can be done.
@@ -1612,15 +1615,16 @@ class _AsyncNotifier(object):
         setattr(self._cmd_rsock, '_task', lambda: self._cmd_rsock._rsock.recv(128))
         self.modify(self._cmd_rsock, _AsyncNotifier._Readable)
 
-        timeout = poll_interval
+        timeout = self.poll_interval
         while not self._terminate:
+            timeout *= timeout_multiplier
             try:
                 events = self._poller.poll(timeout)
             except:
                 logging.debug('poll failed')
                 logging.debug(traceback.format_exc())
                 # wait a bit to prevent tight loops
-                time.sleep(poll_interval)
+                time.sleep(self.poll_interval)
                 continue
             now = _time()
             self._lock.acquire()
@@ -1664,7 +1668,7 @@ class _AsyncNotifier(object):
                 if timeout < 0.01:
                     timeout = 0.01
             else:
-                timeout = poll_interval
+                timeout = self.poll_interval
             self._lock.release()
 
         self._cmd_rsock.close()
@@ -1697,6 +1701,8 @@ class _AsyncNotifier(object):
             self._timeouts.insert(i, timeout)
             self._timeout_fds.insert(i, fd)
             fd._timeout_id = timeout
+            if i == 0 and fd._timeout < self.poll_interval:
+                self._cmd_wsock.send('w')
             self._lock.release()
         else:
             fd._timeout_id = None
