@@ -1839,9 +1839,8 @@ class _SelectNotifier(object):
             self.wset = set()
             self.xset = set()
 
-            self.cmd_rsock = cmd_rsock
             self.cmd_wsock = cmd_wsock
-            self.read_fd = self.cmd_rsock.fileno()
+            self.read_fd = cmd_rsock.fileno()
             self.rset.add(self.read_fd)
 
     def register(self, fid, event, update=True):

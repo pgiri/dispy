@@ -171,7 +171,6 @@ class _Compute(object):
         self.id = None
         self.code = None
         self.job_result_port = None
-        self.env = None
         self.dest_path = None
         self.xfer_files = []
         self.cleanup = True
@@ -1453,13 +1452,11 @@ class JobCluster(object):
         if inspect.isfunction(computation) or inspect.ismethod(computation):
             func = computation
             compute = _Compute(_Compute.func_type, func.func_name)
-            # compute.env = {'PYTHONPATH':[os.getcwd()] + sys.path}
             lines = inspect.getsourcelines(func)[0]
             lines[0] = lines[0].lstrip()
             compute.code = ''.join(lines)
         elif isinstance(computation, str):
             compute = _Compute(_Compute.prog_type, computation)
-            compute.env = {'PATH':os.getenv('PATH')}
             depends.append(computation)
         else:
             raise Exception('Invalid computation type: %s' % type(compute))
@@ -1475,7 +1472,7 @@ class JobCluster(object):
                 if dep in depend_ids:
                     continue
                 if compute.type == _Compute.prog_type and not os.path.isfile(dep):
-                    for p in compute.env['PATH'].split(':'):
+                    for p in os.environ['PATH'].split(':'):
                         f = os.path.join(p, dep)
                         if os.path.isfile(f):
                             logging.debug('Assuming "%s" is program "%s"', dep, f)
@@ -1899,8 +1896,7 @@ def fault_recover_jobs(fault_recover_file, port=51348,
 
     port_req = cPickle.dumps({'ip_addr':ip_addr, 'port':srv_sock.getsockname()[1]})
     node_infos = {}
-    for uid in shelf:
-        job_info = shelf[uid]
+    for uid, job_info in shelf.iteritems():
         if job_info['ip_addr'] in node_infos:
             continue
 
@@ -1914,9 +1910,9 @@ def fault_recover_jobs(fault_recover_file, port=51348,
                 if reply['version'] != _dispy_version:
                     raise Exception('peer version "%s" is different from dispy version "%s"' % \
                                     reply['version'], _dispy_version)
-                auth_code = hashlib.sha1(_xor_string(reply['sign'], secret)).hexdigest()
                 if reply['ip_addr'] in node_infos:
                     continue
+                auth_code = hashlib.sha1(_xor_string(reply['sign'], secret)).hexdigest()
                 node_infos[reply['ip_addr']] = {'port':reply['port'], 'auth_code':auth_code}
                 if reply['ip_addr'] == job_info['ip_addr']:
                     break
@@ -1929,9 +1925,8 @@ def fault_recover_jobs(fault_recover_file, port=51348,
     srv_sock.close()
 
     jobs = []
-    uids = shelf.keys()
-    for uid in uids:
-        job_info = shelf[uid]
+    done = []
+    for uid, job_info in shelf.iteritems():
         node_info = node_infos.get(job_info['ip_addr'], None)
         if node_info is None:
             continue
@@ -1962,12 +1957,15 @@ def fault_recover_jobs(fault_recover_file, port=51348,
             setattr(job, 'kwargs', cPickle.loads(job_info['kwargs']))
             jobs.append(job)
             if job.status in [DispyJob.Finished, DispyJob.Terminated]:
-                del shelf[uid]
+                done.append(uid)
         except:
             print 'Failed to get reply for %s' % (uid)
             # print traceback.format_exc()
         finally:
             sock.close()
+
+    for uid in done:
+        del shelf[uid]
 
     pending = len(shelf)
     shelf.close()

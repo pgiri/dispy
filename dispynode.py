@@ -100,7 +100,7 @@ def _same_file(tgt, xf):
 
 def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
                     __dispy_job_args, __dispy_job_kwargs, __dispy_reply_Q,
-                    __dispy_job_env, __dispy_job_name, __dispy_job_code,
+                    __dispy_job_name, __dispy_job_code,
                     __dispy_path, __dispy_job_files=[]):
     """Internal use only.
     """
@@ -108,8 +108,6 @@ def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
     sys.stdout = cStringIO.StringIO()
     sys.stderr = cStringIO.StringIO()
     __dispy_job_reply = __dispy_job_info.job_reply
-    if __dispy_job_env and isinstance(__dispy_job_env, list):
-        sys.path = __dispy_job_env + sys.path
     sys.path = [__dispy_path] + sys.path
     try:
         exec marshal.loads(__dispy_job_code)
@@ -344,7 +342,7 @@ class _DispyNode(object):
                 job_info = _DispyJobInfo(reply, reply_addr, compute)
                 args = (job_info, self.certfile, self.keyfile,
                         _job.args, _job.kwargs, self.reply_Q,
-                        compute.env, compute.name, compute.code, compute.dest_path, _job.files)
+                        compute.name, compute.code, compute.dest_path, _job.files)
                 try:
                     yield conn.send_msg('ACK')
                 except:
@@ -447,8 +445,6 @@ class _DispyNode(object):
             logging.debug('xfer_files given: %s',
                           ','.join(xf.name for xf in compute.xfer_files))
             if compute.type == _Compute.func_type:
-                if compute.env and 'PYTHONPATH' in compute.env:
-                    self.computations[compute.id].env = compute.env['PYTHONPATH']
                 try:
                     code = compile(compute.code, '<string>', 'exec')
                 except:
@@ -579,35 +575,34 @@ class _DispyNode(object):
                 logging.debug('Job %s completed; ignoring cancel request from %s',
                               _job.uid, addr[0])
                 raise StopIteration
-            try:
-                logging.debug('Terminating job %s', _job.uid)
-                job_info.proc.terminate()
-                if isinstance(job_info.proc, multiprocessing.Process):
-                    for x in xrange(20):
-                        if job_info.proc.is_alive():
-                            yield coro.sleep(0.1)
-                        else:
-                            logging.debug('Process "%s" for job %s terminated',
-                                          compute.name, _job.uid)
-                            break
-                    else:
-                        logging.warning('Could not kill process %s', compute.name)
-                else:
-                    assert isinstance(job_info.proc, subprocess.Popen)
-                    for x in xrange(20):
-                        rc = job_info.proc.poll()
-                        logging.debug('Program "%s" for job %s terminated with %s',
-                                      compute.name, _job.uid, rc)
-                        if rc is not None:
-                            break
-                        if x == 10:
-                            logging.debug('Killing job %s', _job.uid)
-                            job_info.proc.kill()
+            logging.debug('Terminating job %s', _job.uid)
+            job_info.proc.terminate()
+            if isinstance(job_info.proc, multiprocessing.Process):
+                for x in xrange(20):
+                    if job_info.proc.is_alive():
                         yield coro.sleep(0.1)
                     else:
-                        logging.warning('Could not kill process %s', compute.name)
-            except:
-                logging.debug(traceback.format_exc())
+                        logging.debug('Process "%s" for job %s terminated',
+                                      compute.name, _job.uid)
+                        break
+                else:
+                    logging.warning('Could not kill process %s', compute.name)
+                    raise StopIteration
+            else:
+                assert isinstance(job_info.proc, subprocess.Popen)
+                for x in xrange(20):
+                    rc = job_info.proc.poll()
+                    logging.debug('Program "%s" for job %s terminated with %s',
+                                  compute.name, _job.uid, rc)
+                    if rc is not None:
+                        break
+                    if x == 10:
+                        logging.debug('Killing job %s', _job.uid)
+                        job_info.proc.kill()
+                    yield coro.sleep(0.1)
+                else:
+                    logging.warning('Could not kill process %s', compute.name)
+                    raise StopIteration
             reply_addr = (addr[0], compute.job_result_port)
             reply = _JobReply(_job, self.ip_addr)
             job_info = _DispyJobInfo(reply, reply_addr, compute)
@@ -662,14 +657,11 @@ class _DispyNode(object):
                             os.remove(info_file)
                             self.lock.acquire()
                             compute = self.computations.get(req['compute_id'], None)
-                            if compute is None:
-                                p = os.path.dirname(info_file)
-                                if p.startswith(self.dest_path_prefix) and \
-                                       len(p) > len(self.dest_path_prefix) and \
-                                       len(os.listdir(p)) == 0:
-                                    os.rmdir(p)
-                            else:
+                            if compute is not None:
                                 compute.pending_results -= 1
+                                if compute.pending_results == 0:
+                                    compute.zombie = True
+                                    self.cleanup_computation(compute)
                             self.lock.release()
                         except:
                             logging.debug('Could not remove "%s"', info_file)
@@ -832,9 +824,11 @@ class _DispyNode(object):
         reply = job_info.job_reply
         try:
             os.chdir(compute.dest_path)
-            env = os.environ
-            env['PATH'] = compute.dest_path + ':' + compute.env.get('PATH')
-            job_info.proc = subprocess.Popen(program, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+            env = {}
+            env.update(os.environ)
+            env['PATH'] = compute.dest_path + ':' + env['PATH']
+            job_info.proc = subprocess.Popen(program, stdout=subprocess.PIPE,
+                                             stderr=subprocess.PIPE, env=env)
 
             assert isinstance(job_info.proc, subprocess.Popen)
             reply.stdout, reply.stderr = job_info.proc.communicate()
@@ -998,7 +992,6 @@ class _DispyNode(object):
 
         Coro(_shutdown, self).value()
         self.timer_coro.terminate()
-        # self.tcp_coro.terminate()
         self.udp_coro.terminate()
         self.asyncoro.join()
         self.asyncoro.terminate()
