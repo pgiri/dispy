@@ -555,6 +555,9 @@ class _AsynCoroSocket(object):
             err = self._rsock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
             if err:
                 logging.debug('connect error: %s', err)
+                self._task = None
+                coro, self._coro = self._coro, None
+                coro.throw(socket.error, socket.error(err))
             elif self._certfile:
                 def _ssl_handshake(self):
                     try:
@@ -588,12 +591,12 @@ class _AsynCoroSocket(object):
         self._task = functools.partial(_connect, self, *args)
         self._coro = self._asyncoro.cur_coro()
         self._coro.suspend()
-        self._notifier.modify(self, _AsyncNotifier._Writable)
         try:
             self._rsock.connect(*args)
         except socket.error, e:
             if e.args[0] not in [EINPROGRESS, EWOULDBLOCK]:
                 logging.debug('connect error: %s', e.args[0])
+        self._notifier.modify(self, _AsyncNotifier._Writable)
 
     def async_send_msg(self, data):
         """Messages are tagged with length of the data, so on the
@@ -822,7 +825,9 @@ if platform.system() == 'Windows':
                             self._overlap.object = functools.partial(_recvall, self, pending, buf)
                             err, n = win32file.WSARecv(self._fileno, buf, self._overlap, 0)
                             if err and err != winerror.ERROR_IO_PENDING:
-                                self._coro.throw(socket.error, socket.error(err))
+                                self._overlap.object = self._result = None
+                                coro, self._coro = self._coro, None
+                                coro.throw(socket.error, socket.error(err))
 
                 self._result = []
                 buf = win32file.AllocateReadBuffer(min(bufsize, 1048576))
@@ -857,7 +862,9 @@ if platform.system() == 'Windows':
                         else:
                             err, n = win32file.WSASend(self._fileno, self._result, self._overlap, 0)
                             if err and err != winerror.ERROR_IO_PENDING:
-                                self._coro.throw(socket.error, socket.error(err))
+                                self._overlap.object = self._result = None
+                                coro, self._coro = self._coro, None
+                                coro.throw(socket.error, socket.error(err))
 
                 self._result = buffer(data, 0)
                 self._overlap.object = functools.partial(_sendall, self)
@@ -1566,31 +1573,34 @@ class _AsyncNotifier(object):
             self.__class__.__instance = self
             self.poll_interval = poll_interval
             self._cmd_rsock, self._cmd_wsock = _AsyncNotifier._socketpair()
+            self._cmd_wsock.setblocking(0)
             timeout_multiplier = 1
 
             if hasattr(select, 'epoll'):
                 self._poller = select.epoll()
-                self.__class__._Readable = select.EPOLLIN
-                self.__class__._Writable = select.EPOLLOUT
+                self.__class__._Read = self.__class__._Readable = select.EPOLLIN
+                self.__class__._Read |= select.EPOLLPRI
+                self.__class__._Write = self.__class__._Writable = select.EPOLLOUT
                 self.__class__._Hangup = select.EPOLLHUP
                 self.__class__._Error = select.EPOLLHUP | select.EPOLLERR
             elif hasattr(select, 'kqueue'):
                 self._poller = _KQueueNotifier()
-                self.__class__._Readable = select.KQ_FILTER_READ
-                self.__class__._Writable = select.KQ_FILTER_WRITE
+                self.__class__._Read = self.__class__._Readable = select.KQ_FILTER_READ
+                self.__class__._Write = self.__class__._Writable = select.KQ_FILTER_WRITE
                 self.__class__._Hangup = select.KQ_EV_EOF
                 self.__class__._Error = select.KQ_EV_ERROR
             elif hasattr(select, 'poll'):
-                self._poller = select.poll()
-                self.__class__._Readable = select.POLLIN
-                self.__class__._Writable = select.POLLOUT
+                self._poller = _PollNotifier(self._cmd_wsock)
+                self.__class__._Read = self.__class__._Readable = select.POLLIN
+                self.__class__._Read |= select.POLLPRI
+                self.__class__._Write = self.__class__._Writable = select.POLLOUT
                 self.__class__._Hangup = select.POLLHUP
                 self.__class__._Error = select.POLLHUP | select.POLLERR
                 timeout_multiplier = 1000
             else:
-                self._poller = _SelectNotifier(self._cmd_rsock, self._cmd_wsock)
-                self.__class__._Readable = 0x01
-                self.__class__._Writable = 0x04
+                self._poller = _SelectNotifier(self._cmd_wsock)
+                self.__class__._Read = self.__class__._Readable = 0x01
+                self.__class__._Write = self.__class__._Writable = 0x04
                 self.__class__._Hangup = 0
                 self.__class__._Error = 0x10
 
@@ -1610,7 +1620,6 @@ class _AsyncNotifier(object):
         read/write event for it. Since coroutines can do only one
         thing at a time, only one of read/write tasks can be done.
         """
-        self._cmd_wsock.setblocking(0)
         self._cmd_rsock = AsynCoroSocket(self._cmd_rsock)
         setattr(self._cmd_rsock, '_task', lambda: self._cmd_rsock._rsock.recv(128))
         self.modify(self._cmd_rsock, _AsyncNotifier._Readable)
@@ -1636,21 +1645,23 @@ class _AsyncNotifier(object):
                         if event != _AsyncNotifier._Hangup:
                             logging.debug('invalid fd for event %s', event)
                         continue
-                    if event == _AsyncNotifier._Readable:
+                    if event & _AsyncNotifier._Read:
                         # logging.debug('fd %s is readable', fd._fileno)
                         if fd._task is None:
                             logging.error('fd %s is not registered for read?', fd._fileno)
                         else:
                             fd._task()
-                    elif event == _AsyncNotifier._Writable:
+                    elif event & _AsyncNotifier._Write:
                         # logging.debug('fd %s is writable', fd._fileno)
                         if fd._task is None:
                             logging.error('fd %s is not registered for write?', fd._fileno)
                         else:
                             fd._task()
 
-                    # if event & _AsyncNotifier._Hangup:
-                    #     logging.debug('hangup on %s', fd._fileno)
+                    if event & _AsyncNotifier._Hangup:
+                        if fd._coro:
+                            fd._coro.throw(socket.error, socket.error('hangup'))
+                        self.unregister(fd)
             except:
                 logging.debug(traceback.format_exc())
 
@@ -1671,19 +1682,21 @@ class _AsyncNotifier(object):
                 timeout = self.poll_interval
             self._lock.release()
 
-        self._cmd_rsock.close()
-        self._cmd_wsock.close()
         if hasattr(self._poller, 'terminate'):
             self._poller.terminate()
         else:
             self._lock.acquire()
+            del self._fds[self._cmd_rsock.fileno()]
             for fd in self._fds.itervalues():
                 try:
                     self._poller.unregister(fd._fileno)
                 except:
                     logging.warning('unregister of %s failed with %s',
                                     fd._fileno, traceback.format_exc())
+            self._fds[self._cmd_rsock.fileno()] = self._cmd_rsock
             self._lock.release()
+        self._cmd_rsock.close()
+        self._cmd_wsock.close()
         self._poller = None
         iocp = getattr(sys.modules[__name__], '_IOCPNotifier', None)
         if isinstance(iocp, MetaSingleton):
@@ -1726,20 +1739,7 @@ class _AsyncNotifier(object):
             self._lock.release()
 
     def register(self, fd, event=0):
-        self._lock.acquire()
-        # if fd in self._fds:
-        #     self._lock.release()
-        #     logging.warning('fd %s is already registered', fd._fileno)
-        #     return
-        self._fds[fd._fileno] = fd
-        self._lock.release()
-        if event:
-            self._add_timeout(fd)
-        try:
-            self._poller.register(fd._fileno, event)
-        except:
-            logging.warning('register of %s for %s failed with %s',
-                            fd._fileno, event, traceback.format_exc())
+        return
 
     def unregister(self, fd):
         self._lock.acquire()
@@ -1756,14 +1756,18 @@ class _AsyncNotifier(object):
 
     def modify(self, fd, event):
         if event:
+            self._lock.acquire()
+            if fd._fileno in self._fds:
+                self._lock.release()
+                self._poller.modify(fd._fileno, event)
+            else:
+                self._fds[fd._fileno] = fd
+                self._lock.release()
+                self._poller.register(fd._fileno, event)
             self._add_timeout(fd)
         else:
             self._del_timeout(fd)
-        try:
             self._poller.modify(fd._fileno, event)
-        except:
-            logging.warning('modify of %s for %s failed with %s',
-                            fd._fileno, event, traceback.format_exc())
 
     def terminate(self):
         self._terminate = True
@@ -1826,22 +1830,53 @@ class _KQueueNotifier(object):
         events = [(kevent.ident, kevent.filter) for kevent in kevents]
         return events
 
+class _PollNotifier(object):
+    """Internal use only.
+    """
+
+    __metaclass__ = MetaSingleton
+
+    def __init__(self, cmd_wsock):
+        if not hasattr(self, 'poller'):
+            self.poller = select.poll()
+            self.polling = False
+            self.cmd_wsock = cmd_wsock
+
+    def register(self, fid, event):
+        self.poller.register(fid, event)
+        if self.polling:
+            self.cmd_wsock.send('r')
+
+    def unregister(self, fid):
+        self.poller.unregister(fid)
+        if self.polling:
+            self.cmd_wsock.send('u')
+
+    def modify(self, fid, event):
+        self.poller.modify(fid, event)
+        if self.polling:
+            self.cmd_wsock.send('m')
+
+    def poll(self, timeout):
+        self.polling = True
+        events = self.poller.poll(timeout)
+        self.polling = False
+        return events
+
 class _SelectNotifier(object):
     """Internal use only.
     """
 
     __metaclass__ = MetaSingleton
 
-    def __init__(self, cmd_rsock, cmd_wsock):
+    def __init__(self, cmd_wsock):
         if not hasattr(self, 'poller'):
             self.poller = select.select
             self.rset = set()
             self.wset = set()
             self.xset = set()
-
             self.cmd_wsock = cmd_wsock
-            self.read_fd = cmd_rsock.fileno()
-            self.rset.add(self.read_fd)
+            self.polling = False
 
     def register(self, fid, event, update=True):
         if event:
@@ -1851,23 +1886,26 @@ class _SelectNotifier(object):
                 self.wset.add(fid)
             elif event & _AsyncNotifier._Error:
                 self.xset.add(fid)
-            if update:
+            if update and self.polling:
                 self.cmd_wsock.send('r')
 
     def unregister(self, fid, update=True):
         self.rset.discard(fid)
         self.wset.discard(fid)
         self.xset.discard(fid)
-        if update:
+        if update and self.polling:
             self.cmd_wsock.send('u')
 
     def modify(self, fid, event):
         self.unregister(fid, update=False)
         self.register(fid, event, update=False)
-        self.cmd_wsock.send('m')
+        if self.polling:
+            self.cmd_wsock.send('m')
 
     def poll(self, timeout):
+        self.polling = True
         rlist, wlist, xlist = self.poller(self.rset, self.wset, self.xset, timeout)
+        self.polling = False
         events = {}
         for fid in rlist:
             events[fid] = _AsyncNotifier._Readable
