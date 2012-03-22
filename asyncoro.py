@@ -1355,15 +1355,15 @@ class AsynCoro(object):
             logging.warning('invalid coroutine %s to terminate', cid)
             self._sched_cv.release()
             return -1
-        if coro._state == AsynCoro._Running:
+        if coro._state == AsynCoro._Suspended:
+            self._suspended.discard(cid)
+            self._scheduled.add(cid)
+            coro._state = AsynCoro._Scheduled
+        elif coro._state == AsynCoro._Running:
             logging.warning('coroutine to terminate %s/%s is running', coro.name, cid)
             # if coro raises exception during current run, this exception will be ignored!
         coro._exception = (GeneratorExit, GeneratorExit('close'))
         coro._timeout = None
-        if coro._state == AsynCoro._Suspended:
-            self._suspended.discard(cid)
-            self._scheduled.add(cid)
-        coro._state = AsynCoro._Scheduled
         self._sched_cv.notify()
         self._sched_cv.release()
         return 0
@@ -1549,7 +1549,9 @@ class _AsyncNotifier(object):
     __metaclass__ = MetaSingleton
     __instance = None
 
+    _Read = None
     _Readable = None
+    _Write = None
     _Writable = None
     _Hangup = None
     _Error = None
@@ -1585,10 +1587,17 @@ class _AsyncNotifier(object):
                 self.__class__._Error = select.EPOLLHUP | select.EPOLLERR
             elif hasattr(select, 'kqueue'):
                 self._poller = _KQueueNotifier()
-                self.__class__._Read = self.__class__._Readable = select.KQ_FILTER_READ
-                self.__class__._Write = self.__class__._Writable = select.KQ_FILTER_WRITE
+                # kqueue filter values are negative numbers so using
+                # them as flags won't work. Here we are only
+                # interested in read/write/hangup, so set them up
+                # according to their values to distinguish them
+                self.__class__._Read = -select.KQ_FILTER_READ
+                self.__class__._Readable = select.KQ_FILTER_READ
+                self.__class__._Write = -select.KQ_FILTER_WRITE
+                self.__class__._Writable = select.KQ_FILTER_WRITE
                 self.__class__._Hangup = select.KQ_EV_EOF
                 self.__class__._Error = select.KQ_EV_ERROR
+                assert (self.__class__._Hangup & (self.__class__._Read | self.__class__._Write)) == 0
             elif hasattr(select, 'poll'):
                 self._poller = _PollNotifier(self._cmd_wsock)
                 self.__class__._Read = self.__class__._Readable = select.POLLIN
@@ -1659,9 +1668,9 @@ class _AsyncNotifier(object):
                             fd._task()
 
                     if event & _AsyncNotifier._Hangup:
+                        self.unregister(fd)
                         if fd._coro:
                             fd._coro.throw(socket.error, socket.error('hangup'))
-                        self.unregister(fd)
             except:
                 logging.debug(traceback.format_exc())
 
@@ -1745,7 +1754,7 @@ class _AsyncNotifier(object):
         self._lock.acquire()
         if self._fds.pop(fd._fileno, None) is None:
             self._lock.release()
-            logging.debug('fd %s is not registered', fd._fileno)
+            # logging.debug('fd %s is not registered', fd._fileno)
             return
         self._lock.release()
         self._del_timeout(fd)
@@ -1827,7 +1836,7 @@ class _KQueueNotifier(object):
 
     def poll(self, timeout):
         kevents = self.poller.control(None, 500, timeout)
-        events = [(kevent.ident, kevent.filter) for kevent in kevents]
+        events = [(kevent.ident, -kevent.filter | kevent.flags) for kevent in kevents]
         return events
 
 class _PollNotifier(object):
@@ -1917,4 +1926,6 @@ class _SelectNotifier(object):
         return events.iteritems()
 
     def terminate(self):
-        self.rset = self.wset = self.xset = None
+        self.rset = set()
+        self.wset = set()
+        self.xset = set()

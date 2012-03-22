@@ -44,7 +44,7 @@ import platform
 
 from asyncoro import Coro, AsynCoro, CoroLock, CoroCondition, AsynCoroSocket, MetaSingleton
 
-_dispy_version = '2.4'
+_dispy_version = '2.5'
 
 class DispyJob(object):
     """Job scheduled for execution with dispy.

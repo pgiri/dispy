@@ -159,6 +159,35 @@ execution (play relay race).
 <p>
 See dispy files for details/examples on how to use asyncoro.
 </p>
+<p>
+Following is asyncoro version
+of <a href="http://nichol.as/asynchronous-servers-in-python">Ping Pong
+Benchmark</a> server:
+<code>import socket
+from asyncoro import AsynCoroSocket, Coro, AsynCoro
+
+def process(conn, coro=None):
+    conn = AsynCoroSocket(conn)
+    yield conn.sendall("HTTP/1.0 200 OK\r\nContent-Length: 5\r\n\r\nPong!\r\n")
+    conn.close()
+
+if __name__ == '__main__':
+    scheduler = AsynCoro()
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(('', 8010))
+    sock.listen(5000)
+
+    while True:
+        try:
+            conn, addr = sock.accept()
+        except KeyboardInterrupt:
+            break
+        Coro(process, conn)
+    scheduler.terminate()
+</code>
+  </p>
 
 	  </div>
 	</div> 
