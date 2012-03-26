@@ -307,7 +307,7 @@ class _Scheduler(object):
                     for cid, cluster in self._clusters.iteritems():
                         if cluster._compute.nodes.pop(node.ip_addr, None) is not None:
                             try:
-                                node.clusters.remove(cid)
+                                node.clusters.discard(cid)
                             except:
                                 logging.debug('Cluster %s/%s is already removed from %s',
                                               cluster.compute.name, cluster.compute.id,
@@ -400,7 +400,7 @@ class _Scheduler(object):
                 self._sched_cv.acquire()
                 if node.ip_addr not in compute.nodes:
                     compute.nodes[node.ip_addr] = node
-                    node.clusters.append(compute.id)
+                    node.clusters.add(compute.id)
                     self._sched_cv.notify()
                 self._sched_cv.release()
 
@@ -416,7 +416,7 @@ class _Scheduler(object):
                 self._sched_cv.acquire()
                 if node.ip_addr not in compute.nodes:
                     compute.nodes[node.ip_addr] = node
-                    node.clusters.append(compute.id)
+                    node.clusters.add(compute.id)
                     self._sched_cv.notify()
                 yield self._sched_cv.release()
 
@@ -983,12 +983,7 @@ class _Scheduler(object):
                             _job.uid, _job.node.ip_addr, cluster._compute.name)
             self._sched_cv.acquire()
             if cluster._compute.nodes.pop(_job.node.ip_addr, None) is not None:
-                try:
-                    _job.node.clusters.remove(cluster.compute.id)
-                except:
-                    logging.debug('Cluster %s/%s is already removed from %s',
-                                  cluster.compute.name, cluster.compute.id, _job.node.ip_addr)
-                    pass
+                _job.node.clusters.discard(cluster.compute.id)
                 # TODO: remove the node from all clusters and globally?
             # this job might have been deleted already due to timeout
             if self._sched_jobs.pop(_job.uid, None) == _job:
@@ -1151,12 +1146,7 @@ class _Scheduler(object):
         compute = cluster._compute
         nodes = compute.nodes.values()
         for node in nodes:
-            try:
-                node.clusters.remove(compute.id)
-            except:
-                logging.debug('Cluster %s/%s is already removed from %s',
-                              compute.name, compute.id, node.ip_addr)
-                pass
+            node.clusters.discard(compute.id)
         compute.nodes = {}
         for xf in compute.xfer_files:
             logging.debug('Removing file "%s"', xf.name)

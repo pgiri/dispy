@@ -1,100 +1,10 @@
-dispy is library and tool for distributing computations across
-multiple computers/cores and gathering results.
+dispy is a framework for parallel execution of computations by
+distributing them across multiple processors on a single machine,
+among many machines in a cluster, grid or cloud. The computations can
+be standalone programs or python functions. dispy is implemented with
+asynchronous sockets and coroutines (without threads) using polling
+mechanisms epoll, kqueue and poll, and Windows I/O Completion Ports
+(IOCP) for high performance and scalability.
 
-When used as library (with python), the computation results can be
-processed further as necessary. The computations can be either
-standalone programs or python fragments, such as functions,
-classes, modules.
-
-As a quick howto, consider the following program to (rather
-inefficiently) compute divisors:
-
-#!/usr/bin/env python
-
-def divisors(n):
-    import math
-    res = []
-    for i in xrange(2, int(math.sqrt(n))+1):
-        if n % i == 0:
-            res.append(i)
-    return (n, res)
-
-if __name__ == '__main__':
-    import dispy
-    cluster = dispy.JobCluster(divisors)
-    jobs = []
-    start = 1 + 10**13
-    for n in xrange(start, start+100, 2):
-        jobs.append(cluster.submit(n))
-    #cluster.wait()
-    for job in jobs:
-        n, factors = job()
-        print n, factors
-    cluster.stats()
-
-Start 'dispynode' program on available servers (nodes).
-
-Here, a cluster is created with function 'divisors'. See API in doc
-strings for customizing it. We then create jobs by submitting
-appropriate arguments to the cluster (the arguments must match those
-with function used to create the cluster). The jobs are automatically
-distributed by dispy to the nodes available. The result of executing
-jobs are then retrieved and printed.
-
-When necessary, multiple clusters can be created and scheduled across
-nodes either simlutaneously (in which case, it is expected that
-clusters are created with disjoint sets of nodes; see JobCluster doc
-string for details) or serially.
-
-'dispynode' is the program that should be running on the nodes
-(servers). This program can be started either before starting the
-cluster, or later; scheduler distributes computations to all available
-nodes, as and when they become available.
-
-Further examples on how to use JobCluster:
-
-  cluster = dispy.JobCluster('/some/program', nodes=['192.168.3.*'], transfer_dest='/tmp')
-    distributes '/some/program' to all nodes whose IP address starts with '192.168.3'
-    transfer_dest is optional; it refers to path on server nodes where files will
-
-  cluster = dispy.JobCluster(func1, depends=[ClassA, moduleB, 'file1'])
-    distributes func1 along with ClassA (python object), moduleB (python object) and
-    'file1' (file). Presumably ClassA, moduleB and file1 are needed by func1.
-
-  cluster = dispy.JobCluster(func2, secret='super')
-    distributes func2 to nodes that also use secret 'super' (i.e., nodes started with
-    'dispynode -s super')
-    Note that secret is used only for establishing communication initially,
-    but not used to encrypt programs or code for python objects. This can be useful to
-    prevent other users from (inadvertantly) using the nodes. If encryption is needed,
-    use SSL, see below.
-
-  cluster = dispy.JobCluster(func2, certfile='mycert', keyfile='mykey')
-    distributes func2 and encrypts all communication using SSL certificate
-    stored in 'mycert' and key stored in 'mykey'.
-
-    If both certificate and key are stored in same file, say, 'mycertkey',
-    they are expected to be in certfile:
-      cluster = dispy.JobCluster(func2, certfile='mycertkey')
-
-After jobs are submitted, cluster.wait() can be used to wait until all
-jobs are finished executing. This can be useful if results of execution are not needed.
-
-When a submitted job is called with job(), it returns that job's
-execution result, possibly waiting until the job is finished. After a job is complete,
-  job.stdout and job.stderr will have stdout and stderr strings
-  job.execution_trace will have exception trace if executing job raises any exception;
-    in this case the result of job() call will be None.
-  job.host will be the host's address where this job is executed.
-  job.start_time will be the time when job is scheduled
-  job.end_time will be time when results became available.
-
-dispy can also be used as a tool; in this case the computations and
-dependencies should be files only.
-
-  dispy.py -f /some/file1 -f file2 -a '"arg11" arg12"' -a '"arg21" "arg22"' /some/program
-
-  will distribute '/some/program' with dependencies '/some/file1' and 'file2' and then
-  execute '/some/program' with 'arg11' and 'arg12', and 'arg21' and 'arg22'.
-
-  More options are available; see end of dispy.py for them.
+See index.html and other HTML files in this package for more
+information.

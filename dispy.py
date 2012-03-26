@@ -44,7 +44,7 @@ import platform
 
 from asyncoro import Coro, AsynCoro, CoroLock, CoroCondition, AsynCoroSocket, MetaSingleton
 
-_dispy_version = '2.5'
+_dispy_version = '2.6'
 
 class DispyJob(object):
     """Job scheduled for execution with dispy.
@@ -207,7 +207,7 @@ class _Node(object):
         self.cpus = cpus
         self.name = None
         self.jobs = 0
-        self.clusters = []
+        self.clusters = set()
         self.cpu_time = 0
         self.busy = 0
         self.files_xferred = {}
@@ -498,6 +498,7 @@ class _Cluster(object):
         sock.settimeout(1)
         for node_spec, node_info in cluster._compute.node_spec.iteritems():
             if node_spec.find('*') >= 0:
+                # TODO: make sure that this is for local network only
                 port = node_info['port']
                 if not port:
                     port = self.node_port
@@ -597,7 +598,7 @@ class _Cluster(object):
             nodes = cluster._compute.nodes.values()
             for node in nodes:
                 logging.debug('node %s is being removed', node.ip_addr)
-                node.clusters.remove(cluster._compute.id)
+                node.clusters.discard(cluster._compute.id)
             cluster._compute.nodes = {}
             yield self._sched_cv.release()
             for node in nodes:
@@ -692,22 +693,27 @@ class _Cluster(object):
         # generator
         assert coro is not None
         for compute in computations:
+            # NB: to avoid computation being sent multiple times, we
+            # add it to node's clusters before sending it; this does
+            # not affect scheduler, as the node won't be in cluster's
+            # nodes map and cluster's jobs is empty
             self._sched_cv.acquire()
-            if node.ip_addr in compute.nodes:
+            if node.ip_addr in compute.nodes or compute.id in node.clusters:
                 self._sched_cv.release()
                 continue
+            node.clusters.add(compute.id)
             self._sched_cv.release()
             r = yield node.setup(compute, coro=coro)
+            self._sched_cv.acquire()
             if r:
+                node.clusters.discard(compute.id)
                 logging.warning('Failed to setup %s for compute "%s"',
                                 node.ip_addr, compute)
             else:
-                self._sched_cv.acquire()
                 if node.ip_addr not in compute.nodes:
                     compute.nodes[node.ip_addr] = node
-                    node.clusters.append(compute.id)
                     self._sched_cv.notify()
-                yield self._sched_cv.release()
+            yield self._sched_cv.release()
 
     def run_job(self, _job, cluster, coro=None):
         # generator
@@ -729,7 +735,7 @@ class _Cluster(object):
                             _job.uid, _job.node.ip_addr, cluster._compute.name)
             self._sched_cv.acquire()
             if cluster._compute.nodes.pop(_job.node.ip_addr, None) is not None:
-                _job.node.clusters.remove(cluster.compute.id)
+                _job.node.clusters.discard(cluster.compute.id)
                 # TODO: remove the node from all clusters and globally?
             # this job might have been deleted already due to timeout
             if self._sched_jobs.pop(_job.uid, None) == _job:
@@ -838,7 +844,7 @@ class _Cluster(object):
                     self.reschedule_jobs(dead_jobs, coro)
                     for cid, cluster in self._clusters.iteritems():
                         if cluster._compute.nodes.pop(node.ip_addr, None) is not None:
-                            node.clusters.remove(cid)
+                            node.clusters.discard(cid)
                     yield self._sched_cv.release()
                     del node
                 except:
