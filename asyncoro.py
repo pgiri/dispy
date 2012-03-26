@@ -724,6 +724,7 @@ if platform.system() == 'Windows':
                         self.xset.add(fid)
                     if fd._timeout:
                         self.iocp_notifier._add_timeout(fd)
+                        self.iocp_notifier.wakeup(fd._timeout)
                 if self.polling:
                     self.cmd_wsock.send('m')
 
@@ -818,14 +819,18 @@ if platform.system() == 'Windows':
                                                                  None, 0, 0)
                     self._timeouts = []
                     self._timeout_fds = []
+                    self.poll_timeout = 0
                     self._lock = threading.Lock()
                     self.cmd_wsock = cmd_wsock
                     self.cmd_rsock = None
                     self.cmd_rsock_buf = win32file.AllocateReadBuffer(128)
                     self.async_poller = _AsyncPoller(self)
 
-            def wakeup(self):
-                self.cmd_wsock.send('w')
+            def wakeup(self, timeout=None):
+                if timeout is None:
+                    self.cmd_wsock.send('w')
+                elif self.poll_timeout == _AsyncNotifier._Block or timeout < self.poll_timeout:
+                    self.cmd_wsock.send('w')
 
             def register(self, fd, event=0):
                 win32file.CreateIoCompletionPort(fd._fileno, self.iocp, 1, 0)
@@ -839,19 +844,19 @@ if platform.system() == 'Windows':
             def poll(self, timeout):
                 now = _time()
                 self._lock.acquire()
-                if self._timeouts:
-                    self.timeout = self._timeouts[0] - now
-                    if self.timeout < 0.001:
-                        self.timeout = 0
+                if timeout == 0:
+                    self.poll_timeout = 0
+                elif self._timeouts:
+                    self.poll_timeout = self._timeouts[0] - now
+                    if self.poll_timeout < 0.001:
+                        self.poll_timeout = 0
+                    elif timeout is not None:
+                        self.poll_timeout = min(timeout, self.poll_timeout)
+                elif timeout is None:
+                    self.poll_timeout = _AsyncNotifier._Block
                 else:
-                    self.timeout = _AsyncNotifier._Block
-
-                if timeout is not None:
-                    if self.timeout == _AsyncNotifier._Block:
-                        self.timeout = timeout
-                    else:
-                        self.timeout = min(timeout, self.timeout)
-                timeout = self.timeout
+                    self.poll_timeout = timeout
+                timeout = self.poll_timeout
                 self._lock.release()
                 if timeout and timeout != _AsyncNotifier._Block:
                     timeout = int(timeout * 1000)
@@ -863,6 +868,7 @@ if platform.system() == 'Windows':
                     else:
                         logging.warning('no overlap!')
                     err, n, key, overlap = win32file.GetQueuedCompletionStatus(self.iocp, 0)
+                self.poll_timeout = 0
                 if timeout == 0:
                     now = _time()
                     self._lock.acquire()
@@ -1315,7 +1321,6 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
                 self._timeouts = []
                 self._timeout_fds = []
                 self._lock = threading.Lock()
-                self.timeout = 0
 
         def setup_cmd_rsock(self, cmd_rsock):
             setattr(cmd_rsock, '_task', lambda: cmd_rsock._rsock.recv(128))
@@ -1330,33 +1335,28 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
             now = _time()
             self._lock.acquire()
             if timeout == 0:
-                self.timeout = timeout
+                poll_timeout = timeout
+            elif self._timeouts:
+                poll_timeout = self._timeouts[0] - now
+                if poll_timeout < 0.001:
+                    poll_timeout = 0
+                elif timeout is not None:
+                    poll_timeout = min(timeout, poll_timeout)
+            elif timeout is None:
+                poll_timeout = _AsyncNotifier._Block
             else:
-                if self._timeouts:
-                    self.timeout = self._timeouts[0] - now
-                    if self.timeout < 0.001:
-                        self.timeout = 0
-                else:
-                    self.timeout = _AsyncNotifier._Block
-
-                if timeout is not None:
-                    if self.timeout == _AsyncNotifier._Block:
-                        self.timeout = timeout
-                    else:
-                        self.timeout = min(timeout, self.timeout)
-            timeout = self.timeout
+                poll_timeout = timeout
             self._lock.release()
-            if timeout and timeout != _AsyncPoller._Block:
-                timeout *= self.timeout_multiplier
+            if poll_timeout and poll_timeout != _AsyncPoller._Block:
+                poll_timeout *= self.timeout_multiplier
             try:
-                events = self._poller.poll(timeout)
+                events = self._poller.poll(poll_timeout)
             except:
                 logging.debug('poll failed')
                 logging.debug(traceback.format_exc())
                 # prevent tight loops
                 time.sleep(5)
                 return
-            self.timeout = 0
             self._lock.acquire()
             events = [(self._fds.get(fileno, None), event) for fileno, event in events]
             self._lock.release()
