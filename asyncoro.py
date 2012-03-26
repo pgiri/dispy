@@ -724,7 +724,7 @@ if platform.system() == 'Windows':
                         self.xset.add(fid)
                     if fd._timeout:
                         self.iocp_notifier._add_timeout(fd)
-                        self.iocp_notifier.wakeup(fd._timeout)
+                        self.iocp_notifier.interrupt(fd._timeout)
                 if self.polling:
                     self.cmd_wsock.send('m')
 
@@ -769,14 +769,13 @@ if platform.system() == 'Windows':
                             else:
                                 logging.warning('fd %s is not registered for writing!', fd._fileno)
                     if iocp_notify:
-                        self.iocp_notifier.wakeup()
+                        self.iocp_notifier.interrupt()
 
                 self.rset = set()
                 self.wset = set()
                 self.xset = set()
                 self.cmd_rsock.close()
                 self.cmd_wsock.close()
-                self.cmd_rsock = self.cmd_wsock = None
 
             def terminate(self):
                 self._terminate = True
@@ -812,7 +811,7 @@ if platform.system() == 'Windows':
                     cls.__instance = cls()
                 return cls.__instance
 
-            def __init__(self, cmd_wsock):
+            def __init__(self):
                 if not hasattr(self, 'iocp'):
                     self.__class__.__instance = self
                     self.iocp = win32file.CreateIoCompletionPort(win32file.INVALID_HANDLE_VALUE,
@@ -821,16 +820,32 @@ if platform.system() == 'Windows':
                     self._timeout_fds = []
                     self.poll_timeout = 0
                     self._lock = threading.Lock()
-                    self.cmd_wsock = cmd_wsock
-                    self.cmd_rsock = None
-                    self.cmd_rsock_buf = win32file.AllocateReadBuffer(128)
                     self.async_poller = _AsyncPoller(self)
+                    self.cmd_rsock, self.cmd_wsock = _AsyncPoller._socketpair()
+                    self.cmd_wsock.setblocking(0)
+                    self.cmd_rsock = AsynCoroSocket(self.cmd_rsock)
+                    self.cmd_rsock_buf = win32file.AllocateReadBuffer(128)
+                    self.cmd_rsock._overlap.object = self.cmd_rsock_recv
+                    err, n = win32file.WSARecv(self.cmd_rsock._fileno, self.cmd_rsock_buf,
+                                               self.cmd_rsock._overlap, 0)
+                    if err and err != winerror.ERROR_IO_PENDING:
+                        logging.warning('WSARecv error: %s', err)
 
-            def wakeup(self, timeout=None):
+            def cmd_rsock_recv(self, err, n):
+                if n == 0:
+                    err = winerror.ERROR_CONNECTION_INVALID
+                if err:
+                    logging.warning('iocp cmd recv error: %s', err)
+                err, n = win32file.WSARecv(self.cmd_rsock._fileno, self.cmd_rsock_buf,
+                                           self.cmd_rsock._overlap, 0)
+                if err and err != winerror.ERROR_IO_PENDING:
+                    logging.warning('WSARecv error: %s', err)
+
+            def interrupt(self, timeout=None):
                 if timeout is None:
-                    self.cmd_wsock.send('w')
+                    self.cmd_wsock.send('i')
                 elif self.poll_timeout == _AsyncNotifier._Block or timeout < self.poll_timeout:
-                    self.cmd_wsock.send('w')
+                    self.cmd_wsock.send('I')
 
             def register(self, fd, event=0):
                 win32file.CreateIoCompletionPort(fd._fileno, self.iocp, 1, 0)
@@ -913,26 +928,10 @@ if platform.system() == 'Windows':
                     self._lock.release()
 
             def terminate(self):
-                self.cmd_wsock.send('q')
+                self.cmd_rsock.close()
+                self.cmd_wsock.close()
+                self.cmd_rsock_buf = None
                 self.async_poller.terminate()
-
-            def setup_cmd_rsock(self, cmd_rsock):
-                self.cmd_rsock = cmd_rsock
-                cmd_rsock._overlap.object = self.cmd_rsock_recv
-                err, n = win32file.WSARecv(cmd_rsock._fileno, self.cmd_rsock_buf,
-                                           cmd_rsock._overlap, 0)
-                if err and err != winerror.ERROR_IO_PENDING:
-                    logging.warning('WSARecv error: %s', err)
-
-            def cmd_rsock_recv(self, err, n):
-                if n == 0:
-                    err = winerror.ERROR_CONNECTION_INVALID
-                if err:
-                    logging.warning('iocp cmd recv error: %s', err)
-                err, n = win32file.WSARecv(self.cmd_rsock._fileno, self.cmd_rsock_buf,
-                                           self.cmd_rsock._overlap, 0)
-                if err and err != winerror.ERROR_IO_PENDING:
-                    logging.warning('WSARecv error: %s', err)
 
         class AsynCoroSocket(_AsynCoroSocket):
             """AsynCoroSocket with I/O Completion Ports (under
@@ -1259,7 +1258,7 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
             """
             return cls.__instance
 
-        def __init__(self, cmd_wsock):
+        def __init__(self):
             if self.__class__.__instance is None:
                 self.__class__.__instance = self
                 self.timeout_multiplier = 1
@@ -1321,10 +1320,14 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
                 self._timeouts = []
                 self._timeout_fds = []
                 self._lock = threading.Lock()
+                self.cmd_rsock, self.cmd_wsock = _AsyncPoller._socketpair()
+                self.cmd_wsock.setblocking(0)
+                self.cmd_rsock = AsynCoroSocket(self.cmd_rsock)
+                setattr(self.cmd_rsock, '_task', lambda: self.cmd_rsock._rsock.recv(128))
+                self.modify(self.cmd_rsock, _AsyncPoller._Readable)
 
-        def setup_cmd_rsock(self, cmd_rsock):
-            setattr(cmd_rsock, '_task', lambda: cmd_rsock._rsock.recv(128))
-            self.modify(cmd_rsock, _AsyncPoller._Readable)
+        def interrupt(self):
+            self.cmd_wsock.send('I')
 
         def poll(self, timeout):
             """Calls 'task' method of registered fds when there is a
@@ -1400,6 +1403,8 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
                 self._lock.release()
 
         def terminate(self):
+            self.cmd_rsock.close()
+            self.cmd_wsock.close()
             if hasattr(self._poller, 'terminate'):
                 self._poller.terminate()
             else:
@@ -1822,9 +1827,7 @@ class AsynCoro(object):
             self._lock = threading.Lock()
             self._terminate = False
             self._complete = threading.Event()
-            self._cmd_rsock, self._cmd_wsock = _AsyncPoller._socketpair()
-            self._cmd_wsock.setblocking(0)
-            self._notifier = _AsyncNotifier(self._cmd_wsock)
+            self._notifier = _AsyncNotifier()
             self._scheduler = threading.Thread(target=self._schedule)
             self._scheduler.daemon = True
             self._scheduler.start()
@@ -1853,8 +1856,7 @@ class AsynCoro(object):
         coro._state = AsynCoro._Scheduled
         self._scheduled.add(coro._id)
         if len(self._scheduled) == 1:
-            # interrupt notifier
-            self._cmd_wsock.send('a')
+            self._notifier.interrupt()
         self._lock.release()
 
     def _suspend(self, cid, timeout=None):
@@ -1930,8 +1932,6 @@ class AsynCoro(object):
             self._suspended.discard(coro._id)
             self._scheduled.add(coro._id)
         coro._state = AsynCoro._Scheduled
-        if len(self._scheduled) == 1:
-            self._cmd_wsock.send('e')
         self._lock.release()
         return 0
 
@@ -1953,17 +1953,12 @@ class AsynCoro(object):
         coro._exception = (GeneratorExit, GeneratorExit('close'))
         coro._timeout = None
         coro._state = AsynCoro._Scheduled
-        if len(self._scheduled) == 1:
-            self._cmd_wsock.send('x')
         self._lock.release()
         return 0
 
     def _schedule(self):
         """Internal use only.
         """
-        self._cmd_rsock = AsynCoroSocket(self._cmd_rsock)
-        self._notifier.setup_cmd_rsock(self._cmd_rsock)
-
         while not self._terminate:
             # process I/O events
             self._notifier.poll(0)
@@ -2114,11 +2109,9 @@ class AsynCoro(object):
         all running coroutines.
         """
         self._terminate = True
-        self._cmd_wsock.send('q')
+        self._notifier.interrupt()
         self._complete.wait()
         self._notifier.terminate()
-        self._cmd_rsock.close()
-        self._cmd_wsock.close()
         logging.debug('AsynCoro terminated')
 
     def join(self):
