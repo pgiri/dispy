@@ -1108,7 +1108,7 @@ if platform.system() == 'Windows':
                 if err and err != winerror.ERROR_IO_PENDING:
                     raise socket.error(err)
 
-            def iocp_connect(self, (host, port)):
+            def iocp_connect(self, host_port):
                 def _connect(self, err, n):
                     def _ssl_handshake(self, err, n):
                         try:
@@ -1166,7 +1166,7 @@ if platform.system() == 'Windows':
                 self._coro.suspend()
                 if self._timeout:
                     self._notifier._add_timeout(self)
-                err, n = win32file.ConnectEx(self._rsock, (host, port), self._overlap)
+                err, n = win32file.ConnectEx(self._rsock, host_port, self._overlap)
                 if err and err != winerror.ERROR_IO_PENDING:
                     raise socket.error(err)
 
