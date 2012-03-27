@@ -789,7 +789,7 @@ if platform.system() == 'Windows':
                 srv_sock.listen(1)
 
                 sock1 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                conn_thread = threading.Thread(target=lambda sock, (addr, port): sock.connect((addr, port)),
+                conn_thread = threading.Thread(target=lambda sock, addr_port: sock.connect(addr_port),
                                                args=(sock1, srv_sock.getsockname()))
                 conn_thread.daemon = True
                 conn_thread.start()
@@ -1488,7 +1488,7 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
             srv_sock.listen(1)
 
             sock1 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            conn_thread = threading.Thread(target=lambda sock, (addr, port): sock.connect((addr, port)),
+            conn_thread = threading.Thread(target=lambda sock, addr_port: sock.connect(addr_port),
                                            args=(sock1, srv_sock.getsockname()))
             conn_thread.daemon = True
             conn_thread.start()
