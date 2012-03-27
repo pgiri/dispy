@@ -25,9 +25,13 @@ import sys
 import socket
 import struct
 import time
-import cPickle
 import select
 import logging
+
+if sys.version > '3':
+    import pickle
+else:
+    import cPickle as pickle
 
 from dispy import _node_ipaddr, _dispy_version
 
@@ -77,7 +81,7 @@ class DispyNetRelay(object):
 
         scheduler_ip_addr = _node_ipaddr(scheduler_node)
         if scheduler_ip_addr and scheduler_port:
-            relay_request = cPickle.dumps({'scheduler_ip_addr':scheduler_ip_addr,
+            relay_request = pickle.dumps({'scheduler_ip_addr':scheduler_ip_addr,
                                            'scheduler_port':scheduler_port,
                                            'version':scheduler_version})
             bc_sock.sendto('PING:%s' % relay_request, ('<broadcast>', node_port))
@@ -108,7 +112,7 @@ class DispyNetRelay(object):
                     last_ping = time.time()
                     logging.debug('Ping message from %s (%s)', addr[0], addr[1])
                     try:
-                        data = cPickle.loads(msg[len('PING:'):])
+                        data = pickle.loads(msg[len('PING:'):])
                         scheduler_ip_addr = data['scheduler_ip_addr']
                         scheduler_port = data['scheduler_port']
                         scheduler_version = data['version']
@@ -118,7 +122,7 @@ class DispyNetRelay(object):
                         logging.debug('Ignoring ping message from %s (%s)',
                                       addr[0], addr[1])
                         continue
-                    relay_request = cPickle.dumps({'scheduler_ip_addr':scheduler_ip_addr,
+                    relay_request = pickle.dumps({'scheduler_ip_addr':scheduler_ip_addr,
                                                    'scheduler_port':scheduler_port,
                                                    'version':scheduler_version})
                     bc_sock.sendto('PING:%s' % relay_request, ('<broadcast>', node_port))
@@ -137,11 +141,11 @@ class DispyNetRelay(object):
                         continue
                     logging.debug('Pong message from %s (%s)', addr[0], addr[1])
                     try:
-                        pong = cPickle.loads(msg[len('PONG:'):])
+                        pong = pickle.loads(msg[len('PONG:'):])
                         assert isinstance(pong['host'], str)
                         assert isinstance(pong['port'], int)
                         assert isinstance(pong['cpus'], int)
-                        relay_request = cPickle.dumps({'scheduler_ip_addr':scheduler_ip_addr,
+                        relay_request = pickle.dumps({'scheduler_ip_addr':scheduler_ip_addr,
                                                        'scheduler_port':scheduler_port,
                                                        'version':scheduler_version})
                         relay_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

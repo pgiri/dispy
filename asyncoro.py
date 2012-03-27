@@ -1693,10 +1693,10 @@ class Coro(object):
     def terminate(self):
         """Terminate coro.
 
-        This method should be called by a coro (on some other
-        coro). Otherwise, there is a chance that coro being terminated
-        is currently running and can interfere with GenratorExit
-        exception that will be thrown to coro.
+        If this method called by a thread (and not a coro), there is a
+        chance that coro being terminated is currently running and can
+        interfere with GenratorExit exception that will be thrown to
+        coro.
         """
         if self._asyncoro:
             return self._asyncoro._terminate_coro(self._id)
@@ -1954,6 +1954,8 @@ class AsynCoro(object):
         coro._exception = (GeneratorExit, GeneratorExit('close'))
         coro._timeout = None
         coro._state = AsynCoro._Scheduled
+        if len(self._scheduled) == 1:
+            self._notifier.interrupt()
         self._lock.release()
         return 0
 

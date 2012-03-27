@@ -27,10 +27,8 @@ import stat
 import socket
 import multiprocessing
 import threading
-import cPickle
 import subprocess
 import signal
-import cStringIO
 import ssl
 import traceback
 import hashlib
@@ -38,6 +36,13 @@ import atexit
 import logging
 import marshal
 import shelve
+
+if sys.version > '3':
+    import pickle
+    import io
+else:
+    import cPickle as pickle
+    import cStringIO as io
 
 from dispy import _DispyJob_, _JobReply, DispyJob, \
      _Compute, _XferFile, _xor_string, _node_ipaddr, _dispy_version
@@ -68,7 +73,7 @@ def dispy_provisional_result(result):
     sock.settimeout(2)
     try:
         sock.connect(__dispy_job_info.reply_addr)
-        sock.send_msg(cPickle.dumps(__dispy_job_reply))
+        sock.send_msg(pickle.dumps(__dispy_job_reply))
         ack = sock.recv_msg()
     except:
         logging.warning("Couldn't send provisional results %s:\n%s",
@@ -105,15 +110,15 @@ def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
     """Internal use only.
     """
     os.chdir(__dispy_path)
-    sys.stdout = cStringIO.StringIO()
-    sys.stderr = cStringIO.StringIO()
+    sys.stdout = io.StringIO()
+    sys.stderr = io.StringIO()
     __dispy_job_reply = __dispy_job_info.job_reply
     sys.path = [__dispy_path] + sys.path
     try:
-        exec marshal.loads(__dispy_job_code)
+        exec(marshal.loads(__dispy_job_code))
         globals().update(locals())
-        __dispy_job_args = cPickle.loads(__dispy_job_args)
-        __dispy_job_kwargs = cPickle.loads(__dispy_job_kwargs)
+        __dispy_job_args = pickle.loads(__dispy_job_args)
+        __dispy_job_kwargs = pickle.loads(__dispy_job_kwargs)
         __func = globals()[__dispy_job_name]
         __dispy_job_reply.result = __func(*__dispy_job_args, **__dispy_job_kwargs)
         __dispy_job_reply.status = DispyJob.Finished
@@ -215,7 +220,7 @@ class _DispyNode(object):
         ping_sock = AsynCoroSocket(ping_sock, blocking=False)
         pong_msg = {'ip_addr':self.ip_addr, 'name':self.name, 'port':self.address[1],
                     'cpus':self.cpus, 'sign':self.signature, 'version':_dispy_version}
-        pong_msg = 'PONG:' + cPickle.dumps(pong_msg)
+        pong_msg = 'PONG:' + pickle.dumps(pong_msg)
         yield ping_sock.sendto(pong_msg, ('<broadcast>', self.scheduler_port))
         ping_sock.close()
 
@@ -226,7 +231,7 @@ class _DispyNode(object):
             yield self.send_pong_msg(coro=coro)
         pong_msg = {'ip_addr':self.ip_addr, 'name':self.name, 'port':self.address[1],
                     'cpus':self.cpus, 'sign':self.signature, 'version':_dispy_version}
-        pong_msg = 'PONG:' + cPickle.dumps(pong_msg)
+        pong_msg = 'PONG:' + pickle.dumps(pong_msg)
 
         if scheduler_ip_addr:
             sock = AsynCoroSocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
@@ -248,7 +253,7 @@ class _DispyNode(object):
                                   self.cpus, self.avail_cpus, addr[0])
                     continue
                 try:
-                    info = cPickle.loads(msg[len('PING:'):])
+                    info = pickle.loads(msg[len('PING:'):])
                     socket.inet_aton(info['scheduler_ip_addr'])
                     assert isinstance(info['scheduler_port'], int)
                     assert info['version'] == _dispy_version
@@ -261,7 +266,7 @@ class _DispyNode(object):
                 yield self.udp_sock.sendto(pong_msg, addr)
             elif msg.startswith('PULSE:'):
                 try:
-                    info = cPickle.loads(msg[len('PULSE:'):])
+                    info = pickle.loads(msg[len('PULSE:'):])
                     assert info['ip_addr'] == self.scheduler_ip_addr
                     self.lock.acquire()
                     for compute in self.computations.itervalues():
@@ -271,13 +276,13 @@ class _DispyNode(object):
                     logging.warning('Ignoring PULSE from %s', addr[0])
             elif msg.startswith('SERVERPORT:'):
                 try:
-                    req = cPickle.loads(msg[len('SERVERPORT:'):])
+                    req = pickle.loads(msg[len('SERVERPORT:'):])
                     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                     reply = {'ip_addr':self.address[0], 'port':self.address[1],
                              'sign':self.signature, 'version':_dispy_version}
                     sock = AsynCoroSocket(sock, blocking=False)
                     sock.settimeout(1)
-                    yield sock.sendto(cPickle.dumps(reply), (req['ip_addr'], req['port']))
+                    yield sock.sendto(pickle.dumps(reply), (req['ip_addr'], req['port']))
                     sock.close()
                 except:
                     logging.debug(traceback.format_exc())
@@ -289,7 +294,7 @@ class _DispyNode(object):
         def job_request_task(msg):
             assert coro is not None
             try:
-                _job = cPickle.loads(msg)
+                _job = pickle.loads(msg)
             except:
                 logging.debug('Ignoring job request from %s', addr[0])
                 logging.debug(traceback.format_exc())
@@ -386,7 +391,7 @@ class _DispyNode(object):
         def add_computation_task(msg):
             assert coro is not None
             try:
-                compute = cPickle.loads(msg)
+                compute = pickle.loads(msg)
             except:
                 logging.debug('Ignoring computation request from %s', addr[0])
                 try:
@@ -484,7 +489,7 @@ class _DispyNode(object):
                 self.pulse_interval = compute.pulse_interval
                 resp = 'ACK'
                 if xfer_files:
-                    resp += ':XFER_FILES:' + cPickle.dumps(xfer_files)
+                    resp += ':XFER_FILES:' + pickle.dumps(xfer_files)
                 try:
                     yield conn.send_msg(resp)
                 except:
@@ -501,7 +506,7 @@ class _DispyNode(object):
         def xfer_file_task(msg):
             assert coro is not None
             try:
-                xf = cPickle.loads(msg)
+                xf = pickle.loads(msg)
             except:
                 logging.debug('Ignoring file trasnfer request from %s', addr[0])
                 raise StopIteration
@@ -562,7 +567,7 @@ class _DispyNode(object):
             assert coro is not None
             self.lock.acquire()
             try:
-                _job = cPickle.loads(msg)
+                _job = pickle.loads(msg)
                 compute = self.computations[_job.compute_id]
                 assert addr[0] == compute.scheduler_ip_addr
                 job_info = self.job_infos.pop(_job.uid, None)
@@ -612,12 +617,12 @@ class _DispyNode(object):
         def retrieve_job_task(msg):
             assert coro is not None
             try:
-                req = cPickle.loads(msg)
+                req = pickle.loads(msg)
                 assert req['uid'] is not None
                 assert req['hash'] is not None
                 assert req['compute_id'] is not None
             except:
-                resp = cPickle.dumps('Invalid job')
+                resp = pickle.dumps('Invalid job')
                 try:
                     yield conn.send_msg(resp)
                 except:
@@ -628,7 +633,7 @@ class _DispyNode(object):
             resp = None
             if job_info is not None:
                 try:
-                    yield conn.send_msg(cPickle.dumps(job_info.job_reply))
+                    yield conn.send_msg(pickle.dumps(job_info.job_reply))
                     ack = yield conn.recv_msg()
                     # no need to check ack
                 except:
@@ -641,13 +646,13 @@ class _DispyNode(object):
                 if os.path.isfile(info_file):
                     try:
                         fd = open(info_file, 'rb')
-                        job_reply = cPickle.load(fd)
+                        job_reply = pickle.load(fd)
                         fd.close()
                     except:
                         job_reply = None
                     if hasattr(job_reply, 'hash') and job_reply.hash == req['hash']:
                         try:
-                            yield conn.send_msg(cPickle.dumps(job_reply))
+                            yield conn.send_msg(pickle.dumps(job_reply))
                             ack = yield conn.recv_msg()
                             assert ack == 'ACK'
                         except:
@@ -667,7 +672,7 @@ class _DispyNode(object):
                             logging.debug('Could not remove "%s"', info_file)
                         raise StopIteration
             else:
-                resp = cPickle.dumps('Invalid job: %s' % req['uid'])
+                resp = pickle.dumps('Invalid job: %s' % req['uid'])
 
             if resp:
                 try:
@@ -704,7 +709,7 @@ class _DispyNode(object):
         elif msg.startswith('DEL_COMPUTE:'):
             msg = msg[len('DEL_COMPUTE:'):]
             try:
-                info = cPickle.loads(msg)
+                info = pickle.loads(msg)
                 compute_id = info['ID']
                 self.lock.acquire()
                 compute = self.computations.get(compute_id, None)
@@ -756,7 +761,7 @@ class _DispyNode(object):
                 assert n >= 0
                 if n > 0 and self.scheduler_ip_addr:
                     last_pulse_time = now
-                    msg = 'PULSE:' + cPickle.dumps({'ip_addr':self.ip_addr,
+                    msg = 'PULSE:' + pickle.dumps({'ip_addr':self.ip_addr,
                                                     'port':self.udp_sock.getsockname()[1], 'cpus':n})
                     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                     sock = AsynCoroSocket(sock, blocking=False)
@@ -785,7 +790,7 @@ class _DispyNode(object):
                         result_file = os.path.join(compute.dest_path, f)
                         try:
                             fd = open(result_file, 'rb')
-                            job_result = cPickle.load(fd)
+                            job_result = pickle.load(fd)
                             fd.close()
                         except:
                             logging.debug('Could not load "%s"', result_file)
@@ -805,7 +810,7 @@ class _DispyNode(object):
                     sock = AsynCoroSocket(sock, blocking=False)
                     sock.settimeout(1)
                     logging.debug('Sending TERMINATE to %s', compute.scheduler_ip_addr)
-                    data = cPickle.dumps({'ip_addr':self.address[0], 'port':self.address[1],
+                    data = pickle.dumps({'ip_addr':self.address[0], 'port':self.address[1],
                                           'sign':self.signature})
                     yield sock.sendto('TERMINATED:%s' % data, (compute.scheduler_ip_addr,
                                                                compute.scheduler_port))
@@ -818,7 +823,7 @@ class _DispyNode(object):
     def __job_program(self, _job, job_info):
         compute = self.computations[_job.compute_id]
         program = [compute.name]
-        args = cPickle.loads(_job.args)
+        args = pickle.loads(_job.args)
         program.extend(args)
         logging.debug('Executing "%s"', str(program))
         reply = job_info.job_reply
@@ -867,7 +872,7 @@ class _DispyNode(object):
         sock.settimeout(2)
         try:
             yield sock.connect(job_info.reply_addr)
-            yield sock.send_msg(cPickle.dumps(job_reply))
+            yield sock.send_msg(pickle.dumps(job_reply))
             ack = yield sock.recv_msg()
             assert ack == 'ACK'
         except:
@@ -880,7 +885,7 @@ class _DispyNode(object):
             logging.debug('storing results for job %s', job_reply.uid)
             try:
                 fd = open(f, 'wb')
-                cPickle.dump(job_reply, fd)
+                pickle.dump(job_reply, fd)
                 fd.close()
             except:
                 logging.debug('Could not save results for job %s', job_reply.uid)
@@ -984,7 +989,7 @@ class _DispyNode(object):
                 sock = AsynCoroSocket(sock, blocking=False)
                 sock.settimeout(2)
                 logging.debug('Sending TERMINATE to %s', compute.scheduler_ip_addr)
-                data = cPickle.dumps({'ip_addr':self.address[0], 'port':self.address[1],
+                data = pickle.dumps({'ip_addr':self.address[0], 'port':self.address[1],
                                       'sign':self.signature})
                 yield sock.sendto('TERMINATED:' + data, (compute.scheduler_ip_addr,
                                                          compute.scheduler_port))
