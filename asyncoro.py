@@ -199,7 +199,6 @@ class _AsynCoroSocket(object):
                 self.recv_msg = self.async_recv_msg
                 self.send_msg = self.async_send_msg
             self._asyncoro = AsynCoro.instance()
-            # for timeouts we need _notifier even for IOCP sockets
             self._notifier = _AsyncNotifier.instance()
             self._register()
 
@@ -638,7 +637,7 @@ if platform.system() == 'Windows':
         import pywintypes
         import winerror
     except:
-        print ('Could not load pywin32 for I/O Completion Ports; using inefficient polling for sockets')
+        print('Could not load pywin32 for I/O Completion Ports; using inefficient polling for sockets')
     else:
         # for UDP we need 'select' polling (pywin32 doesn't yet
         # support UDP); _AsyncPoller below is combination of the other
@@ -955,7 +954,7 @@ if platform.system() == 'Windows':
                 if self._notifier:
                     self._notifier.unregister(self)
                     if self._rsock.type == socket.SOCK_STREAM:
-                        if self._overlap.object:
+                        if self._overlap and self._overlap.object:
                             win32file.CancelIo(self._fileno)
                         else:
                             self._overlap = None
@@ -984,7 +983,9 @@ if platform.system() == 'Windows':
                         coro, self._coro = self._coro, None
                         if not err:
                             err = winerror.ERROR_CONNECTION_INVALID
-                        if err != winerror.ERROR_OPERATION_ABORTED:
+                        if err == winerror.ERROR_OPERATION_ABORTED:
+                            self._overlap = None
+                        else:
                             coro.throw(socket.error(err))
                     else:
                         buf = self._result[:n]
@@ -1011,7 +1012,9 @@ if platform.system() == 'Windows':
                         coro, self._coro = self._coro, None
                         if not err:
                             err = winerror.ERROR_CONNECTION_INVALID
-                        if err != winerror.ERROR_OPERATION_ABORTED:
+                        if err == winerror.ERROR_OPERATION_ABORTED:
+                            self._overlap = None
+                        else:
                             coro.throw(socket.error(err))
                     else:
                         self._overlap.object = self._result = None
@@ -1033,10 +1036,12 @@ if platform.system() == 'Windows':
                         if self._timeout and self._notifier:
                             self._notifier._del_timeout(self)
                         self._overlap.object = self._result = None
-                        coro, self._coro = self._coro, None
                         if not err:
                             err = winerror.ERROR_CONNECTION_INVALID
-                        if err != winerror.ERROR_OPERATION_ABORTED:
+                        if err == winerror.ERROR_OPERATION_ABORTED:
+                            self._overlap = None
+                        else:
+                            coro, self._coro = self._coro, None
                             coro.throw(socket.error(err))
                     else:
                         self._result.append(buf[:n])
@@ -1076,10 +1081,12 @@ if platform.system() == 'Windows':
                         if self._timeout and self._notifier:
                             self._notifier._del_timeout(self)
                         self._overlap.object = self._result = None
-                        coro, self._coro = self._coro, None
                         if not err:
                             err = winerror.ERROR_CONNECTION_INVALID
-                        if err != winerror.ERROR_OPERATION_ABORTED:
+                        if err == winerror.ERROR_OPERATION_ABORTED:
+                            self._overlap = None
+                        else:
+                            coro, self._coro = self._coro, None
                             coro.throw(socket.error(err))
                     else:
                         self._result = buffer(self._result, n)
@@ -1119,11 +1126,16 @@ if platform.system() == 'Windows':
                             elif err.args[0] == ssl.SSL_ERROR_WANT_WRITE:
                                 err, n = win32file.WSASend(self._fileno, '', self._overlap, 0)
                             else:
-                                if self._timeout and self._notifier:
-                                    self._notifier._del_timeout(self)
-                                self._overlap.object = self._result = None
+                                raise socket.error(err)
+                        except:
+                            if self._timeout and self._notifier:
+                                self._notifier._del_timeout(self)
+                            self._overlap.object = self._result = None
+                            self.close()
+                            if err == winerror.ERROR_OPERATION_ABORTED:
+                                self._overlap = None
+                            else:
                                 coro, self._coro = self._coro, None
-                                self.close()
                                 coro.throw(*sys.exc_info())
                         else:
                             if self._timeout and self._notifier:
@@ -1136,8 +1148,10 @@ if platform.system() == 'Windows':
                         if self._timeout and self._notifier:
                             self._notifier._del_timeout(self)
                         self._overlap.object = self._result = None
-                        coro, self._coro = self._coro, None
-                        if err != winerror.ERROR_OPERATION_ABORTED:
+                        if err == winerror.ERROR_OPERATION_ABORTED:
+                            self._overlap = None
+                        else:
+                            coro, self._coro = self._coro, None
                             coro.throw(socket.error(err))
                     else:
                         self._rsock.setsockopt(socket.SOL_SOCKET, win32file.SO_UPDATE_CONNECT_CONTEXT, '')
@@ -1181,11 +1195,16 @@ if platform.system() == 'Windows':
                             elif err.args[0] == ssl.SSL_ERROR_WANT_WRITE:
                                 err, n = win32file.WSASend(conn._fileno, '', self._overlap, 0)
                             else:
-                                if self._timeout and self._notifier:
-                                    self._notifier._del_timeout(self)
-                                self._overlap.object = self._result = None
+                                raise socket.error(err)
+                        except:
+                            if self._timeout and self._notifier:
+                                self._notifier._del_timeout(self)
+                            self._overlap.object = self._result = None
+                            conn.close()
+                            if err == winerror.ERROR_OPERATION_ABORTED:
+                                self._overlap = None
+                            else:
                                 coro, self._coro = self._coro, None
-                                conn.close()
                                 coro.throw(*sys.exc_info())
                         else:
                             if self._timeout and self._notifier:
@@ -1198,15 +1217,16 @@ if platform.system() == 'Windows':
                         if self._timeout and self._notifier:
                             self._notifier._del_timeout(self)
                         self._overlap.object = self._result = None
-                        coro, self._coro = self._coro, None
-                        if err != winerror.ERROR_OPERATION_ABORTED:
+                        if err == winerror.ERROR_OPERATION_ABORTED:
+                            self._overlap = None
+                        else:
+                            coro, self._coro = self._coro, None
                             coro.throw(socket.error(err))
                     else:
                         family, laddr, raddr = win32file.GetAcceptExSockaddrs(conn, self._result)
                         # TODO: unpack raddr if family != AF_INET
                         conn._rsock.setsockopt(socket.SOL_SOCKET, win32file.SO_UPDATE_ACCEPT_CONTEXT,
                                                struct.pack('P', self._fileno))
-                        self._overlap.object = self._result = None
                         if self._certfile:
                             conn._rsock = ssl.wrap_socket(conn._rsock, keyfile=self._keyfile,
                                                           certfile=self._certfile, server_side=True,
@@ -1218,6 +1238,7 @@ if platform.system() == 'Windows':
                         else:
                             if self._timeout and self._notifier:
                                 self._notifier._del_timeout(self)
+                            self._overlap.object = self._result = None
                             coro, self._coro = self._coro, None
                             coro.resume((conn, raddr))
 
@@ -1319,6 +1340,7 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
                 self._fds = {}
                 self._timeouts = []
                 self._timeout_fds = []
+                # TODO: no need for lock
                 self._lock = threading.Lock()
                 self.cmd_rsock, self.cmd_wsock = _AsyncPoller._socketpair()
                 self.cmd_wsock.setblocking(0)
@@ -1383,7 +1405,6 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
                             fd._task()
 
                     if event & _AsyncNotifier._Hangup:
-                        # logging.debug('hangup on %s', fd._fileno)
                         self.unregister(fd)
                         if fd._coro:
                             fd._coro.throw(socket.error('hangup'))

@@ -153,10 +153,9 @@ parallelizing on an SMP (single node with multiple cores), then start
 
 def compute(n):
     import time, socket
-    now = time.time()
     time.sleep(n)
     host = socket.gethostname()
-    return (host, n, now)
+    return (host, n)
 
 if __name__ == '__main__':
     import dispy, random
@@ -168,8 +167,8 @@ if __name__ == '__main__':
         jobs.append(job)
     # cluster.wait()
     for job in jobs:
-        host, n, when = job()
-        print '%s executed job %s at %s with %s' % (host, job.id, when, n)
+        host, n = job()
+        print '%s executed job %s at %s with %s' % (host, job.id, job.start_time, n)
         # other fields of 'job' that may be useful:
         # print job.stdout, job.stderr, job.exception, job.ip_addr, job.start_time, job.end_time
     cluster.stats()
