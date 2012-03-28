@@ -802,12 +802,13 @@ if platform.system() == 'Windows':
 
             __metaclass__ = MetaSingleton
             __instance = None
+
             _Block = win32event.INFINITE
 
             @classmethod
-            def instance(cls):
+            def instance(cls, *args, **kwargs):
                 if cls.__instance is None:
-                    cls.__instance = cls()
+                    cls.__instance = cls(*args, **kwargs)
                 return cls.__instance
 
             def __init__(self):
@@ -1273,10 +1274,9 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
         _Block = None
 
         @classmethod
-        def instance(cls):
-            """Returns instance of AsyncNotifier. This method should be
-            called only after initializing AsyncNotifier.
-            """
+        def instance(cls, *args, **kwargs):
+            if cls.__instance is None:
+                cls.__instance = cls(*args, **kwargs)
             return cls.__instance
 
         def __init__(self):
@@ -1340,8 +1340,6 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
                 self._fds = {}
                 self._timeouts = []
                 self._timeout_fds = []
-                # TODO: no need for lock
-                self._lock = threading.Lock()
                 self.cmd_rsock, self.cmd_wsock = _AsyncPoller._socketpair()
                 self.cmd_wsock.setblocking(0)
                 self.cmd_rsock = AsynCoroSocket(self.cmd_rsock)
@@ -1358,7 +1356,6 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
             """
 
             now = _time()
-            self._lock.acquire()
             if timeout == 0:
                 poll_timeout = timeout
             elif self._timeouts:
@@ -1371,9 +1368,9 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
                 poll_timeout = _AsyncNotifier._Block
             else:
                 poll_timeout = timeout
-            self._lock.release()
             if poll_timeout and poll_timeout != _AsyncPoller._Block:
                 poll_timeout *= self.timeout_multiplier
+
             try:
                 events = self._poller.poll(poll_timeout)
             except:
@@ -1382,14 +1379,18 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
                 # prevent tight loops
                 time.sleep(5)
                 return
-            self._lock.acquire()
+
             events = [(self._fds.get(fileno, None), event) for fileno, event in events]
-            self._lock.release()
             try:
                 for fd, event in events:
                     if fd is None:
                         if event != _AsyncNotifier._Hangup:
                             logging.debug('invalid fd for event %s', event)
+                        continue
+                    if event & _AsyncNotifier._Hangup:
+                        self.unregister(fd)
+                        if fd._coro:
+                            fd._coro.throw(socket.error('hangup'))
                         continue
                     if event & _AsyncNotifier._Read:
                         # logging.debug('fd %s is readable', fd._fileno)
@@ -1403,17 +1404,11 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
                             logging.error('fd %s is not registered for write?', fd._fileno)
                         else:
                             fd._task()
-
-                    if event & _AsyncNotifier._Hangup:
-                        self.unregister(fd)
-                        if fd._coro:
-                            fd._coro.throw(socket.error('hangup'))
             except:
                 logging.debug(traceback.format_exc())
 
             if timeout == 0:
                 now = _time()
-                self._lock.acquire()
                 while self._timeouts and self._timeouts[0] <= now:
                     fd = self._timeout_fds[0]
                     if fd._timeout_id == self._timeouts[0]:
@@ -1421,7 +1416,6 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
                         fd._timeout_id = None
                     del self._timeouts[0]
                     del self._timeout_fds[0]
-                self._lock.release()
 
         def terminate(self):
             self.cmd_rsock.close()
@@ -1429,14 +1423,12 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
             if hasattr(self._poller, 'terminate'):
                 self._poller.terminate()
             else:
-                self._lock.acquire()
                 for fd in self._fds.itervalues():
                     try:
                         self._poller.unregister(fd._fileno)
                     except:
                         logging.warning('unregister of %s failed with %s',
                                         fd._fileno, traceback.format_exc())
-                self._lock.release()
             self._poller = None
             self._timeouts = []
             self._timeout_fds = []
@@ -1445,18 +1437,15 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
         def _add_timeout(self, fd):
             if fd._timeout:
                 timeout = _time() + fd._timeout
-                self._lock.acquire()
                 i = bisect_left(self._timeouts, timeout)
                 self._timeouts.insert(i, timeout)
                 self._timeout_fds.insert(i, fd)
                 fd._timeout_id = timeout
-                self._lock.release()
             else:
                 fd._timeout_id = None
 
         def _del_timeout(self, fd):
             if fd._timeout_id:
-                self._lock.acquire()
                 i = bisect_left(self._timeouts, fd._timeout_id)
                 # in case of identical timeouts (unlikely?), search for
                 # correct index where fd is
@@ -1470,30 +1459,23 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
                     if fd._timeout_id != self._timeouts[i]:
                         logging.warning('fd %s with %s is not found', fd._fileno, fd._timeout_id)
                         break
-                self._lock.release()
 
         def register(self, fd, event=0):
             return
 
         def unregister(self, fd):
-            self._lock.acquire()
             if self._fds.pop(fd._fileno, None) is None:
-                self._lock.release()
                 # logging.debug('fd %s is not registered', fd._fileno)
                 return
             self._poller.unregister(fd._fileno)
-            self._lock.release()
             self._del_timeout(fd)
 
         def modify(self, fd, event):
             if event:
-                self._lock.acquire()
                 if fd._fileno in self._fds:
-                    self._lock.release()
                     self._poller.modify(fd._fileno, event)
                 else:
                     self._fds[fd._fileno] = fd
-                    self._lock.release()
                     self._poller.register(fd._fileno, event)
                 self._add_timeout(fd)
             else:
@@ -1971,7 +1953,8 @@ class AsynCoro(object):
             self._scheduled.add(cid)
         elif coro._state == AsynCoro._Running:
             logging.warning('coroutine to terminate %s/%s is running', coro.name, cid)
-            # if coro raises exception during current run, this exception will be ignored!
+            # if coro raises exception during current run, this
+            # exception will be ignored (coro won't terminated)!
         coro._exception = (GeneratorExit, GeneratorExit('close'))
         coro._timeout = None
         coro._state = AsynCoro._Scheduled
@@ -2115,14 +2098,15 @@ class AsynCoro(object):
                 try:
                     coro._generator.close()
                 except:
-                    logging.debug('closing %s raised exception: %s',
-                                  coro._generator.__name__, traceback.format_exc())
+                    logging.warning('closing %s raised exception: %s',
+                                    coro._generator.__name__, traceback.format_exc())
                 if coro._callers:
                     coro._generator, coro._value = coro._callers.pop(-1)
                 else:
                     coro._generator = None
             coro._complete.set()
-        self._scheduled = self._suspended = set()
+        self._scheduled = set()
+        self._suspended = set()
         self._timeouts = []
         self._coros = {}
         self._lock.release()
