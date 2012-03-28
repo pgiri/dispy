@@ -301,10 +301,10 @@ class _DispyNode(object):
                 raise StopIteration
             self.lock.acquire()
             compute = self.computations.get(_job.compute_id, None)
-            if compute is not None and compute.scheduler_ip_addr != self.scheduler_ip_addr:
-                compute = None
-            elif addr[0] != compute.scheduler_ip_addr:
-                compute = None
+            if compute is not None:
+                if compute.scheduler_ip_addr != self.scheduler_ip_addr or \
+                       addr[0] != compute.scheduler_ip_addr:
+                    compute = None
             yield self.lock.release()
             if self.avail_cpus == 0:
                 logging.warning('All cpus busy')
@@ -413,6 +413,7 @@ class _DispyNode(object):
                     pass
                 raise StopIteration
 
+            resp = 'ACK'
             if compute.dest_path and isinstance(compute.dest_path, str):
                 compute.dest_path = compute.dest_path.strip(os.sep)
             else:
@@ -479,27 +480,39 @@ class _DispyNode(object):
                         continue
                 except:
                     pass
-                xfer_files.append(xf)
-            yield self.lock.release()
-            if (self.scheduler_ip_addr is None) or \
-                   (self.scheduler_ip_addr == compute.scheduler_ip_addr):
+                if self.max_file_size and xf.stat_buf.st_size > self.max_file_size:
+                    resp = 'NACK (file "%s" too big)' % xf.name
+                else:
+                    xfer_files.append(xf)
+            if resp == 'ACK' and ((self.scheduler_ip_addr is not None) and \
+                                  (self.scheduler_ip_addr != compute.scheduler_ip_addr)):
+                resp = 'NACK (busy)'
+            if resp == 'ACK':
                 self.computations[compute.id] = compute
                 self.scheduler_ip_addr = compute.scheduler_ip_addr
                 self.scheduler_port = compute.scheduler_port
                 self.pulse_interval = compute.pulse_interval
-                resp = 'ACK'
+                self.lock.release()
                 if xfer_files:
                     resp += ':XFER_FILES:' + pickle.dumps(xfer_files)
                 try:
                     yield conn.send_msg(resp)
                 except:
-                    pass
-                self.timer_coro.resume(True)
+                    assert self.scheduler_ip_addr == compute.scheduler_ip_addr
+                    self.lock.acquire()
+                    del self.computations[compute.id]
+                    self.scheduler_ip_addr = None
+                    self.scheduler_port = None
+                    self.pulse_interval = None
+                    self.lock.release()
+                else:
+                    self.timer_coro.resume(True)
             else:
+                self.lock.release()
                 if os.path.isdir(compute.dest_path):
                     os.rmdir(compute.dest_path)
                 try:
-                    yield conn.send_msg('Busy')
+                    yield conn.send_msg(resp)
                 except:
                     pass
 

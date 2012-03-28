@@ -557,6 +557,12 @@ class _Scheduler(object):
                         conn.close()
                         raise StopIteration
             for xf in compute.xfer_files:
+                if self.max_file_size and xf.stat_buf.st_size > self.max_file_size:
+                    logging.warning('transfer file "%s" is too big (%s)',
+                                    xf.name, xf.stat_buf.st_size)
+                    self._sched_cv.release()
+                    conn.close()
+                    raise StopIteration
                 xf.compute_id = compute.id
                 xf.name = os.path.join(dest_path, os.path.basename(xf.name))
             self._sched_cv.release()
@@ -969,7 +975,9 @@ class _Scheduler(object):
         for ip_addr, host in self._nodes.iteritems():
             if host.busy >= host.cpus or not host.clusters:
                 continue
-            if all(not self._clusters[cluster_id]._jobs for cluster_id in host.clusters):
+            if all((not self._clusters[cluster_id]._jobs or \
+                    node.ip_addr not in self._clusters[cluster_id]._compute.nodes) \
+                   for cluster_id in node.clusters):
                 continue
             logging.debug('load: %s, %s, %s' % (host.ip_addr, host.busy, host.cpus))
             if (load is None) or ((float(host.busy) / host.cpus) < load):

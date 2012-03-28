@@ -1046,7 +1046,9 @@ class _Cluster(object):
         for node in self._nodes.itervalues():
             if node.busy >= node.cpus or not node.clusters:
                 continue
-            if all(not self._clusters[cluster_id]._jobs for cluster_id in node.clusters):
+            if all((not self._clusters[cluster_id]._jobs or \
+                    node.ip_addr not in self._clusters[cluster_id]._compute.nodes) \
+                   for cluster_id in node.clusters):
                 continue
             # logging.debug('load: %s, %s, %s' % (node.ip_addr, node.busy, node.cpus))
             if (load is None) or ((float(node.busy) / node.cpus) < load):
@@ -1064,7 +1066,9 @@ class _Cluster(object):
         for node in self._nodes.itervalues():
             if node.busy >= node.cpus or not node.clusters:
                 continue
-            if all(not self._clusters[cluster_id]._jobs for cluster_id in node.clusters):
+            if all((not self._clusters[cluster_id]._jobs or \
+                    node.ip_addr not in self._clusters[cluster_id]._compute.nodes) \
+                   for cluster_id in node.clusters):
                 continue
             # logging.debug('load: %s, %s, %s' % (node.ip_addr, node.jobs, node.cpu_time))
             if (secs_per_job is None) or (node.jobs == 0) or \
