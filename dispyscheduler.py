@@ -43,7 +43,8 @@ else:
 from dispy import _Compute, DispyJob, _DispyJob_, _Node, _JobReply, \
      _xor_string, _parse_nodes, _node_ipaddr, _XferFile, _dispy_version
 
-from asyncoro import Coro, AsynCoro, CoroCondition, AsynCoroSocket, MetaSingleton
+import asyncoro
+from asyncoro import Coro, AsynCoro, AsynCoroSocket, MetaSingleton
 
 from dispynode import _same_file
 
@@ -147,7 +148,7 @@ class _Scheduler(object):
             self.unsched_jobs = 0
             self.job_uid = 1
             self._sched_jobs = {}
-            self._sched_cv = CoroCondition()
+            self._sched_cv = asyncoro.Condition()
             self._terminate_scheduler = False
             self.sign = os.urandom(20).encode('hex')
             self.auth_code = hashlib.sha1(_xor_string(self.sign, self.cluster_secret)).hexdigest()
@@ -713,9 +714,9 @@ class _Scheduler(object):
                         del cluster._jobs[i]
                         self.unsched_jobs -= 1
                         reply = _JobReply(_job, self.ip_addr, status=DispyJob.Cancelled)
-                        Coro(self.send_job_result,
-                             _job.uid, compute.id, cluster.client_scheduler_ip_addr,
-                             cluster.client_job_result_port, reply)
+                        Coro(self.send_job_result, _job.uid, compute.id,
+                             cluster.client_scheduler_ip_addr, cluster.client_job_result_port,
+                             reply)
                         break
                 else:
                     logging.debug('Invalid job %s!', job.uid)
@@ -848,9 +849,9 @@ class _Scheduler(object):
                             fd = open(result_file, 'rb')
                             result = pickle.load(fd)
                             fd.close()
-                            Coro(self.send_job_result,
-                                 result.uid, compute.id, cluster.client_scheduler_ip_addr,
-                                 cluster.client_job_result_port, result)
+                            Coro(self.send_job_result, result.uid, compute.id,
+                                 cluster.client_scheduler_ip_addr, cluster.client_job_result_port,
+                                 result)
                         except:
                             logging.debug('Could not load "%s"', result_file)
                         else:
@@ -970,20 +971,20 @@ class _Scheduler(object):
 
     def load_balance_schedule(self):
         # TODO: maintain "available" sequence of nodes for better performance
-        node = None
+        host = None
         load = None
-        for ip_addr, host in self._nodes.iteritems():
-            if host.busy >= host.cpus or not host.clusters:
+        for ip_addr, node in self._nodes.iteritems():
+            if node.busy >= node.cpus or not node.clusters:
                 continue
             if all((not self._clusters[cluster_id]._jobs or \
                     node.ip_addr not in self._clusters[cluster_id]._compute.nodes) \
                    for cluster_id in node.clusters):
                 continue
-            logging.debug('load: %s, %s, %s' % (host.ip_addr, host.busy, host.cpus))
-            if (load is None) or ((float(host.busy) / host.cpus) < load):
-                node = host
+            logging.debug('load: %s, %s, %s' % (node.ip_addr, node.busy, node.cpus))
+            if (load is None) or ((float(node.busy) / node.cpus) < load):
+                host = node
                 load = float(node.busy) / node.cpus
-        return node
+        return host
 
     def run_job(self, _job, cluster, coro=None):
         # generator

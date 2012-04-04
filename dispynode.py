@@ -47,7 +47,8 @@ else:
 from dispy import _DispyJob_, _JobReply, DispyJob, \
      _Compute, _XferFile, _xor_string, _node_ipaddr, _dispy_version
 
-from asyncoro import Coro, CoroLock, AsynCoro, AsynCoroSocket, MetaSingleton
+import asyncoro
+from asyncoro import Coro, AsynCoro, AsynCoroSocket, MetaSingleton
 
 MaxFileSize = 102400000
 
@@ -188,7 +189,7 @@ class _DispyNode(object):
         self.scheduler_ip_addr = None
         self.file_uses = {}
         self.job_infos = {}
-        self.lock = CoroLock()
+        self.lock = asyncoro.Lock()
         self.terminate = False
         self.signature = os.urandom(20).encode('hex')
         self.auth_code = hashlib.sha1(_xor_string(self.signature, secret)).hexdigest()

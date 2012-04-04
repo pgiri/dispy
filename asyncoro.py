@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-
 # asyncoro: Sockets with asynchronous I/O and coroutines;
 # see accompanying 'asyncoro.html' for more details.
 
@@ -19,6 +17,15 @@
 
 # You should have received a copy of the GNU Lesser General Public License
 # along with dispy.  If not, see <http://www.gnu.org/licenses/>.
+
+"""
+AsynCoro and associated classes in this file provide a framework for
+developing concurrent programs with asynchronous I/O for sockets and
+coroutines. With efficient polling mechanisms epoll, kqueue, /dev/poll
+and Windows I/O Completion Ports (IOCP) used by asyncoro, applications
+using asyncoro will be highly scalable. See
+http://dispy.sourceforge.net/asyncoro.html for more details.
+"""
 
 import time
 import threading
@@ -50,58 +57,6 @@ else:
     from errno import EINVAL
     from time import time as _time
 
-"""
-AsynCoro and associated classes in this file provide framework
-for developing programs with coroutines and asynchronous I/O for
-sockets. The programs developed with asyncoro will have same logic as
-python progorams with synchronous sockets and threads, except for
-converting sockets to asynchronous model with AsynCoroSocket class,
-'yield' when waiting for completion of tasks (i.e., socket operations,
-sleep and waiting on CoroCondition) and using CoroLock, CoroCondition
-in place of thread locking. Tehcnically, CoroLock is not needed (as
-there is no forced preemption with coroutines and at most one
-coroutine is executing at anytime), but if one wants to maintain same
-program for both synchronous and asynchronous models, it should be
-simple to interchange threading.Lock and CoroLock, threading.Condition
-and CoroCondition, and a few syntactic changes.
-
-For example, a simple tcp server looks like:
-
-def process(sock, coro=None):
-    sock = AsynCoroSocket(sock)
-    # get (exactly) 4MB of data, for example, and let other coroutines
-    # (process methods, in this case) execute in the meantime
-    data = yield sock.recvall(4096*1024)
-    ...
-    yield sock.sendall(reply)
-    sock.close()
-
-if __name__ == '__main__':
-    host, port = '', 3456
-    # start asyncoro scheduler before creating coroutines
-    asyncoro = AsynCoro()
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.bind((host, port))
-    sock.listen(128)
-    while True:
-        conn, addr = sock.accept()
-        Coro(process, conn)
-
-Here we mixed synchronous sockets in server loop with asynchronous
-sockets in the 'process' method for illustration. The server does not
-do any processing, so the loop can quickly accept connections. Each
-request is processed in a separate coroutine. A coroutine method must
-have 'coro=None' default argument. The coroutine builder Coro will set
-coro argument with the Coro instance, which is used for calling
-methods in Coro class.
-
-With 'yield', 'suspend' and 'resume' methods, coroutines can cooperate
-scheduling their execution, send/receive values to/from each other,
-etc.
-
-See dispy files in this package for details on how to use asyncoro.
-"""
-
 class MetaSingleton(type):
     __instance = None
     def __call__(cls, *args, **kwargs):
@@ -124,9 +79,11 @@ class _AsynCoroSocket(object):
         blocking=True implies synchronous sockets and blocking=False
         implies asynchronous sockets.
 
-        keyfile, certfile and ssl_version are as per ssl's wrap_socket method.
+        keyfile, certfile and ssl_version are as per ssl's wrap_socket
+        method.
 
-        Only methods should be used; other attributes are for internal use only.
+        Only methods should be used; other attributes are for internal
+        use only.
         """
 
         if isinstance(sock, AsynCoroSocket):
@@ -223,7 +180,8 @@ class _AsynCoroSocket(object):
         self._coro = None
 
     def unwrap(self):
-        """Get rid of AsynCoroSocket setup and return underlying socket object.
+        """Get rid of AsynCoroSocket setup and return underlying socket
+        object.
         """
         self._unregister()
         self._asyncoro = None
@@ -279,9 +237,9 @@ class _AsynCoroSocket(object):
     def _timed_out(self):
         """Internal use only.
         """
-        # don't clear _coro or _task; the task may complete before
-        # this exception is thrown to coro
-        if self._coro is not None:
+        # don't clear _coro or _task; the task may complete before this
+        # exception is thrown to coro
+        if self._coro:
             self._coro.throw(socket.timeout('timed out'))
 
     def async_recv(self, bufsize, *args):
@@ -639,11 +597,10 @@ if platform.system() == 'Windows':
     except:
         print('Could not load pywin32 for I/O Completion Ports; using inefficient polling for sockets')
     else:
-        # for UDP we need 'select' polling (pywin32 doesn't yet
-        # support UDP); _AsyncPoller below is combination of the other
-        # _AsyncPoller for epoll/poll/kqueue/select and
-        # _SelectNotifier below. (Un)fortunately, most of it is
-        # duplicate code
+        # for UDP we need 'select' polling (pywin32 doesn't yet support
+        # UDP); _AsyncPoller below is combination of the other
+        # _AsyncPoller for epoll/poll/kqueue/select and _SelectNotifier
+        # below. (Un)fortunately, most of it is duplicate code
         class _AsyncPoller(object):
             """Internal use only.
             """
@@ -857,12 +814,11 @@ if platform.system() == 'Windows':
                 pass
 
             def poll(self, timeout):
-                now = _time()
                 self._lock.acquire()
                 if timeout == 0:
                     self.poll_timeout = 0
                 elif self._timeouts:
-                    self.poll_timeout = self._timeouts[0] - now
+                    self.poll_timeout = self._timeouts[0] - _time()
                     if self.poll_timeout < 0.001:
                         self.poll_timeout = 0
                     elif timeout is not None:
@@ -981,12 +937,12 @@ if platform.system() == 'Windows':
                         self._notifier._del_timeout(self)
                     if err or n == 0:
                         self._overlap.object = self._result = None
-                        coro, self._coro = self._coro, None
-                        if not err:
-                            err = winerror.ERROR_CONNECTION_INVALID
                         if err == winerror.ERROR_OPERATION_ABORTED:
                             self._overlap = None
                         else:
+                            if not err:
+                                err = winerror.ERROR_CONNECTION_INVALID
+                            coro, self._coro = self._coro, None
                             coro.throw(socket.error(err))
                     else:
                         buf = self._result[:n]
@@ -1010,12 +966,12 @@ if platform.system() == 'Windows':
                         self._notifier._del_timeout(self)
                     if err or n == 0:
                         self._overlap.object = self._result = None
-                        coro, self._coro = self._coro, None
-                        if not err:
-                            err = winerror.ERROR_CONNECTION_INVALID
                         if err == winerror.ERROR_OPERATION_ABORTED:
                             self._overlap = None
                         else:
+                            if not err:
+                                err = winerror.ERROR_CONNECTION_INVALID
+                            coro, self._coro = self._coro, None
                             coro.throw(socket.error(err))
                     else:
                         self._overlap.object = self._result = None
@@ -1037,11 +993,11 @@ if platform.system() == 'Windows':
                         if self._timeout and self._notifier:
                             self._notifier._del_timeout(self)
                         self._overlap.object = self._result = None
-                        if not err:
-                            err = winerror.ERROR_CONNECTION_INVALID
                         if err == winerror.ERROR_OPERATION_ABORTED:
                             self._overlap = None
                         else:
+                            if not err:
+                                err = winerror.ERROR_CONNECTION_INVALID
                             coro, self._coro = self._coro, None
                             coro.throw(socket.error(err))
                     else:
@@ -1082,11 +1038,11 @@ if platform.system() == 'Windows':
                         if self._timeout and self._notifier:
                             self._notifier._del_timeout(self)
                         self._overlap.object = self._result = None
-                        if not err:
-                            err = winerror.ERROR_CONNECTION_INVALID
                         if err == winerror.ERROR_OPERATION_ABORTED:
                             self._overlap = None
                         else:
+                            if not err:
+                                err = winerror.ERROR_CONNECTION_INVALID
                             coro, self._coro = self._coro, None
                             coro.throw(socket.error(err))
                     else:
@@ -1287,12 +1243,12 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
                 if hasattr(select, 'epoll'):
                     # print ('poller: epoll')
                     self._poller = select.epoll()
-                    self.__class__._Read = self.__class__._Readable = select.EPOLLIN
-                    self.__class__._Read |= select.EPOLLPRI
-                    self.__class__._Write = self.__class__._Writable = select.EPOLLOUT
-                    self.__class__._Hangup = select.EPOLLHUP
-                    self.__class__._Error = select.EPOLLHUP | select.EPOLLERR
-                    self.__class__._Block = -1
+                    _AsyncPoller._Read = _AsyncPoller._Readable = select.EPOLLIN
+                    _AsyncPoller._Read |= select.EPOLLPRI
+                    _AsyncPoller._Write = _AsyncPoller._Writable = select.EPOLLOUT
+                    _AsyncPoller._Hangup = select.EPOLLHUP
+                    _AsyncPoller._Error = select.EPOLLHUP | select.EPOLLERR
+                    _AsyncPoller._Block = -1
                 elif hasattr(select, 'kqueue'):
                     # print ('poller: kqueue')
                     self._poller = _KQueueNotifier()
@@ -1300,42 +1256,42 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
                     # them as flags won't work. Here we are only
                     # interested in read/write/hangup, so set them up
                     # according to their values to distinguish them
-                    self.__class__._Read = -select.KQ_FILTER_READ
-                    self.__class__._Readable = select.KQ_FILTER_READ
-                    self.__class__._Write = -select.KQ_FILTER_WRITE
-                    self.__class__._Writable = select.KQ_FILTER_WRITE
-                    self.__class__._Hangup = select.KQ_EV_EOF
-                    self.__class__._Error = select.KQ_EV_ERROR
-                    self.__class__._Block = None
-                    assert (self.__class__._Hangup & (self.__class__._Read | self.__class__._Write)) == 0
+                    _AsyncPoller._Read = -select.KQ_FILTER_READ
+                    _AsyncPoller._Readable = select.KQ_FILTER_READ
+                    _AsyncPoller._Write = -select.KQ_FILTER_WRITE
+                    _AsyncPoller._Writable = select.KQ_FILTER_WRITE
+                    _AsyncPoller._Hangup = select.KQ_EV_EOF
+                    _AsyncPoller._Error = select.KQ_EV_ERROR
+                    _AsyncPoller._Block = None
+                    assert (_AsyncPoller._Hangup & (_AsyncPoller._Read | _AsyncPoller._Write)) == 0
                 elif hasattr(select, 'devpoll'):
                     # print ('poller: devpoll')
                     self._poller = select.devpoll()
-                    self.__class__._Read = self.__class__._Readable = select.POLLIN
-                    self.__class__._Read |= select.POLLPRI
-                    self.__class__._Write = self.__class__._Writable = select.POLLOUT
-                    self.__class__._Hangup = select.POLLHUP
-                    self.__class__._Error = select.POLLHUP | select.POLLERR
-                    self.__class__._Block = -1
+                    _AsyncPoller._Read = _AsyncPoller._Readable = select.POLLIN
+                    _AsyncPoller._Read |= select.POLLPRI
+                    _AsyncPoller._Write = _AsyncPoller._Writable = select.POLLOUT
+                    _AsyncPoller._Hangup = select.POLLHUP
+                    _AsyncPoller._Error = select.POLLHUP | select.POLLERR
+                    _AsyncPoller._Block = -1
                     self.timeout_multiplier = 1000
                 elif hasattr(select, 'poll'):
                     # print ('poller: poll')
                     self._poller = select.poll()
-                    self.__class__._Read = self.__class__._Readable = select.POLLIN
-                    self.__class__._Read |= select.POLLPRI
-                    self.__class__._Write = self.__class__._Writable = select.POLLOUT
-                    self.__class__._Hangup = select.POLLHUP
-                    self.__class__._Error = select.POLLHUP | select.POLLERR
-                    self.__class__._Block = -1
+                    _AsyncPoller._Read = _AsyncPoller._Readable = select.POLLIN
+                    _AsyncPoller._Read |= select.POLLPRI
+                    _AsyncPoller._Write = _AsyncPoller._Writable = select.POLLOUT
+                    _AsyncPoller._Hangup = select.POLLHUP
+                    _AsyncPoller._Error = select.POLLHUP | select.POLLERR
+                    _AsyncPoller._Block = -1
                     self.timeout_multiplier = 1000
                 else:
                     # print ('poller: select')
                     self._poller = _SelectNotifier()
-                    self.__class__._Read = self.__class__._Readable = 0x01
-                    self.__class__._Write = self.__class__._Writable = 0x02
-                    self.__class__._Hangup = 0x0
-                    self.__class__._Error = 0x04
-                    self.__class__._Block = None
+                    _AsyncPoller._Read = _AsyncPoller._Readable = 0x01
+                    _AsyncPoller._Write = _AsyncPoller._Writable = 0x02
+                    _AsyncPoller._Hangup = 0x0
+                    _AsyncPoller._Error = 0x04
+                    _AsyncPoller._Block = None
 
                 self._fds = {}
                 self._timeouts = []
@@ -1355,17 +1311,16 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
             thing at a time, only one of read/write tasks can be done.
             """
 
-            now = _time()
             if timeout == 0:
                 poll_timeout = timeout
             elif self._timeouts:
-                poll_timeout = self._timeouts[0] - now
+                poll_timeout = self._timeouts[0] - _time()
                 if poll_timeout < 0.001:
                     poll_timeout = 0
                 elif timeout is not None:
                     poll_timeout = min(timeout, poll_timeout)
             elif timeout is None:
-                poll_timeout = _AsyncNotifier._Block
+                poll_timeout = _AsyncPoller._Block
             else:
                 poll_timeout = timeout
             if poll_timeout and poll_timeout != _AsyncPoller._Block:
@@ -1380,25 +1335,25 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
                 time.sleep(5)
                 return
 
-            events = [(self._fds.get(fileno, None), event) for fileno, event in events]
             try:
-                for fd, event in events:
+                for fileno, event in events:
+                    fd = self._fds.get(fileno, None)
                     if fd is None:
-                        if event != _AsyncNotifier._Hangup:
+                        if event != _AsyncPoller._Hangup:
                             logging.debug('invalid fd for event %s', event)
                         continue
-                    if event & _AsyncNotifier._Hangup:
+                    if event & _AsyncPoller._Hangup:
                         self.unregister(fd)
                         if fd._coro:
                             fd._coro.throw(socket.error('hangup'))
                         continue
-                    if event & _AsyncNotifier._Read:
+                    if event & _AsyncPoller._Read:
                         # logging.debug('fd %s is readable', fd._fileno)
                         if fd._task is None:
                             logging.error('fd %s is not registered for read?', fd._fileno)
                         else:
                             fd._task()
-                    elif event & _AsyncNotifier._Write:
+                    elif event & _AsyncPoller._Write:
                         # logging.debug('fd %s is writable', fd._fileno)
                         if fd._task is None:
                             logging.error('fd %s is not registered for write?', fd._fileno)
@@ -1596,21 +1551,22 @@ class Coro(object):
     None. When the function is called, that argument will be this
     object.
     """
-    def __init__(self, func, *args, **kwargs):
-        if not inspect.isfunction(func) and not inspect.ismethod(func):
-            raise Exception('Invalid coroutine function %s', func.__name__)
-        if not inspect.isgeneratorfunction(func):
-            raise Exception('%s is not a generator!' % func.__name__)
-        if 'coro' in kwargs:
+    def __init__(self, target, *args, **kwargs):
+        if not inspect.isgeneratorfunction(target):
+            raise Exception('%s is not a generator!' % target.__name__)
+        if not args and kwargs:
+            args = kwargs.pop('args', ())
+            kwargs = kwargs.pop('kwargs', kwargs)
+        if kwargs.get('coro', None) is not None:
             raise Exception('Coro function %s should not be called with ' \
-                            '"coro" parameter' % func.__name__)
-        callargs = inspect.getcallargs(func, *args, **kwargs)
+                            '"coro" parameter' % target.__name__)
+        callargs = inspect.getcallargs(target, *args, **kwargs)
         if 'coro' not in callargs or callargs['coro'] is not None:
             raise Exception('Coro function "%s" should have "coro" argument with ' \
-                            'default value None' % func.__name__)
+                            'default value None' % target.__name__)
         kwargs['coro'] = self
-        self.name = func.__name__
-        self._generator = func(*args, **kwargs)
+        self.name = target.__name__
+        self._generator = target(*args, **kwargs)
         self._id = None
         self._state = None
         self._value = None
@@ -1622,15 +1578,15 @@ class Coro(object):
         self._asyncoro._add(self)
 
     def suspend(self, timeout=None):
-        """Suspend/sleep coro (until woken up, usually by
-        AsyncNotifier in the case of AsynCoroSockets).
+        """Suspend/sleep coro (until woken up, usually by AsyncNotifier
+        in the case of AsynCoroSockets).
 
-        If timeout is a (floating point) number, this coro is
-        suspended for that many seconds (or fractions of second). This
-        method should be used with 'yield'; e.g., as 'x = yield
-        coro.suspend(2.5)' to suspend execution of coro for 2.5
-        seconds; in that time other coroutines can execute. This
-        method must be called from coro only.
+        If timeout is a (floating point) number, this coro is suspended
+        for that many seconds (or fractions of second). This method
+        should be used with 'yield'; e.g., as 'x = yield
+        coro.suspend(2.5)' to suspend execution of coro for 2.5 seconds;
+        in that time other coroutines can execute. This method must be
+        called from coro only.
         """
         if self._asyncoro:
             return self._asyncoro._suspend(self._id, timeout)
@@ -1646,9 +1602,9 @@ class Coro(object):
         The resuming coro gets 'update' for the 'yield' that caused it
         to suspend. Thus, if coro1 resumes coro2 with
         'coro2.resume({'a':1, 'b':2})', coro2 resumes from where it
-        suspended itself and will have the dictionary with keys 'a'
-        and 'b' for 'x' in the example above. This method must be
-        called from coro only.
+        suspended itself and will have the dictionary with keys 'a' and
+        'b' for 'x' in the example above. This method must be called
+        from coro only.
         """
         if self._asyncoro:
             return self._asyncoro._resume(self._id, update)
@@ -1659,7 +1615,8 @@ class Coro(object):
     wakeup = resume
 
     def throw(self, *args):
-        """Throw exception in coroutine. This method must be called from coro only.
+        """Throw exception in coroutine. This method must be called from
+        coro only.
         """
         if len(args) == 0:
             logging.warning('throw: invalid argument(s)')
@@ -1676,19 +1633,18 @@ class Coro(object):
         """Get 'return' value of coro.
 
         NB: This method should _not_ be called from a coroutine! This
-        method is meant for main thread in the user program to wait
-        for (main) coroutine(s) it creates.
+        method is meant for main thread in the user program to wait for
+        (main) coroutine(s) it creates.
 
         Once coroutine stops (finishes) executing, the last value
         yielded by it is returned.
 
         If waiting for one coro from another is needed, there are
-        multiple approaches: If one coro starts another, then caller
-        can 'yield' to the generator instead of creating coro. If
-        coros are conccurrent, they can use CoroCondition variable so
-        coro being waited on uses .notify on that variable and the
-        coro waiting on uses .wait on that variable (see
-        CoroCondition).
+        multiple approaches: If one coro starts another, then caller can
+        'yield' to the generator instead of creating coro. If coros are
+        conccurrent, they can use CoroCondition variable so coro being
+        waited on uses .notify on that variable and the coro waiting on
+        uses .wait on that variable (see CoroCondition).
         """
         self._complete.wait()
         return self._value
@@ -1707,12 +1663,12 @@ class Coro(object):
             logging.warning('terminate: coroutine %s removed?', self.name)
             return -1
 
-class CoroLock(object):
+class Lock(object):
     """'Lock' primitive for coroutines.
 
-    Since a coroutine runs until 'yield', there is no need for
-    lock. The caller has to guarantee that 'yield' statement is not
-    used from when lock is acquired and till when lock is released.
+    Since a coroutine runs until 'yield', there is no need for lock. The
+    caller has to guarantee that 'yield' statement is not used from when
+    lock is acquired and till when lock is released.
     """
     def __init__(self):
         self._owner = None
@@ -1731,13 +1687,13 @@ class CoroLock(object):
                (owner.name, owner._id, self._owner.name, self._owner._id)
         self._owner = None
 
-class CoroCondition(object):
+class Condition(object):
     """'Condition' primitive for coroutines.
 
-    Since a coroutine runs until 'yield', there is no need for
-    lock. The caller has to guarantee that once a lock is obtained,
-    'yield' is not used, except for the case of 'wait'. See 'dispy.py'
-    on how to use it.
+    Since a coroutine runs until 'yield', there is no need for lock. The
+    caller has to guarantee that once a lock is obtained, 'yield' is not
+    used, except for the case of 'wait'. See 'dispy.py' on how to use
+    it.
     """
     def __init__(self):
         self._waitlist = []
@@ -1769,7 +1725,9 @@ class CoroCondition(object):
             wake.resume(None)
 
     def wait(self):
-        """If condition variable is called cv, then a typical use in consumer is:
+        """Must be used with 'yield' as below (and not as 'yield cv.wait()').
+
+        If condition variable is called cv, then a typical use in consumer is:
 
         while True:
             cv.acquire()
@@ -1795,14 +1753,72 @@ class CoroCondition(object):
             coro.suspend()
             return True
 
+class Event(object):
+    """'Event' primitive for coroutines.
+    """
+    def __init__(self):
+        self._flag = False
+        self._waitlist = []
+        self._asyncoro = AsynCoro.instance()
+
+    def set(self):
+        self._flag = True
+        for coro in self._waitlist:
+            coro.resume(True)
+        self._waitlist = []
+
+    def is_set(self):
+        return self._flag
+
+    isSet = is_set
+
+    def clear(self):
+        self._flag = False
+
+    def wait(self, timeout=None):
+        """Must be used with 'yield' as 'yield event.wait()' .
+        """
+        if self._flag:
+            return True
+        else:
+            coro = self._asyncoro.cur_coro()
+            self._waitlist.append(coro)
+            coro.suspend(timeout)
+
+class Semaphore(object):
+    """'Semaphore' primitive for coroutines.
+    """
+    def __init__(self, value=1):
+        assert value >= 1
+        self._waitlist = []
+        self._counter = value
+        self._asyncoro = AsynCoro.instance()
+
+    def acquire(self, blocking=True):
+        """Must be used with 'yield' as 'yield sem.acquire()'.
+        """
+        if self._counter == 0:
+            if blocking:
+                coro = self._asyncoro.cur_coro()
+                self._waitlist.append(coro)
+                coro.suspend()
+            else:
+                return False
+        else:
+            self._counter -= 1
+
+    def release(self):
+        if self._counter == 0 and self._waitlist:
+            wake = self._waitlist.pop(0)
+            wake.resume()
+        else:
+            self._counter += 1
+
 class AsynCoro(object):
     """Coroutine scheduler.
 
-    Once created (singleton) AsynCoro, any coroutines built with Coro
-    class above will start executing. AsynCoro creates _AsyncNotifier
-    to wake up suspended coroutines waiting for I/O completion. The
-    only methods available to users are 'cur_coro', 'terminate' and
-    'join'.
+    The only methods available to users are 'cur_coro', 'terminate' and
+    'join' and class method 'instance'.
     """
 
     __metaclass__ = MetaSingleton
@@ -1825,9 +1841,9 @@ class AsynCoro(object):
             self._scheduled = set()
             self._suspended = set()
             self._timeouts = []
-            # because Coro can be added from thread(s) and UDP poller
-            # in the case of Windows (IOCP) runs in a separate thread,
-            # we need to lock access to _scheduled, etc.
+            # because Coro can be added from thread(s) and UDP poller in
+            # the case of Windows (IOCP) runs in a separate thread, we
+            # need to lock access to _scheduled, etc.
             self._lock = threading.Lock()
             self._terminate = False
             self._complete = threading.Event()
@@ -1900,9 +1916,9 @@ class AsynCoro(object):
         elif coro._state == AsynCoro._Scheduled:
             if coro._exception and coro._exception[0] != GeneratorExit:
                 # this can happen with sockets with timeouts:
-                # _AsyncNotifier may throw timeout exception, but
-                # before exception is thrown to coro, I/O operation
-                # may complete
+                # _AsyncNotifier may throw timeout exception, but before
+                # exception is thrown to coro, I/O operation may
+                # complete
                 logging.debug('discarding exception for %s/%s', coro.name, cid)
                 coro._exception = None
                 coro._value = update
@@ -1917,6 +1933,11 @@ class AsynCoro(object):
         self._suspended.discard(cid)
         self._scheduled.add(cid)
         coro._state = AsynCoro._Scheduled
+        # if resumed by coro or notifier(s), we don't need to interrupt
+        # notifier, but if resumed from threads, we need to interrupt
+        # notifier
+        if len(self._scheduled) == 1:
+            self._notifier.interrupt()
         self._lock.release()
         return 0
 
@@ -1936,6 +1957,8 @@ class AsynCoro(object):
             self._suspended.discard(coro._id)
             self._scheduled.add(coro._id)
         coro._state = AsynCoro._Scheduled
+        if len(self._scheduled) == 1:
+            self._notifier.interrupt()
         self._lock.release()
         return 0
 
@@ -1969,8 +1992,8 @@ class AsynCoro(object):
         while not self._terminate:
             # process I/O events
             self._notifier.poll(0)
+            self._lock.acquire()
             if not self._scheduled:
-                self._lock.acquire()
                 if self._timeouts:
                     now = _time()
                     timeout, cid = self._timeouts[0]
@@ -1981,7 +2004,7 @@ class AsynCoro(object):
                     timeout = None
                 self._lock.release()
                 self._notifier.poll(timeout)
-            self._lock.acquire()
+                self._lock.acquire()
             if self._timeouts:
                 # wake up timed suspends; pollers may timeout slightly
                 # earlier, so give a bit of slack
@@ -2079,8 +2102,8 @@ class AsynCoro(object):
                         coro._value = retval
 
                     if isinstance(retval, types.GeneratorType):
-                        # push current generator onto stack and
-                        # activate new generator
+                        # push current generator onto stack and activate
+                        # new generator
                         coro._callers.append((coro._generator, coro._value))
                         coro._generator = retval
                         coro._value = None
@@ -2124,7 +2147,8 @@ class AsynCoro(object):
 
     def join(self):
         """Wait for currently scheduled coroutines to finish. AsynCoro
-        continues to execute, so new coroutines can be added if necessary.
+        continues to execute, so new coroutines can be added if
+        necessary.
         """
         self._lock.acquire()
         for coro in self._coros.itervalues():

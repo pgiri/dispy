@@ -47,9 +47,10 @@ else:
     import cPickle as pickle
     import Queue as queue
 
-from asyncoro import Coro, AsynCoro, CoroLock, CoroCondition, AsynCoroSocket, MetaSingleton
+import asyncoro
+from asyncoro import Coro, AsynCoro, AsynCoroSocket, MetaSingleton
 
-_dispy_version = '2.6'
+_dispy_version = '2.7'
 
 class DispyJob(object):
     """Job scheduled for execution with dispy.
@@ -452,12 +453,12 @@ class _Cluster(object):
             self.pulse_interval = None
             self.ping_interval = None
 
-            self.fault_recover_lock = CoroLock()
+            self.fault_recover_lock = asyncoro.Lock()
             self._clusters = {}
             self.unsched_jobs = 0
             self.job_uid = 1
             self._sched_jobs = {}
-            self._sched_cv = CoroCondition()
+            self._sched_cv = asyncoro.Condition()
             self.terminate_scheduler = False
             self.auth_code = os.urandom(20).encode('hex')
 

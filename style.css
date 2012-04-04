@@ -6,9 +6,10 @@
         width:100%;
         background:#fff;
         min-width:600px;
+	max-width:70em;
 	font-size:90%;
 	line-height: 140%;
-	font-size: 90%;
+	font-size: 100%;
     }
  
   a img
@@ -33,6 +34,8 @@
       white-space: pre;
       background: #f0f0f0;
       border: 1px solid #999;
+      -moz-border-radius: 8px; -webkit-border-radius: 8px;
+      border-radius: 8px;
   }
 
   tt {

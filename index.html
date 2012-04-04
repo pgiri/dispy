@@ -123,8 +123,7 @@ dispy consists of 4 components:
   same network, there is no need for dispynetrelay - the scheduler and
   nodes automatically discover each other.</li>
 </ol>
- dispy has been tested with Python 2.7 on Linux and OS X. It is also
- known to work on Windows, but not well tested.
+ dispy has been tested with Python 2.7 on Linux, OS X and Windows.
 
         <h3> 
           Quick Guide
@@ -149,9 +148,7 @@ parallelizing on an SMP (single node with multiple cores), then start
 'dispynode' on that node (which also runs dispy client).
 </p>
 
-<code>#!/usr/bin/env python
-
-def compute(n):
+<code>def compute(n):
     import time, socket
     time.sleep(n)
     host = socket.gethostname()
