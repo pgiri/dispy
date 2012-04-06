@@ -36,13 +36,8 @@ import atexit
 import logging
 import marshal
 import shelve
-
-if sys.version > '3':
-    import pickle
-    import io
-else:
-    import cPickle as pickle
-    import cStringIO as io
+import cPickle as pickle
+import cStringIO as io
 
 from dispy import _DispyJob_, _JobReply, DispyJob, \
      _Compute, _XferFile, _xor_string, _node_ipaddr, _dispy_version

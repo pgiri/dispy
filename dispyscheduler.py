@@ -34,11 +34,7 @@ import ssl
 import hashlib
 import atexit
 import traceback
-
-if sys.version > '3':
-    import pickle
-else:
-    import cPickle as pickle
+import cPickle as pickle
 
 from dispy import _Compute, DispyJob, _DispyJob_, _Node, _JobReply, \
      _xor_string, _parse_nodes, _node_ipaddr, _XferFile, _dispy_version

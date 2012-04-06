@@ -39,13 +39,8 @@ import shelve
 import datetime
 import atexit
 import platform
-
-if sys.version > '3':
-    import pickle
-    import queue
-else:
-    import cPickle as pickle
-    import Queue as queue
+import cPickle as pickle
+import Queue as queue
 
 import asyncoro
 from asyncoro import Coro, AsynCoro, AsynCoroSocket, MetaSingleton

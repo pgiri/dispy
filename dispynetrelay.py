@@ -27,11 +27,7 @@ import struct
 import time
 import select
 import logging
-
-if sys.version > '3':
-    import pickle
-else:
-    import cPickle as pickle
+import cPickle as pickle
 
 from dispy import _node_ipaddr, _dispy_version
 

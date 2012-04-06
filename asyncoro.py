@@ -135,7 +135,7 @@ class _AsynCoroSocket(object):
                                               ssl_version=self._ssl_version)
             for name in ['recv', 'send', 'recvfrom', 'sendto', 'accept', 'connect']:
                 setattr(self, name, getattr(self._rsock, name))
-            if self._rsock.type == socket.SOCK_STREAM:
+            if self._rsock.type & socket.SOCK_STREAM:
                 self.recvall = self.sync_recvall
                 self.sendall = self.sync_sendall
                 self.recv_msg = self.sync_recv_msg
@@ -150,7 +150,7 @@ class _AsynCoroSocket(object):
             self.sendto = self.async_sendto
             self.accept = self.async_accept
             self.connect = self.async_connect
-            if self._rsock.type == socket.SOCK_STREAM:
+            if self._rsock.type & socket.SOCK_STREAM:
                 self.recvall = self.async_recvall
                 self.sendall = self.async_sendall
                 self.recv_msg = self.async_recv_msg
@@ -281,9 +281,9 @@ class _AsynCoroSocket(object):
     def async_recvall(self, bufsize, *args):
         """Receive exactly bufsize bytes.
         """
-        def _recvall(self, pending, *args):
+        def _recvall(self, view, *args):
             try:
-                buf = self._rsock.recv(pending, *args)
+                sent = self._rsock.recv_into(view, len(view), *args)
             except ssl.SSLError as err:
                 if err.args[0] != ssl.SSL_ERROR_WANT_READ:
                     raise socket.error(err)
@@ -293,40 +293,40 @@ class _AsynCoroSocket(object):
                 coro, self._coro = self._coro, None
                 coro.throw(*sys.exc_info())
             else:
-                if buf:
-                    self._result.append(buf)
-                    pending -= len(buf)
-                    if pending == 0:
+                if sent:
+                    view = view[sent:]
+                    if len(view) == 0:
+                        buf = str(self._result)
                         self._notifier.modify(self, 0)
-                        buf = ''.join(self._result)
                         self._task = self._result = None
                         coro, self._coro = self._coro, None
                         coro.resume(buf)
                     else:
-                        self._task = functools.partial(_recvall, self, pending, *args)
+                        self._task = functools.partial(_recvall, self, view, *args)
                 else:
                     self._notifier.modify(self, 0)
                     self._task = self._result = None
                     coro, self._coro = self._coro, None
                     coro.throw(socket.error('recv error'))
 
-        self._result = []
+        self._result = bytearray(bufsize)
+        view = memoryview(self._result)
         if self._certfile:
             # in case of SSL, attempt recv first
             try:
-                buf = self._rsock.recv(bufsize)
+                sent = self._rsock.recv_into(view, bufsize)
             except ssl.SSLError as err:
                 if err.args[0] != ssl.SSL_ERROR_WANT_READ:
                     raise socket.error(err)
             else:
-                if len(buf) == bufsize:
+                if sent == bufsize:
+                    buf = self._result
                     self._task = self._result = None
                     return buf
                 else:
-                    self._result.append(buf)
-                    bufsize -= len(buf)
+                    view = view[sent:]
 
-        self._task = functools.partial(_recvall, self, bufsize, *args)
+        self._task = functools.partial(_recvall, self, view, *args)
         self._coro = self._asyncoro.cur_coro()
         self._coro.suspend()
         self._notifier.modify(self, _AsyncPoller._Readable)
@@ -334,14 +334,16 @@ class _AsynCoroSocket(object):
     def sync_recvall(self, bufsize, *args):
         """Synchronous version of async_recvall.
         """
-        self._result = []
-        while bufsize:
-            buf = self._rsock.recv(bufsize, *args)
-            if not buf:
+        self._result = bytearray(bufsize)
+        view = memoryview(self._result)
+        while len(view) > 0:
+            sent = self._rsock.recv_into(view, *args)
+            if not sent:
+                view.close()
+                self._result = None
                 raise socket.error('recv error')
-            bufsize -= len(buf)
-            self._result.append(buf)
-        buf = ''.join(self._result)
+            view = view[sent:]
+        buf = str(self._result)
         self._result = None
         return buf
 
@@ -424,14 +426,14 @@ class _AsynCoroSocket(object):
                 coro.throw(*sys.exc_info())
             else:
                 if sent > 0:
-                    self._result = buffer(self._result, sent)
+                    self._result = self._result[sent:]
                     if len(self._result) == 0:
                         self._notifier.modify(self, 0)
                         self._task = self._result = None
                         coro, self._coro = self._coro, None
                         coro.resume(0)
 
-        self._result = buffer(data, 0)
+        self._result = memoryview(data)
         self._task = functools.partial(_sendall, self)
         self._coro = self._asyncoro.cur_coro()
         self._coro.suspend()
@@ -441,11 +443,11 @@ class _AsynCoroSocket(object):
         """Synchronous version of async_sendall.
         """
         # TODO: is socket's sendall better?
-        self._result = buffer(data, 0)
-        while len(self._result) > 0:
-            sent = self._rsock.send(self._result)
+        buf = memoryview(data)
+        while len(buf) > 0:
+            sent = self._rsock.send(buf)
             if sent > 0:
-                self._result = buffer(self._result, sent)
+                buf = buf[sent:]
         return 0
 
     def async_accept(self):
@@ -595,7 +597,8 @@ if platform.system() == 'Windows':
         import pywintypes
         import winerror
     except:
-        print('Could not load pywin32 for I/O Completion Ports; using inefficient polling for sockets')
+        print 'Could not load pywin32 for I/O Completion Ports; ' \
+              'using inefficient polling for sockets'
     else:
         # for UDP we need 'select' polling (pywin32 doesn't yet support
         # UDP); _AsyncPoller below is combination of the other
@@ -884,10 +887,12 @@ if platform.system() == 'Windows':
                     self._lock.release()
 
             def terminate(self):
+                self.async_poller.terminate()
                 self.cmd_rsock.close()
                 self.cmd_wsock.close()
+                win32file.CloseHandle(self.iocp)
+                self.iocp = None
                 self.cmd_rsock_buf = None
-                self.async_poller.terminate()
 
         class AsynCoroSocket(_AsynCoroSocket):
             """AsynCoroSocket with I/O Completion Ports (under
@@ -899,7 +904,7 @@ if platform.system() == 'Windows':
 
             def _register(self):
                 if not self._blocking:
-                    if self._rsock.type == socket.SOCK_STREAM:
+                    if self._rsock.type & socket.SOCK_STREAM:
                         self._overlap = pywintypes.OVERLAPPED()
                     else:
                         self._notifier = _AsyncPoller.instance()
@@ -910,7 +915,7 @@ if platform.system() == 'Windows':
             def _unregister(self):
                 if self._notifier:
                     self._notifier.unregister(self)
-                    if self._rsock.type == socket.SOCK_STREAM:
+                    if self._rsock.type & socket.SOCK_STREAM:
                         if self._overlap and self._overlap.object:
                             win32file.CancelIo(self._fileno)
                         else:
@@ -919,7 +924,7 @@ if platform.system() == 'Windows':
 
             def setblocking(self, blocking):
                 _AsynCoroSocket.setblocking(self, blocking)
-                if not self._blocking and self._rsock.type == socket.SOCK_STREAM:
+                if not self._blocking and self._rsock.type & socket.SOCK_STREAM:
                     self.recv = self.iocp_recv
                     self.send = self.iocp_send
                     self.recvall = self.iocp_recvall
