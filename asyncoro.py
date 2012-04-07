@@ -44,6 +44,7 @@ import random
 import ssl
 from heapq import heappush, heappop
 from bisect import bisect_left
+import Queue
 
 if platform.system() == 'Windows':
     from errno import WSAEINPROGRESS as EINPROGRESS
@@ -1627,7 +1628,10 @@ class Coro(object):
             logging.warning('throw: invalid argument(s)')
             return -1
         if len(args) == 1:
-            args = (type(args[0]), args[0])
+            if isinstance(args[0], tuple) and len(args[0]) > 1:
+                args = args[0]
+            else:
+                args = (type(args[0]), args[0])
         if self._asyncoro:
             return self._asyncoro._throw(self._id, *args)
         else:
@@ -2071,7 +2075,9 @@ class AsynCoro(object):
                         if coro._exception:
                             # callee raised exception, restore saved value
                             coro._value = caller[1]
-                        coro._state = AsynCoro._Scheduled
+                            coro._state = AsynCoro._Scheduled
+                        elif coro._state == AsynCoro._Running:
+                            coro._state = AsynCoro._Scheduled
                     else:
                         if coro._exception:
                             assert isinstance(coro._exception, tuple)
@@ -2162,6 +2168,98 @@ class AsynCoro(object):
 
         self._complete.wait()
 
+class AsynCoroThreadPool(object):
+    """Schedule synchronous tasks with threads to be executed asynchronously.
+    """
+    def __init__(self, num_threads):
+        self._num_threads = num_threads
+        self._task_queue = Queue.Queue()
+        for n in xrange(num_threads):
+            tasklet = threading.Thread(target=self._tasklet)
+            tasklet.daemon = True
+            tasklet.start()
+
+    def _tasklet(self):
+        while True:
+            item = self._task_queue.get(block=True)
+            if item is None:
+                self._task_queue.task_done()
+                break
+            coro, func, args, kwargs = item
+            try:
+                retval = func(*args, **kwargs)
+            except:
+                coro.throw(*sys.exc_info())
+            else:
+                coro.resume(retval)
+            finally:
+                self._task_queue.task_done()
+
+    def add_task(self, coro, func, *args, **kwargs):
+        """Must be used with 'yield'
+        """
+        coro.suspend()
+        self._task_queue.put((coro, func, args, kwargs))
+
+    def finish(self):
+        for n in xrange(self._num_threads):
+            self._task_queue.put(None)
+        self._task_queue.join()
+
+class AsynCoroDBCursor(object):
+    """Database cursor proxy for asynchronous processing of executions.
+
+    Since connections (and cursors) can't be shared in threads,
+    operations on same cursor are serialized. As there are many issues
+    with databases to force one approach (e.g., is connection pooling
+    better?, how caching affects parallel queries?), this rather
+    simplistic approach can be customized as suited to specific
+    situation/needs (such as using connection pooling).
+    """
+
+    def __init__(self, thread_pool, cursor):
+        self._thread_pool = thread_pool
+        self._cursor = cursor
+        self._sem = Semaphore()
+        self._asyncoro = AsynCoro.instance()
+
+    def __getattr__(self, name):
+        return getattr(self._cursor, name)
+
+    def _exec_task(self, func):
+        try:
+            retval = func()
+        except:
+            raise
+        else:
+            return retval
+        finally:
+            self._sem.release()
+
+    def execute(self, query, args=None):
+        """Must be used with 'yield'
+        """
+        coro = self._asyncoro.cur_coro()
+        yield self._sem.acquire()
+        self._thread_pool.add_task(coro, self._exec_task,
+                                   functools.partial(self._cursor.execute, query, args))
+
+    def executemany(self, query, args):
+        """Must be used with 'yield'
+        """
+        coro = self._asyncoro.cur_coro()
+        yield self._sem.acquire()
+        self._thread_pool.add_task(coro, self._exec_task,
+                                   functools.partial(self._cursor.executemany, query, args))
+
+    def callproc(self, proc, args=()):
+        """Must be used with 'yield'
+        """
+        coro = self._asyncoro.cur_coro()
+        yield self._sem.acquire()
+        self._thread_pool.add_task(coro, self._exec_task,
+                                   functools.partial(self._cursor.callproc, proc, args))
+        
 # initialize AsynCoro so all components are setup correctly
 scheduler = AsynCoro()
 del scheduler

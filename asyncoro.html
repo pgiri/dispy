@@ -43,9 +43,9 @@
   package, is a framework for developing concurrent programs with
   asynchronous event completion and coroutines. Asynchronous
   completions currently implemented in asyncoro are socket I/O
-  operations, sleep timers, (conditional) event notification and
-  semaphores.  The coroutines should use 'yield' with these
-  completions. Each yield statement gives control to asyncoro's
+  operations, database cursors, sleep timers, (conditional) event
+  notification and semaphores.  The coroutines should use 'yield' with
+  these completions. Each yield statement gives control to asyncoro's
   scheduler, which interleaves executions of coroutines, similar to
   the way an operating system executes multiple processes. Programs
   developed with asyncoro will have same logic as python progorams
@@ -76,11 +76,7 @@ GIL</a>).</p>
   thread implementations can be converted to asyncoro almost
   mechanically (although it cannot be automated). In fact, it may be
   easier to use asyncoro than threads, as locking is not required with
-  asyncoro (see below).  asyncoro framework consists of AsynCoro
-  scheduler, Coro factory to create coroutines from generator functions,
-  AsynCoroSocket to convert regular synchronous sockets to
-  asynchronous sockets and locking, event, semaphore primitives
-  similar to thread primitives.
+  asyncoro (see below).
 </p>
 
 <p>
@@ -97,8 +93,6 @@ For example, a simple tcp server with asyncoro looks like:
 
 if __name__ == '__main__':
     host, port = '', 3456
-    # start asyncoro scheduler before creating coroutines
-    scheduler = AsynCoro()
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind((host, port))
     sock.listen(128)
@@ -128,7 +122,18 @@ coroutines).
 
 <h4>API</h4>
 <p>
-  Below is asyncoro's API.
+  asyncoro framework consists of AsynCoro scheduler, Coro factory to
+  create coroutines from generator functions, AsynCoroSocket to
+  convert regular synchronous sockets to asynchronous sockets,
+  AsynCoroDBCursor to convert database cursor
+  operations <tt>execute</tt> and <tt>executemany</tt> to asynchronous
+  operations, and locking, event, semaphore primitives similar to
+  thread primitives.  asyncoro has been tested with Python versions
+  2.7 and 3.2 under Linux, OS X and Windows. Under Windows asyncoro
+  uses IOCP only
+  if <a href="https://sourceforge.net/projects/pywin32/files/pywin32/">Python
+  for Windows Extensions</a> (pywin32) is installed. pywin32 works
+  with Windows 32-bit and 64-bit.
   </p>
 
 <ul>
@@ -256,6 +261,70 @@ coroutines).
     (counterpart to sendall), send_msg prefixes the given buffer with
     the length so that receiving side knows exactly how many bytes to
     read, and recv_msg recieves full message from send_msg.
+    </li>
+  <li>
+    <p>
+      Database operations are blocking operations and do not provide
+      asynchronous notification. asyncoro
+      provides <b>AsynCoroDBCursor</b> that
+      schedules <tt>execute</tt>, <tt>executemany</tt>
+      and <tt>callproc</tt> operations through a thread pool (see
+      below) for asynchronous completion. Other database operations
+      are considered very fast. This interface works with MySQLdb
+      under Python version 2.x
+      and <a href="https://github.com/petehunt/PyMySQL">pymysql</a>
+      under Python version 3.x. If necessary other database interfaces
+      and operations can be made asynchronous with <b>AsynCoroThreadPool</b>.
+    </p>
+    <p>
+      As database connections and cursors are not supposed to be
+      shared among threads, asyncoro serializes operations on a
+      cursor. Operations on different cursors at the same time are run
+      concurrently. A simple example is
+
+      <code># create pool of async cursors (can be reused)
+num_threads = 3
+thread_pool = asyncoro.AsynCoroThreadPool(num_threads)
+async_cursors = []
+for x in range(num_threads):
+    conn = MySQLdb.connect(host=host, user=user, passwd=passwd, db=db)
+    cursor = conn.cursor(cursorclass=MySQLdb.cursors.DictCursor)
+    async_cursors.append(asyncoro.AsynCoroDBCursor(thread_pool, cursor))
+
+coros = []
+for x, cursor in itertools.izip(xrange(10), itertools.cycle(async_cursors)):
+    coros.append(asyncoro.Coro(db_proc, cursor, stmt))
+
+def db_proc(cursor, stmt, coro=None):
+    # ...
+    n = yield cursor.execute(stmt)
+    rows = cursor.fetchall()
+    # process rows</code>
+      </p>
+    </li>
+  <li>
+    <b>AsynCoroThreadPool</b> can be used to schedule synchronous,
+    time consuming operations with a pool of threads for asynchronous
+    completions (similar to sockets). A new thread pool can be created
+    with <tt>AsynCoroThreadPool(num_threads)</tt>.  It provides two
+    methods:
+    <ul>
+      <li><b>add_task</b>(coro, func, *args, **kwargs)
+	schedules <tt>func</tt> with arguments <tt>args</tt> and keyword
+	arguments <tt>kwargs</tt> with the thread pool. This method
+	suspends the calling coroutine <tt>coro</tt>, so it must be used
+	with 'yield'. Once the task is complete, <tt>coro</tt> is
+	resumed with the return value from <tt>func</tt>. Thus,
+
+	<code>thread_pool = AsynCoroThreadPool(3)
+v = yield thread_pool.add_task(coro, f, 1)</code>
+	executes function <tt>f(1)</tt> in a thread and its return
+	value is set to <tt>v</tt>.
+      </li>
+      <li><b>finish</b> method waits for all scheduled tasks to
+	complete and terminates the threads.
+      </li>
+    </ul>
     </li>
   <li>
     asyncoro provides <b>Lock</b>, <b>Condition</b>, <b>Event</b>
