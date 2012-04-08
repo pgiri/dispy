@@ -1552,7 +1552,7 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
 
 class Coro(object):
     """'Coroutine' factory to build coroutines to be scheduled with
-    AsynCoro. Automatically starts executing 'func'.  The function
+    AsynCoro. Automatically starts executing 'target'.  The function
     definition should have 'coro' argument set to (default value)
     None. When the function is called, that argument will be this
     object.
@@ -1699,68 +1699,37 @@ class Lock(object):
 class Condition(object):
     """'Condition' primitive for coroutines.
 
-    Since a coroutine runs until 'yield', there is no need for lock. The
-    caller has to guarantee that once a lock is obtained, 'yield' is not
-    used, except for the case of 'wait'. See 'dispy.py' on how to use
-    it.
+    Since a coroutine runs until 'yield', there is no need for
+    locking. The caller has to guarantee that once condition is
+    acquired, 'yield' is not used until either 'wait' or 'release'.
     """
     def __init__(self):
         self._waitlist = []
-        self._owner = None
-        self._notify = False
         self._asyncoro = AsynCoro.instance()
 
     def acquire(self):
-        owner = self._asyncoro.cur_coro()
-        assert self._owner == None, '"%s"/%s: condition variable owned by "%s"/%s' % \
-               (owner.name, owner._id, self._owner.name, self._owner._id)
-        self._owner = owner
+        pass
 
     def release(self):
-        owner = self._asyncoro.cur_coro()
-        assert self._owner == owner and owner is not None, \
-               '"%s"/%s: invalid condition variable release - owned by "%s"/%s' % \
-               (owner.name, owner._id, self._owner.name, self._owner._id)
-        self._owner = None
+        pass
 
-    def notify(self):
-        owner = self._asyncoro.cur_coro()
-        assert self._owner == owner and owner is not None, \
-               '"%s"/%s: invalid condition variable notify - owned by "%s"/%s' % \
-               (owner.name, owner._id, self._owner.name, self._owner._id)
-        self._notify = True
-        if self._waitlist:
+    def notify(self, n=1):
+        while self._waitlist and n:
             wake = self._waitlist.pop(0)
             wake.resume(None)
+            n -= 1
 
-    def wait(self):
-        """Must be used with 'yield' as below (and not as 'yield cv.wait()').
+    def notifyAll(self):
+        self.notify(len(self._waitlist))
 
-        If condition variable is called cv, then a typical use in consumer is:
+    notify_all = notifyAll
 
-        while True:
-            cv.acquire()
-            while not queue or cv.wait():
-                yield None
-            item = queue.pop(0)
-            process(item)
-            yield cv.release()
-        
+    def wait(self, timeout=None):
+        """Must be used with 'yield' as 'yield cv.wait()'.
         """
         coro = self._asyncoro.cur_coro()
-        if self._owner is not None:
-            assert self._owner == coro, \
-                   '"%s"/%s: invalid condition variable wait - owned by "%s"/%s' % \
-                   (coro.name, coro._id, self._owner.name, self._owner._id)
-        if self._notify:
-            self._notify = False
-            self._owner = coro
-            return False
-        else:
-            self._owner = None
-            self._waitlist.append(coro)
-            coro.suspend()
-            return True
+        self._waitlist.append(coro)
+        coro.suspend(timeout)
 
 class Event(object):
     """'Event' primitive for coroutines.
@@ -2196,12 +2165,36 @@ class AsynCoroThreadPool(object):
                 self._task_queue.task_done()
 
     def add_task(self, coro, func, *args, **kwargs):
-        """Must be used with 'yield'
+        """Must be used with 'yield'.
+
+        @coro is coroutine where this method is called. 
+
+        @func is function that will be executed asynchronously in a
+        thread.
+
+        @args and @kwargs are arguments and keyword arguments passed
+        to @func.
+
+        This method returns whatever func(*args, **kwargs) returns.
         """
+        if not isinstance(coro, Coro):
+            logging.warning('invalid usage: first argument to add_task must be coroutine')
+            return
+        if not(inspect.isfunction(func) or inspect.ismethod(func)):
+            logging.warning('invalid usage: second argument to add_task must be function or method')
+            return
         coro.suspend()
         self._task_queue.put((coro, func, args, kwargs))
 
-    def finish(self):
+    def join(self):
+        """Wait till all scheduled tasks are completed.
+        """
+        self._task_queue.join()
+
+    def terminate(self):
+        """Wait for all scheduled tasks to complete and terminate
+        threads.
+        """
         for n in xrange(self._num_threads):
             self._task_queue.put(None)
         self._task_queue.join()
@@ -2210,11 +2203,9 @@ class AsynCoroDBCursor(object):
     """Database cursor proxy for asynchronous processing of executions.
 
     Since connections (and cursors) can't be shared in threads,
-    operations on same cursor are serialized. As there are many issues
-    with databases to force one approach (e.g., is connection pooling
-    better?, how caching affects parallel queries?), this rather
-    simplistic approach can be customized as suited to specific
-    situation/needs (such as using connection pooling).
+    operations on same cursor are run sequentially. This
+    implementation can be augmented with any optimizations such as
+    connection pooling.
     """
 
     def __init__(self, thread_pool, cursor):
@@ -2229,15 +2220,12 @@ class AsynCoroDBCursor(object):
     def _exec_task(self, func):
         try:
             retval = func()
-        except:
-            raise
-        else:
             return retval
         finally:
             self._sem.release()
 
     def execute(self, query, args=None):
-        """Must be used with 'yield'
+        """Must be used with 'yield'.
         """
         coro = self._asyncoro.cur_coro()
         yield self._sem.acquire()
@@ -2245,7 +2233,7 @@ class AsynCoroDBCursor(object):
                                    functools.partial(self._cursor.execute, query, args))
 
     def executemany(self, query, args):
-        """Must be used with 'yield'
+        """Must be used with 'yield'.
         """
         coro = self._asyncoro.cur_coro()
         yield self._sem.acquire()
@@ -2253,7 +2241,7 @@ class AsynCoroDBCursor(object):
                                    functools.partial(self._cursor.executemany, query, args))
 
     def callproc(self, proc, args=()):
-        """Must be used with 'yield'
+        """Must be used with 'yield'.
         """
         coro = self._asyncoro.cur_coro()
         yield self._sem.acquire()

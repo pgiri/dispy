@@ -1024,35 +1024,37 @@ class _Scheduler(object):
             self._sched_cv.acquire()
             # n = sum(len(cluster._jobs) for cluster in self._clusters.itervalues())
             # assert self.unsched_jobs == n, '%s != %s' % (self.unsched_jobs, n)
-            while self._sched_cv.wait():
-                yield None
+            while not self._terminate_scheduler:
+                logging.debug('Pending jobs: %s', self.unsched_jobs)
+                node = self.select_job_node()
+                if node:
+                    break
+                logging.debug('No nodes/jobs')
+                yield self._sched_cv.wait()
             if self._terminate_scheduler:
                 yield self._sched_cv.release()
                 break
-            while self.unsched_jobs:
-                logging.debug('Pending jobs: %s', self.unsched_jobs)
-                node = self.select_job_node()
-                if node is None:
-                    logging.debug('No nodes/jobs')
+
+            logging.debug('Pending jobs: %s', self.unsched_jobs)
+            # TODO: strategy to pick a cluster?
+            for cid in node.clusters:
+                if self._clusters[cid]._jobs:
+                    _job = self._clusters[cid]._jobs.pop(0)
                     break
-                # TODO: strategy to pick a cluster?
-                for cid in node.clusters:
-                    if self._clusters[cid]._jobs:
-                        _job = self._clusters[cid]._jobs.pop(0)
-                        break
-                else:
-                    break
-                cluster = self._clusters[_job.compute_id]
-                _job.node = node
-                logging.debug('Scheduling job %s on %s (load: %.3f)',
-                              _job.uid, node.ip_addr, float(node.busy) / node.cpus)
-                assert node.busy < node.cpus
-                # _job.ip_addr = node.ip_addr
-                self._sched_jobs[_job.uid] = _job
-                _job.job.status = DispyJob.Running
-                self.unsched_jobs -= 1
-                node.busy += 1
-                Coro(self.run_job, _job, cluster)
+            else:
+                yield self._sched_cv.release()
+                continue
+            cluster = self._clusters[_job.compute_id]
+            _job.node = node
+            logging.debug('Scheduling job %s on %s (load: %.3f)',
+                          _job.uid, node.ip_addr, float(node.busy) / node.cpus)
+            assert node.busy < node.cpus
+            # _job.ip_addr = node.ip_addr
+            self._sched_jobs[_job.uid] = _job
+            _job.job.status = DispyJob.Running
+            self.unsched_jobs -= 1
+            node.busy += 1
+            Coro(self.run_job, _job, cluster)
             yield self._sched_cv.release()
         self._sched_cv.acquire()
         logging.debug('scheduler quitting (%s / %s)',
@@ -1076,9 +1078,8 @@ class _Scheduler(object):
             # TODO: send shutdown notification to clients? Or wait for all
             # pending tasks to complete?
             self._sched_cv.acquire()
-            select_job_node = self.select_job_node
-            self.select_job_node = None
-            if select_job_node:
+            if self._terminate_scheduler is False:
+                self._terminate_scheduler = True
                 logging.debug('shutting down scheduler ...')
                 coros = []
                 for uid, _job in self._sched_jobs.iteritems():
@@ -1091,7 +1092,6 @@ class _Scheduler(object):
                 clusters = self._clusters.values()
                 self._clusters = {}
                 self._sched_jobs = {}
-                self._terminate_scheduler = True
                 self._sched_cv.notify()
                 yield self._sched_cv.release()
 
@@ -1109,7 +1109,7 @@ class _Scheduler(object):
             else:
                 self._sched_cv.release()
 
-        if self.select_job_node:
+        if self._terminate_scheduler is False:
             Coro(_shutdown, self).value()
             self.asyncoro.join()
             self.asyncoro.terminate()

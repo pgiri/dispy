@@ -306,7 +306,7 @@ def db_proc(cursor, stmt, coro=None):
     <b>AsynCoroThreadPool</b> can be used to schedule synchronous,
     time consuming operations with a pool of threads for asynchronous
     completions (similar to sockets). A new thread pool can be created
-    with <tt>AsynCoroThreadPool(num_threads)</tt>.  It provides two
+    with <tt>AsynCoroThreadPool(num_threads)</tt>.  It provides three
     methods:
     <ul>
       <li><b>add_task</b>(coro, func, *args, **kwargs)
@@ -321,8 +321,12 @@ v = yield thread_pool.add_task(coro, f, 1)</code>
 	executes function <tt>f(1)</tt> in a thread and its return
 	value is set to <tt>v</tt>.
       </li>
-      <li><b>finish</b> method waits for all scheduled tasks to
-	complete and terminates the threads.
+      <li><b>join</b> method waits for all scheduled tasks to be
+	completed. More tasks can be added if necessary.
+      </li>
+      <li><b>terminate</b> method waits for all scheduled tasks to be
+	completed and terminates the threads. Tasks added later will
+	not be executed.
       </li>
     </ul>
     </li>
@@ -332,27 +336,30 @@ v = yield thread_pool.add_task(coro, f, 1)</code>
     threading module. Any blocking operaitons on these primitives must
     be called with 'yield' appropriately. For example, acquiring a
     semaphore may block, so it should be invoked as <tt>yield
-    sem.acquire()</tt>. Similarly, Event's wait method must be used as
-    <tt>yield event.wait()</tt>. The wait method of Condition variable cv in
-    a client should be used as
+    sem.acquire()</tt>. Similarly, Event's wait method and Condition's
+    wait method must be used as
+    <tt>yield event.wait()</tt> or <tt>yield
+    condition.wait()</tt>. For example, Condition variable cv in a
+    client should be used as
 
     <code>while True:
       cv.acquire()
-      while not queue or cv.wait():
-          yield None
-      item = queue.pop(0)
-      process(item)
+      while not an_item_is_available():
+          yield cv.wait()
+      get_an_available_item()
       yield cv.release()</code>
-    Technically, locking is not required (nor special way to use wait
-    of Condition variable), as there is no forced preemption with
-    coroutines and at most one coroutine is executing at
-    anytime. Currently the locking and unlocking opertions simply
-    assert that 'yield' is not used between lock and corresponding
-    unlock. If one wants to maintain same program for both synchronous
-    and asynchronous models, it would be simple to interchange
-    threading.Lock and asyncoro.Lock, threading.Condition and
-    asyncoro.Condition etc., and a few syntactic changes. However, if
-    there is no need to go back to synchronous model, it is very
+
+    'yield' is used when releasing a lock to be cooperative with other
+    coroutines that might be waiting for their turn to
+    execute. Technically, locking is not required, as there is no
+    forced preemption with coroutines and at most one coroutine is
+    executing at anytime. Currently the locking and unlocking
+    opertions simply assert that 'yield' is not used between lock and
+    corresponding unlock. If one wants to maintain same program for
+    both synchronous and asynchronous models, it would be simple to
+    interchange threading.Lock and asyncoro.Lock, threading.Condition
+    and asyncoro.Condition etc., and a few syntactic changes. However,
+    if there is no need to go back to synchronous model, it is very
     appealing to not worry about locking at all with asyncoro.
     </li>
   <li>
