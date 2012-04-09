@@ -41,19 +41,19 @@
   asyncoro, part of
   <a href="http://sourceforge.net/projects/dispy/files">dispy</a>
   package, is a framework for developing concurrent programs with
-  asynchronous event completion and coroutines. Asynchronous
-  completions currently implemented in asyncoro are socket I/O
-  operations, database cursors, sleep timers, (conditional) event
-  notification and semaphores.  The coroutines should use 'yield' with
-  these completions. Each yield statement gives control to asyncoro's
+  asynchronous completions and coroutines. Asynchronous completions
+  currently implemented in asyncoro are socket I/O operations,
+  database cursors, sleep timers, (conditional) event notification and
+  semaphores.  The coroutines should use 'yield' with these
+  completions. Each yield statement gives control to asyncoro's
   scheduler, which interleaves executions of coroutines, similar to
   the way an operating system executes multiple processes. Programs
   developed with asyncoro will have same logic as python progorams
   with synchronous sockets and threads, except for a few syntactic
   changes. asyncoro supports polling mechanisms epoll, kqueue,
-  /dev/poll, and poll, and Windows I/O Completion Ports (IOCP) for
-  high performance and scalability, and SSL for security.  asyncoro
-  can be used independently of dispy.</p>
+  /dev/poll (and poll and select, where necessary), and Windows I/O
+  Completion Ports (IOCP) for high performance and scalability, and
+  SSL for security.  asyncoro can be used independently of dispy.</p>
 
 <h4>Details</h4>
 <p>
@@ -126,11 +126,11 @@ coroutines).
   create coroutines from generator functions, AsynCoroSocket to
   convert regular synchronous sockets to asynchronous sockets,
   AsynCoroDBCursor to convert database cursor
-  operations <tt>execute</tt> and <tt>executemany</tt> to asynchronous
-  operations, and locking, event, semaphore primitives similar to
-  thread primitives.  asyncoro has been tested with Python versions
-  2.7 and 3.2 under Linux, OS X and Windows. Under Windows asyncoro
-  uses IOCP only
+  operations <tt>execute</tt>, <tt>executemany</tt>
+  and <tt>callproc</tt>to asynchronous operations, and locking,
+  condition, event, semaphore primitives similar to thread primitives.
+  asyncoro has been tested with Python versions 2.7 and 3.2 under
+  Linux, OS X and Windows. Under Windows asyncoro uses IOCP only
   if <a href="https://sourceforge.net/projects/pywin32/files/pywin32/">Python
   for Windows Extensions</a> (pywin32) is installed. pywin32 works
   with Windows 32-bit and 64-bit.
@@ -166,11 +166,12 @@ coroutines).
     using asyncoro's <b>Coro</b> class (i.e., Coro replaces
     threading.Thread). <tt>Coro(target[, arg1, arg2, ...])</tt>
     creates a coroutine. "target" must be a generator function (a
-    function with 'yield' statements). "arg1", "arg2" are arguments or
-    keyword arguments to "target". "target" generator function must have
-    "coro=None" keyword argument. Coro instantiaion replaces None with
-    the instance of coro, so coroutine can use this to invoke methods
-    in Coro class (see below). Consider the function
+    function with 'yield' statements). "arg1", "arg2" etc. are
+    arguments or keyword arguments to "target". "target" generator
+    function must have "coro=None" keyword argument. Coro instantiaion
+    replaces None with the instance of coro, so coroutine can use this
+    to invoke methods in Coro class (see below). Consider the
+    generator function
 
     <code>def get_reply(sock, msg, coro=None):
     yield sock.send(msg)
@@ -232,12 +233,15 @@ coroutines).
 	otherwise never terminate.
 	</li>
       <li>
-	<b>value()</b> method returns the last value yielded by
-	the coroutine, possibly waiting until coroutine
-	terminates. This method should not be called from a coroutine
-	- this will cause entire coroutine framework to deadlock.
-	This method is meant for main thread in the user program to
-	wait for (main) coroutine(s) it creates.
+	<b>value()</b> method returns the last value yielded by the
+	coroutine, possibly waiting until coroutine terminates. This
+	method should not be called from a coroutine - this will cause
+	entire coroutine framework to deadlock.  This method is meant
+	for main thread in the user program to wait for (main)
+	coroutine(s) it creates. If one coroutine needs to wait for
+	another to finish, they can use asyncoro's Condition variable
+	(see below) so first coroutine waits on the condition variable
+	(with 'yield') and finishing coroutine notifies the variable.
 	</li>
       </ul>
     </li>
@@ -261,6 +265,34 @@ coroutines).
     (counterpart to sendall), send_msg prefixes the given buffer with
     the length so that receiving side knows exactly how many bytes to
     read, and recv_msg recieves full message from send_msg.
+    </li>
+  <li>
+    <b>AsynCoroThreadPool</b> can be used to schedule synchronous,
+    time consuming operations with a pool of threads for asynchronous
+    completions (similar to sockets). A new thread pool can be created
+    with <tt>AsynCoroThreadPool(num_threads)</tt>.  It provides three
+    methods:
+    <ul>
+      <li><b>add_task</b>(coro, func, *args, **kwargs)
+	schedules <tt>func</tt> with arguments <tt>args</tt> and
+	keyword arguments <tt>kwargs</tt> with the thread pool. This
+	method suspends the calling coroutine <tt>coro</tt>, so it
+	must be used with 'yield'. Once the task is
+	complete, <tt>coro</tt> is resumed with the return value
+	from <tt>func</tt>. Thus, in a coroutine <tt>coro</tt>, the
+	statement
+	<tt>v = yield thread_pool.add_task(coro, f, 1)</tt> executes
+	function <tt>f(1)</tt> in a thread and its return value is set
+	to <tt>v</tt>
+      </li>
+      <li><b>join()</b> method waits for all scheduled tasks to be
+	completed. More tasks can be added if necessary.
+      </li>
+      <li><b>terminate()</b> method waits for all scheduled tasks to be
+	completed and terminates the threads. Tasks added later will
+	not be executed.
+      </li>
+    </ul>
     </li>
   <li>
     <p>
@@ -303,40 +335,12 @@ def db_proc(cursor, stmt, coro=None):
       </p>
     </li>
   <li>
-    <b>AsynCoroThreadPool</b> can be used to schedule synchronous,
-    time consuming operations with a pool of threads for asynchronous
-    completions (similar to sockets). A new thread pool can be created
-    with <tt>AsynCoroThreadPool(num_threads)</tt>.  It provides three
-    methods:
-    <ul>
-      <li><b>add_task</b>(coro, func, *args, **kwargs)
-	schedules <tt>func</tt> with arguments <tt>args</tt> and keyword
-	arguments <tt>kwargs</tt> with the thread pool. This method
-	suspends the calling coroutine <tt>coro</tt>, so it must be used
-	with 'yield'. Once the task is complete, <tt>coro</tt> is
-	resumed with the return value from <tt>func</tt>. Thus,
-
-	<code>thread_pool = AsynCoroThreadPool(3)
-v = yield thread_pool.add_task(coro, f, 1)</code>
-	executes function <tt>f(1)</tt> in a thread and its return
-	value is set to <tt>v</tt>.
-      </li>
-      <li><b>join</b> method waits for all scheduled tasks to be
-	completed. More tasks can be added if necessary.
-      </li>
-      <li><b>terminate</b> method waits for all scheduled tasks to be
-	completed and terminates the threads. Tasks added later will
-	not be executed.
-      </li>
-    </ul>
-    </li>
-  <li>
     asyncoro provides <b>Lock</b>, <b>Condition</b>, <b>Event</b>
     and <b>Semaphore</b> primitives. They are similar to versions in
     threading module. Any blocking operaitons on these primitives must
     be called with 'yield' appropriately. For example, acquiring a
-    semaphore may block, so it should be invoked as <tt>yield
-    sem.acquire()</tt>. Similarly, Event's wait method and Condition's
+    semaphore may block, so it should be invoked as
+    <tt>yield sem.acquire()</tt>. Similarly, Event's wait method and Condition's
     wait method must be used as
     <tt>yield event.wait()</tt> or <tt>yield
     condition.wait()</tt>. For example, Condition variable cv in a

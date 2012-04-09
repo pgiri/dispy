@@ -1639,7 +1639,7 @@ class Coro(object):
             return -1
 
     def value(self):
-        """Get 'return' value of coro.
+        """Get last value 'yield'ed by coro.
 
         NB: This method should _not_ be called from a coroutine! This
         method is meant for main thread in the user program to wait for
@@ -1647,13 +1647,6 @@ class Coro(object):
 
         Once coroutine stops (finishes) executing, the last value
         yielded by it is returned.
-
-        If waiting for one coro from another is needed, there are
-        multiple approaches: If one coro starts another, then caller can
-        'yield' to the generator instead of creating coro. If coros are
-        conccurrent, they can use CoroCondition variable so coro being
-        waited on uses .notify on that variable and the coro waiting on
-        uses .wait on that variable (see CoroCondition).
         """
         self._complete.wait()
         return self._value
@@ -1677,23 +1670,24 @@ class Lock(object):
 
     Since a coroutine runs until 'yield', there is no need for lock. The
     caller has to guarantee that 'yield' statement is not used from when
-    lock is acquired and till when lock is released.
+    lock is acquired till when lock is released.
     """
     def __init__(self):
         self._owner = None
         self._asyncoro = AsynCoro.instance()
 
     def acquire(self):
-        owner = self._asyncoro.cur_coro()
-        assert self._owner == None, '"%s"/%s: lock owned by "%s"/%s' % \
-               (owner.name, owner._id, self._owner.name, self._owner._id)
-        self._owner = owner
+        coro = self._asyncoro.cur_coro()
+        if self._owner != None:
+            raise RuntimeError('"%s"/%s: lock owned by "%s"/%s' % \
+                               (coro.name, coro._id, self._owner.name, self._owner._id))
+        self._owner = coro
 
     def release(self):
-        owner = self._asyncoro.cur_coro()
-        assert self._owner == owner and owner is not None, \
-               '"%s"/%s: invalid lock release - owned by "%s"/%s' % \
-               (owner.name, owner._id, self._owner.name, self._owner._id)
+        coro = self._asyncoro.cur_coro()
+        if self._owner != coro:
+            raise RuntimeError('"%s"/%s: invalid lock release - owned by "%s"/%s' % \
+                               (coro.name, coro._id, self._owner.name, self._owner._id))
         self._owner = None
 
 class Condition(object):
@@ -2175,14 +2169,12 @@ class AsynCoroThreadPool(object):
         @args and @kwargs are arguments and keyword arguments passed
         to @func.
 
-        This method returns whatever func(*args, **kwargs) returns.
+        This call effectively returns whatever func(*args, **kwargs) returns.
         """
         if not isinstance(coro, Coro):
-            logging.warning('invalid usage: first argument to add_task must be coroutine')
-            return
+            raise RuntimeError('invalid usage: first argument to add_task must be coroutine')
         if not(inspect.isfunction(func) or inspect.ismethod(func)):
-            logging.warning('invalid usage: second argument to add_task must be function or method')
-            return
+            raise RuntimeError('invalid usage: second argument to add_task must be function or method')
         coro.suspend()
         self._task_queue.put((coro, func, args, kwargs))
 
@@ -2227,24 +2219,24 @@ class AsynCoroDBCursor(object):
     def execute(self, query, args=None):
         """Must be used with 'yield'.
         """
-        coro = self._asyncoro.cur_coro()
         yield self._sem.acquire()
+        coro = self._asyncoro.cur_coro()
         self._thread_pool.add_task(coro, self._exec_task,
                                    functools.partial(self._cursor.execute, query, args))
 
     def executemany(self, query, args):
         """Must be used with 'yield'.
         """
-        coro = self._asyncoro.cur_coro()
         yield self._sem.acquire()
+        coro = self._asyncoro.cur_coro()
         self._thread_pool.add_task(coro, self._exec_task,
                                    functools.partial(self._cursor.executemany, query, args))
 
     def callproc(self, proc, args=()):
         """Must be used with 'yield'.
         """
-        coro = self._asyncoro.cur_coro()
         yield self._sem.acquire()
+        coro = self._asyncoro.cur_coro()
         self._thread_pool.add_task(coro, self._exec_task,
                                    functools.partial(self._cursor.callproc, proc, args))
         
