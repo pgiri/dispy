@@ -1,5 +1,5 @@
-# asyncoro: Sockets with asynchronous I/O and coroutines;
-# see accompanying 'asyncoro.html' for more details.
+# asyncoro: Framework for asynchronous, concurrent programming with
+# coroutines; see accompanying 'asyncoro.html' for more details.
 
 # Copyright (C) 2012 Giridhar Pemmasani (pgiri@yahoo.com)
 
@@ -17,15 +17,6 @@
 
 # You should have received a copy of the GNU Lesser General Public License
 # along with dispy.  If not, see <http://www.gnu.org/licenses/>.
-
-"""
-AsynCoro and associated classes in this file provide a framework for
-developing concurrent programs with asynchronous I/O for sockets and
-coroutines. With efficient polling mechanisms epoll, kqueue, /dev/poll
-and Windows I/O Completion Ports (IOCP) used by asyncoro, applications
-using asyncoro will be highly scalable. See
-http://dispy.sourceforge.net/asyncoro.html for more details.
-"""
 
 import time
 import threading
@@ -77,14 +68,16 @@ class _AsynCoroSocket(object):
                  ssl_version=ssl.PROTOCOL_SSLv23):
         """Setup socket for use wih asyncoro.
 
-        blocking=True implies synchronous sockets and blocking=False
+        @blocking=True implies synchronous sockets and blocking=False
         implies asynchronous sockets.
 
-        keyfile, certfile and ssl_version are as per ssl's wrap_socket
+        @keyfile, @certfile and @ssl_version are as per ssl's wrap_socket
         method.
 
-        Only methods should be used; other attributes are for internal
-        use only.
+        Only methods without leading underscore should be used; other
+        attributes are for internal use only. In addition to usual
+        socket I/O methods, AsynCoroSocket implemnents 'recvall',
+        'send_msg', 'recv_msg' and 'unwrap' methods.
         """
 
         if isinstance(sock, AsynCoroSocket):
@@ -137,33 +130,37 @@ class _AsynCoroSocket(object):
             for name in ['recv', 'send', 'recvfrom', 'sendto', 'accept', 'connect']:
                 setattr(self, name, getattr(self._rsock, name))
             if self._rsock.type & socket.SOCK_STREAM:
-                self.recvall = self.sync_recvall
-                self.sendall = self.sync_sendall
-                self.recv_msg = self.sync_recv_msg
-                self.send_msg = self.sync_send_msg
+                self.recvall = self._sync_recvall
+                self.sendall = self._sync_sendall
+                self.recv_msg = self._sync_recv_msg
+                self.send_msg = self._sync_send_msg
             self._asyncoro = None
             self._notifier = None
         else:
             self._rsock.setblocking(0)
-            self.recv = self.async_recv
-            self.send = self.async_send
-            self.recvfrom = self.async_recvfrom
-            self.sendto = self.async_sendto
-            self.accept = self.async_accept
-            self.connect = self.async_connect
+            self.recv = self._async_recv
+            self.send = self._async_send
+            self.recvfrom = self._async_recvfrom
+            self.sendto = self._async_sendto
+            self.accept = self._async_accept
+            self.connect = self._async_connect
             if self._rsock.type & socket.SOCK_STREAM:
-                self.recvall = self.async_recvall
-                self.sendall = self.async_sendall
-                self.recv_msg = self.async_recv_msg
-                self.send_msg = self.async_send_msg
+                self.recvall = self._async_recvall
+                self.sendall = self._async_sendall
+                self.recv_msg = self._async_recv_msg
+                self.send_msg = self._async_send_msg
             self._asyncoro = AsynCoro.instance()
             self._notifier = _AsyncNotifier.instance()
             self._register()
 
     def _register(self):
+        """Internal use only.
+        """
         self._notifier.register(self)
 
     def _unregister(self):
+        """Internal use only.
+        """
         if self._notifier:
             if self._timeout_id:
                 self._notifier._del_timeout(self)
@@ -243,8 +240,10 @@ class _AsynCoroSocket(object):
         if self._coro:
             self._coro.throw(socket.timeout('timed out'))
 
-    def async_recv(self, bufsize, *args):
-        """Asynchronous version of socket recv method.
+    def _async_recv(self, bufsize, *args):
+        """Internal use only; use 'recv' with 'yield' instead.
+
+        Asynchronous version of socket recv method.
         """
         def _recv(self, bufsize, *args):
             try:
@@ -279,8 +278,10 @@ class _AsynCoroSocket(object):
         self._coro.suspend()
         self._notifier.modify(self, _AsyncPoller._Readable)
 
-    def async_recvall(self, bufsize, *args):
-        """Receive exactly bufsize bytes.
+    def _async_recvall(self, bufsize, *args):
+        """Internal use only; use 'recvall' with 'yield' instead.
+
+        Receive exactly bufsize bytes.
         """
         def _recvall(self, view, *args):
             try:
@@ -332,8 +333,10 @@ class _AsynCoroSocket(object):
         self._coro.suspend()
         self._notifier.modify(self, _AsyncPoller._Readable)
 
-    def sync_recvall(self, bufsize, *args):
-        """Synchronous version of async_recvall.
+    def _sync_recvall(self, bufsize, *args):
+        """Internal use only; use 'recvall' instead.
+
+        Synchronous version of async_recvall.
         """
         self._result = bytearray(bufsize)
         view = memoryview(self._result)
@@ -348,8 +351,10 @@ class _AsynCoroSocket(object):
         self._result = None
         return buf
 
-    def async_recvfrom(self, *args):
-        """Asynchronous version of socket recvfrom method.
+    def _async_recvfrom(self, *args):
+        """Internal use only; use 'recvfrom' with 'yield' instead.
+
+        Asynchronous version of socket recvfrom method.
         """
         def _recvfrom(self, *args):
             try:
@@ -370,8 +375,10 @@ class _AsynCoroSocket(object):
         self._coro.suspend()
         self._notifier.modify(self, _AsyncPoller._Readable)
 
-    def async_send(self, *args):
-        """Asynchronous version of socket send method.
+    def _async_send(self, *args):
+        """Internal use only; use 'send' with 'yield' instead.
+
+        Asynchronous version of socket send method.
         """
         def _send(self, *args):
             try:
@@ -392,8 +399,10 @@ class _AsynCoroSocket(object):
         self._coro.suspend()
         self._notifier.modify(self, _AsyncPoller._Writable)
 
-    def async_sendto(self, *args):
-        """Asynchronous version of socket sendto method.
+    def _async_sendto(self, *args):
+        """Internal use only; use 'sendto' with 'yield' instead.
+
+        Asynchronous version of socket sendto method.
         """
         def _sendto(self, *args):
             try:
@@ -414,8 +423,10 @@ class _AsynCoroSocket(object):
         self._coro.suspend()
         self._notifier.modify(self, _AsyncPoller._Writable)
 
-    def async_sendall(self, data):
-        """Send all the data.
+    def _async_sendall(self, data):
+        """Internal use only; use 'sendall' with 'yield' instead.
+
+        Asynchronous version of socket sendall method.
         """
         def _sendall(self):
             try:
@@ -440,8 +451,10 @@ class _AsynCoroSocket(object):
         self._coro.suspend()
         self._notifier.modify(self, _AsyncPoller._Writable)
 
-    def sync_sendall(self, data):
-        """Synchronous version of async_sendall.
+    def _sync_sendall(self, data):
+        """Internal use only; use 'sendall' instead.
+
+        Synchronous version of async_sendall.
         """
         # TODO: is socket's sendall better?
         buf = memoryview(data)
@@ -451,9 +464,12 @@ class _AsynCoroSocket(object):
                 buf = buf[sent:]
         return 0
 
-    def async_accept(self):
-        """Asynchronous version of socket accept method. Socket in
-        returned pair is AsynCoroSocket.
+    def _async_accept(self):
+        """Internal use only; use 'accept' with 'yield' instead.
+
+        Asynchronous version of socket accept method. Socket in
+        returned pair is asynchronous socket (instance of
+        AsynCoroSocket with blocking=False).
         """
         def _accept(self):
             conn, addr = self._rsock.accept()
@@ -496,8 +512,10 @@ class _AsynCoroSocket(object):
         self._coro.suspend()
         self._notifier.modify(self, _AsyncPoller._Readable)
 
-    def async_connect(self, *args):
-        """Asynchronous version of socket connect method.
+    def _async_connect(self, *args):
+        """Internal use only; use 'connect' with 'yield' instead.
+
+        Asynchronous version of socket connect method.
         """
         def _connect(self, *args):
             err = self._rsock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
@@ -545,46 +563,54 @@ class _AsynCoroSocket(object):
                 raise
         self._notifier.modify(self, _AsyncPoller._Writable)
 
-    def async_send_msg(self, data):
-        """Messages are tagged with length of the data, so on the
+    def _async_send_msg(self, data):
+        """Internal use only; use 'send_msg' with 'yield' instead.
+
+        Messages are tagged with length of the data, so on the
         receiving side, recv_msg knows how much data to receive.
         """
-        yield self.sendall(struct.pack('>L', len(data)) + data)
+        yield self._async_sendall(struct.pack('>L', len(data)) + data)
 
-    def sync_send_msg(self, data):
-        """Synchronous version of async_send_msg.
+    def _sync_send_msg(self, data):
+        """Internal use only; use 'send_msg' instead.
+
+        Synchronous version of async_send_msg.
         """
-        return self.sync_sendall(struct.pack('>L', len(data)) + data)
+        return self._sync_sendall(struct.pack('>L', len(data)) + data)
 
-    def async_recv_msg(self):
-        """Message is tagged with length of the payload (data). This
+    def _async_recv_msg(self):
+        """Internal use only; use 'recv_msg' with 'yield' instead.
+
+        Message is tagged with length of the payload (data). This
         method receives length of payload, then the payload and
         returns the payload.
         """
         n = struct.calcsize('>L')
-        data = yield self.recvall(n)
+        data = yield self._async_recvall(n)
         if len(data) < n:
             logging.error('Socket disconnected?(%s, %s)', len(data), n)
             yield None
         n = struct.unpack('>L', data)[0]
         assert n > 0
-        data = yield self.recvall(n)
+        data = yield self._async_recvall(n)
         if len(data) < n:
             logging.error('Socket disconnected?(%s, %s)', len(data), n)
             yield None
         yield data
 
-    def sync_recv_msg(self):
-        """Synchronous version of async_recv_msg.
+    def _sync_recv_msg(self):
+        """Internal use only; use 'recv_msg' instead.
+
+        Synchronous version of async_recv_msg.
         """
         n = struct.calcsize('>L')
-        data = self.sync_recvall(n)
+        data = self._sync_recvall(n)
         if len(data) < n:
             logging.error('Socket disconnected?(%s, %s)', len(data), n)
             return None
         n = struct.unpack('>L', data)[0]
         assert n > 0
-        data = self.sync_recvall(n)
+        data = self._sync_recvall(n)
         if len(data) < n:
             logging.error('Socket disconnected?(%s, %s)', len(data), n)
             return None
@@ -897,7 +923,8 @@ if platform.system() == 'Windows':
 
         class AsynCoroSocket(_AsynCoroSocket):
             """AsynCoroSocket with I/O Completion Ports (under
-            Windows). UDP traffic is handled by _AsyncPoller.
+            Windows). See _AsynCoroSocket above for more details.  UDP
+            traffic is handled by _AsyncPoller.
             """
             def __init__(self, *args, **kwargs):
                 self._overlap = None
@@ -926,18 +953,20 @@ if platform.system() == 'Windows':
             def setblocking(self, blocking):
                 _AsynCoroSocket.setblocking(self, blocking)
                 if not self._blocking and self._rsock.type & socket.SOCK_STREAM:
-                    self.recv = self.iocp_recv
-                    self.send = self.iocp_send
-                    self.recvall = self.iocp_recvall
-                    self.sendall = self.iocp_sendall
-                    self.connect = self.iocp_connect
-                    self.accept = self.iocp_accept
+                    self.recv = self._iocp_recv
+                    self.send = self._iocp_send
+                    self.recvall = self._iocp_recvall
+                    self.sendall = self._iocp_sendall
+                    self.connect = self._iocp_connect
+                    self.accept = self._iocp_accept
 
             def _timed_out(self):
                 if self._coro:
                     self._coro.throw(socket.timeout('timed out'))
 
-            def iocp_recv(self, bufsize, *args):
+            def _iocp_recv(self, bufsize, *args):
+                """Internal use only; use 'recv' with 'yield' instead.
+                """
                 def _recv(self, err, n):
                     if self._timeout and self._notifier:
                         self._notifier._del_timeout(self)
@@ -966,7 +995,9 @@ if platform.system() == 'Windows':
                 if err and err != winerror.ERROR_IO_PENDING:
                     raise socket.error(err)
 
-            def iocp_send(self, buf, *args):
+            def _iocp_send(self, buf, *args):
+                """Internal use only; use 'send' with 'yield' instead.
+                """
                 def _send(self, err, n):
                     if self._timeout and self._notifier:
                         self._notifier._del_timeout(self)
@@ -993,7 +1024,9 @@ if platform.system() == 'Windows':
                 if err and err != winerror.ERROR_IO_PENDING:
                     raise socket.error(err)
 
-            def iocp_recvall(self, bufsize, *args):
+            def _iocp_recvall(self, bufsize, *args):
+                """Internal use only; use 'recvall' with 'yield' instead.
+                """
                 def _recvall(self, pending, buf, err, n):
                     if err or n == 0:
                         if self._timeout and self._notifier:
@@ -1038,7 +1071,9 @@ if platform.system() == 'Windows':
                 if err and err != winerror.ERROR_IO_PENDING:
                     raise socket.error(err)
 
-            def iocp_sendall(self, data):
+            def _iocp_sendall(self, data):
+                """Internal use only; use 'sendall' with 'yield' instead.
+                """
                 def _sendall(self, err, n):
                     if err or n == 0:
                         if self._timeout and self._notifier:
@@ -1078,7 +1113,9 @@ if platform.system() == 'Windows':
                 if err and err != winerror.ERROR_IO_PENDING:
                     raise socket.error(err)
 
-            def iocp_connect(self, host_port):
+            def _iocp_connect(self, host_port):
+                """Internal use only; use 'connect' with 'yield' instead.
+                """
                 def _connect(self, err, n):
                     def _ssl_handshake(self, err, n):
                         try:
@@ -1147,7 +1184,11 @@ if platform.system() == 'Windows':
                 if err and err != winerror.ERROR_IO_PENDING:
                     raise socket.error(err)
 
-            def iocp_accept(self):
+            def _iocp_accept(self):
+                """Internal use only; use 'accept' with 'yield'
+                instead. Socket in returned pair is asynchronous
+                socket (instance of AsynCoroSocket with blocking=False).
+                """
                 def _accept(self, conn, err, n):
                     def _ssl_handshake(self, conn, addr, err, n):
                         try:

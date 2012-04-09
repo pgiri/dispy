@@ -45,7 +45,7 @@ import Queue as queue
 import asyncoro
 from asyncoro import Coro, AsynCoro, AsynCoroSocket, MetaSingleton
 
-_dispy_version = '2.7'
+_dispy_version = '2.8'
 
 class DispyJob(object):
     """Job scheduled for execution with dispy.
