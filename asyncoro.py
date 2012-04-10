@@ -2199,25 +2199,28 @@ class AsynCoroThreadPool(object):
             finally:
                 self._task_queue.task_done()
 
-    def add_task(self, coro, func, *args, **kwargs):
+    def async_task(self, coro, target, *args, **kwargs):
         """Must be used with 'yield'.
 
         @coro is coroutine where this method is called. 
 
-        @func is function that will be executed asynchronously in a
-        thread.
+        @target is function/method that will be executed
+          asynchronously in a thread.
 
         @args and @kwargs are arguments and keyword arguments passed
-        to @func.
+          to @target.
 
-        This call effectively returns whatever func(*args, **kwargs) returns.
+        This call effectively returns whatever target(*args, **kwargs) returns.
         """
-        if not isinstance(coro, Coro):
-            raise RuntimeError('invalid usage: first argument to add_task must be coroutine')
-        if not(inspect.isfunction(func) or inspect.ismethod(func)):
-            raise RuntimeError('invalid usage: second argument to add_task must be function or method')
+
+        if not(inspect.isfunction(target) or inspect.ismethod(target)):
+            raise RuntimeError('invalid usage: "target" must be function or method')
+        # if arguments are passed as per Thread call, get args and kwargs
+        if not args and kwargs:
+            args = kwargs.pop('args', ())
+            kwargs = kwargs.pop('kwargs', kwargs)
         coro.suspend()
-        self._task_queue.put((coro, func, args, kwargs))
+        self._task_queue.put((coro, target, args, kwargs))
 
     def join(self):
         """Wait till all scheduled tasks are completed.
@@ -2252,8 +2255,7 @@ class AsynCoroDBCursor(object):
 
     def _exec_task(self, func):
         try:
-            retval = func()
-            return retval
+            return func()
         finally:
             self._sem.release()
 
@@ -2262,24 +2264,24 @@ class AsynCoroDBCursor(object):
         """
         yield self._sem.acquire()
         coro = self._asyncoro.cur_coro()
-        self._thread_pool.add_task(coro, self._exec_task,
-                                   functools.partial(self._cursor.execute, query, args))
+        self._thread_pool.async_task(coro, self._exec_task,
+                                     functools.partial(self._cursor.execute, query, args))
 
     def executemany(self, query, args):
         """Must be used with 'yield'.
         """
         yield self._sem.acquire()
         coro = self._asyncoro.cur_coro()
-        self._thread_pool.add_task(coro, self._exec_task,
-                                   functools.partial(self._cursor.executemany, query, args))
+        self._thread_pool.async_task(coro, self._exec_task,
+                                     functools.partial(self._cursor.executemany, query, args))
 
     def callproc(self, proc, args=()):
         """Must be used with 'yield'.
         """
         yield self._sem.acquire()
         coro = self._asyncoro.cur_coro()
-        self._thread_pool.add_task(coro, self._exec_task,
-                                   functools.partial(self._cursor.callproc, proc, args))
+        self._thread_pool.async_task(coro, self._exec_task,
+                                     functools.partial(self._cursor.callproc, proc, args))
         
 # initialize AsynCoro so all components are setup correctly
 scheduler = AsynCoro()
