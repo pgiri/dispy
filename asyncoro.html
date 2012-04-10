@@ -6,15 +6,14 @@
     <meta name="description" content="Python module for distributing computations across multiple processors on a single machine, among many machines in a cluster, grid or cloud. The computations can be standalone programs or python functions." /> 
     <meta name="keywords" content="dispy, python, parallel processing, distributed computing, cluster computing" /> 
     <title> 
-      SourceForge.net: dispy - Project Web Hosting - Open Source Software
+      asyncoro - Framework for Asynchronous, Concurrent Programming
     </title> 
 
 <link rel="stylesheet" type="text/css" href="style.css" />
  
   </head> 
   <body> 
-    <small><a href="http://sourceforge.net/projects/dispy/">dispy</a>:  Project Web Hosting - Open Source Software</small> 
-    <h1>dispy</h1> 
+    <center><h4>asyncoro : Framework for Asynchronous, Concurrent Programming</h4></center>
     <div id="content-mask">
       <div id="content-container"> 
 	<div id="content-menu">
@@ -41,11 +40,11 @@
   asyncoro, part of
   <a href="http://sourceforge.net/projects/dispy/files">dispy</a>
   package, is a framework for developing concurrent programs with
-  asynchronous completions and coroutines. Asynchronous completions
-  currently implemented in asyncoro are socket I/O operations,
-  database cursors, sleep timers, (conditional) event notification and
-  semaphores.  The coroutines should use 'yield' with these
-  completions. Each yield statement gives control to asyncoro's
+  asynchronous completions and coroutines in Python. Asynchronous
+  completions currently implemented in asyncoro are socket I/O
+  operations, database cursors, sleep timers, (conditional) event
+  notification and semaphores.  The coroutines should use 'yield' with
+  these completions. Each yield statement gives control to asyncoro's
   scheduler, which interleaves executions of coroutines, similar to
   the way an operating system executes multiple processes. Programs
   developed with asyncoro will have same logic as python progorams
@@ -274,15 +273,15 @@ coroutines).
     with <tt>AsynCoroThreadPool(num_threads)</tt>.  It provides three
     methods:
     <ul>
-      <li><b>add_task</b>(coro, func, *args, **kwargs)
-	schedules <tt>func</tt> with arguments <tt>args</tt> and
+      <li><b>async_task</b>(coro, target, *args, **kwargs)
+	schedules <tt>target</tt> with arguments <tt>args</tt> and
 	keyword arguments <tt>kwargs</tt> with the thread pool. This
 	method suspends the calling coroutine <tt>coro</tt>, so it
 	must be used with 'yield'. Once the task is
 	complete, <tt>coro</tt> is resumed with the return value
-	from <tt>func</tt>. Thus, in a coroutine <tt>coro</tt>, the
+	from <tt>target</tt>. Thus, in a coroutine <tt>coro</tt>, the
 	statement
-	<tt>v = yield thread_pool.add_task(coro, f, 1)</tt> executes
+	<tt>v = yield thread_pool.async_task(coro, f, 1)</tt> executes
 	function <tt>f(1)</tt> in a thread and its return value is set
 	to <tt>v</tt>
       </li>
@@ -325,6 +324,7 @@ for x in range(num_threads):
     async_cursors.append(asyncoro.AsynCoroDBCursor(thread_pool, cursor))
 
 coros = []
+# 3 cursors are used in 10 coroutines
 for x, cursor in itertools.izip(xrange(10), itertools.cycle(async_cursors)):
     coros.append(asyncoro.Coro(db_proc, cursor, stmt))
 
@@ -356,7 +356,7 @@ def db_proc(cursor, stmt, coro=None):
 
     'yield' is used when releasing a lock to be cooperative with other
     coroutines that might be waiting for their turn to
-    execute. Technically, locking is not required, as there is no
+    execute.<br/> Technically, locking is not required, as there is no
     forced preemption with coroutines and at most one coroutine is
     executing at anytime. Currently the locking and unlocking
     opertions simply assert that 'yield' is not used between lock and
@@ -368,9 +368,9 @@ def db_proc(cursor, stmt, coro=None):
     appealing to not worry about locking at all with asyncoro.
     </li>
   <li>
-    Within a coroutine, generator functions (that are not coroutines)
-    must be called with 'yield' statement. If 'g' is a generator
-    function, it should be called with <tt>v = yield g()</tt>.
+    Within a coroutine, generator functions must be called with
+    'yield' statement: If 'g' is a generator function, it should be
+    called as <tt>v = yield g()</tt>.
     </li>
   </ul>
 

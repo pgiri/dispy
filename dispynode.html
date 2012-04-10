@@ -6,15 +6,14 @@
     <meta name="description" content="Python module for distributing computations across multiple processors on a single machine, among many machines in a cluster, grid or cloud. The computations can be standalone programs or python functions." /> 
     <meta name="keywords" content="dispy, python, parallel processing, distributed computing, cluster computing" /> 
     <title> 
-      SourceForge.net: dispy - Project Web Hosting - Open Source Software
+      dispy - Distribute Computations and Execute them in Parallel
     </title> 
 
 <link rel="stylesheet" type="text/css" href="style.css" />
 
   </head> 
   <body> 
-    <small><a href="http://sourceforge.net/projects/dispy/">dispy</a>:  Project Web Hosting - Open Source Software</small> 
-    <h1>dispy</h1> 
+    <center><h4>dispy : Distribute Computations and Execute them in Parallel</h4></center>
     <div id="content-mask">
       <div id="content-container"> 
 	<div id="content-menu">
@@ -35,22 +34,23 @@
 
 	<div id="content-wrap"> 
 	  <div id="content"> 
-        <h2> 
-          dispynode
-        </h2> 
+        <center><h2>dispynode</h2></center>
 <p>
-  dispynode runs on each of the nodes in a cluster and executes jobs
-  for dispy clients (and dispyscheduler in case of SharedJobCluster).
+  dispynode should be running on each of the nodes in a cluster. It
+  executes jobs for dispy clients (and dispyscheduler in case of
+  SharedJobCluster).
 </p>
 
-<p>Below are various options to invoking dispynode:
+<p>Below are various options to invoke dispynode:
   </p>
   <ul>
     <li><tt>-c n</tt> or <tt>--cpus=n</tt> sets the number of
     processing units to <tt>n</tt>. Without this option, dispynode
     will use all the processing units available on that
-    node. <tt>n</tt> must be at least 1 and at most number of
-    processing units on that node.</li>
+    node. If <tt>n</tt> is positive, it must be at least 1 and at most
+    number of processing units on that node. If <tt>n</tt> is
+    negative, then that many processing units are not used by
+    dispynode.</li>
     <li><tt>-i addr</tt> or <tt>--ip_addr=addr</tt> directs dispynode
     to use given <tt>addr</tt> for communication, instead of the IP
     address associated with the host name.</li>
@@ -89,9 +89,9 @@
     <li><tt>--zombie_interval=n</tt> indicates dispynode to assume a
     scheduler is a zombie if there is no communication from it for 'n'
     <strong>minutes</strong>. dispynode doesn't terminate jobs
-    submitted by that scheduler; instead, when all the jobs scheduled
-    are completed, the node frees itself from that scheduler so other
-    schedulers may use the node.</li>
+    submitted by a zombie scheduler; instead, when all the jobs
+    scheduled are completed, the node frees itself from that scheduler
+    so other schedulers may use the node.</li>
     <li><tt>-d</tt> enables debug messages that show trace of
     execution. This may not be very useful to end users.</li>
 </ul>

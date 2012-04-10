@@ -6,15 +6,14 @@
     <meta name="description" content="Python module for distributing computations across multiple processors on a single machine, among many machines in a cluster, grid or cloud. The computations can be standalone programs or python functions." /> 
     <meta name="keywords" content="dispy, python, parallel processing, distributed computing, cluster computing" /> 
     <title> 
-      SourceForge.net: dispy - Project Web Hosting - Open Source Software
+      dispy - Distribute Computations and Execute them in Parallel
     </title> 
 
 <link rel="stylesheet" type="text/css" href="style.css" />
  
   </head> 
   <body> 
-    <small><a href="http://sourceforge.net/projects/dispy/">dispy</a>:  Project Web Hosting - Open Source Software</small> 
-    <h1>dispy</h1> 
+    <center><h4>dispy : Distribute Computations and Execute them in Parallel</h4></center>
     <div id="content-mask">
       <div id="content-container"> 
 	<div id="content-menu">
@@ -35,15 +34,14 @@
 
 	<div id="content-wrap"> 
 	  <div id="content"> 
-<h2> 
-  dispynetrelay
-</h2> 
+<center><h2>dispynetrelay</h2></center>
 <p>
-  dispynetrelay relays information about nodes on its network to the scheduler.
+  dispynetrelay relays information about nodes on its network to dispy
+  scheduler(s).
   </p>
 
 <p>
-  If scheduler and nodes are on same network, dispynetrelay is not
+  If dispy scheduler and nodes are on same network, dispynetrelay is not
   needed. If they are not, then there are two choices to use nodes on
   a different network:
   </p>
@@ -53,7 +51,12 @@
     cumbersome if there are many nodes on different network(s).</li>
     <li>dispynetrelay is running on one node per network. In this
     case, dispynetrelay recognizes nodes on its network and relays
-    that information to scheduler.</li>
+    that information to dispy scheduler. In this case, 'nodes' option
+    to dispy client need to specify only the node(s) running
+    dispynetrelay - all the nodes in that network can then be used by
+    dispy. Note that 'nodes' option is also used to filter matching
+    nodes, so '*' may be added to the 'nodes' option to use all
+    nodes.</li>
   </ul>
 
 <p>Below are various options to invoking dispynetrelay:

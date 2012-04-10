@@ -6,16 +6,14 @@
     <meta name="description" content="Python module for distributing computations across multiple processors on a single machine, among many machines in a cluster, grid or cloud. The computations can be standalone programs or python functions." /> 
     <meta name="keywords" content="dispy, python, parallel processing, parallel computing, distributed computing, cluster computing" /> 
     <title> 
-      dispy - distribute computations and execute them in parallel
+      dispy - Distribute Computations and Execute them in Parallel
     </title> 
 
 <link rel="stylesheet" type="text/css" href="style.css" />
 
   </head> 
   <body> 
-    <small><a href="http://sourceforge.net/projects/dispy/">dispy</a>:
-      Project Web Hosting - Open Source Software</small>
-    <center><h1>dispy</h1></center>
+    <center><h4>dispy : Distribute Computations and Execute them in Parallel</h4></center>
     <div id="content-mask">
       <div id="content-container"> 
 	<div id="content-menu">
@@ -36,9 +34,7 @@
 
 	<div id="content-wrap"> 
 	  <div id="content"> 
-<h3>
-  dispy
-</h3>
+<center><h2>dispy</h2></center>
 <p>
 dispy is a framework, developed
 in <a href="http://www.python.org">Python</a>, for parallel execution
@@ -90,14 +86,12 @@ independently. Salient features of dispy are:
     (with <tt>ShareJobCluster</tt>
     and <a href="dispyscheduler.html">dispyscheduler</a>).</li>
 
-<li>dispy is implemented with <a href="asyncoro.html">asyncoro</a>, a
-framework for asynchronous sockets and coroutines (without threads),
-using polling mechanisms epoll, kqueue and poll, and Windows I/O
-Completion Ports (IOCP) for high performance and scalability, so dispy
-scales well from a single node to large cluster(s) of
-nodes. <a href="asyncoro.html">asyncoro</a> framework can be used
-independently of dispy to develop programs with asynchronous sockets
-and coroutines.</li>
+<li>dispy is implemented with <a href="asyncoro.html">asyncoro</a>, an
+independent framework for asynchronous, concurrent programming with
+coroutines (without threads). asyncoro uses socket I/O notification
+mechanisms epoll, kqueue and poll, and Windows I/O Completion Ports
+(IOCP) for high performance and scalability, so dispy scales well from
+a single node to large cluster(s) of nodes.</li>
   </ul>
 <p>
 dispy consists of 4 components:
@@ -123,7 +117,7 @@ dispy consists of 4 components:
   same network, there is no need for dispynetrelay - the scheduler and
   nodes automatically discover each other.</li>
 </ol>
- dispy has been tested with Python 2.7 on Linux, OS X and Windows.
+ dispy has been tested with Python versions 2.7 and 3.2 on Linux, OS X and Windows.
 
         <h3> 
           Quick Guide
@@ -148,7 +142,9 @@ parallelizing on an SMP (single node with multiple cores), then start
 'dispynode' on that node (which also runs dispy client).
 </p>
 
-<code>def compute(n):
+<code>#!/usr/bin/env python
+
+def compute(n):
     import time, socket
     time.sleep(n)
     host = socket.gethostname()
