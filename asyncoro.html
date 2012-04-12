@@ -293,6 +293,9 @@ coroutines).
 	not be executed.
       </li>
     </ul>
+    As coroutines run in a separate thread, any variables shared
+    between coroutines and tasks scheduled with thread pool must be
+    protected by thread locking (not coroutine locking).
     </li>
   <li>
     <p>

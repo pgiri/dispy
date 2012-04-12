@@ -156,14 +156,20 @@ class _AsynCoroSocket(object):
     def _register(self):
         """Internal use only.
         """
-        self._notifier.register(self)
+        if self._rsock.type & socket.SOCK_STREAM:
+            # register if socket is connected
+            try:
+                addr = self._rsock.getpeername()
+                # addr is string for AF_UNIX sockets
+                if isinstance(addr, str) or addr[1]:
+                    self._notifier.register(self)
+            except:
+                pass
 
     def _unregister(self):
         """Internal use only.
         """
         if self._notifier:
-            if self._timeout_id:
-                self._notifier._del_timeout(self)
             self._notifier.unregister(self)
             self._notifier = None
 
@@ -474,7 +480,7 @@ class _AsynCoroSocket(object):
         def _accept(self):
             conn, addr = self._rsock.accept()
             self._task = None
-            self._notifier.modify(self, 0)
+            self._notifier.unregister(self)
 
             if self._certfile:
                 def _ssl_handshake(self, conn, addr):
@@ -497,6 +503,7 @@ class _AsynCoroSocket(object):
                         coro.resume((conn, addr))
                 conn = AsynCoroSocket(conn, blocking=False, keyfile=self._keyfile,
                                       certfile=self._certfile, ssl_version=self._ssl_version)
+                conn._notifier.register(conn)
                 conn._rsock = ssl.wrap_socket(conn._rsock, keyfile=self._keyfile, certfile=self._certfile,
                                               server_side=True, do_handshake_on_connect=False,
                                               ssl_version=self._ssl_version)
@@ -505,12 +512,13 @@ class _AsynCoroSocket(object):
             else:
                 coro, self._coro = self._coro, None
                 conn = AsynCoroSocket(conn, blocking=False)
+                conn._notifier.register(conn)
                 coro.resume((conn, addr))
 
         self._task = functools.partial(_accept, self)
         self._coro = self._asyncoro.cur_coro()
         self._coro.suspend()
-        self._notifier.modify(self, _AsyncPoller._Readable)
+        self._notifier.register(self, _AsyncPoller._Readable)
 
     def _async_connect(self, *args):
         """Internal use only; use 'connect' with 'yield' instead.
@@ -561,7 +569,7 @@ class _AsynCoroSocket(object):
         except socket.error as e:
             if e.args[0] not in [EINPROGRESS, EWOULDBLOCK]:
                 raise
-        self._notifier.modify(self, _AsyncPoller._Writable)
+        self._notifier.register(self, _AsyncPoller._Writable)
 
     def _async_send_msg(self, data):
         """Internal use only; use 'send_msg' with 'yield' instead.
@@ -569,7 +577,7 @@ class _AsynCoroSocket(object):
         Messages are tagged with length of the data, so on the
         receiving side, recv_msg knows how much data to receive.
         """
-        yield self._async_sendall(struct.pack('>L', len(data)) + data)
+        yield self.sendall(struct.pack('>L', len(data)) + data)
 
     def _sync_send_msg(self, data):
         """Internal use only; use 'send_msg' instead.
@@ -586,16 +594,12 @@ class _AsynCoroSocket(object):
         returns the payload.
         """
         n = struct.calcsize('>L')
-        data = yield self._async_recvall(n)
-        if len(data) < n:
-            logging.error('Socket disconnected?(%s, %s)', len(data), n)
-            yield None
+        data = yield self.recvall(n)
+        assert len(data) == n
         n = struct.unpack('>L', data)[0]
-        assert n > 0
-        data = yield self._async_recvall(n)
-        if len(data) < n:
-            logging.error('Socket disconnected?(%s, %s)', len(data), n)
-            yield None
+        assert n >= 0
+        data = yield self.recvall(n)
+        assert len(data) == n
         yield data
 
     def _sync_recv_msg(self):
@@ -605,15 +609,11 @@ class _AsynCoroSocket(object):
         """
         n = struct.calcsize('>L')
         data = self._sync_recvall(n)
-        if len(data) < n:
-            logging.error('Socket disconnected?(%s, %s)', len(data), n)
-            return None
+        assert len(data) == n
         n = struct.unpack('>L', data)[0]
-        assert n > 0
+        assert n >= 0
         data = self._sync_recvall(n)
-        if len(data) < n:
-            logging.error('Socket disconnected?(%s, %s)', len(data), n)
-            return None
+        assert len(data) == n
         return data
 
 if platform.system() == 'Windows':
@@ -1463,7 +1463,8 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
                         break
 
         def register(self, fd, event=0):
-            return
+            self._fds[fd._fileno] = fd
+            self._poller.register(fd._fileno, event)
 
         def unregister(self, fd):
             if self._fds.pop(fd._fileno, None) is None:
@@ -1474,11 +1475,7 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
 
         def modify(self, fd, event):
             if event:
-                if fd._fileno in self._fds:
-                    self._poller.modify(fd._fileno, event)
-                else:
-                    self._fds[fd._fileno] = fd
-                    self._poller.register(fd._fileno, event)
+                self._poller.modify(fd._fileno, event)
                 self._add_timeout(fd)
             else:
                 self._del_timeout(fd)
@@ -2173,7 +2170,12 @@ class AsynCoro(object):
         self._complete.wait()
 
 class AsynCoroThreadPool(object):
-    """Schedule synchronous tasks with threads to be executed asynchronously.
+    """Schedule synchronous tasks with threads to be executed
+    asynchronously.
+
+    NB: As coroutines run in a separate thread, any variables shared
+    between coroutines and tasks scheduled with thread pool must be
+    protected by thread locking (not coroutine locking).
     """
     def __init__(self, num_threads):
         self._num_threads = num_threads
@@ -2191,11 +2193,9 @@ class AsynCoroThreadPool(object):
                 break
             coro, func, args, kwargs = item
             try:
-                retval = func(*args, **kwargs)
+                coro.resume(func(*args, **kwargs))
             except:
                 coro.throw(*sys.exc_info())
-            else:
-                coro.resume(retval)
             finally:
                 self._task_queue.task_done()
 
@@ -2282,7 +2282,7 @@ class AsynCoroDBCursor(object):
         coro = self._asyncoro.cur_coro()
         self._thread_pool.async_task(coro, self._exec_task,
                                      functools.partial(self._cursor.callproc, proc, args))
-        
+
 # initialize AsynCoro so all components are setup correctly
 scheduler = AsynCoro()
 del scheduler
