@@ -156,15 +156,7 @@ class _AsynCoroSocket(object):
     def _register(self):
         """Internal use only.
         """
-        if self._rsock.type & socket.SOCK_STREAM:
-            # register if socket is connected
-            try:
-                addr = self._rsock.getpeername()
-                # addr is string for AF_UNIX sockets
-                if isinstance(addr, str) or addr[1]:
-                    self._notifier.register(self)
-            except:
-                pass
+        pass
 
     def _unregister(self):
         """Internal use only.
@@ -503,7 +495,7 @@ class _AsynCoroSocket(object):
                         coro.resume((conn, addr))
                 conn = AsynCoroSocket(conn, blocking=False, keyfile=self._keyfile,
                                       certfile=self._certfile, ssl_version=self._ssl_version)
-                conn._notifier.register(conn)
+                conn._notifier.register(conn, _AsyncPoller._Readable)
                 conn._rsock = ssl.wrap_socket(conn._rsock, keyfile=self._keyfile, certfile=self._certfile,
                                               server_side=True, do_handshake_on_connect=False,
                                               ssl_version=self._ssl_version)
@@ -528,6 +520,7 @@ class _AsynCoroSocket(object):
         def _connect(self, *args):
             err = self._rsock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
             if err:
+                self._notifier.unregister(self)
                 self._task = None
                 coro, self._coro = self._coro, None
                 coro.throw(socket.error(err))
@@ -541,6 +534,7 @@ class _AsynCoroSocket(object):
                         elif err.args[0] == ssl.SSL_ERROR_WANT_WRITE:
                             self._notifier.modify(self, _AsyncPoller._Writable)
                         else:
+                            self._notifier.unregister(self)
                             self._task = None
                             coro, self._coro = self._coro, None
                             self.close()
@@ -1347,7 +1341,7 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
                 self.cmd_wsock.setblocking(0)
                 self.cmd_rsock = AsynCoroSocket(self.cmd_rsock)
                 setattr(self.cmd_rsock, '_task', lambda: self.cmd_rsock._rsock.recv(128))
-                self.modify(self.cmd_rsock, _AsyncPoller._Readable)
+                self.register(self.cmd_rsock, _AsyncPoller._Readable)
 
         def interrupt(self):
             self.cmd_wsock.send('I')
@@ -1475,7 +1469,11 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
 
         def modify(self, fd, event):
             if event:
-                self._poller.modify(fd._fileno, event)
+                if fd._fileno in self._fds:
+                    self._poller.modify(fd._fileno, event)
+                else:
+                    self._fds[fd._fileno] = fd
+                    self._poller.register(fd._fileno, event)
                 self._add_timeout(fd)
             else:
                 self._del_timeout(fd)
