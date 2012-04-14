@@ -764,6 +764,7 @@ class _Cluster(object):
     def udp_server(self, udp_sock, coro=None):
         # generator
         assert coro is not None
+        coro.set_daemon()
         while True:
             msg, addr = yield udp_sock.recvfrom(1024)
             if msg.startswith('PULSE:'):
@@ -856,6 +857,7 @@ class _Cluster(object):
                               msg[:min(5, len(msg))], addr[0])
 
     def job_result_server(self, coro=None):
+        coro.set_daemon()
         # generator
         assert coro is not None
         while True:
@@ -977,6 +979,7 @@ class _Cluster(object):
                 self.finish_job(_job, status, cluster)
 
     def timer_task(self, coro=None):
+        coro.set_daemon()
         reset = True
         last_pulse_time = last_ping_time = time.time()
         while True:
@@ -1230,11 +1233,6 @@ class _Cluster(object):
             else:
                 self._sched_cv.release()
 
-            self.timer_coro.terminate()
-            self.job_result_coro.terminate()
-            if self.udp_coro:
-                self.udp_coro.terminate()
-            yield None
         Coro(_shutdown, self).value()
         self._scheduler.value()
         self.worker_Q.join()

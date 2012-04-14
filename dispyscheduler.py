@@ -212,7 +212,7 @@ class _Scheduler(object):
     def udp_server(self, coro=None):
         # generator
         assert coro is not None
-
+        coro.set_daemon()
         while True:
             msg, addr = yield self.udp_sock.recvfrom(1024)
             # no need to create coros to process these requests
@@ -770,6 +770,7 @@ class _Scheduler(object):
         # end of _request_task
 
     def timer_task(self, coro=None):
+        coro.set_daemon()
         reset = True
         last_ping_time = last_pulse_time = last_zombie_time = time.time()
         while True:
@@ -924,6 +925,7 @@ class _Scheduler(object):
     def job_result_server(self, coro=None):
         # generator
         assert coro is not None
+        coro.set_daemon()
         logging.debug('Job results port is %s:%s',
                       self.ip_addr, self.job_result_sock.getsockname()[1])
         while True:
@@ -1101,11 +1103,6 @@ class _Scheduler(object):
                         yield node.close(compute, coro=coro)
                 for coro in coros:
                     coro.value()
-
-                self.timer_coro.terminate()
-                # self.request_coro.terminate()
-                self.job_result_coro.terminate()
-                self.udp_coro.terminate()
             else:
                 self._sched_cv.release()
 

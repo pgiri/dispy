@@ -36,6 +36,7 @@ import ssl
 from heapq import heappush, heappop
 from bisect import bisect_left
 import Queue
+import atexit
 
 if platform.system() == 'Windows':
     from errno import WSAEINPROGRESS as EINPROGRESS
@@ -1615,9 +1616,21 @@ class Coro(object):
         self._exception = None
         self._callers = []
         self._timeout = None
+        self._daemon = False
         self._asyncoro = AsynCoro.instance()
         self._complete = threading.Event()
         self._asyncoro._add(self)
+
+    def set_daemon(self):
+        """Set coroutine is daemon.
+
+        When exiting, AsynCoro scheduler waits for all non-daemon
+        coroutines to terminate.
+        """
+        if self._asyncoro:
+            self._asyncoro._set_daemon(self._id)
+        else:
+            logging.warning('set_daemon: coroutine %s removed?', self.name)
 
     def suspend(self, timeout=None):
         """Suspend/sleep coro (until woken up, usually by AsyncNotifier
@@ -1742,7 +1755,7 @@ class RLock(object):
         self._waitlist = []
         self._asyncoro = AsynCoro.instance()
 
-    def acquire(self):
+    def acquire(self, blocking=1):
         """Must be used with 'yield' as 'yield rlock.acquire()'.
         """
         coro = self._asyncoro.cur_coro()
@@ -1750,10 +1763,16 @@ class RLock(object):
             assert self._depth == 0
             self._owner = coro
             self._depth = 1
+            if blocking is True:
+                return True
         elif self._owner == coro:
             self._depth += 1
+            if blocking is True:
+                return True
         else:
             # self._owner != coro
+            if blocking is False:
+                return False
             self._waitlist.append(coro)
             coro.suspend()
 
@@ -1770,7 +1789,7 @@ class RLock(object):
                 wake = self._waitlist.pop(0)
                 self._owner = wake
                 self._depth = 1
-                wake.resume()
+                wake.resume(True)
             else:
                 self._owner = None
 
@@ -1920,11 +1939,14 @@ class AsynCoro(object):
             # need to lock access to _scheduled, etc.
             self._lock = threading.Lock()
             self._terminate = False
+            self._exit = False
             self._complete = threading.Event()
+            self._daemons = 0
             self._notifier = _AsyncNotifier()
             self._scheduler = threading.Thread(target=self._schedule)
             self._scheduler.daemon = True
             self._scheduler.start()
+            atexit.register(self.terminate, True)
 
     @classmethod
     def instance(cls):
@@ -1951,6 +1973,16 @@ class AsynCoro(object):
         self._scheduled.add(coro._id)
         if len(self._scheduled) == 1:
             self._notifier.interrupt()
+        self._lock.release()
+
+    def _set_daemon(self, cid):
+        """Internal use only. See set_daemon in Coro.
+        """
+        self._lock.acquire()
+        coro = self._coros.get(cid, None)
+        if coro is not None:
+            coro._daemon = True
+            self._daemons += 1
         self._lock.release()
 
     def _suspend(self, cid, timeout=None):
@@ -2162,7 +2194,9 @@ class AsynCoro(object):
                             coro._asyncoro = None
                             coro._complete.set()
                             coro._state = None
-                            if not self._coros:
+                            if coro._daemon:
+                                self._daemons -= 1
+                            if len(self._coros) == self._daemons:
                                 self._complete.set()
                         else:
                             logging.warning('coro %s/%s already removed?', coro.name, coro._id)
@@ -2204,6 +2238,7 @@ class AsynCoro(object):
                 else:
                     coro._generator = None
             coro._complete.set()
+        print 'terminating'
         self._scheduled = set()
         self._suspended = set()
         self._timeouts = []
@@ -2211,15 +2246,20 @@ class AsynCoro(object):
         self._lock.release()
         self._complete.set()
 
-    def terminate(self):
+    def terminate(self, await_non_daemons=False):
         """Terminate (singleton) instance of AsynCoro. This 'kills'
         all running coroutines.
         """
-        self._terminate = True
-        self._notifier.interrupt()
-        self._complete.wait()
-        self._notifier.terminate()
-        logging.debug('AsynCoro terminated')
+        if not self._terminate:
+            if await_non_daemons:
+                logging.debug('waiting for %s coroutines to terminate',
+                              len(self._coros) - self._daemons)
+                self._complete.wait()
+            self._terminate = True
+            self._notifier.interrupt()
+            self._complete.wait()
+            self._notifier.terminate()
+            logging.debug('AsynCoro terminated')
 
     def join(self):
         """Wait for currently scheduled coroutines to finish. AsynCoro

@@ -222,7 +222,7 @@ class _DispyNode(object):
 
     def udp_server(self, scheduler_ip_addr, coro=None):
         assert coro is not None
-        
+        coro.set_daemon()
         if self.avail_cpus == self.cpus:
             yield self.send_pong_msg(coro=coro)
         pong_msg = {'ip_addr':self.ip_addr, 'name':self.name, 'port':self.address[1],
@@ -751,6 +751,7 @@ class _DispyNode(object):
             conn.close()
 
     def timer_task(self, coro=None):
+        coro.set_daemon()
         reset = True
         last_pulse_time = last_zombie_time = time.time()
         while True:
@@ -1005,8 +1006,6 @@ class _DispyNode(object):
                 sock.close()
 
         Coro(_shutdown, self).value()
-        self.timer_coro.terminate()
-        self.udp_coro.terminate()
         self.asyncoro.join()
         self.asyncoro.terminate()
 
