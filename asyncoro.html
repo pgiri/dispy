@@ -39,15 +39,15 @@
 <p>
   asyncoro, part of
   <a href="http://sourceforge.net/projects/dispy/files">dispy</a>
-  package, is a framework for developing concurrent programs with
-  asynchronous completions and coroutines in Python. Asynchronous
+  package, is a Python framework for developing concurrent programs
+  with asynchronous completions and coroutines. Asynchronous
   completions currently implemented in asyncoro are socket I/O
   operations, database cursors, sleep timers, (conditional) event
   notification and semaphores.  The coroutines should use 'yield' with
   these completions. Each yield statement gives control to asyncoro's
   scheduler, which interleaves executions of coroutines, similar to
   the way an operating system executes multiple processes. Programs
-  developed with asyncoro will have same logic as python progorams
+  developed with asyncoro will have same logic as python programs
   with synchronous sockets and threads, except for a few syntactic
   changes. asyncoro supports socket I/O notification mechanisms epoll,
   kqueue, /dev/poll (and poll and select, where necessary), and
@@ -76,18 +76,21 @@ GIL</a>).</p>
   thread implementations can be converted to asyncoro almost
   mechanically (although it cannot be automated). In fact, it may be
   easier to use asyncoro than threads, as locking is not required with
-  asyncoro (see below).
+  asyncoro (see below). Moreover, asyncoro framework is very small
+  (about 2000 lines in a single file 'asyncoro.py'), so it is easy to
+  understand how it works and how to program with it.
 </p>
 
 <p>
 For example, a simple tcp server with asyncoro looks like:
 </p>
 <code>def process(sock, coro=None):
+    # convert sock to asynchronous socket
     sock = AsynCoroSocket(sock)
     # get (exactly) 4MB of data, for example, and let other coroutines
     # (process methods, in this case) execute in the meantime
     data = yield sock.recvall(4096*1024)
-    ...
+    # ...
     yield sock.sendall(reply)
     sock.close()
 
@@ -106,15 +109,16 @@ Here we mixed synchronous sockets in server loop and asynchronous
 sockets in the 'process' method for illustration. The server does not
 do any processing, so the loop can quickly accept connections. Each
 request is processed in a separate coroutine. Note that IO event loop
-is transparent - asyncoro handles IO events by itself. A coroutine
-should have 'coro=None' default argument. The coroutine builder Coro
-(which is similar to threading.Thread) will set coro argument with the
-Coro instance, which is used for calling methods in Coro class (see
-below). In the 'process' method, socket I/O operations are called with
-'yield'. With these statements, the I/O operation is initiated and
-control goes to AsynCoro's scheduler for scheduling other coroutines
-as well as processing I/O events. When the I/O operation is complete,
-the scheduler returns the results of the I/O operation back to the
+is transparent - asyncoro's scheduler handles I/O events
+automatically. A coroutine should have 'coro=None' default
+argument. The coroutine builder Coro (which is similar to
+threading.Thread) will set coro argument with the Coro instance, which
+is used for calling methods in Coro class (see below). In the
+'process' method, socket I/O operations are called with 'yield'. With
+these statements, the I/O operation is initiated and control goes to
+asyncoro's scheduler for scheduling other coroutines as well as
+processing I/O events. When an I/O operation is complete, the
+scheduler returns the results of the I/O operation back to the
 method. During the time it takes to complete an I/O operation, the
 scheduler executes other coroutines (in this case, other 'process'
 coroutines).
@@ -124,13 +128,14 @@ coroutines).
 <p>
   asyncoro framework consists of AsynCoro scheduler, Coro factory to
   create coroutines from generator functions, AsynCoroSocket to
-  convert regular synchronous sockets to asynchronous sockets,
-  AsynCoroDBCursor to convert database cursor
+  convert regular synchronous sockets to asynchronous (non-blocking)
+  sockets, AsynCoroDBCursor to convert database cursor
   operations <tt>execute</tt>, <tt>executemany</tt>
   and <tt>callproc</tt>to asynchronous operations, and locking,
-  condition, event, semaphore primitives similar to thread primitives.
-  asyncoro has been tested with Python versions 2.7 and 3.2 under
-  Linux, OS X and Windows. Under Windows asyncoro uses IOCP only
+  condition, event, semaphore primitives similar to thread
+  primitives. asyncoro has been tested with Python versions 2.7 and
+  3.2 under Linux, OS X and Windows. Under Windows asyncoro uses IOCP
+  only
   if <a href="https://sourceforge.net/projects/pywin32/files/pywin32/">Python
   for Windows Extensions</a> (pywin32) is installed. pywin32 works
   with Windows 32-bit and 64-bit.
@@ -138,12 +143,13 @@ coroutines).
 
 <ul>
   <li>
-    <b>AsynCoro</b> is a (singleton) scheduler that runs coroutines similar to
-    operating system's scheduler that runs multiple processes. It is
-    initialized when asyncoro module is imported. If necessary, the
-    scheduler instance can be obtained with <tt>AsynCoro()</tt>
-    or <tt>AsynCoro.instance()</tt>. The scheduler runs in a separate
-    thread. It has two methods:
+    <b>AsynCoro</b> is a (singleton) scheduler that runs coroutines
+    similar to operating system's scheduler that runs multiple
+    processes. It is initialized when asyncoro module is imported. If
+    necessary, the scheduler instance can be obtained
+    with <tt>AsynCoro()</tt> or <tt>AsynCoro.instance()</tt>. The
+    scheduler runs in a separate thread from user program. It has two
+    methods:
     <ul>
       <li>
 	<b>join()</b> method waits for all scheduled coroutines to
@@ -162,34 +168,36 @@ coroutines).
       </li>
     </ul>
     </li>
-  <li>Threads in synchronous programms can be replaced with coroutines
+  <li>Threads in synchronous programs can be replaced with coroutines
     using asyncoro's <b>Coro</b> class (i.e., Coro replaces
     threading.Thread). <tt>Coro(target[, arg1, arg2, ...])</tt>
     creates a coroutine. "target" must be a generator function (a
     function with 'yield' statements). "arg1", "arg2" etc. are
     arguments or keyword arguments to "target". "target" generator
-    function must have "coro=None" keyword argument. Coro instantiaion
-    replaces None with the instance of coro, so coroutine can use this
-    to invoke methods in Coro class (see below). Consider the
-    generator function
+    function must have "coro=None" keyword argument. Coro
+    instantiation replaces None with the instance of coro, so
+    coroutine can use this to invoke methods in Coro class (see
+    below). Consider the generator function (where 'sock' is
+    asynchronous socket and all statements are asynchronous, so all
+    are used with 'yield')
 
     <code>def get_reply(sock, msg, coro=None):
     yield sock.send(msg)
-    reply = yield sock.recv(1024)
-    yield reply</code>
+    yield coro.sleep(1)
+    yield sock.recv(1024)</code>
     It can be made a coroutine with
-    <tt>Coro(get_reply, conn, "ping")</tt> so that generator function is called
-    with <tt>sock=conn, msg="ping"</tt>. 'coro' keyword argument
-    is automatically supplied by Coro; it should not be in the
-    arguments to Coro. When a coroutine is created with Coro, it is
-    added to AsynCoro scheduler and starts executing - there is no
+    <tt>Coro(get_reply, conn, "ping")</tt> so that generator function
+    is called with <tt>sock=conn, msg="ping"</tt>. 'coro' keyword
+    argument is automatically supplied by Coro; it should not be in
+    the arguments to Coro. When a coroutine is created with Coro, it
+    is added to AsynCoro scheduler and starts executing - there is no
     need to start it explicitly, as done with threads. Note that
     generator functions cannot use 'return' statement; instead,
     AsynCoro treats the last value yielded in the coroutine as the
-    return value of the function (in this case, 'reply' is equivalent
-    to return value of get_reply). If 'return' is needed from
-    elsewhere in function body, a 'yield' followed by 'raise
-    StopIteration' would accomplish it.
+    return value of the function (in this case, buffer received is
+    equivalent to return value of get_reply). If 'return' is needed
+    from elsewhere in function body, a 'yield' followed by <tt>raise
+    StopIteration</tt> would accomplish it.
     </li>
   <li>Within a coroutine, 'coro' variable refers to the coroutine
   (instance of Coro class). This variable can be used to invoke
@@ -208,8 +216,10 @@ coroutines).
       coro.sleep(2.9)</tt>, it is suspended for 2.9 seconds. If before
       timeout, another coroutine wakes up this coroutine (with
       "resume" method) with a value, "v" is set to that
-      value. Oterwise, after 2.9 seconds, this coroutine is resumed
-      with "v" set to None.
+      value. Otherwise, after 2.9 seconds, this coroutine is resumed
+      with None so "v" is set to None and coroutine continues
+      execution. During the time coroutine is suspended, scheduler
+      executes other scheduled coroutines.
       </li>
       <li>
 	<b>resume(update=None)</b> method should be invoked on a
@@ -220,7 +230,7 @@ coroutines).
 	coroutines can synchronize their executions and possibly
 	exchange data at specific execution points (compared to python
 	generator functions that do so at every 'yield' statement,
-	which can be very complex to program and understand for
+	which can be very complex to program and understand
 	non-trivial programs).
 	</li>
       <li>
@@ -246,25 +256,26 @@ coroutines).
       </ul>
     </li>
   <li>
-    A synchronous (normal) socket "sock" can be converted to
-    asynchronous socket with <b>AsynCoroSocket</b>(sock). SSL can be
-    enabled with <b>AsynCoroocket</b>(sock, keyfile=key,
-    certfile=cert, ssl_version=version), where keyfile, certfile and
-    ssl_version are as per wrap_socket method
+    A synchronous (regular) socket "sock" can be converted to
+    asynchronous (non-blocking) socket
+    with <b>AsynCoroSocket</b>(sock). SSL can be enabled
+    with <b>AsynCoroSocket</b>(sock, keyfile=key, certfile=cert,
+    ssl_version=version), where keyfile, certfile and ssl_version are
+    as per wrap_socket method
     in <a href="http://docs.python.org/library/ssl.html">ssl
-    module</a>. Socket operations accept, connect, send, recv, sendall,
-    recvall, send_msg, recv_msg, sendto and recvfrom for asynchronous
-    sockets must be used with 'yield' statement. The value of such
-    yield statement is the result of the socket IO operation (for
-    example, for recv, it would be the buffer received by the
-    socket). The socket returned from accept method of an asynchronous
-    socket is also an asynchronous socket, so there is no need to
-    conver it. The methods recvall, send_msg and recv_msg are
+    module</a>. Socket operations accept, connect, send, recv,
+    sendall, recvall, send_msg, recv_msg, sendto and recvfrom for
+    asynchronous sockets must be used with 'yield' statement. The
+    value of such yield statement is the result of the socket I/O
+    operation (for example, for recv, it would be the buffer received
+    by the socket). The socket returned from accept method of an
+    asynchronous socket is also an asynchronous socket, so there is no
+    need to convert it. The methods recvall, send_msg and recv_msg are
     available for AsynCoroSocket only; they are not standard socket
     methods: recvall receives exactly given number of bytes
     (counterpart to sendall), send_msg prefixes the given buffer with
     the length so that receiving side knows exactly how many bytes to
-    read, and recv_msg recieves full message from send_msg.
+    read, and recv_msg receives full message from send_msg.
     </li>
   <li>
     <b>AsynCoroThreadPool</b> can be used to schedule synchronous,
@@ -303,35 +314,36 @@ coroutines).
       asynchronous notification. asyncoro
       provides <b>AsynCoroDBCursor</b> that
       schedules <tt>execute</tt>, <tt>executemany</tt>
-      and <tt>callproc</tt> operations through a thread pool (see
-      below) for asynchronous completion. Other database operations
-      are considered very fast. This interface works with MySQLdb
-      under Python version 2.x
+      and <tt>callproc</tt> operations through AsynCoroThreadPool for
+      asynchronous completion. Other database operations are
+      considered very fast. This interface works with MySQLdb under
+      Python version 2.x
       and <a href="https://github.com/petehunt/PyMySQL">pymysql</a>
       under Python version 3.x. If necessary other database interfaces
-      and operations can be made asynchronous with <b>AsynCoroThreadPool</b>.
+      and operations can be made asynchronous with AsynCoroThreadPool.
     </p>
     <p>
       As database connections and cursors are not supposed to be
-      shared among threads, asyncoro serializes operations on a
-      cursor. Operations on different cursors at the same time are run
-      concurrently. A simple example is
+      shared among threads, asyncoro executes operations on a cursor
+      sequentially. Operations on different cursors at the same time
+      are run concurrently. A simple example is
 
-      <code># create pool of async cursors (can be reused)
+      <code># create pool of threads
 num_threads = 3
 thread_pool = asyncoro.AsynCoroThreadPool(num_threads)
 async_cursors = []
 for x in range(num_threads):
     conn = MySQLdb.connect(host=host, user=user, passwd=passwd, db=db)
     cursor = conn.cursor(cursorclass=MySQLdb.cursors.DictCursor)
+    # convert cursor to asynchronous cursor using thread_pool to
+    # schedule operations
     async_cursors.append(asyncoro.AsynCoroDBCursor(thread_pool, cursor))
 
-coros = []
 # 3 cursors are used in 10 coroutines
-for x, cursor in itertools.izip(xrange(10), itertools.cycle(async_cursors)):
-    coros.append(asyncoro.Coro(db_proc, cursor, stmt))
+for _, async_cursor in itertools.izip(xrange(10), itertools.cycle(async_cursors)):
+    asyncoro.Coro(db_proc, async_cursor)
 
-def db_proc(cursor, stmt, coro=None):
+def db_proc(cursor, coro=None):
     # ...
     n = yield cursor.execute(stmt)
     rows = cursor.fetchall()
@@ -341,14 +353,18 @@ def db_proc(cursor, stmt, coro=None):
   <li>
     asyncoro provides <b>Lock</b>, <b>Condition</b>, <b>Event</b>
     and <b>Semaphore</b> primitives. They are similar to versions in
-    threading module. Any blocking operaitons on these primitives must
-    be called with 'yield' appropriately. For example, acquiring a
-    semaphore may block, so it should be invoked as
-    <tt>yield sem.acquire()</tt>. Similarly, Event's wait method and Condition's
-    wait method must be used as
+    threading module. Any operation that would block in threading
+    module is implemented as asynchronous operation in asyncoro. Such
+    operations must be called with 'yield' appropriately. For example,
+    acquiring a thread semaphore may block, so it should be invoked as
+    <tt>yield sem.acquire()</tt> where <tt>sem</tt> is asyncoro's
+    Semaphore. Similarly, Event's wait method and Condition's wait
+    method must be used as
     <tt>yield event.wait()</tt> or <tt>yield
     condition.wait()</tt>. For example, Condition variable cv in a
-    client should be used as
+    client should be used as (compare to example at
+    <a href="http://docs.python.org/library/threading.html#condition-objects">threading
+    module</a>)
 
     <code>while True:
       cv.acquire()
@@ -362,7 +378,7 @@ def db_proc(cursor, stmt, coro=None):
     execute.<br/> Technically, locking is not required, as there is no
     forced preemption with coroutines and at most one coroutine is
     executing at anytime. Currently the locking and unlocking
-    opertions simply assert that 'yield' is not used between lock and
+    operations simply assert that 'yield' is not used between lock and
     corresponding unlock. If one wants to maintain same program for
     both synchronous and asynchronous models, it would be simple to
     interchange threading.Lock and asyncoro.Lock, threading.Condition
@@ -381,7 +397,7 @@ def db_proc(cursor, stmt, coro=None):
 <ul>
   <li>
     <a href="http://sourceforge.net/projects/dispy/files">dispy</a> is
-    a framework for parallel execution of computations by distribyting
+    a framework for parallel execution of computations by distributing
     them to multiple processors on a single node (SMP), nodes in a
     cluster, or large clusters. dispy is implemented with asyncoro, so the
     files in dispy may help understand asyncoro.

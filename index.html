@@ -45,7 +45,7 @@ computation is evaluated with different (large) datasets
 independently. Salient features of dispy are:
 </p>
 <ul>
-<li>Computations (Python functions or standalone programs) and its
+<li>Computations (Python functions or standalone programs) and their
     dependencies (files, Python functions, classes, modules) are
     distributed automatically.</li>
 
@@ -64,8 +64,8 @@ independently. Salient features of dispy are:
     whenever a node is available and computations can use that node.</li>
 
 <li>If callback function is provided, dispy executes that function
-    when a job is finished; this feature is useful for further
-    processing of job results.</li>
+    when a job is finished; this feature is useful for processing of
+    job results.</li>
 
 <li>Client-side and server-side fault recovery are supported:<br/>
 
@@ -125,14 +125,6 @@ dispy consists of 4 components:
         <p> Below is a quick guide on how to use dispy. More details
 are available in <a href="dispy.html">dispy</a> document.
 </p>
-<!--
-<p>
-dispy can distribute computations to multiple (server) nodes for
-parallel execution. If a node has multiple processing units (CPUs or
-Cores), all those processing units are used for parallel
-execution.
-</p>
--->
 
 <p>
 As a tutorial, consider the following program, in which 'compute' is

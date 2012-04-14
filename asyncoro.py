@@ -1713,6 +1713,8 @@ class Lock(object):
         self._asyncoro = AsynCoro.instance()
 
     def acquire(self):
+        """Should _not_ be used with 'yield'.
+        """
         coro = self._asyncoro.cur_coro()
         if self._owner != None:
             raise RuntimeError('"%s"/%s: lock owned by "%s"/%s' % \
@@ -1720,36 +1722,89 @@ class Lock(object):
         self._owner = coro
 
     def release(self):
+        """Can be used with 'yield'.
+        """
         coro = self._asyncoro.cur_coro()
         if self._owner != coro:
             raise RuntimeError('"%s"/%s: invalid lock release - owned by "%s"/%s' % \
                                (coro.name, coro._id, self._owner.name, self._owner._id))
         self._owner = None
 
+class RLock(object):
+    """'RLock' primitive for coroutines.
+
+    Unlike in the case of 'Lock', using 'yield' after acquiring rlock
+    but before releasing it is allowed.
+    """
+    def __init__(self):
+        self._owner = None
+        self._depth = 0
+        self._waitlist = []
+        self._asyncoro = AsynCoro.instance()
+
+    def acquire(self):
+        """Must be used with 'yield' as 'yield rlock.acquire()'.
+        """
+        coro = self._asyncoro.cur_coro()
+        if self._owner is None:
+            assert self._depth == 0
+            self._owner = coro
+            self._depth = 1
+        elif self._owner == coro:
+            self._depth += 1
+        else:
+            # self._owner != coro
+            self._waitlist.append(coro)
+            coro.suspend()
+
+    def release(self):
+        """Can be used with 'yield'.
+        """
+        coro = self._asyncoro.cur_coro()
+        if self._owner != coro:
+            raise RuntimeError('"%s"/%s: invalid lock release - owned by "%s"/%s' % \
+                               (coro.name, coro._id, self._owner.name, self._owner._id))
+        self._depth -= 1
+        if self._depth == 0:
+            if self._waitlist:
+                wake = self._waitlist.pop(0)
+                self._owner = wake
+                self._depth = 1
+                wake.resume()
+            else:
+                self._owner = None
+
 class Condition(object):
     """'Condition' primitive for coroutines.
 
-    Since a coroutine runs until 'yield', there is no need for
-    locking. The caller has to guarantee that once condition is
-    acquired, 'yield' is not used until either 'wait' or 'release'.
+    Once condition is acquired, 'yield' should not be used until
+    either 'release' or 'wait'.
     """
     def __init__(self):
         self._waitlist = []
         self._asyncoro = AsynCoro.instance()
 
     def acquire(self):
+        """Should _not_ be used with 'yield'.
+        """
         pass
 
     def release(self):
+        """Can be used with 'yield'.
+        """
         pass
 
     def notify(self, n=1):
+        """Should _not_ be used with 'yield'.
+        """
         while self._waitlist and n:
             wake = self._waitlist.pop(0)
             wake.resume(None)
             n -= 1
 
     def notifyAll(self):
+        """Should _not_ be used with 'yield'.
+        """
         self.notify(len(self._waitlist))
 
     notify_all = notifyAll
@@ -1770,17 +1825,23 @@ class Event(object):
         self._asyncoro = AsynCoro.instance()
 
     def set(self):
+        """Can be used with 'yield'.
+        """
         self._flag = True
         for coro in self._waitlist:
             coro.resume(True)
         self._waitlist = []
 
     def is_set(self):
+        """No need to use with 'yield'.
+        """
         return self._flag
 
     isSet = is_set
 
     def clear(self):
+        """No need to use with 'yield'.
+        """
         self._flag = False
 
     def wait(self, timeout=None):
@@ -1795,6 +1856,9 @@ class Event(object):
 
 class Semaphore(object):
     """'Semaphore' primitive for coroutines.
+
+    Similar to RLock, it is acceptable to use 'yield' after acquiring
+    semaphore and before releasing it.
     """
     def __init__(self, value=1):
         assert value >= 1
@@ -1816,6 +1880,8 @@ class Semaphore(object):
             self._counter -= 1
 
     def release(self):
+        """Can be used with 'yield'.
+        """
         if self._counter == 0 and self._waitlist:
             wake = self._waitlist.pop(0)
             wake.resume()
