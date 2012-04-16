@@ -47,13 +47,12 @@
   these completions. Each yield statement gives control to asyncoro's
   scheduler, which interleaves executions of coroutines, similar to
   the way an operating system executes multiple processes. Programs
-  developed with asyncoro will have same logic as python programs
-  with synchronous sockets and threads, except for a few syntactic
-  changes. asyncoro supports socket I/O notification mechanisms epoll,
-  kqueue, /dev/poll (and poll and select, where necessary), and
-  Windows I/O Completion Ports (IOCP) for high performance and
-  scalability, and SSL for security.  asyncoro can be used
-  independently of dispy.</p>
+  developed with asyncoro will have same logic as python programs with
+  threads, except for a few syntactic changes. asyncoro supports
+  socket I/O notification mechanisms epoll, kqueue, /dev/poll (and
+  poll and select, where necessary), and Windows I/O Completion Ports
+  (IOCP) for high performance and scalability, and SSL for security.
+  asyncoro can be used independently of dispy.</p>
 
 <h4>Details</h4>
 <p>
@@ -182,7 +181,7 @@ coroutines).
     are used with 'yield')
 
     <code>def get_reply(sock, msg, coro=None):
-    yield sock.send(msg)
+    yield sock.sendall(msg)
     yield coro.sleep(1)
     yield sock.recv(1024)</code>
     It can be made a coroutine with
@@ -192,34 +191,35 @@ coroutines).
     the arguments to Coro. When a coroutine is created with Coro, it
     is added to AsynCoro scheduler and starts executing - there is no
     need to start it explicitly, as done with threads. Note that
-    generator functions cannot use 'return' statement; instead,
-    AsynCoro treats the last value yielded in the coroutine as the
-    return value of the function (in this case, buffer received is
-    equivalent to return value of get_reply). If 'return' is needed
-    from elsewhere in function body, a 'yield' followed by <tt>raise
-    StopIteration</tt> would accomplish it.
+    generator functions cannot use 'return' statement. With asyncoro,
+    a <tt>raise StopIteration(v)</tt> effectively serves as <tt>return
+    v</tt>. If a generator/coroutine does not use StopIteration, then
+    the last value yielded in the generator becomes the return
+    value. Thus, in the example above get_reply does not use
+    StopIteration, so buffer received (in the last 'yield') is
+    equivalent to return value of get_reply.
     </li>
   <li>Within a coroutine, 'coro' variable refers to the coroutine
   (instance of Coro class). This variable can be used to invoke
   methods of Coro class, use it in other coroutines, for example, to
   wakeup from sleep etc. A coroutine has following methods:
     <ul>
-      <li><b>suspend(timeout=None)</b> method should be used with
-      'yield' statement. <b>sleep</b> method is synonym for
-      suspend. If timeout is a positive number (float or int),
+      <li><b>suspend(timeout=None, alarm_value=None)</b> method should
+      be used with 'yield' statement. <b>sleep</b> method is synonym
+      for suspend. If timeout is a positive number (float or int),
       AsynCoro suspends execution of coroutine until that many seconds
       (or fractions of second). If timeout is None, the coroutine is
       not woken up by AsynCoro - some other coroutine needs to resume
       it. The value yielded by this method is the value it is resumed
-      with or None if resumed by AsynCoro due to timeout.  For
+      with or alarm_value if resumed by AsynCoro due to timeout.  For
       example, if a coroutine executes <tt>v = yield
       coro.sleep(2.9)</tt>, it is suspended for 2.9 seconds. If before
       timeout, another coroutine wakes up this coroutine (with
       "resume" method) with a value, "v" is set to that
       value. Otherwise, after 2.9 seconds, this coroutine is resumed
-      with None so "v" is set to None and coroutine continues
-      execution. During the time coroutine is suspended, scheduler
-      executes other scheduled coroutines.
+      with None (default alarm_value) so "v" is set to None and
+      coroutine continues execution. During the time coroutine is
+      suspended, scheduler executes other scheduled coroutines.
       </li>
       <li>
 	<b>resume(update=None)</b> method should be invoked on a
@@ -234,8 +234,14 @@ coroutines).
 	non-trivial programs).
 	</li>
       <li>
+	<b>set_daemon()</b> method indicates that coroutine is a
+	daemon (process that never terminates). Similar to threading
+	module, AsynCoro scheduler waits for all non-daemon coroutines
+	to terminate before exiting.
+	</li>
+      <li>
 	<b>throw(exc)</b> method throws exception exc to
-	coroutine coro (at the point where it currently is executing).
+	coroutine coro (at the point where it is currently executing).
 	</li>
       <li>
 	<b>terminate()</b> method terminates the coroutine. This
@@ -351,15 +357,15 @@ def db_proc(cursor, coro=None):
       </p>
     </li>
   <li>
-    asyncoro provides <b>Lock</b>, <b>Condition</b>, <b>Event</b>
+    asyncoro
+    provides <b>Lock</b>, <b>RLock</b>, <b>Condition</b>, <b>Event</b>
     and <b>Semaphore</b> primitives. They are similar to versions in
     threading module. Any operation that would block in threading
     module is implemented as asynchronous operation in asyncoro. Such
     operations must be called with 'yield' appropriately. For example,
-    acquiring a thread semaphore may block, so it should be invoked as
-    <tt>yield sem.acquire()</tt> where <tt>sem</tt> is asyncoro's
-    Semaphore. Similarly, Event's wait method and Condition's wait
-    method must be used as
+    acquiring a lock may block, so it should be invoked as
+    <tt>yield lock.acquire()</tt>. Similarly, Event's wait method or
+    Condition's wait method must be used as
     <tt>yield event.wait()</tt> or <tt>yield
     condition.wait()</tt>. For example, Condition variable cv in a
     client should be used as (compare to example at
@@ -367,24 +373,21 @@ def db_proc(cursor, coro=None):
     module</a>)
 
     <code>while True:
-      cv.acquire()
+      yield cv.acquire()
       while not an_item_is_available():
           yield cv.wait()
       get_an_available_item()
       yield cv.release()</code>
 
     'yield' is used when releasing a lock to be cooperative with other
-    coroutines that might be waiting for their turn to
-    execute.<br/> Technically, locking is not required, as there is no
-    forced preemption with coroutines and at most one coroutine is
-    executing at anytime. Currently the locking and unlocking
-    operations simply assert that 'yield' is not used between lock and
-    corresponding unlock. If one wants to maintain same program for
-    both synchronous and asynchronous models, it would be simple to
-    interchange threading.Lock and asyncoro.Lock, threading.Condition
-    and asyncoro.Condition etc., and a few syntactic changes. However,
-    if there is no need to go back to synchronous model, it is very
-    appealing to not worry about locking at all with asyncoro.
+    coroutines that might be waiting for their turn to execute. See
+    'asyncoro.py' for more details on which methods should be used
+    with 'yield' and which methods need not be. <br/> Technically,
+    locking may not be required in most cases (where 'yield' is not
+    used in critical sections), as there is no forced preemption with
+    coroutines and at most one coroutine is executing at anytime; in
+    fact, the implementation of these primitives in asyncoro updates
+    lists and counters without locking.
     </li>
   <li>
     Within a coroutine, generator functions must be called with

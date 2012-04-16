@@ -224,7 +224,7 @@ class _Scheduler(object):
                     logging.warning('Ignoring pulse message from %s', addr[0])
                     continue
                 if 'client_scheduler_ip_addr' in info:
-                    self._sched_cv.acquire()
+                    yield self._sched_cv.acquire()
                     for cluster in self._clusters.itervalues():
                         if cluster.client_scheduler_ip_addr == info['client_scheduler_ip_addr'] and \
                                cluster.client_scheduler_port == info['client_scheduler_port']:
@@ -254,7 +254,7 @@ class _Scheduler(object):
                 if status['cpus'] <= 0:
                     logging.debug('Ignoring node %s', status['ip_addr'])
                     continue
-                self._sched_cv.acquire()
+                yield self._sched_cv.acquire()
                 node = self._nodes.get(status['ip_addr'], None)
                 if node is None:
                     node = _Node(status['ip_addr'], status['port'], status['cpus'],
@@ -291,7 +291,7 @@ class _Scheduler(object):
             elif msg.startswith('TERMINATED:'):
                 try:
                     data = pickle.loads(msg[len('TERMINATED:'):])
-                    self._sched_cv.acquire()
+                    yield self._sched_cv.acquire()
                     node = self._nodes.pop(data['ip_addr'], None)
                     if not node:
                         yield self._sched_cv.release()
@@ -380,7 +380,7 @@ class _Scheduler(object):
         # TODO: should we allow clients to add new nodes, or use only
         # the nodes initially created with command-line?
         yield self.send_ping_cluster(cluster, coro)
-        self._sched_cv.acquire()
+        yield self._sched_cv.acquire()
         compute_nodes = []
         for node_spec, host in compute.node_spec.iteritems():
             for ip_addr, node in self._nodes.iteritems():
@@ -398,7 +398,7 @@ class _Scheduler(object):
                 logging.warning('Failed to setup %s for computation "%s"',
                                 node.ip_addr, compute.name)
             else:
-                self._sched_cv.acquire()
+                yield self._sched_cv.acquire()
                 if node.ip_addr not in compute.nodes:
                     compute.nodes[node.ip_addr] = node
                     node.clusters.add(compute.id)
@@ -414,7 +414,7 @@ class _Scheduler(object):
                 logging.warning('Failed to setup %s for computation "%s"',
                                 node.ip_addr, compute.name)
             else:
-                self._sched_cv.acquire()
+                yield self._sched_cv.acquire()
                 if node.ip_addr not in compute.nodes:
                     compute.nodes[node.ip_addr] = node
                     node.clusters.add(compute.id)
@@ -445,7 +445,7 @@ class _Scheduler(object):
                 logging.debug('Could not save results for job %s', uid)
                 logging.debug(traceback.format_exc())
 
-            self._sched_cv.acquire()
+            yield self._sched_cv.acquire()
             cluster = self._clusters.get(cid, None)
             if cluster:
                 cluster.pending_results += 1
@@ -487,7 +487,7 @@ class _Scheduler(object):
             except:
                 logging.debug('Ignoring job request from %s', addr[0])
                 raise StopIteration
-            self._sched_cv.acquire()
+            yield self._sched_cv.acquire()
             _job.uid = self.job_uid
             self.job_uid += 1
             yield self._sched_cv.release()
@@ -509,7 +509,7 @@ class _Scheduler(object):
                 logging.warning('Invalid reply for job: %s, %s',
                                 _job.uid, traceback.format_exc())
                 raise StopIteration
-            self._sched_cv.acquire()
+            yield self._sched_cv.acquire()
             cluster = self._clusters.get(_job.compute_id, None)
             if cluster is None:
                 logging.debug('cluster %s is not valid anymore for job %s',
@@ -529,7 +529,7 @@ class _Scheduler(object):
                 compute = pickle.loads(msg)
             except:
                 logging.debug('Ignoring compute request from %s', addr[0])
-                yield None; raise StopIteration
+                raise StopIteration(None)
             setattr(compute, 'nodes', {})
             cluster = _Cluster(compute)
             compute = cluster._compute
@@ -539,7 +539,7 @@ class _Scheduler(object):
             compute.job_result_port = self.job_result_sock.getsockname()[1]
             compute.scheduler_ip_addr = self.ip_addr
             compute.scheduler_port = self.port
-            self._sched_cv.acquire()
+            yield self._sched_cv.acquire()
             compute.id = cluster.id = self.cluster_id
             self._clusters[cluster.id] = cluster
             self.cluster_id += 1
@@ -652,7 +652,7 @@ class _Scheduler(object):
             resp = yield _compute_task(self, msg)
         elif msg.startswith('ADD_COMPUTE:'):
             msg = msg[len('ADD_COMPUTE:'):]
-            self._sched_cv.acquire()
+            yield self._sched_cv.acquire()
             try:
                 req = pickle.loads(msg)
                 cluster = self._clusters[req['ID']]
@@ -675,7 +675,7 @@ class _Scheduler(object):
             except:
                 logging.warning('Invalid compuation for deleting')
                 raise StopIteration
-            self._sched_cv.acquire()
+            yield self._sched_cv.acquire()
             cluster = self._clusters.get(req['ID'], None)
             if cluster is None:
                 # this cluster is closed
@@ -695,7 +695,7 @@ class _Scheduler(object):
             except:
                 logging.warning('Invalid job cancel message')
                 raise StopIteration
-            self._sched_cv.acquire()
+            yield self._sched_cv.acquire()
             cluster = self._clusters.get(job.compute_id, None)
             if not cluster:
                 logging.debug('Invalid job %s!', job.uid)
@@ -740,7 +740,7 @@ class _Scheduler(object):
                         assert ack == 'ACK'
                         try:
                             os.remove(result_file)
-                            self._sched_cv.acquire()
+                            yield self._sched_cv.acquire()
                             cluster = self._clusters.get(req['compute_id'], None)
                             if cluster is None:
                                 p = os.path.dirname(result_file)
@@ -796,7 +796,7 @@ class _Scheduler(object):
             now = time.time()
             if self.pulse_timeout and (now - last_pulse_time) >= self.pulse_timeout:
                 last_pulse_time = now
-                self._sched_cv.acquire()
+                yield self._sched_cv.acquire()
                 dead_nodes = {}
                 for node in self._nodes.itervalues():
                     if node.busy and node.last_pulse + self.pulse_timeout < now:
@@ -815,13 +815,13 @@ class _Scheduler(object):
                 yield self._sched_cv.release()
             if self.ping_interval and (now - last_ping_time) >= self.ping_interval:
                 last_ping_time = now
-                self._sched_cv.acquire()
+                yield self._sched_cv.acquire()
                 for cluster in self.clusters.itervalues():
                     Coro(self.send_ping_cluster, cluster)
                 yield self._sched_cv.release()
             if self.zombie_interval and (now - last_zombie_time) >= self.zombie_interval:
                 last_zombie_time = now
-                self._sched_cv.acquire()
+                yield self._sched_cv.acquire()
                 for cluster in self._clusters.itervalues():
                     if (now - cluster.last_pulse) > self.zombie_interval:
                         cluster.zombie = True
@@ -874,7 +874,7 @@ class _Scheduler(object):
             conn.close()
 
         logging.debug('Received reply for job %s from %s' % (reply.uid, addr[0]))
-        self._sched_cv.acquire()
+        yield self._sched_cv.acquire()
         node = self._nodes.get(addr[0], None)
         if node is None:
             self._sched_cv.release()
@@ -992,7 +992,7 @@ class _Scheduler(object):
         except EnvironmentError:
             logging.warning('Failed to run job %s on %s for computation %s; removing this node',
                             _job.uid, _job.node.ip_addr, cluster._compute.name)
-            self._sched_cv.acquire()
+            yield self._sched_cv.acquire()
             if cluster._compute.nodes.pop(_job.node.ip_addr, None) is not None:
                 _job.node.clusters.discard(cluster.compute.id)
                 # TODO: remove the node from all clusters and globally?
@@ -1009,7 +1009,7 @@ class _Scheduler(object):
             logging.warning('Failed to run job %s on %s for computation %s; rescheduling it',
                             _job.uid, _job.node.ip_addr, cluster._compute.name)
             # TODO: delay executing again for some time?
-            self._sched_cv.acquire()
+            yield self._sched_cv.acquire()
             # this job might have been deleted already due to timeout
             if self._sched_jobs.pop(_job.uid, None) == _job:
                 cluster._jobs.append(_job)
@@ -1023,7 +1023,7 @@ class _Scheduler(object):
         # generator
         assert coro is not None
         while True:
-            self._sched_cv.acquire()
+            yield self._sched_cv.acquire()
             # n = sum(len(cluster._jobs) for cluster in self._clusters.itervalues())
             # assert self.unsched_jobs == n, '%s != %s' % (self.unsched_jobs, n)
             while not self._terminate_scheduler:
@@ -1058,7 +1058,7 @@ class _Scheduler(object):
             node.busy += 1
             Coro(self.run_job, _job, cluster)
             yield self._sched_cv.release()
-        self._sched_cv.acquire()
+        yield self._sched_cv.acquire()
         logging.debug('scheduler quitting (%s / %s)',
                       len(self._sched_jobs), self.unsched_jobs)
         for cid, cluster in self._clusters.iteritems():
@@ -1079,7 +1079,7 @@ class _Scheduler(object):
             assert coro is not None
             # TODO: send shutdown notification to clients? Or wait for all
             # pending tasks to complete?
-            self._sched_cv.acquire()
+            yield self._sched_cv.acquire()
             if self._terminate_scheduler is False:
                 self._terminate_scheduler = True
                 logging.debug('shutting down scheduler ...')

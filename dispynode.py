@@ -264,7 +264,7 @@ class _DispyNode(object):
                 try:
                     info = pickle.loads(msg[len('PULSE:'):])
                     assert info['ip_addr'] == self.scheduler_ip_addr
-                    self.lock.acquire()
+                    yield self.lock.acquire()
                     for compute in self.computations.itervalues():
                         compute.last_pulse = time.time()
                     yield self.lock.release()
@@ -295,7 +295,7 @@ class _DispyNode(object):
                 logging.debug('Ignoring job request from %s', addr[0])
                 logging.debug(traceback.format_exc())
                 raise StopIteration
-            self.lock.acquire()
+            yield self.lock.acquire()
             compute = self.computations.get(_job.compute_id, None)
             if compute is not None:
                 if compute.scheduler_ip_addr != self.scheduler_ip_addr or \
@@ -352,7 +352,7 @@ class _DispyNode(object):
                     raise StopIteration
                 job_info.job_reply.status = DispyJob.Running
                 job_info.proc = multiprocessing.Process(target=_dispy_job_func, args=args)
-                self.lock.acquire()
+                yield self.lock.acquire()
                 self.avail_cpus -= 1
                 compute.pending_jobs += 1
                 self.job_infos[_job.uid] = job_info
@@ -369,7 +369,7 @@ class _DispyNode(object):
                 reply = _JobReply(_job, self.ip_addr)
                 job_info = _DispyJobInfo(reply, reply_addr, compute)
                 job_info.job_reply.status = DispyJob.Running
-                self.lock.acquire()
+                yield self.lock.acquire()
                 self.job_infos[_job.uid] = job_info
                 self.avail_cpus -= 1
                 compute.pending_jobs += 1
@@ -395,7 +395,7 @@ class _DispyNode(object):
                 except:
                     logging.warning('Failed to send reply to %s', str(addr))
                 raise StopIteration
-            self.lock.acquire()
+            yield self.lock.acquire()
             if not ((self.scheduler_ip_addr is None) or
                     (self.scheduler_ip_addr == compute.scheduler_ip_addr and \
                      self.scheduler_port == compute.scheduler_port)):
@@ -495,7 +495,7 @@ class _DispyNode(object):
                     yield conn.send_msg(resp)
                 except:
                     assert self.scheduler_ip_addr == compute.scheduler_ip_addr
-                    self.lock.acquire()
+                    yield self.lock.acquire()
                     del self.computations[compute.id]
                     self.scheduler_ip_addr = None
                     self.scheduler_port = None
@@ -527,7 +527,7 @@ class _DispyNode(object):
                                os.path.basename(xf.name))
             if os.path.isfile(tgt):
                 if _same_file(tgt, xf):
-                    self.lock.acquire()
+                    yield self.lock.acquire()
                     if tgt in self.file_uses:
                         self.file_uses[tgt] += 1
                     else:
@@ -574,7 +574,7 @@ class _DispyNode(object):
 
         def terminate_job_task(msg):
             assert coro is not None
-            self.lock.acquire()
+            yield self.lock.acquire()
             try:
                 _job = pickle.loads(msg)
                 compute = self.computations[_job.compute_id]
@@ -669,7 +669,7 @@ class _DispyNode(object):
                             raise StopIteration
                         try:
                             os.remove(info_file)
-                            self.lock.acquire()
+                            yield self.lock.acquire()
                             compute = self.computations.get(req['compute_id'], None)
                             if compute is not None:
                                 compute.pending_results -= 1
@@ -720,7 +720,7 @@ class _DispyNode(object):
             try:
                 info = pickle.loads(msg)
                 compute_id = info['ID']
-                self.lock.acquire()
+                yield self.lock.acquire()
                 compute = self.computations.get(compute_id, None)
                 if compute is None:
                     logging.warning('Computation "%s" is not valid', compute_id)
@@ -780,7 +780,7 @@ class _DispyNode(object):
                     sock.close()
             if self.zombie_interval and (now - last_zombie_time) >= self.zombie_interval:
                 last_zombie_time = now
-                self.lock.acquire()
+                yield self.lock.acquire()
                 for compute in self.computations.itervalues():
                     if (now - compute.last_pulse) > self.zombie_interval:
                         compute.zombie = True
@@ -900,7 +900,7 @@ class _DispyNode(object):
             except:
                 logging.debug('Could not save results for job %s', job_reply.uid)
             else:
-                self.lock.acquire()
+                yield self.lock.acquire()
                 compute = self.computations.get(job_info.compute_id, None)
                 if compute is not None:
                     compute.pending_results += 1
@@ -908,7 +908,7 @@ class _DispyNode(object):
         finally:
             sock.close()
             if not resending:
-                self.lock.acquire()
+                yield self.lock.acquire()
                 self.avail_cpus += 1
                 compute = self.computations.get(job_info.compute_id, None)
                 if compute is None:
@@ -979,7 +979,7 @@ class _DispyNode(object):
     def shutdown(self):
         def _shutdown(self, coro=None):
             assert coro is not None
-            self.lock.acquire()
+            yield self.lock.acquire()
             job_infos = self.job_infos
             self.job_infos = {}
             computations = self.computations.items()

@@ -284,7 +284,7 @@ class _AsynCoroSocket(object):
         """
         def _recvall(self, view, *args):
             try:
-                sent = self._rsock.recv_into(view, len(view), *args)
+                n = self._rsock.recv_into(view, len(view), *args)
             except ssl.SSLError as err:
                 if err.args[0] != ssl.SSL_ERROR_WANT_READ:
                     raise socket.error(err)
@@ -294,8 +294,8 @@ class _AsynCoroSocket(object):
                 coro, self._coro = self._coro, None
                 coro.throw(*sys.exc_info())
             else:
-                if sent:
-                    view = view[sent:]
+                if n:
+                    view = view[n:]
                     if len(view) == 0:
                         buf = str(self._result)
                         self._notifier.modify(self, 0)
@@ -315,17 +315,17 @@ class _AsynCoroSocket(object):
         if self._certfile:
             # in case of SSL, attempt recv first
             try:
-                sent = self._rsock.recv_into(view, bufsize)
+                n = self._rsock.recv_into(view, bufsize)
             except ssl.SSLError as err:
                 if err.args[0] != ssl.SSL_ERROR_WANT_READ:
                     raise socket.error(err)
             else:
-                if sent == bufsize:
+                if n == bufsize:
                     buf = self._result
                     self._task = self._result = None
                     return buf
                 else:
-                    view = view[sent:]
+                    view = view[n:]
 
         self._task = functools.partial(_recvall, self, view, *args)
         self._coro = self._asyncoro.cur_coro()
@@ -340,12 +340,12 @@ class _AsynCoroSocket(object):
         self._result = bytearray(bufsize)
         view = memoryview(self._result)
         while len(view) > 0:
-            sent = self._rsock.recv_into(view, *args)
-            if not sent:
+            n = self._rsock.recv_into(view, *args)
+            if not n:
                 view.close()
                 self._result = None
                 raise socket.error('recv error')
-            view = view[sent:]
+            view = view[n:]
         buf = str(self._result)
         self._result = None
         return buf
@@ -381,7 +381,7 @@ class _AsynCoroSocket(object):
         """
         def _send(self, *args):
             try:
-                sent = self._rsock.send(*args)
+                n = self._rsock.send(*args)
             except:
                 self._notifier.modify(self, 0)
                 self._task = self._result = None
@@ -391,7 +391,7 @@ class _AsynCoroSocket(object):
                 self._notifier.modify(self, 0)
                 self._task = self._result = None
                 coro, self._coro = self._coro, None
-                coro.resume(sent)
+                coro.resume(n)
 
         self._task = functools.partial(_send, self, *args)
         self._coro = self._asyncoro.cur_coro()
@@ -405,7 +405,7 @@ class _AsynCoroSocket(object):
         """
         def _sendto(self, *args):
             try:
-                sent = self._rsock.sendto(*args)
+                n = self._rsock.sendto(*args)
             except:
                 self._notifier.modify(self, 0)
                 self._task = self._result = None
@@ -415,7 +415,7 @@ class _AsynCoroSocket(object):
                 self._notifier.modify(self, 0)
                 self._task = self._result = None
                 coro, self._coro = self._coro, None
-                coro.resume(sent)
+                coro.resume(n)
 
         self._task = functools.partial(_sendto, self, *args)
         self._coro = self._asyncoro.cur_coro()
@@ -429,15 +429,15 @@ class _AsynCoroSocket(object):
         """
         def _sendall(self):
             try:
-                sent = self._rsock.send(self._result)
+                n = self._rsock.send(self._result)
             except:
                 self._notifier.modify(self, 0)
                 self._task = self._result = None
                 coro, self._coro = self._coro, None
                 coro.throw(*sys.exc_info())
             else:
-                if sent > 0:
-                    self._result = self._result[sent:]
+                if n > 0:
+                    self._result = self._result[n:]
                     if len(self._result) == 0:
                         self._notifier.modify(self, 0)
                         self._task = self._result = None
@@ -458,9 +458,9 @@ class _AsynCoroSocket(object):
         # TODO: is socket's sendall better?
         buf = memoryview(data)
         while len(buf) > 0:
-            sent = self._rsock.send(buf)
-            if sent > 0:
-                buf = buf[sent:]
+            n = self._rsock.send(buf)
+            if n > 0:
+                buf = buf[n:]
         return 0
 
     def _async_accept(self):
@@ -1415,8 +1415,8 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
                     del self._timeout_fds[0]
 
         def terminate(self):
-            self.cmd_rsock.close()
             self.cmd_wsock.close()
+            self.cmd_rsock.close()
             if hasattr(self._poller, 'terminate'):
                 self._poller.terminate()
             else:
@@ -1632,19 +1632,19 @@ class Coro(object):
         else:
             logging.warning('set_daemon: coroutine %s removed?', self.name)
 
-    def suspend(self, timeout=None):
+    def suspend(self, timeout=None, alarm_value=None):
         """Suspend/sleep coro (until woken up, usually by AsyncNotifier
         in the case of AsynCoroSockets).
 
-        If timeout is a (floating point) number, this coro is suspended
-        for that many seconds (or fractions of second). This method
-        should be used with 'yield'; e.g., as 'x = yield
-        coro.suspend(2.5)' to suspend execution of coro for 2.5 seconds;
-        in that time other coroutines can execute. This method must be
-        called from coro only.
+        If timeout is a (floating point) number, this coro is
+        suspended for that many seconds (or fractions of second). This
+        method should be used with 'yield' and from coro only.
+
+        If suspend times out (no other coroutine resumes it), AsynCoro
+        resumes it with the value 'alarm_value'.
         """
         if self._asyncoro:
-            return self._asyncoro._suspend(self._id, timeout)
+            return self._asyncoro._suspend(self._id, timeout, alarm_value)
         else:
             logging.warning('suspend: coroutine %s removed?', self.name)
             return -1
@@ -1716,38 +1716,43 @@ class Coro(object):
 
 class Lock(object):
     """'Lock' primitive for coroutines.
-
-    Since a coroutine runs until 'yield', there is no need for lock. The
-    caller has to guarantee that 'yield' statement is not used from when
-    lock is acquired till when lock is released.
     """
     def __init__(self):
         self._owner = None
+        self._waitlist = []
         self._asyncoro = AsynCoro.instance()
 
-    def acquire(self):
-        """Should _not_ be used with 'yield'.
+    def acquire(self, blocking=True):
+        """Must be used with 'yield' as 'yield lock.acquire()'.
         """
         coro = self._asyncoro.cur_coro()
-        if self._owner != None:
-            raise RuntimeError('"%s"/%s: lock owned by "%s"/%s' % \
-                               (coro.name, coro._id, self._owner.name, self._owner._id))
-        self._owner = coro
+        while True:
+            if self._owner is None:
+                self._owner = coro
+                raise StopIteration(True)
+            if blocking is False:
+                raise StopIteration(False)
+            self._waitlist.append(coro)
+            yield coro.suspend()
 
     def release(self):
-        """Can be used with 'yield'.
+        """May be used with 'yield'.
         """
         coro = self._asyncoro.cur_coro()
         if self._owner != coro:
             raise RuntimeError('"%s"/%s: invalid lock release - owned by "%s"/%s' % \
                                (coro.name, coro._id, self._owner.name, self._owner._id))
         self._owner = None
+        if self._waitlist:
+            wake = self._waitlist.pop(0)
+            wake.resume()
 
 class RLock(object):
     """'RLock' primitive for coroutines.
 
-    Unlike in the case of 'Lock', using 'yield' after acquiring rlock
-    but before releasing it is allowed.
+    Since a coroutine runs until 'yield', there is no need for lock. The
+    caller has to guarantee that 'yield' statement is not used from when
+    lock is acquired till when lock is released.
     """
     def __init__(self):
         self._owner = None
@@ -1759,25 +1764,23 @@ class RLock(object):
         """Must be used with 'yield' as 'yield rlock.acquire()'.
         """
         coro = self._asyncoro.cur_coro()
-        if self._owner is None:
-            assert self._depth == 0
-            self._owner = coro
-            self._depth = 1
-            if blocking is True:
-                return True
-        elif self._owner == coro:
-            self._depth += 1
-            if blocking is True:
-                return True
-        else:
-            # self._owner != coro
-            if blocking is False:
-                return False
-            self._waitlist.append(coro)
-            coro.suspend()
+        while True:
+            if self._owner is None:
+                assert self._depth == 0
+                self._owner = coro
+                self._depth = 1
+                raise StopIteration(True)
+            elif self._owner == coro:
+                self._depth += 1
+                raise StopIteration(True)
+            else:
+                if blocking is False:
+                    raise StopIteration(False)
+                self._waitlist.append(coro)
+                yield coro.suspend()
 
     def release(self):
-        """Can be used with 'yield'.
+        """May be used with 'yield'.
         """
         coro = self._asyncoro.cur_coro()
         if self._owner != coro:
@@ -1785,55 +1788,96 @@ class RLock(object):
                                (coro.name, coro._id, self._owner.name, self._owner._id))
         self._depth -= 1
         if self._depth == 0:
+            self._owner = None
             if self._waitlist:
                 wake = self._waitlist.pop(0)
-                self._owner = wake
-                self._depth = 1
-                wake.resume(True)
-            else:
-                self._owner = None
+                wake.resume()
 
 class Condition(object):
     """'Condition' primitive for coroutines.
-
-    Once condition is acquired, 'yield' should not be used until
-    either 'release' or 'wait'.
     """
     def __init__(self):
+        """TODO: support lock argument?
+        """
+        self._owner = None
+        self._depth = 0
         self._waitlist = []
+        self._notifylist = []
         self._asyncoro = AsynCoro.instance()
 
-    def acquire(self):
-        """Should _not_ be used with 'yield'.
+    def acquire(self, blocking=1):
+        """Must be used with 'yield' as 'yield cv.acquire()'.
         """
-        pass
+        coro = self._asyncoro.cur_coro()
+        while True:
+            if self._owner is None:
+                assert self._depth == 0
+                self._owner = coro
+                self._depth = 1
+                raise StopIteration(True)
+            elif self._owner == coro:
+                self._depth += 1
+                raise StopIteration(True)
+            else:
+                if blocking is False:
+                    raise StopIteration(False)
+                self._waitlist.append(coro)
+                yield coro.suspend()
 
     def release(self):
-        """Can be used with 'yield'.
+        """May be used with 'yield'.
         """
-        pass
+        coro = self._asyncoro.cur_coro()
+        if self._owner != coro:
+            raise RuntimeError('"%s"/%s: invalid lock release - owned by "%s"/%s' % \
+                               (coro.name, coro._id, self._owner.name, self._owner._id))
+        self._depth -= 1
+        if self._depth == 0:
+            self._owner = None
+            if self._waitlist:
+                wake = self._waitlist.pop(0)
+                wake.resume()
 
     def notify(self, n=1):
-        """Should _not_ be used with 'yield'.
+        """May not be used with 'yield'.
         """
-        while self._waitlist and n:
-            wake = self._waitlist.pop(0)
-            wake.resume(None)
+        while self._notifylist and n:
+            wake = self._notifylist.pop(0)
+            wake.resume()
             n -= 1
 
-    def notifyAll(self):
-        """Should _not_ be used with 'yield'.
-        """
-        self.notify(len(self._waitlist))
+    def notify_all(self):
+        self.notify(len(self._notifylist))
 
-    notify_all = notifyAll
+    notifyAll = notify_all
 
     def wait(self, timeout=None):
         """Must be used with 'yield' as 'yield cv.wait()'.
         """
         coro = self._asyncoro.cur_coro()
-        self._waitlist.append(coro)
-        coro.suspend(timeout)
+        if self._owner != coro:
+            raise RuntimeError('"%s"/%s: invalid lock release - owned by "%s"/%s' % \
+                               (coro.name, coro._id, self._owner.name, self._owner._id))
+        self._owner = None
+        depth = self._depth
+        self._depth = 0
+        if self._waitlist:
+            wake = self._waitlist.pop(0)
+            wake.resume()
+        while True:
+            if timeout is not None:
+                if timeout <= 0:
+                    raise StopIteration
+                start = _time()
+            self._notifylist.append(coro)
+            yield coro.suspend(timeout)
+            if self._owner is None:
+                assert self._depth == 0
+                self._owner = coro
+                self._depth = depth
+                raise StopIteration
+            if timeout is not None:
+                timeout -= (_time() - start)
 
 class Event(object):
     """'Event' primitive for coroutines.
@@ -1844,7 +1888,7 @@ class Event(object):
         self._asyncoro = AsynCoro.instance()
 
     def set(self):
-        """Can be used with 'yield'.
+        """May be used with 'yield'.
         """
         self._flag = True
         for coro in self._waitlist:
@@ -1867,17 +1911,22 @@ class Event(object):
         """Must be used with 'yield' as 'yield event.wait()' .
         """
         if self._flag:
-            return True
-        else:
-            coro = self._asyncoro.cur_coro()
+            raise StopIteration(True)
+        coro = self._asyncoro.cur_coro()
+        while True:
+            if timeout is not None:
+                if timeout <= 0:
+                    raise StopIteration(False)
+                start = _time()
             self._waitlist.append(coro)
-            coro.suspend(timeout)
+            yield coro.suspend(timeout)
+            if self._flag:
+                raise StopIteration(True)
+            if timeout is not None:
+                timeout -= (_time() - start)
 
 class Semaphore(object):
     """'Semaphore' primitive for coroutines.
-
-    Similar to RLock, it is acceptable to use 'yield' after acquiring
-    semaphore and before releasing it.
     """
     def __init__(self, value=1):
         assert value >= 1
@@ -1888,24 +1937,23 @@ class Semaphore(object):
     def acquire(self, blocking=True):
         """Must be used with 'yield' as 'yield sem.acquire()'.
         """
-        if self._counter == 0:
-            if blocking:
-                coro = self._asyncoro.cur_coro()
+        if blocking:
+            coro = self._asyncoro.cur_coro()
+            while self._counter == 0:
                 self._waitlist.append(coro)
-                coro.suspend()
-            else:
-                return False
-        else:
-            self._counter -= 1
+                yield coro.suspend()
+        elif self._counter == 0:
+            raise StopIteration(False)
+        self._counter -= 1
 
     def release(self):
-        """Can be used with 'yield'.
+        """May be used with 'yield'.
         """
-        if self._counter == 0 and self._waitlist:
+        self._counter += 1
+        assert self._counter > 0
+        if self._waitlist:
             wake = self._waitlist.pop(0)
             wake.resume()
-        else:
-            self._counter += 1
 
 class AsynCoro(object):
     """Coroutine scheduler.
@@ -1985,7 +2033,7 @@ class AsynCoro(object):
             self._daemons += 1
         self._lock.release()
 
-    def _suspend(self, cid, timeout=None):
+    def _suspend(self, cid, timeout, alarm_value):
         """Internal use only. See sleep/suspend in Coro.
         """
         if timeout is not None:
@@ -1996,7 +2044,7 @@ class AsynCoro(object):
         coro = self._coros.get(cid, None)
         if coro is None or coro._state != AsynCoro._Running:
             self._lock.release()
-            logging.warning('invalid coroutine %s to suspend', cid)
+            logging.warning('invalid coroutine %s to suspend (%s)', cid, coro._state)
             return -1
         self._scheduled.discard(cid)
         self._suspended.add(cid)
@@ -2005,7 +2053,7 @@ class AsynCoro(object):
             coro._timeout = None
         else:
             timeout = _time() + timeout
-            heappush(self._timeouts, (timeout, cid))
+            heappush(self._timeouts, (timeout, cid, alarm_value))
             coro._timeout = timeout
         self._lock.release()
         return 0
@@ -2102,7 +2150,7 @@ class AsynCoro(object):
             if not self._scheduled:
                 if self._timeouts:
                     now = _time()
-                    timeout, cid = self._timeouts[0]
+                    timeout, cid, _ = self._timeouts[0]
                     timeout -= now
                     if timeout < 0.001:
                         timeout = 0
@@ -2116,7 +2164,7 @@ class AsynCoro(object):
                 # earlier, so give a bit of slack
                 now = _time() + 0.001
                 while self._timeouts and self._timeouts[0][0] <= now:
-                    timeout, cid = heappop(self._timeouts)
+                    timeout, cid, alarm_value = heappop(self._timeouts)
                     assert timeout <= now
                     coro = self._coros.get(cid, None)
                     if coro is None or coro._timeout != timeout:
@@ -2129,7 +2177,7 @@ class AsynCoro(object):
                     self._suspended.discard(coro._id)
                     self._scheduled.add(coro._id)
                     coro._state = AsynCoro._Scheduled
-                    coro._value = None
+                    coro._value = alarm_value
             scheduled = [self._coros.get(cid, None) for cid in self._scheduled]
             # random.shuffle(scheduled)
             self._lock.release()
@@ -2161,9 +2209,13 @@ class AsynCoro(object):
                     self._cur_coro = None
                     coro._exception = sys.exc_info()
                     if coro._exception[0] == StopIteration:
+                        v = coro._exception[1].args
+                        if v:
+                            if len(v) == 1:
+                                coro._value = v[0]
+                            else:
+                                coro._value = v
                         coro._exception = None
-                    else:
-                        coro._value = None
 
                     if coro._callers:
                         # return to caller
@@ -2238,7 +2290,6 @@ class AsynCoro(object):
                 else:
                     coro._generator = None
             coro._complete.set()
-        print 'terminating'
         self._scheduled = set()
         self._suspended = set()
         self._timeouts = []
@@ -2251,7 +2302,7 @@ class AsynCoro(object):
         all running coroutines.
         """
         if not self._terminate:
-            if await_non_daemons:
+            if await_non_daemons and len(self._coros) > self._daemons:
                 logging.debug('waiting for %s coroutines to terminate',
                               len(self._coros) - self._daemons)
                 self._complete.wait()
