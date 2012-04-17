@@ -284,7 +284,7 @@ class _AsynCoroSocket(object):
         """
         def _recvall(self, view, *args):
             try:
-                n = self._rsock.recv_into(view, len(view), *args)
+                recvd = self._rsock.recv_into(view, len(view), *args)
             except ssl.SSLError as err:
                 if err.args[0] != ssl.SSL_ERROR_WANT_READ:
                     raise socket.error(err)
@@ -294,8 +294,8 @@ class _AsynCoroSocket(object):
                 coro, self._coro = self._coro, None
                 coro.throw(*sys.exc_info())
             else:
-                if n:
-                    view = view[n:]
+                if recvd:
+                    view = view[recvd:]
                     if len(view) == 0:
                         buf = str(self._result)
                         self._notifier.modify(self, 0)
@@ -315,17 +315,17 @@ class _AsynCoroSocket(object):
         if self._certfile:
             # in case of SSL, attempt recv first
             try:
-                n = self._rsock.recv_into(view, bufsize)
+                recvd = self._rsock.recv_into(view, bufsize)
             except ssl.SSLError as err:
                 if err.args[0] != ssl.SSL_ERROR_WANT_READ:
                     raise socket.error(err)
             else:
-                if n == bufsize:
+                if recvd == bufsize:
                     buf = self._result
                     self._task = self._result = None
                     return buf
                 else:
-                    view = view[n:]
+                    view = view[recvd:]
 
         self._task = functools.partial(_recvall, self, view, *args)
         self._coro = self._asyncoro.cur_coro()
@@ -340,12 +340,11 @@ class _AsynCoroSocket(object):
         self._result = bytearray(bufsize)
         view = memoryview(self._result)
         while len(view) > 0:
-            n = self._rsock.recv_into(view, *args)
-            if not n:
-                view.close()
+            recvd = self._rsock.recv_into(view, *args)
+            if not recvd:
                 self._result = None
                 raise socket.error('recv error')
-            view = view[n:]
+            view = view[recvd:]
         buf = str(self._result)
         self._result = None
         return buf
@@ -381,7 +380,7 @@ class _AsynCoroSocket(object):
         """
         def _send(self, *args):
             try:
-                n = self._rsock.send(*args)
+                sent = self._rsock.send(*args)
             except:
                 self._notifier.modify(self, 0)
                 self._task = self._result = None
@@ -391,7 +390,7 @@ class _AsynCoroSocket(object):
                 self._notifier.modify(self, 0)
                 self._task = self._result = None
                 coro, self._coro = self._coro, None
-                coro.resume(n)
+                coro.resume(sent)
 
         self._task = functools.partial(_send, self, *args)
         self._coro = self._asyncoro.cur_coro()
@@ -405,7 +404,7 @@ class _AsynCoroSocket(object):
         """
         def _sendto(self, *args):
             try:
-                n = self._rsock.sendto(*args)
+                sent = self._rsock.sendto(*args)
             except:
                 self._notifier.modify(self, 0)
                 self._task = self._result = None
@@ -415,7 +414,7 @@ class _AsynCoroSocket(object):
                 self._notifier.modify(self, 0)
                 self._task = self._result = None
                 coro, self._coro = self._coro, None
-                coro.resume(n)
+                coro.resume(sent)
 
         self._task = functools.partial(_sendto, self, *args)
         self._coro = self._asyncoro.cur_coro()
@@ -429,15 +428,15 @@ class _AsynCoroSocket(object):
         """
         def _sendall(self):
             try:
-                n = self._rsock.send(self._result)
+                sent = self._rsock.send(self._result)
             except:
                 self._notifier.modify(self, 0)
                 self._task = self._result = None
                 coro, self._coro = self._coro, None
                 coro.throw(*sys.exc_info())
             else:
-                if n > 0:
-                    self._result = self._result[n:]
+                if sent > 0:
+                    self._result = self._result[sent:]
                     if len(self._result) == 0:
                         self._notifier.modify(self, 0)
                         self._task = self._result = None
@@ -458,9 +457,9 @@ class _AsynCoroSocket(object):
         # TODO: is socket's sendall better?
         buf = memoryview(data)
         while len(buf) > 0:
-            n = self._rsock.send(buf)
-            if n > 0:
-                buf = buf[n:]
+            sent = self._rsock.send(buf)
+            if sent > 0:
+                buf = buf[sent:]
         return 0
 
     def _async_accept(self):
@@ -1589,10 +1588,10 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
 
 class Coro(object):
     """'Coroutine' factory to build coroutines to be scheduled with
-    AsynCoro. Automatically starts executing 'target'.  The function
-    definition should have 'coro' argument set to (default value)
-    None. When the function is called, that argument will be this
-    object.
+    AsynCoro. Automatically starts executing 'target'.  The generator
+    function definition should have 'coro' argument set to (default
+    value) None. When the function is called, that argument will be
+    this object.
     """
     def __init__(self, target, *args, **kwargs):
         if not inspect.isgeneratorfunction(target):
@@ -1655,11 +1654,7 @@ class Coro(object):
         """Resume/wakeup this coro and send 'update' to it.
 
         The resuming coro gets 'update' for the 'yield' that caused it
-        to suspend. Thus, if coro1 resumes coro2 with
-        'coro2.resume({'a':1, 'b':2})', coro2 resumes from where it
-        suspended itself and will have the dictionary with keys 'a' and
-        'b' for 'x' in the example above. This method must be called
-        from coro only.
+        to suspend. This method must be called from coro only.
         """
         if self._asyncoro:
             return self._asyncoro._resume(self._id, update)
@@ -1730,7 +1725,7 @@ class Lock(object):
             if self._owner is None:
                 self._owner = coro
                 raise StopIteration(True)
-            if blocking is False:
+            if not blocking:
                 raise StopIteration(False)
             self._waitlist.append(coro)
             yield coro.suspend()
@@ -1739,9 +1734,9 @@ class Lock(object):
         """May be used with 'yield'.
         """
         coro = self._asyncoro.cur_coro()
-        if self._owner != coro:
-            raise RuntimeError('"%s"/%s: invalid lock release - owned by "%s"/%s' % \
-                               (coro.name, coro._id, self._owner.name, self._owner._id))
+        if self._owner is None:
+            raise RuntimeError('"%s"/%s: invalid lock release - not locked' % \
+                               (coro.name, coro._id))
         self._owner = None
         if self._waitlist:
             wake = self._waitlist.pop(0)
@@ -1749,10 +1744,6 @@ class Lock(object):
 
 class RLock(object):
     """'RLock' primitive for coroutines.
-
-    Since a coroutine runs until 'yield', there is no need for lock. The
-    caller has to guarantee that 'yield' statement is not used from when
-    lock is acquired till when lock is released.
     """
     def __init__(self):
         self._owner = None
@@ -1760,7 +1751,7 @@ class RLock(object):
         self._waitlist = []
         self._asyncoro = AsynCoro.instance()
 
-    def acquire(self, blocking=1):
+    def acquire(self, blocking=True):
         """Must be used with 'yield' as 'yield rlock.acquire()'.
         """
         coro = self._asyncoro.cur_coro()
@@ -1774,7 +1765,7 @@ class RLock(object):
                 self._depth += 1
                 raise StopIteration(True)
             else:
-                if blocking is False:
+                if not blocking:
                     raise StopIteration(False)
                 self._waitlist.append(coro)
                 yield coro.suspend()
@@ -1805,7 +1796,7 @@ class Condition(object):
         self._notifylist = []
         self._asyncoro = AsynCoro.instance()
 
-    def acquire(self, blocking=1):
+    def acquire(self, blocking=True):
         """Must be used with 'yield' as 'yield cv.acquire()'.
         """
         coro = self._asyncoro.cur_coro()
@@ -1819,7 +1810,7 @@ class Condition(object):
                 self._depth += 1
                 raise StopIteration(True)
             else:
-                if blocking is False:
+                if not blocking:
                     raise StopIteration(False)
                 self._waitlist.append(coro)
                 yield coro.suspend()
@@ -1910,18 +1901,16 @@ class Event(object):
     def wait(self, timeout=None):
         """Must be used with 'yield' as 'yield event.wait()' .
         """
-        if self._flag:
-            raise StopIteration(True)
         coro = self._asyncoro.cur_coro()
         while True:
+            if self._flag:
+                raise StopIteration(True)
             if timeout is not None:
                 if timeout <= 0:
                     raise StopIteration(False)
                 start = _time()
             self._waitlist.append(coro)
             yield coro.suspend(timeout)
-            if self._flag:
-                raise StopIteration(True)
             if timeout is not None:
                 timeout -= (_time() - start)
 
@@ -1945,6 +1934,7 @@ class Semaphore(object):
         elif self._counter == 0:
             raise StopIteration(False)
         self._counter -= 1
+        raise StopIteration(True)
 
     def release(self):
         """May be used with 'yield'.
@@ -1987,7 +1977,6 @@ class AsynCoro(object):
             # need to lock access to _scheduled, etc.
             self._lock = threading.Lock()
             self._terminate = False
-            self._exit = False
             self._complete = threading.Event()
             self._daemons = 0
             self._notifier = _AsyncNotifier()
@@ -2044,7 +2033,7 @@ class AsynCoro(object):
         coro = self._coros.get(cid, None)
         if coro is None or coro._state != AsynCoro._Running:
             self._lock.release()
-            logging.warning('invalid coroutine %s to suspend (%s)', cid, coro._state)
+            logging.warning('invalid coroutine %s to suspend', cid)
             return -1
         self._scheduled.discard(cid)
         self._suspended.add(cid)
