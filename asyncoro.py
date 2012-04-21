@@ -1,22 +1,20 @@
 # asyncoro: Framework for asynchronous, concurrent programming with
-# coroutines; see accompanying 'asyncoro.html' for more details.
+# coroutines.
 
 # Copyright (C) 2012 Giridhar Pemmasani (pgiri@yahoo.com)
 
-# This file is part of dispy.
-
-# dispy is free software: you can redistribute it and/or modify
+# asyncoro is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Lesser General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
 
-# dispy is distributed in the hope that it will be useful,
+# asyncoro is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU Lesser General Public License for more details.
 
 # You should have received a copy of the GNU Lesser General Public License
-# along with dispy.  If not, see <http://www.gnu.org/licenses/>.
+# along with asyncoro.  If not, see <http://www.gnu.org/licenses/>.
 
 import time
 import threading
@@ -89,12 +87,12 @@ class _AsynCoroSocket(object):
             self._keyfile = keyfile
             self._certfile = certfile
             self._ssl_version = ssl_version
-            self._result = None
             self._fileno = sock.fileno()
             self._timeout = 0
             self._timeout_id = None
             self._coro = None
             self._task = None
+            self._result = None
             self._asyncoro = None
             self._notifier = None
 
@@ -174,7 +172,7 @@ class _AsynCoroSocket(object):
             self._rsock.close()
             self._rsock = None
         self._asyncoro = None
-        self._coro = None
+        self._coro = self._coro = None
 
     def unwrap(self):
         """Get rid of AsynCoroSocket setup and return underlying socket
@@ -259,23 +257,26 @@ class _AsynCoroSocket(object):
                 self._notifier.modify(self, 0)
                 self._task = self._result = None
                 coro, self._coro = self._coro, None
-                coro.resume(buf)
-
-        if self._certfile:
-            # in case of SSL, attempt read first
-            try:
-                buf = self._rsock.recv(bufsize)
-            except ssl.SSLError as err:
-                if err.args[0] != ssl.SSL_ERROR_WANT_READ:
-                    raise socket.error(err)
-            else:
-                if buf:
-                    return buf
+                coro._proceed_(buf)
 
         self._task = functools.partial(_recv, self, bufsize, *args)
-        self._coro = self._asyncoro.cur_coro()
-        self._coro.suspend()
         self._notifier.modify(self, _AsyncPoller._Readable)
+        if not self._certfile:
+            try:
+                buf = self._rsock.recv(bufsize)
+            except socket.error as err:
+                if err.args[0] != EWOULDBLOCK:
+                    self._task = None
+                    self._notifier.modify(self, 0)
+                    raise
+            else:
+                if buf:
+                    self._task = None
+                    self._notifier.modify(self, 0)
+                    return buf
+
+        self._coro = self._asyncoro.cur_coro()
+        self._coro._await_()
 
     def _async_recvall(self, bufsize, *args):
         """Internal use only; use 'recvall' with 'yield' instead.
@@ -301,36 +302,38 @@ class _AsynCoroSocket(object):
                         self._notifier.modify(self, 0)
                         self._task = self._result = None
                         coro, self._coro = self._coro, None
-                        coro.resume(buf)
+                        coro._proceed_(buf)
                     else:
                         self._task = functools.partial(_recvall, self, view, *args)
                 else:
                     self._notifier.modify(self, 0)
                     self._task = self._result = None
                     coro, self._coro = self._coro, None
-                    coro.throw(socket.error('recv error'))
+                    coro._proceed_('')
 
         self._result = bytearray(bufsize)
         view = memoryview(self._result)
-        if self._certfile:
-            # in case of SSL, attempt recv first
+        self._task = functools.partial(_recvall, self, view, *args)
+        self._notifier.modify(self, _AsyncPoller._Readable)
+        if not self._certfile:
             try:
                 recvd = self._rsock.recv_into(view, bufsize)
-            except ssl.SSLError as err:
-                if err.args[0] != ssl.SSL_ERROR_WANT_READ:
-                    raise socket.error(err)
+            except socket.error as err:
+                if err.args[0] != EWOULDBLOCK:
+                    self._task = self._result = None
+                    self._notifier.modify(self, 0)
+                    raise
             else:
                 if recvd == bufsize:
-                    buf = self._result
+                    buf = str(self._result)
                     self._task = self._result = None
+                    self._notifier.modify(self, 0)
                     return buf
-                else:
+                elif recvd:
                     view = view[recvd:]
 
-        self._task = functools.partial(_recvall, self, view, *args)
         self._coro = self._asyncoro.cur_coro()
-        self._coro.suspend()
-        self._notifier.modify(self, _AsyncPoller._Readable)
+        self._coro._await_()
 
     def _sync_recvall(self, bufsize, *args):
         """Internal use only; use 'recvall' instead.
@@ -343,7 +346,7 @@ class _AsynCoroSocket(object):
             recvd = self._rsock.recv_into(view, *args)
             if not recvd:
                 self._result = None
-                raise socket.error('recv error')
+                return ''
             view = view[recvd:]
         buf = str(self._result)
         self._result = None
@@ -366,12 +369,23 @@ class _AsynCoroSocket(object):
                 self._notifier.modify(self, 0)
                 self._task = self._result = None
                 coro, self._coro = self._coro, None
-                coro.resume(res)
+                coro._proceed_(res)
 
         self._task = functools.partial(_recvfrom, self, *args)
-        self._coro = self._asyncoro.cur_coro()
-        self._coro.suspend()
         self._notifier.modify(self, _AsyncPoller._Readable)
+        try:
+            res = self._rsock.recvfrom(*args)
+        except socket.error as err:
+            if err.args[0] != EWOULDBLOCK:
+                self._task = None
+                self._notifier.modify(self, 0)
+                raise
+        else:
+            self._task = None
+            self._notifier.modify(self, 0)
+            return res
+        self._coro = self._asyncoro.cur_coro()
+        self._coro._await_()
 
     def _async_send(self, *args):
         """Internal use only; use 'send' with 'yield' instead.
@@ -390,11 +404,11 @@ class _AsynCoroSocket(object):
                 self._notifier.modify(self, 0)
                 self._task = self._result = None
                 coro, self._coro = self._coro, None
-                coro.resume(sent)
+                coro._proceed_(sent)
 
         self._task = functools.partial(_send, self, *args)
         self._coro = self._asyncoro.cur_coro()
-        self._coro.suspend()
+        self._coro._await_()
         self._notifier.modify(self, _AsyncPoller._Writable)
 
     def _async_sendto(self, *args):
@@ -414,11 +428,11 @@ class _AsynCoroSocket(object):
                 self._notifier.modify(self, 0)
                 self._task = self._result = None
                 coro, self._coro = self._coro, None
-                coro.resume(sent)
+                coro._proceed_(sent)
 
         self._task = functools.partial(_sendto, self, *args)
         self._coro = self._asyncoro.cur_coro()
-        self._coro.suspend()
+        self._coro._await_()
         self._notifier.modify(self, _AsyncPoller._Writable)
 
     def _async_sendall(self, data):
@@ -432,7 +446,7 @@ class _AsynCoroSocket(object):
             except:
                 self._notifier.modify(self, 0)
                 self._task = self._result = None
-                coro, self._coro = self._coro, None
+                coro, self._wirte_coro = self._coro, None
                 coro.throw(*sys.exc_info())
             else:
                 if sent > 0:
@@ -441,12 +455,12 @@ class _AsynCoroSocket(object):
                         self._notifier.modify(self, 0)
                         self._task = self._result = None
                         coro, self._coro = self._coro, None
-                        coro.resume(0)
+                        coro._proceed_(0)
 
         self._result = memoryview(data)
         self._task = functools.partial(_sendall, self)
         self._coro = self._asyncoro.cur_coro()
-        self._coro.suspend()
+        self._coro._await_()
         self._notifier.modify(self, _AsyncPoller._Writable)
 
     def _sync_sendall(self, data):
@@ -492,7 +506,7 @@ class _AsynCoroSocket(object):
                         conn._task = None
                         coro, self._coro = self._coro, None
                         conn._notifier.modify(conn, 0)
-                        coro.resume((conn, addr))
+                        coro._proceed_((conn, addr))
                 conn = AsynCoroSocket(conn, blocking=False, keyfile=self._keyfile,
                                       certfile=self._certfile, ssl_version=self._ssl_version)
                 conn._notifier.register(conn, _AsyncPoller._Readable)
@@ -505,11 +519,11 @@ class _AsynCoroSocket(object):
                 coro, self._coro = self._coro, None
                 conn = AsynCoroSocket(conn, blocking=False)
                 conn._notifier.register(conn)
-                coro.resume((conn, addr))
+                coro._proceed_((conn, addr))
 
         self._task = functools.partial(_accept, self)
         self._coro = self._asyncoro.cur_coro()
-        self._coro.suspend()
+        self._coro._await_()
         self._notifier.register(self, _AsyncPoller._Readable)
 
     def _async_connect(self, *args):
@@ -542,7 +556,7 @@ class _AsynCoroSocket(object):
                     else:
                         coro, self._coro = self._coro, None
                         self._notifier.modify(self, 0)
-                        coro.resume(0)
+                        coro._proceed_(0)
 
                 self._rsock = ssl.wrap_socket(self._rsock, keyfile=self._keyfile,
                                               certfile=self._certfile, server_side=False,
@@ -553,11 +567,11 @@ class _AsynCoroSocket(object):
                 self._task = None
                 coro, self._coro = self._coro, None
                 self._notifier.modify(self, 0)
-                coro.resume(0)
+                coro._proceed_(0)
 
         self._task = functools.partial(_connect, self, *args)
         self._coro = self._asyncoro.cur_coro()
-        self._coro.suspend()
+        self._coro._await_()
         try:
             self._rsock.connect(*args)
         except socket.error as e:
@@ -587,28 +601,40 @@ class _AsynCoroSocket(object):
         method receives length of payload, then the payload and
         returns the payload.
         """
-        n = struct.calcsize('>L')
-        data = yield self.recvall(n)
-        assert len(data) == n
-        n = struct.unpack('>L', data)[0]
-        assert n >= 0
-        data = yield self.recvall(n)
-        assert len(data) == n
-        yield data
+        try:
+            n = struct.calcsize('>L')
+            data = yield self.recvall(n)
+            assert len(data) == n
+            n = struct.unpack('>L', data)[0]
+            assert n >= 0
+            data = yield self.recvall(n)
+            assert len(data) == n
+            yield data
+        except socket.error as err:
+            if err.args[0] == 'hangup':
+                raise StopIteration('')
+            else:
+                raise
 
     def _sync_recv_msg(self):
         """Internal use only; use 'recv_msg' instead.
 
         Synchronous version of async_recv_msg.
         """
-        n = struct.calcsize('>L')
-        data = self._sync_recvall(n)
-        assert len(data) == n
-        n = struct.unpack('>L', data)[0]
-        assert n >= 0
-        data = self._sync_recvall(n)
-        assert len(data) == n
-        return data
+        try:
+            n = struct.calcsize('>L')
+            data = self._sync_recvall(n)
+            assert len(data) == n
+            n = struct.unpack('>L', data)[0]
+            assert n >= 0
+            data = self._sync_recvall(n)
+            assert len(data) == n
+            return data
+        except socket.error as err:
+            if err.args[0] == 'hangup':
+                raise StopIteration('')
+            else:
+                raise
 
 if platform.system() == 'Windows':
     # use IOCP if pywin32 (http://pywin32.sf.net) is installed
@@ -972,21 +998,24 @@ if platform.system() == 'Windows':
                             if not err:
                                 err = winerror.ERROR_CONNECTION_INVALID
                             coro, self._coro = self._coro, None
-                            coro.throw(socket.error(err))
+                            if coro:
+                                coro.throw(socket.error(err))
                     else:
                         buf = self._result[:n]
                         self._overlap.object = self._result = None
                         coro, self._coro = self._coro, None
-                        coro.resume(buf)
+                        if coro:
+                            coro._proceed_(buf)
 
                 self._result = win32file.AllocateReadBuffer(bufsize)
                 self._overlap.object = functools.partial(_recv, self)
                 self._coro = self._asyncoro.cur_coro()
-                self._coro.suspend()
+                self._coro._await_()
                 if self._timeout:
                     self._notifier._add_timeout(self)
                 err, n = win32file.WSARecv(self._fileno, self._result, self._overlap, 0)
                 if err and err != winerror.ERROR_IO_PENDING:
+                    self._overlap.object = self._result = self._coro = None
                     raise socket.error(err)
 
             def _iocp_send(self, buf, *args):
@@ -1003,19 +1032,22 @@ if platform.system() == 'Windows':
                             if not err:
                                 err = winerror.ERROR_CONNECTION_INVALID
                             coro, self._coro = self._coro, None
-                            coro.throw(socket.error(err))
+                            if coro:
+                                coro.throw(socket.error(err))
                     else:
                         self._overlap.object = self._result = None
                         coro, self._coro = self._coro, None
-                        coro.resume(n)
+                        if coro:
+                            coro._proceed_(n)
 
                 self._overlap.object = functools.partial(_send, self)
                 self._coro = self._asyncoro.cur_coro()
-                self._coro.suspend()
+                self._coro._await_()
                 if self._timeout:
                     self._notifier._add_timeout(self)
                 err, n = win32file.WSASend(self._fileno, buf, self._overlap, 0)
                 if err and err != winerror.ERROR_IO_PENDING:
+                    self._overlap.object = self._result = self._coro = None
                     raise socket.error(err)
 
             def _iocp_recvall(self, bufsize, *args):
@@ -1032,7 +1064,8 @@ if platform.system() == 'Windows':
                             if not err:
                                 err = winerror.ERROR_CONNECTION_INVALID
                             coro, self._coro = self._coro, None
-                            coro.throw(socket.error(err))
+                            if coro:
+                                coro.throw(socket.error(err))
                     else:
                         self._result.append(buf[:n])
                         pending -= n
@@ -1042,7 +1075,8 @@ if platform.system() == 'Windows':
                                 self._notifier._del_timeout(self)
                             self._overlap.object = self._result = None
                             coro, self._coro = self._coro, None
-                            coro.resume(buf)
+                            if coro:
+                                coro._proceed_(buf)
                         else:
                             buf = win32file.AllocateReadBuffer(min(pending, 1048576))
                             self._overlap.object = functools.partial(_recvall, self, pending, buf)
@@ -1052,17 +1086,19 @@ if platform.system() == 'Windows':
                                     self._notifier._del_timeout(self)
                                 self._overlap.object = self._result = None
                                 coro, self._coro = self._coro, None
-                                coro.throw(socket.error(err))
+                                if coro:
+                                    coro.throw(socket.error(err))
 
                 self._result = []
                 buf = win32file.AllocateReadBuffer(min(bufsize, 1048576))
                 self._overlap.object = functools.partial(_recvall, self, bufsize, buf)
                 self._coro = self._asyncoro.cur_coro()
-                self._coro.suspend()
+                self._coro._await_()
                 if self._timeout:
                     self._notifier._add_timeout(self)
                 err, n = win32file.WSARecv(self._fileno, buf, self._overlap, 0)
                 if err and err != winerror.ERROR_IO_PENDING:
+                    self._overlap.object = self._result = self._coro = None
                     raise socket.error(err)
 
             def _iocp_sendall(self, data):
@@ -1079,7 +1115,8 @@ if platform.system() == 'Windows':
                             if not err:
                                 err = winerror.ERROR_CONNECTION_INVALID
                             coro, self._coro = self._coro, None
-                            coro.throw(socket.error(err))
+                            if coro:
+                                coro.throw(socket.error(err))
                     else:
                         self._result = buffer(self._result, n)
                         if len(self._result) == 0:
@@ -1087,24 +1124,28 @@ if platform.system() == 'Windows':
                                 self._notifier._del_timeout(self)
                             self._overlap.object = self._result = None
                             coro, self._coro = self._coro, None
-                            coro.resume(0)
+                            if coro:
+                                coro._proceed_(0)
                         else:
-                            err, n = win32file.WSASend(self._fileno, self._result, self._overlap, 0)
+                            err, n = win32file.WSASend(self._fileno, self._result,
+                                                       self._overlap, 0)
                             if err and err != winerror.ERROR_IO_PENDING:
                                 if self._timeout and self._notifier:
                                     self._notifier._del_timeout(self)
                                 self._overlap.object = self._result = None
                                 coro, self._coro = self._coro, None
-                                coro.throw(socket.error(err))
+                                if coro:
+                                    coro.throw(socket.error(err))
 
                 self._result = buffer(data, 0)
                 self._overlap.object = functools.partial(_sendall, self)
                 self._coro = self._asyncoro.cur_coro()
-                self._coro.suspend()
+                self._coro._await_()
                 if self._timeout:
                     self._notifier._add_timeout(self)
                 err, n = win32file.WSASend(self._fileno, self._result, self._overlap, 0)
                 if err and err != winerror.ERROR_IO_PENDING:
+                    self._overlap.object = self._result = self._coro = None
                     raise socket.error(err)
 
             def _iocp_connect(self, host_port):
@@ -1116,7 +1157,8 @@ if platform.system() == 'Windows':
                             self._rsock.do_handshake()
                         except ssl.SSLError as err:
                             if err.args[0] == ssl.SSL_ERROR_WANT_READ:
-                                err, n = win32file.WSARecv(self._fileno, self._result, self._overlap, 0)
+                                err, n = win32file.WSARecv(self._fileno, self._result,
+                                                           self._overlap, 0)
                             elif err.args[0] == ssl.SSL_ERROR_WANT_WRITE:
                                 err, n = win32file.WSASend(self._fileno, '', self._overlap, 0)
                             else:
@@ -1130,13 +1172,15 @@ if platform.system() == 'Windows':
                                 self._overlap = None
                             else:
                                 coro, self._coro = self._coro, None
-                                coro.throw(*sys.exc_info())
+                                if coro:
+                                    coro.throw(*sys.exc_info())
                         else:
                             if self._timeout and self._notifier:
                                 self._notifier._del_timeout(self)
                             self._overlap.object = self._result = None
                             coro, self._coro = self._coro, None
-                            coro.resume(0)
+                            if coro:
+                                coro._proceed_(0)
 
                     if err:
                         if self._timeout and self._notifier:
@@ -1146,7 +1190,8 @@ if platform.system() == 'Windows':
                             self._overlap = None
                         else:
                             coro, self._coro = self._coro, None
-                            coro.throw(socket.error(err))
+                            if coro:
+                                coro.throw(socket.error(err))
                     else:
                         self._rsock.setsockopt(socket.SOL_SOCKET, win32file.SO_UPDATE_CONNECT_CONTEXT, '')
                         if self._certfile:
@@ -1161,7 +1206,8 @@ if platform.system() == 'Windows':
                                 self._notifier._del_timeout(self)
                             self._overlap.object = self._result = None
                             coro, self._coro = self._coro, None
-                            coro.resume(0)
+                            if coro:
+                                coro._proceed_(0)
 
                 # ConnectEX requires socket to be bound!
                 try:
@@ -1171,11 +1217,12 @@ if platform.system() == 'Windows':
                         raise
                 self._overlap.object = functools.partial(_connect, self)
                 self._coro = self._asyncoro.cur_coro()
-                self._coro.suspend()
+                self._coro._await_()
                 if self._timeout:
                     self._notifier._add_timeout(self)
                 err, n = win32file.ConnectEx(self._rsock, host_port, self._overlap)
                 if err and err != winerror.ERROR_IO_PENDING:
+                    self._overlap.object = self._result = self._coro = None
                     raise socket.error(err)
 
             def _iocp_accept(self):
@@ -1189,7 +1236,8 @@ if platform.system() == 'Windows':
                             conn._rsock.do_handshake()
                         except ssl.SSLError as err:
                             if err.args[0] == ssl.SSL_ERROR_WANT_READ:
-                                err, n = win32file.WSARecv(conn._fileno, self._result, self._overlap, 0)
+                                err, n = win32file.WSARecv(conn._fileno, self._result,
+                                                           self._overlap, 0)
                             elif err.args[0] == ssl.SSL_ERROR_WANT_WRITE:
                                 err, n = win32file.WSASend(conn._fileno, '', self._overlap, 0)
                             else:
@@ -1203,13 +1251,15 @@ if platform.system() == 'Windows':
                                 self._overlap = None
                             else:
                                 coro, self._coro = self._coro, None
-                                coro.throw(*sys.exc_info())
+                                if coro:
+                                    coro.throw(*sys.exc_info())
                         else:
                             if self._timeout and self._notifier:
                                 self._notifier._del_timeout(self)
                             self._overlap.object = self._result = None
                             coro, self._coro = self._coro, None
-                            coro.resume((conn, addr))
+                            if coro:
+                                coro._proceed_((conn, addr))
 
                     if err:
                         if self._timeout and self._notifier:
@@ -1219,7 +1269,8 @@ if platform.system() == 'Windows':
                             self._overlap = None
                         else:
                             coro, self._coro = self._coro, None
-                            coro.throw(socket.error(err))
+                            if coro:
+                                coro.throw(socket.error(err))
                     else:
                         family, laddr, raddr = win32file.GetAcceptExSockaddrs(conn, self._result)
                         # TODO: unpack raddr if family != AF_INET
@@ -1238,7 +1289,8 @@ if platform.system() == 'Windows':
                                 self._notifier._del_timeout(self)
                             self._overlap.object = self._result = None
                             coro, self._coro = self._coro, None
-                            coro.resume((conn, raddr))
+                            if coro:
+                                coro._proceed_((conn, raddr))
 
                 sock = socket.socket(self._rsock.family, self._rsock.type, self._rsock.proto)
                 conn = AsynCoroSocket(sock, keyfile=self._keyfile, certfile=self._certfile,
@@ -1246,11 +1298,13 @@ if platform.system() == 'Windows':
                 self._result = win32file.AllocateReadBuffer(win32file.CalculateSocketEndPointSize(sock))
                 self._overlap.object = functools.partial(_accept, self, conn)
                 self._coro = self._asyncoro.cur_coro()
-                self._coro.suspend()
+                self._coro._await_()
                 if self._timeout:
                     self._notifier._add_timeout(self)
-                err = win32file.AcceptEx(self._fileno, conn._fileno, self._result, self._overlap)
+                err = win32file.AcceptEx(self._fileno, conn._fileno, self._result,
+                                         self._overlap)
                 if err and err != winerror.ERROR_IO_PENDING:
+                    self._overlap.object = self._result = self._coro = None
                     raise socket.error(err)
 
 if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSingleton):
@@ -1383,23 +1437,22 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
                         if event != _AsyncPoller._Hangup:
                             logging.debug('invalid fd for event %s', event)
                         continue
-                    if event & _AsyncPoller._Hangup:
-                        self.unregister(fd)
-                        if fd._coro:
-                            fd._coro.throw(socket.error('hangup'))
-                        continue
                     if event & _AsyncPoller._Read:
                         # logging.debug('fd %s is readable', fd._fileno)
                         if fd._task is None:
-                            logging.error('fd %s is not registered for read?', fd._fileno)
+                            logging.error('fd %s is not registered for read!', fd._fileno)
                         else:
                             fd._task()
                     elif event & _AsyncPoller._Write:
                         # logging.debug('fd %s is writable', fd._fileno)
                         if fd._task is None:
-                            logging.error('fd %s is not registered for write?', fd._fileno)
+                            logging.error('fd %s is not registered for write!', fd._fileno)
                         else:
                             fd._task()
+                    if event & _AsyncPoller._Hangup:
+                        self.unregister(fd)
+                        if fd._coro:
+                            fd._coro.throw(socket.error('hangup'))
             except:
                 logging.debug(traceback.format_exc())
 
@@ -1521,14 +1574,10 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
             self.register(fid, event)
 
         def update(self, fid, event, flags):
-            kevents = []
             if event == _AsyncNotifier._Readable:
-                kevents = [select.kevent(fid, filter=select.KQ_FILTER_READ, flags=flags)]
+                self.poller.control([select.kevent(fid, filter=select.KQ_FILTER_READ, flags=flags)])
             elif event == _AsyncNotifier._Writable:
-                kevents = [select.kevent(fid, filter=select.KQ_FILTER_WRITE, flags=flags)]
-
-            if kevents:
-                self.poller.control(kevents, 0)
+                self.poller.control([select.kevent(fid, filter=select.KQ_FILTER_WRITE, flags=flags)])
 
         def poll(self, timeout):
             kevents = self.poller.control(None, 500, timeout)
@@ -1609,7 +1658,6 @@ class Coro(object):
         kwargs['coro'] = self
         self.name = target.__name__
         self._generator = target(*args, **kwargs)
-        self._id = None
         self._state = None
         self._value = None
         self._exception = None
@@ -1627,7 +1675,7 @@ class Coro(object):
         coroutines to terminate.
         """
         if self._asyncoro:
-            self._asyncoro._set_daemon(self._id)
+            self._asyncoro._set_daemon(self)
         else:
             logging.warning('set_daemon: coroutine %s removed?', self.name)
 
@@ -1643,26 +1691,40 @@ class Coro(object):
         resumes it with the value 'alarm_value'.
         """
         if self._asyncoro:
-            return self._asyncoro._suspend(self._id, timeout, alarm_value)
+            return self._asyncoro._suspend(self, timeout, alarm_value, AsynCoro._Suspended)
         else:
             logging.warning('suspend: coroutine %s removed?', self.name)
             return -1
 
     sleep = suspend
 
+    def _await_(self, timeout=None, alarm_value=None):
+        """Internal use only.
+        """
+        return self._asyncoro._suspend(self, timeout, alarm_value, AsynCoro._Await_)
+
     def resume(self, update=None):
         """Resume/wakeup this coro and send 'update' to it.
 
         The resuming coro gets 'update' for the 'yield' that caused it
-        to suspend. This method must be called from coro only.
+        to suspend. This method must be called from coro only. Note
+        that asyncoro also uses suspend/resume to implement
+        asynchronous API, so resume from user programs must be for
+        matching suspend - resuming otherwise may interrupt
+        asynchronous call, causing failures.
         """
         if self._asyncoro:
-            return self._asyncoro._resume(self._id, update)
+            return self._asyncoro._resume(self, update, AsynCoro._Suspended)
         else:
             logging.warning('resume: coroutine %s removed?', self.name)
             return -1
 
     wakeup = resume
+
+    def _proceed_(self, update=None):
+        """Internal use only.
+        """
+        return self._asyncoro._resume(self, update, AsynCoro._Await_)
 
     def throw(self, *args):
         """Throw exception in coroutine. This method must be called from
@@ -1677,7 +1739,7 @@ class Coro(object):
             else:
                 args = (type(args[0]), args[0])
         if self._asyncoro:
-            return self._asyncoro._throw(self._id, *args)
+            return self._asyncoro._throw(self, *args)
         else:
             logging.warning('throw: coroutine %s removed?', self.name)
             return -1
@@ -1704,7 +1766,7 @@ class Coro(object):
         coro.
         """
         if self._asyncoro:
-            return self._asyncoro._terminate_coro(self._id)
+            return self._asyncoro._terminate_coro(self)
         else:
             logging.warning('terminate: coroutine %s removed?', self.name)
             return -1
@@ -1728,7 +1790,7 @@ class Lock(object):
             if not blocking:
                 raise StopIteration(False)
             self._waitlist.append(coro)
-            yield coro.suspend()
+            yield coro._await_()
 
     def release(self):
         """May be used with 'yield'.
@@ -1736,11 +1798,11 @@ class Lock(object):
         coro = self._asyncoro.cur_coro()
         if self._owner is None:
             raise RuntimeError('"%s"/%s: invalid lock release - not locked' % \
-                               (coro.name, coro._id))
+                               (coro.name, id(coro)))
         self._owner = None
         if self._waitlist:
             wake = self._waitlist.pop(0)
-            wake.resume()
+            wake._proceed_()
 
 class RLock(object):
     """'RLock' primitive for coroutines.
@@ -1768,7 +1830,7 @@ class RLock(object):
                 if not blocking:
                     raise StopIteration(False)
                 self._waitlist.append(coro)
-                yield coro.suspend()
+                yield coro._await_()
 
     def release(self):
         """May be used with 'yield'.
@@ -1776,13 +1838,13 @@ class RLock(object):
         coro = self._asyncoro.cur_coro()
         if self._owner != coro:
             raise RuntimeError('"%s"/%s: invalid lock release - owned by "%s"/%s' % \
-                               (coro.name, coro._id, self._owner.name, self._owner._id))
+                               (coro.name, id(coro), self._owner.name, id(self._owner)))
         self._depth -= 1
         if self._depth == 0:
             self._owner = None
             if self._waitlist:
                 wake = self._waitlist.pop(0)
-                wake.resume()
+                wake._proceed_()
 
 class Condition(object):
     """'Condition' primitive for coroutines.
@@ -1813,7 +1875,7 @@ class Condition(object):
                 if not blocking:
                     raise StopIteration(False)
                 self._waitlist.append(coro)
-                yield coro.suspend()
+                yield coro._await_()
 
     def release(self):
         """May be used with 'yield'.
@@ -1821,20 +1883,20 @@ class Condition(object):
         coro = self._asyncoro.cur_coro()
         if self._owner != coro:
             raise RuntimeError('"%s"/%s: invalid lock release - owned by "%s"/%s' % \
-                               (coro.name, coro._id, self._owner.name, self._owner._id))
+                               (coro.name, id(coro), self._owner.name, id(self._owner)))
         self._depth -= 1
         if self._depth == 0:
             self._owner = None
             if self._waitlist:
                 wake = self._waitlist.pop(0)
-                wake.resume()
+                wake._proceed_()
 
     def notify(self, n=1):
         """May not be used with 'yield'.
         """
         while self._notifylist and n:
             wake = self._notifylist.pop(0)
-            wake.resume()
+            wake._proceed_()
             n -= 1
 
     def notify_all(self):
@@ -1848,20 +1910,20 @@ class Condition(object):
         coro = self._asyncoro.cur_coro()
         if self._owner != coro:
             raise RuntimeError('"%s"/%s: invalid lock release - owned by "%s"/%s' % \
-                               (coro.name, coro._id, self._owner.name, self._owner._id))
+                               (coro.name, id(coro), self._owner.name, id(self._owner)))
         self._owner = None
         depth = self._depth
         self._depth = 0
         if self._waitlist:
             wake = self._waitlist.pop(0)
-            wake.resume()
+            wake._proceed_()
         while True:
             if timeout is not None:
                 if timeout <= 0:
                     raise StopIteration
                 start = _time()
             self._notifylist.append(coro)
-            yield coro.suspend(timeout)
+            yield coro._await_(timeout)
             if self._owner is None:
                 assert self._depth == 0
                 self._owner = coro
@@ -1883,7 +1945,7 @@ class Event(object):
         """
         self._flag = True
         for coro in self._waitlist:
-            coro.resume(True)
+            coro._proceed_(True)
         self._waitlist = []
 
     def is_set(self):
@@ -1910,7 +1972,7 @@ class Event(object):
                     raise StopIteration(False)
                 start = _time()
             self._waitlist.append(coro)
-            yield coro.suspend(timeout)
+            yield coro._await_(timeout)
             if timeout is not None:
                 timeout -= (_time() - start)
 
@@ -1930,7 +1992,7 @@ class Semaphore(object):
             coro = self._asyncoro.cur_coro()
             while self._counter == 0:
                 self._waitlist.append(coro)
-                yield coro.suspend()
+                yield coro._await_()
         elif self._counter == 0:
             raise StopIteration(False)
         self._counter -= 1
@@ -1943,7 +2005,7 @@ class Semaphore(object):
         assert self._counter > 0
         if self._waitlist:
             wake = self._waitlist.pop(0)
-            wake.resume()
+            wake._proceed_()
 
 class AsynCoro(object):
     """Coroutine scheduler.
@@ -1961,8 +2023,8 @@ class AsynCoro(object):
     _Running = 2
     # in _suspended
     _Suspended = 3
-
-    _coro_id = 1
+    # in _suspended; for internal use
+    _Await_ = 4
 
     def __init__(self):
         if self.__class__.__instance is None:
@@ -2002,27 +2064,26 @@ class AsynCoro(object):
         """Internal use only. See Coro class.
         """
         self._lock.acquire()
-        coro._id = AsynCoro._coro_id
-        AsynCoro._coro_id += 1
-        self._coros[coro._id] = coro
+        self._coros[id(coro)] = coro
         self._complete.clear()
         coro._state = AsynCoro._Scheduled
-        self._scheduled.add(coro._id)
+        self._scheduled.add(id(coro))
         if len(self._scheduled) == 1:
             self._notifier.interrupt()
         self._lock.release()
 
-    def _set_daemon(self, cid):
+    def _set_daemon(self, coro):
         """Internal use only. See set_daemon in Coro.
         """
         self._lock.acquire()
+        cid = id(coro)
         coro = self._coros.get(cid, None)
         if coro is not None:
             coro._daemon = True
             self._daemons += 1
         self._lock.release()
 
-    def _suspend(self, cid, timeout, alarm_value):
+    def _suspend(self, coro, timeout, alarm_value, state):
         """Internal use only. See sleep/suspend in Coro.
         """
         if timeout is not None:
@@ -2030,6 +2091,7 @@ class AsynCoro(object):
                 logging.warning('invalid timeout %s', timeout)
                 return -1
         self._lock.acquire()
+        cid = id(coro)
         coro = self._coros.get(cid, None)
         if coro is None or coro._state != AsynCoro._Running:
             self._lock.release()
@@ -2037,7 +2099,8 @@ class AsynCoro(object):
             return -1
         self._scheduled.discard(cid)
         self._suspended.add(cid)
-        coro._state = AsynCoro._Suspended
+        assert state == AsynCoro._Await_ or state == AsynCoro._Suspended
+        coro._state = state
         if timeout is None:
             coro._timeout = None
         else:
@@ -2047,10 +2110,11 @@ class AsynCoro(object):
         self._lock.release()
         return 0
 
-    def _resume(self, cid, update):
+    def _resume(self, coro, update, state):
         """Internal use only. See resume in Coro.
         """
         self._lock.acquire()
+        cid = id(coro)
         coro = self._coros.get(cid, None)
         if coro is None:
             self._lock.release()
@@ -2071,6 +2135,11 @@ class AsynCoro(object):
                 self._lock.release()
                 logging.warning('invalid coroutine %s/%s to resume', coro.name, cid)
                 return -1
+        elif coro._state != state:
+            self._lock.release()
+            logging.warning('invalid coroutine %s/%s to resume (%s != %s)', coro.name, cid,
+                            coro._state, state)
+            return -1
         coro._timeout = None
         coro._value = update
         self._suspended.discard(cid)
@@ -2084,37 +2153,40 @@ class AsynCoro(object):
         self._lock.release()
         return 0
 
-    def _throw(self, cid, *args):
+    def _throw(self, coro, *args):
         """Internal use only. See throw in Coro.
         """
         self._lock.acquire()
+        cid = id(coro)
         coro = self._coros.get(cid, None)
-        if coro is None or coro._state not in [AsynCoro._Scheduled, AsynCoro._Suspended]:
+        if coro is None or coro._state not in [AsynCoro._Scheduled, AsynCoro._Await_,
+                                               AsynCoro._Suspended]:
             logging.warning('invalid coroutine %s to throw exception', cid)
             self._lock.release()
             return -1
         # prevent throwing more than once?
         coro._timeout = None
         coro._exception = args
-        if coro._state == AsynCoro._Suspended:
-            self._suspended.discard(coro._id)
-            self._scheduled.add(coro._id)
+        if coro._state == AsynCoro._Await_ or coro._state == AsynCoro._Suspended:
+            self._suspended.discard(id(coro))
+            self._scheduled.add(id(coro))
         coro._state = AsynCoro._Scheduled
         if len(self._scheduled) == 1:
             self._notifier.interrupt()
         self._lock.release()
         return 0
 
-    def _terminate_coro(self, cid):
+    def _terminate_coro(self, coro):
         """Internal use only.
         """
         self._lock.acquire()
+        cid = id(coro)
         coro = self._coros.get(cid, None)
         if coro is None:
             logging.warning('invalid coroutine %s to terminate', cid)
             self._lock.release()
             return -1
-        if coro._state == AsynCoro._Suspended:
+        if coro._state == AsynCoro._Await_ or coro._state == AsynCoro._Suspended:
             self._suspended.discard(cid)
             self._scheduled.add(cid)
         elif coro._state == AsynCoro._Running:
@@ -2158,13 +2230,13 @@ class AsynCoro(object):
                     coro = self._coros.get(cid, None)
                     if coro is None or coro._timeout != timeout:
                         continue
-                    if coro._state != AsynCoro._Suspended:
+                    if coro._state != AsynCoro._Await_ and coro._state != AsynCoro._Suspended:
                         logging.warning('coro %s/%s is in state %s for resume; ignored',
-                                        coro.name, coro._id, coro._state)
+                                        coro.name, id(coro), coro._state)
                         continue
                     coro._timeout = None
-                    self._suspended.discard(coro._id)
-                    self._scheduled.add(coro._id)
+                    self._suspended.discard(id(coro))
+                    self._scheduled.add(id(coro))
                     coro._state = AsynCoro._Scheduled
                     coro._value = alarm_value
             scheduled = [self._coros.get(cid, None) for cid in self._scheduled]
@@ -2226,12 +2298,13 @@ class AsynCoro(object):
                             logging.warning('uncaught exception in %s:\n%s', coro.name, exc)
 
                         # delete this coro
-                        if self._coros.pop(coro._id, None) == coro:
-                            if coro._state == AsynCoro._Suspended:
-                                self._suspended.discard(coro._id)
+                        if self._coros.pop(id(coro), None) == coro:
+                            if coro._state == AsynCoro._Await_ or \
+                                   coro._state == AsynCoro._Suspended:
+                                self._suspended.discard(id(coro))
                             else:
                                 assert coro._state in [AsynCoro._Scheduled, AsynCoro._Running]
-                                self._scheduled.discard(coro._id)
+                                self._scheduled.discard(id(coro))
                             coro._asyncoro = None
                             coro._complete.set()
                             coro._state = None
@@ -2240,7 +2313,7 @@ class AsynCoro(object):
                             if len(self._coros) == self._daemons:
                                 self._complete.set()
                         else:
-                            logging.warning('coro %s/%s already removed?', coro.name, coro._id)
+                            logging.warning('coro %s/%s already removed?', coro.name, id(coro))
                     self._lock.release()
                 else:
                     self._lock.acquire()
@@ -2265,7 +2338,7 @@ class AsynCoro(object):
             coro = self._coros.get(cid, None)
             if coro is None:
                 continue
-            logging.debug('terminating Coro %s/%s', coro.name, coro._id)
+            logging.debug('terminating Coro %s/%s', coro.name, id(coro))
             self._cur_coro = coro
             coro._state = AsynCoro._Scheduled
             while coro._generator:
@@ -2337,7 +2410,7 @@ class AsynCoroThreadPool(object):
                 break
             coro, func, args, kwargs = item
             try:
-                coro.resume(func(*args, **kwargs))
+                coro._proceed_(func(*args, **kwargs))
             except:
                 coro.throw(*sys.exc_info())
             finally:
@@ -2357,13 +2430,13 @@ class AsynCoroThreadPool(object):
         This call effectively returns whatever target(*args, **kwargs) returns.
         """
 
-        if not(inspect.isfunction(target) or inspect.ismethod(target)):
+        if not inspect.isroutine(target):
             raise RuntimeError('invalid usage: "target" must be function or method')
         # if arguments are passed as per Thread call, get args and kwargs
         if not args and kwargs:
             args = kwargs.pop('args', ())
             kwargs = kwargs.pop('kwargs', kwargs)
-        coro.suspend()
+        coro._await_()
         self._task_queue.put((coro, target, args, kwargs))
 
     def join(self):
@@ -2383,9 +2456,7 @@ class AsynCoroDBCursor(object):
     """Database cursor proxy for asynchronous processing of executions.
 
     Since connections (and cursors) can't be shared in threads,
-    operations on same cursor are run sequentially. This
-    implementation can be augmented with any optimizations such as
-    connection pooling.
+    operations on same cursor are run sequentially.
     """
 
     def __init__(self, thread_pool, cursor):
