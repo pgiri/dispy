@@ -3,7 +3,7 @@
 <html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en"> 
   <head> 
     <meta http-equiv="content-type" content="text/html; charset=utf-8" /> 
-    <meta name="description" content="Python module for distributing computations across multiple processors on a single machine, among many machines in a cluster, grid or cloud. The computations can be standalone programs or python functions." /> 
+    <meta name="description" content="Python module for distributing computations across multiple processors on a single machine, among many machines in a cluster or grid. The computations can be standalone programs or python functions." /> 
     <meta name="keywords" content="dispy, python, parallel processing, parallel computing, distributed computing, cluster computing" /> 
     <title> 
       dispy - Distribute Computations and Execute them in Parallel
@@ -18,11 +18,11 @@
       <div id="content-container"> 
 	<div id="content-menu">
 	  <ul>
+            <li><a href="asyncoro.html">asyncoro</a></li>
             <li><a href="dispy.html">dispy</a></li> 
             <li><a href="dispynode.html">dispynode</a></li> 
             <li><a href="dispyscheduler.html">dispyscheduler</a></li> 
             <li><a href="dispynetrelay.html">dispynetrelay</a></li>
-            <li><a href="asyncoro.html">asyncoro</a></li>
 	  </ul>
 	  <hr />
 	  <ul>
@@ -39,12 +39,20 @@
 dispy is a framework, developed
 in <a href="http://www.python.org">Python</a>, for parallel execution
 of computations by distributing them across multiple processors on a
-single machine (SMP), among many machines in a cluster, grid or cloud.
-dispy is well suited for data parallellism (SIMD paradigm) where a
+single machine (SMP), among many machines in a cluster or grid.  dispy
+is well suited for data parallellism (SIMD paradigm) where a
 computation is evaluated with different (large) datasets
 independently. Salient features of dispy are:
 </p>
 <ul>
+
+<li>dispy is implemented with <a href="asyncoro.html">asyncoro</a>, an
+  independent framework for asynchronous, concurrent programming with
+  coroutines (without threads). asyncoro uses socket I/O notification
+  mechanisms epoll, kqueue and poll, and Windows I/O Completion Ports
+  (IOCP) for high performance and scalability, so dispy scales well
+  from a single node to large cluster(s) of nodes.</li>
+
 <li>Computations (Python functions or standalone programs) and their
     dependencies (files, Python functions, classes, modules) are
     distributed automatically.</li>
@@ -64,7 +72,7 @@ independently. Salient features of dispy are:
     whenever a node is available and computations can use that node.</li>
 
 <li>If callback function is provided, dispy executes that function
-    when a job is finished; this feature is useful for processing of
+    when a job is finished; this feature is useful for processing
     job results.</li>
 
 <li>Client-side and server-side fault recovery are supported:<br/>
@@ -86,12 +94,6 @@ independently. Salient features of dispy are:
     (with <tt>ShareJobCluster</tt>
     and <a href="dispyscheduler.html">dispyscheduler</a>).</li>
 
-<li>dispy is implemented with <a href="asyncoro.html">asyncoro</a>, an
-independent framework for asynchronous, concurrent programming with
-coroutines (without threads). asyncoro uses socket I/O notification
-mechanisms epoll, kqueue and poll, and Windows I/O Completion Ports
-(IOCP) for high performance and scalability, so dispy scales well from
-a single node to large cluster(s) of nodes.</li>
   </ul>
 <p>
 dispy consists of 4 components:
@@ -146,7 +148,7 @@ if __name__ == '__main__':
     import dispy, random
     cluster = dispy.JobCluster(compute)
     jobs = []
-    for n in xrange(20):
+    for n in range(20):
         job = cluster.submit(random.randint(5,20))
         job.id = n
         jobs.append(job)

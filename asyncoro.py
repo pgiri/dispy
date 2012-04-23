@@ -438,7 +438,6 @@ class _AsynCoroSocket(object):
         self._write_task = functools.partial(_sendto, self, *args)
         self._write_coro = self._asyncoro.cur_coro()
         self._write_coro._await_()
-        logging.debug('adding write to %s', self._fileno)
         self._notifier.add(self, _AsyncPoller._Write)
 
     def _async_sendall(self, data):
