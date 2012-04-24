@@ -42,17 +42,18 @@
   package, is a Python framework for developing concurrent programs
   with asynchronous completions and coroutines. Asynchronous
   completions currently implemented in asyncoro are socket I/O
-  operations, database cursors, sleep timers and locking primitives.
-  The coroutines should use 'yield' with these completions. Each yield
-  statement gives control to asyncoro's scheduler, which interleaves
-  executions of coroutines, similar to the way an operating system
-  executes multiple processes. Programs developed with asyncoro have
-  same logic as Python programs with threads, except for a few
-  syntactic changes. asyncoro supports socket I/O notification
-  mechanisms epoll, kqueue, /dev/poll (and poll and select, where
-  necessary), and Windows I/O Completion Ports (IOCP) for high
-  performance and scalability, and SSL for security.  asyncoro can be
-  used independently of dispy.</p>
+  operations (for non-blocking sockets), database cursors, sleep
+  timers and locking primitives.  The coroutines should use 'yield'
+  with these completions. Each yield statement gives control to
+  asyncoro's scheduler, which interleaves executions of coroutines,
+  similar to the way an operating system executes multiple
+  processes. Programs developed with asyncoro have same logic and
+  structure as programs with threads, except for a few syntactic
+  changes. asyncoro supports socket I/O notification mechanisms epoll,
+  kqueue, /dev/poll (and poll and select, where necessary), and
+  Windows I/O Completion Ports (IOCP) for high performance and
+  scalability, and SSL for security.  asyncoro can be used
+  independently of dispy.</p>
 
 <h4>Details</h4>
 <p>
@@ -232,13 +233,13 @@ coroutines).
 	suspended coroutine. <b>wakeup</b> method is synonym for
 	resume. As explained above, the suspended coroutine gets
 	"update" (any Python object) as the value of yield statement
-	that caused it to suspend. Note that asynchronous operations
-	also use suspend/resume, so a resume must be for corresponding
-	suspend; otherwise, resume may wake up a coroutine waiting on
-	a different event. If necessary, Event locking primitive (see
-	below) can be used so that resuming coroutine waits on an
-	event variable and suspending coroutine sets the event before
-	going to sleep.  With suspend/resume methods, coroutines can
+	that caused it to suspend. Resume and suspend methods must be
+	synchronized - a resume on a coroutine must be for specific
+	suspend for that coroutine. If necessary, Event locking
+	primitive (see below) can be used so that resuming coroutine
+	waits on an event variable and suspending coroutine sets the
+	event before going to sleep, so that resume will suspend only
+	that suspend.  With suspend/resume methods, coroutines can
 	synchronize their executions and possibly exchange data at
 	specific execution points.
 	</li>
