@@ -43,12 +43,12 @@
   with asynchronous completions and coroutines. Asynchronous
   completions currently implemented in asyncoro are socket I/O
   operations (for non-blocking sockets), database cursors, sleep
-  timers and locking primitives.  The coroutines should use 'yield'
-  with these completions. Each yield statement gives control to
-  asyncoro's scheduler, which interleaves executions of coroutines,
-  similar to the way an operating system executes multiple
-  processes. Programs developed with asyncoro have same logic and
-  structure as programs with threads, except for a few syntactic
+  timers and locking primitives.  The coroutines should
+  use <em>yield</em> with these completions. Each yield statement
+  gives control to asyncoro's scheduler, which interleaves executions
+  of coroutines, similar to the way an operating system executes
+  multiple processes. Programs developed with asyncoro have same logic
+  and structure as programs with threads, except for a few syntactic
   changes. asyncoro supports socket I/O notification mechanisms epoll,
   kqueue, /dev/poll (and poll and select, where necessary), and
   Windows I/O Completion Ports (IOCP) for high performance and
@@ -110,22 +110,22 @@ if __name__ == '__main__':
 
 <p>
 Here we mixed synchronous sockets in server loop and asynchronous
-sockets in the 'process' method for illustration. The server does not
-do any processing, so the loop can quickly accept connections. Each
-request is processed in a separate coroutine. Note that I/O event loop
-is transparent - asyncoro's scheduler handles I/O events
-automatically. A coroutine should have 'coro=None' default
-argument. The coroutine builder Coro (which is similar to
+sockets in the <em>process</em> method for illustration. The server
+does not do any processing, so the loop can quickly accept
+connections. Each request is processed in a separate coroutine. Note
+that I/O event loop is transparent - asyncoro's scheduler handles I/O
+events automatically. A coroutine should have <em>coro=None</em>
+default argument. The coroutine builder Coro (which is similar to
 threading.Thread) will set coro argument with the Coro instance, which
-is used for calling methods in Coro class (see below). In the
-'process' method, socket I/O operations are called with 'yield'. With
-these statements, the I/O operation is initiated and control goes to
-asyncoro's scheduler for scheduling other coroutines as well as
-processing I/O events. When an I/O operation is complete, the
-scheduler returns the results of the I/O operation back to the
-method. During the time it takes to complete an I/O operation, the
-scheduler executes other coroutines (in this case, other 'process'
-coroutines).
+can used for calling methods in Coro class (see below). In the
+<em>process</em> method, socket I/O operations are called with
+<em>yield</em>. With these statements, the I/O operation is initiated
+and control goes to asyncoro's scheduler for scheduling other
+coroutines as well as processing I/O events. When an I/O operation is
+complete, the scheduler returns the results of the I/O operation back
+to the method. During the time it takes to complete an I/O operation,
+the scheduler executes other coroutines (in this case,
+other <em>process</em> coroutines).
 </p>
 
 <h4>API</h4>
@@ -134,8 +134,8 @@ coroutines).
   create coroutines from generator functions, AsynCoroSocket to
   convert regular synchronous sockets to asynchronous (non-blocking)
   sockets, AsynCoroDBCursor to convert database cursor
-  operations <tt>execute</tt>, <tt>executemany</tt>
-  and <tt>callproc</tt>to asynchronous operations, and locking,
+  operations <em>execute</em>, <em>executemany</em>
+  and <em>callproc</em>to asynchronous operations, and locking,
   condition, event, semaphore primitives similar to thread
   primitives. asyncoro has been tested with Python versions 2.7 and
   3.2 under Linux, OS X and Windows. Under Windows asyncoro uses IOCP
@@ -157,9 +157,9 @@ coroutines).
     <ul>
       <li>
 	<b>cur_coro()</b> method returns coroutine (instance of Coro)
-	being executed. As mentioned below, coroutines have 'coro'
-	variable (parameter to generator function, to be specific)
-	that can be used more efficiently instead.
+	being executed. As mentioned below, coroutines
+	have <em>coro</em> variable (parameter to generator function,
+	to be specific) that can be used more efficiently instead.
       </li>
       <li>
 	<b>join()</b> method waits for all scheduled non-daemon
@@ -177,15 +177,16 @@ coroutines).
   <li>Threads in synchronous programs can be replaced with coroutines
     using asyncoro's <b>Coro</b> class (i.e., Coro replaces
     threading.Thread). <tt>Coro(target[, arg1, arg2, ...])</tt>
-    creates a coroutine. "target" must be a generator function (a
-    function with 'yield' statements). "arg1", "arg2" etc. are
-    arguments or keyword arguments to "target". "target" generator
-    function must have "coro=None" keyword argument. Coro
+    creates a coroutine. <em>target</em> must be a generator function
+    (a function with <em>yield</em>
+    statements). <em>arg1</em>, <em>arg2</em> etc. are arguments or
+    keyword arguments to <em>target</em>. <em>target</em> generator
+    function must have <em>coro=None</em> keyword argument. Coro
     instantiation replaces None with the instance of Coro, so
     coroutine can use this to invoke methods in Coro class (see
-    below). Consider the generator function (where 'sock' is
+    below). Consider the generator function (where <em>sock</em> is
     asynchronous socket and all statements are asynchronous, so all
-    are used with 'yield')
+    are used with <em>yield</em>)
 
     <code>def get_reply(sock, msg, coro=None):
     yield sock.sendall(msg)
@@ -193,27 +194,29 @@ coroutines).
     yield sock.recv(1024)</code>
     It can be made a coroutine with
     <tt>Coro(get_reply, conn, "ping")</tt> so that generator function
-    get_reply is called with <tt>sock=conn, msg="ping"</tt>. 'coro' keyword
-    argument is automatically supplied by Coro; it should not be in
-    the arguments to Coro. When a coroutine is created with Coro, it
-    is added to AsynCoro scheduler and starts executing - there is no
-    need to start it explicitly, as done with threads. Note that
-    generator functions cannot use 'return' statement. With asyncoro,
-    a <tt>raise StopIteration(v)</tt> effectively serves as <tt>return
-    v</tt>. If a generator/coroutine does not use StopIteration, then
-    the last value yielded in the generator becomes the return
-    value. Thus, in the example above get_reply does not use
-    StopIteration, so buffer received (in the last 'yield') is
-    equivalent to return value of get_reply.
+    get_reply is called with <tt>sock=conn,
+    msg="ping"</tt>. <em>coro</em> keyword argument is automatically
+    supplied by Coro; it should not be in the arguments to Coro. When
+    a coroutine is created with Coro, it is added to AsynCoro
+    scheduler and starts executing - there is no need to start it
+    explicitly, as done with threads. Note that generator functions
+    cannot use <em>return</em> statement. With asyncoro, a <tt>raise
+    StopIteration(v)</tt> effectively serves as <tt>return v</tt>. If
+    a generator/coroutine does not use StopIteration, then the last
+    value yielded in the generator becomes the return value. Thus, in
+    the example above <em>get_reply</em> does not use StopIteration,
+    so buffer received (in the last <em>yield</em>) is equivalent to
+    return value of <em>get_reply</em>.
     </li>
-  <li>Within a coroutine, 'coro' variable refers to the coroutine
-  (instance of Coro class). This variable can be used to invoke
-  methods of Coro class, use it in other coroutines, for example, to
-  wakeup from sleep etc. A coroutine has following methods:
+  <li>Within a coroutine, <em>coro</em> variable refers to the
+  coroutine (instance of Coro class). This variable can be used to
+  invoke methods of Coro class, use it in other coroutines, for
+  example, to wakeup from sleep etc. A coroutine has following
+  methods:
     <ul>
       <li><b>suspend(timeout=None, alarm_value=None)</b> method should
-      be used with 'yield' statement. <b>sleep</b> method is synonym
-      for suspend. If timeout is a positive number (float or int),
+      be used with <em>yield</em> statement. <b>sleep</b> method is synonym
+      for <em>suspend</em>. If timeout is a positive number (float or int),
       AsynCoro suspends execution of coroutine until that many seconds
       (or fractions of second). If timeout is None, the coroutine is
       not woken up by AsynCoro - some other coroutine needs to resume
@@ -222,26 +225,27 @@ coroutines).
       example, if a coroutine executes <tt>v = yield
       coro.sleep(2.9)</tt>, it is suspended for 2.9 seconds. If before
       timeout, another coroutine wakes up this coroutine (with
-      "resume" method) with a value, "v" is set to that
+      <em>resume</em> method) with a value, <em>v</em> is set to that
       value. Otherwise, after 2.9 seconds, this coroutine is resumed
-      with None (default alarm_value) so "v" is set to None and
+      with None (default alarm_value) so <em>v</em> is set to None and
       coroutine continues execution. During the time coroutine is
-      suspended, scheduler executes other scheduled coroutines.
+      suspended, scheduler executes other scheduled coroutines. Within
+      a coroutine coro.sleep must be used instead of thread.sleep.
       </li>
       <li>
 	<b>resume(update=None)</b> method should be invoked on a
 	suspended coroutine. <b>wakeup</b> method is synonym for
-	resume. As explained above, the suspended coroutine gets
-	"update" (any Python object) as the value of yield statement
-	that caused it to suspend. Resume and suspend methods must be
-	synchronized - a resume on a coroutine must be for specific
-	suspend for that coroutine. If necessary, Event locking
-	primitive (see below) can be used so that resuming coroutine
-	waits on an event variable and suspending coroutine sets the
-	event before going to sleep, so that resume will suspend only
-	that suspend.  With suspend/resume methods, coroutines can
-	synchronize their executions and possibly exchange data at
-	specific execution points.
+	<em>resume</em>. As explained above, the suspended coroutine gets
+	<em>update</em> (any Python object) as the value of yield
+	statement that caused it to suspend. Resume and suspend
+	methods must be synchronized - a resume on a coroutine must be
+	for specific suspend for that coroutine. If necessary, Event
+	locking primitive (see below) can be used so that resuming
+	coroutine waits on an event variable and suspending coroutine
+	sets the event before going to sleep, so that resume will
+	suspend only that suspend.  With suspend/resume methods,
+	coroutines can synchronize their executions and possibly
+	exchange data at specific execution points.
 	</li>
       <li>
 	<b>set_daemon()</b> method indicates that coroutine is a
@@ -267,32 +271,35 @@ coroutines).
 	coroutine(s) it creates. If one coroutine needs to wait for
 	another to finish, they can use asyncoro's locking primitive
 	Event (see below) so first coroutine waits on the event
-	variable (with 'yield') and finishing coroutine sets the
-	variable.
+	variable (with <em>yield</em>) and finishing coroutine sets
+	the variable.
 	</li>
       </ul>
     </li>
   <li>
-    A synchronous (regular) socket "sock" can be converted to
+    A synchronous (regular) socket <em>sock</em> can be converted to
     asynchronous (non-blocking) socket
     with <b>AsynCoroSocket</b>(sock). SSL can be enabled
     with <b>AsynCoroSocket</b>(sock, keyfile=key, certfile=cert,
-    ssl_version=version), where keyfile, certfile and ssl_version are
-    as per wrap_socket method
+    ssl_version=version), where <em>keyfile</em>, <em>certfile</em>
+    and <em>ssl_version</em> are as per <em>wrap_socket</em> method
     in <a href="http://docs.python.org/library/ssl.html">ssl
-    module</a>. Socket operations accept, connect, send, recv,
-    sendall, recvall, send_msg, recv_msg, sendto and recvfrom for
-    asynchronous sockets must be used with 'yield' statement. The
-    value of such yield statement is the result of the socket I/O
-    operation (for example, for recv, it would be the buffer received
-    by the socket). The socket returned from accept method of an
-    asynchronous socket is also an asynchronous socket, so there is no
-    need to convert it. The methods recvall, send_msg and recv_msg are
-    available for AsynCoroSocket only - they are not standard socket
-    methods: recvall receives exactly given number of bytes
-    (counterpart to sendall), send_msg prefixes the given buffer with
-    the length so that receiving side knows exactly how many bytes to
-    read, and recv_msg receives full message from send_msg.
+    module</a>. Socket operations <em>accept</em>, <em>connect</em>,
+    <em>send</em>, <em>recv</em>, <em>sendall</em>, <em>recvall</em>,
+    <em>send_msg</em>, <em>recv_msg</em>, <em>sendto</em>
+    and <em>recvfrom</em> for asynchronous sockets must be used with
+    'yield' statement. The value of such yield statement is the result
+    of the socket I/O operation (for example, for <em>recv</em>, it
+    would be the buffer received by the socket). The socket returned
+    from <em>accept</em> method of an asynchronous socket is also an
+    asynchronous socket, so there is no need to convert it. The
+    methods <em>recvall</em>, <em>send_msg</em> and <em>recv_msg</em>
+    are available for AsynCoroSocket only - they are not standard
+    socket methods: <em>recvall</em> receives exactly given number of
+    bytes (counterpart to <em>sendall</em>), <em>send_msg</em>
+    prefixes the given buffer with the length so that receiving side
+    knows exactly how many bytes to receive, and <em>recv_msg</em>
+    receives full message from <em>send_msg</em>.
     </li>
   <li>
     <b>AsynCoroThreadPool</b> can be used to schedule synchronous,
@@ -302,17 +309,17 @@ coroutines).
     methods:
     <ul>
       <li><b>async_task</b>(coro, target, *args, **kwargs) schedules
-	given task, Python function <tt>target</tt> with
-	arguments <tt>args</tt> and keyword arguments <tt>kwargs</tt>,
+	given task, Python function <em>target</em> with
+	arguments <em>args</em> and keyword arguments <em>kwargs</em>,
 	with the thread pool. This method suspends the calling
-	coroutine <tt>coro</tt>, so it must be used with 'yield'. The
+	coroutine <em>coro</em>, so it must be used with <em>yield</em>. The
 	task is executed in one of the threads in the pool. Once the
-	task is complete, <tt>coro</tt> is resumed with the return
-	value from <tt>target</tt>. Thus, in a
-	coroutine <tt>coro</tt>, the statement
+	task is complete, <em>coro</em> is resumed with the return
+	value from <em>target</em>. Thus, in a
+	coroutine <em>coro</em>, the statement
 	<tt>v = yield thread_pool.async_task(coro, f, 1)</tt> executes
-	function <tt>f(1)</tt> in a thread and its return value is set
-	to <tt>v</tt>.
+	function <em>f(1)</em> in a thread and its return value is set
+	to <em>v</em>.
       </li>
       <li><b>join()</b> method waits for all scheduled tasks to be
 	completed. More tasks can be added if necessary.
@@ -335,8 +342,8 @@ coroutines).
       Database operations are blocking operations and do not provide
       asynchronous notification. asyncoro
       provides <b>AsynCoroDBCursor</b> that
-      schedules <tt>execute</tt>, <tt>executemany</tt>
-      and <tt>callproc</tt> operations through AsynCoroThreadPool for
+      schedules <em>execute</em>, <em>executemany</em>
+      and <em>callproc</em> operations through AsynCoroThreadPool for
       asynchronous completion. Other database operations are
       considered very fast. This interface works with MySQLdb under
       Python version 2.x
@@ -346,9 +353,9 @@ coroutines).
     </p>
     <p>
       As database connections and cursors are not supposed to be
-      shared among threads, asyncoro executes operations on a cursor
-      sequentially. Operations on different cursors at the same time
-      are run concurrently. A simple example is
+      shared among threads, AsynCoroDBCursor executes operations on a
+      cursor sequentially. Operations on different cursors at the same
+      time are run concurrently. A simple example is
 
       <code># create pool of threads
 num_threads = 3
@@ -378,8 +385,8 @@ def db_proc(cursor, coro=None):
     and <b>Semaphore</b> primitives. They are similar to versions in
     threading module. Any operation that would block in threading
     module is implemented as asynchronous operation in asyncoro. Such
-    operations must be called with 'yield' appropriately. For example,
-    acquiring a lock may block, so it should be invoked as
+    operations must be called with <em>yield</em> appropriately. For
+    example, acquiring a lock may block, so it should be invoked as
     <tt>yield lock.acquire()</tt>. Similarly, Event's wait method or
     Condition's wait method must be used as
     <tt>yield event.wait()</tt> or <tt>yield
@@ -395,20 +402,25 @@ def db_proc(cursor, coro=None):
       get_an_available_item()
       yield cv.release()</code>
 
-    'yield' is used when releasing a lock to be cooperative with other
-    coroutines that might be waiting for their turn to execute. See
-    'asyncoro.py' for more details on which methods should be used
-    with 'yield' and which methods need not be. <br/> Technically,
-    locking may not be required in most cases (where 'yield' is not
-    used in critical sections), as there is no forced preemption with
-    coroutines and at most one coroutine is executing at anytime; in
-    fact, the implementation of these primitives in asyncoro updates
-    lists and counters without locking.
+    <em>yield</em> is not needed when releasing a lock. However, to be
+    cooperative with other coroutines that might be waiting for their
+    turn to execute (e.g., waiting to acquire same Condition
+    variable), it may be used where appropriate - each <em>yield</em>
+    transfers control to asyncoro's scheduler, which may schedule a
+    different coroutine that is ready to execute. See documentation
+    strings in 'asyncoro.py' for more details on which methods should
+    be used with <em>yield</em> and which methods need not be. <br/>
+    Technically, locking may not be needed in most cases (where
+    'yield' is not used in critical sections), as there is no forced
+    preemption with coroutines and at most one coroutine is executing
+    at anytime; in fact, the implementation of these primitives in
+    asyncoro updates lists and counters without locking.
     </li>
   <li>
     Within a coroutine, generator functions must be called with
-    'yield' statement: If 'g' is a generator function, it should be
-    called as <tt>v = yield g()</tt>.
+    <em>yield</em> statement: If <em>g</em> is a generator function,
+    it should be called as <tt>v = yield g()</tt>. Regular
+    functions/methods can be called without <em>yield</em>.
     </li>
   </ul>
 

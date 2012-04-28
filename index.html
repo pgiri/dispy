@@ -48,10 +48,11 @@ independently. Salient features of dispy are:
 
 <li>dispy is implemented with <a href="asyncoro.html">asyncoro</a>, an
   independent framework for asynchronous, concurrent programming with
-  coroutines (without threads). asyncoro uses socket I/O notification
-  mechanisms epoll, kqueue and poll, and Windows I/O Completion Ports
-  (IOCP) for high performance and scalability, so dispy scales well
-  from a single node to large cluster(s) of nodes.</li>
+  coroutines (without threads). asyncoro uses non-blocking sockets
+  with I/O notification mechanisms epoll, kqueue and poll, and Windows
+  I/O Completion Ports (IOCP) for high performance and scalability, so
+  dispy scales well from a single node to large cluster(s) of
+  nodes.</li>
 
 <li>Computations (Python functions or standalone programs) and their
     dependencies (files, Python functions, classes, modules) are
