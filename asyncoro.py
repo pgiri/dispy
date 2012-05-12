@@ -320,7 +320,6 @@ class _AsynCoroSocket(object):
 
         self._read_result = bytearray(bufsize)
         view = memoryview(self._read_result)
-        self._read_task = functools.partial(_recvall, self, view, *args)
         self._notifier.add(self, _AsyncPoller._Read)
         if not self._certfile:
             try:
@@ -339,6 +338,7 @@ class _AsynCoroSocket(object):
                 elif recvd:
                     view = view[recvd:]
 
+        self._read_task = functools.partial(_recvall, self, view, *args)
         self._read_coro = self._asyncoro.cur_coro()
         self._read_coro._await_()
 
@@ -805,9 +805,9 @@ if platform.system() == 'Windows':
                     for fid in rlist:
                         events[fid] = _AsyncPoller._Read
                     for fid in wlist:
-                        events[fid] = _AsyncPoller._Write
+                        events[fid] = events.get(fid, 0) | _AsyncPoller._Write
                     for fid in xlist:
-                        events[fid] = _AsyncPoller._Error
+                        events[fid] = events.get(fid, 0) | _AsyncPoller._Error
 
                     self._lock.acquire()
                     events = [(self._fds.get(fid, None), event) \
@@ -1647,9 +1647,9 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
             self.register(fid, event)
 
         def update(self, fid, event, flags):
-            if event & _AsyncNotifier._Read:
+            if event & _AsyncPoller._Read:
                 self.poller.control([select.kevent(fid, filter=select.KQ_FILTER_READ, flags=flags)], 0)
-            if event & _AsyncNotifier._Write:
+            if event & _AsyncPoller._Write:
                 self.poller.control([select.kevent(fid, filter=select.KQ_FILTER_WRITE, flags=flags)], 0)
 
         def poll(self, timeout):
@@ -1677,11 +1677,11 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
 
         def register(self, fid, event):
             if event:
-                if event & _AsyncNotifier._Read:
+                if event & _AsyncPoller._Read:
                     self.rset.add(fid)
-                if event & _AsyncNotifier._Write:
+                if event & _AsyncPoller._Write:
                     self.wset.add(fid)
-                if event & _AsyncNotifier._Error:
+                if event & _AsyncPoller._Error:
                     self.xset.add(fid)
 
         def unregister(self, fid):
@@ -1697,11 +1697,11 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
             rlist, wlist, xlist = self.poller(self.rset, self.wset, self.xset, timeout)
             events = {}
             for fid in rlist:
-                events[fid] = _AsyncNotifier._Read
+                events[fid] = _AsyncPoller._Read
             for fid in wlist:
-                events[fid] = _AsyncNotifier._Write
+                events[fid] = events.get(fid, 0) | _AsyncPoller._Write
             for fid in xlist:
-                events[fid] = _AsyncNotifier._Error
+                events[fid] = events.get(fid, 0) | _AsyncPoller._Error
 
             return events.iteritems()
 
@@ -1712,6 +1712,9 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
 
     AsynCoroSocket = _AsynCoroSocket
     _AsyncNotifier = _AsyncPoller
+
+class HotSwap(Exception):
+    pass
 
 class Coro(object):
     """'Coroutine' factory to build coroutines to be scheduled with
@@ -1742,8 +1745,14 @@ class Coro(object):
         self._callers = []
         self._timeout = None
         self._daemon = False
-        self._asyncoro = AsynCoro.instance()
         self._complete = threading.Event()
+        # if coro is not ready to be resumed, resume requests are
+        # queued. For now, only one type of resumes are queued up, so
+        # no need to use dictionary
+        self._resumes = []
+        self._new_generator = None
+        self._hot_swappable = False
+        self._asyncoro = AsynCoro.instance()
         self._asyncoro._add(self)
 
     def set_daemon(self):
@@ -1752,10 +1761,12 @@ class Coro(object):
         When exiting, AsynCoro scheduler waits for all non-daemon
         coroutines to terminate.
         """
-        if self._asyncoro:
+        if self._asyncoro and self._asyncoro.cur_coro() == self:
             self._asyncoro._set_daemon(self)
+            return 0
         else:
-            logging.warning('set_daemon: coroutine %s removed?', self.name)
+            logging.warning('set_daemon must be called from running coro')
+            return -1
 
     def suspend(self, timeout=None, alarm_value=None):
         """Suspend/sleep coro (until woken up, usually by AsyncNotifier
@@ -1776,6 +1787,8 @@ class Coro(object):
 
     sleep = suspend
 
+    receive = suspend
+
     def _await_(self, timeout=None, alarm_value=None):
         """Internal use only.
         """
@@ -1785,11 +1798,11 @@ class Coro(object):
         """Resume/wakeup this coro and send 'update' to it.
 
         The resuming coro gets 'update' for the 'yield' that caused it
-        to suspend. This method must be called from coro only. Note
-        that asyncoro also uses suspend/resume to implement
-        asynchronous API, so resume from user programs must be for
-        matching suspend - resuming otherwise may interrupt
-        asynchronous call, causing failures.
+        to suspend.
+
+        If coro is currently not suspended/sleeping, 'update' is
+        queued. Then next suspend/sleep call will return queued
+        'update' so coro is not suspended at all.
         """
         if self._asyncoro:
             return self._asyncoro._resume(self, update, AsynCoro._Suspended)
@@ -1798,6 +1811,8 @@ class Coro(object):
             return -1
 
     wakeup = resume
+
+    send = resume
 
     def _proceed_(self, update=None):
         """Internal use only.
@@ -1847,6 +1862,52 @@ class Coro(object):
             return self._asyncoro._terminate_coro(self)
         else:
             logging.warning('terminate: coroutine %s removed?', self.name)
+            return -1
+
+    def hot_swappable(self, flag):
+        if self._asyncoro and self._asyncoro.cur_coro() == self:
+            if flag:
+                self._hot_swappable = True
+            else:
+                self._hot_swappable = False
+            return 0
+        else:
+            logging.warning('hot_swappable must be called from running coro')
+            return -1
+
+    def hot_swap(self, target, *args, **kwargs):
+        """Replaces coro's generator function with given target(*args, **kwargs).
+
+        The new generator starts executing from the beginning. If
+        there are any pending resumes, they will not be reset, so new
+        generator can process them (or clear them with successive
+        'receive' calls with timeout=0 until it returns 'alarm_value').
+        """
+        if not inspect.isgeneratorfunction(target):
+            logging.warning('%s is not a generator!' % target.__name__)
+            return -1
+        if not args and kwargs:
+            args = kwargs.pop('args', ())
+            kwargs = kwargs.pop('kwargs', kwargs)
+        if kwargs.get('coro', None) is not None:
+            logging.warning('Coro function %s should not be called with ' \
+                            '"coro" parameter' % target.__name__)
+            return -1
+        try:
+            callargs = inspect.getcallargs(target, *args, **kwargs)
+        except TypeError as exc:
+            logging.warning(str(exc))
+            return -1
+        if 'coro' not in callargs or callargs['coro'] is not None:
+            logging.warning('Coro function "%s" should have "coro" argument with ' \
+                            'default value None' % target.__name__)
+            return -1
+        kwargs['coro'] = self
+        generator = target(*args, **kwargs)
+        if self._asyncoro:
+            return self._asyncoro._swap_generator(self, generator)
+        else:
+            logging.warning('hot_swap: coroutine %s removed?', self.name)
             return -1
 
 class Lock(object):
@@ -2090,6 +2151,17 @@ class AsynCoro(object):
 
     The only methods available to users are 'cur_coro', 'terminate' and
     'join' and class method 'instance'.
+
+    AsynCoro can be initialized with an event notifier that provides
+    'poll' and 'interrupt' methods. AsynCoro calls 'poll' method to
+    deliver events to coroutines (typically, processing I/O events and
+    calling 'resume' methods), and 'interrupt' method to cause current
+    (blocking) 'poll' method to terminate so control is returned to
+    AsynCoro. 'poll' method is called with timeout argument. If
+    timeout is 0, 'poll' should deliver events without blocking, if
+    timeout is None, 'poll' may block (i.e., can wait indefinitely for
+    events to occur) and if timeout is a number, 'poll' should wait at
+    most that many seconds before returning (control to AsynCoro).
     """
 
     __metaclass__ = MetaSingleton
@@ -2104,7 +2176,7 @@ class AsynCoro(object):
     # in _suspended; for internal use
     _Await_ = 4
 
-    def __init__(self):
+    def __init__(self, notifier=None):
         if self.__class__.__instance is None:
             self.__class__.__instance = self
             self._coros = {}
@@ -2119,18 +2191,21 @@ class AsynCoro(object):
             self._terminate = False
             self._complete = threading.Event()
             self._daemons = 0
-            self._notifier = _AsyncNotifier()
+            if notifier is None:
+                self._notifier = _AsyncNotifier()
+            else:
+                self._notifier = notifier
             self._scheduler = threading.Thread(target=self._schedule)
             self._scheduler.daemon = True
             self._scheduler.start()
             atexit.register(self.terminate, True)
 
     @classmethod
-    def instance(cls):
+    def instance(cls, *args, **kwargs):
         """Returns (singleton) instance of AsynCoro.
         """
         if cls.__instance is None:
-            cls.__instance = cls()
+            cls.__instance = cls(*args, **kwargs)
         return cls.__instance
 
     def cur_coro(self):
@@ -2165,7 +2240,7 @@ class AsynCoro(object):
         """Internal use only. See sleep/suspend in Coro.
         """
         if timeout is not None:
-            if not isinstance(timeout, (float, int)) or timeout <= 0:
+            if not isinstance(timeout, (float, int)) or timeout < 0:
                 logging.warning('invalid timeout %s', timeout)
                 return -1
         self._lock.acquire()
@@ -2175,16 +2250,25 @@ class AsynCoro(object):
             self._lock.release()
             logging.warning('invalid coroutine %s to suspend', cid)
             return -1
-        self._scheduled.discard(cid)
-        self._suspended.add(cid)
-        assert state == AsynCoro._Await_ or state == AsynCoro._Suspended
-        coro._state = state
+        if coro._resumes:
+            s, update = coro._resumes[0]
+            if s == state:
+                del coro._resumes[0]
+                self._lock.release()
+                return update
         if timeout is None:
             coro._timeout = None
+        elif timeout == 0:
+            self._lock.release()
+            return alarm_value
         else:
             timeout = _time() + timeout
             heappush(self._timeouts, (timeout, cid, alarm_value))
             coro._timeout = timeout
+        self._scheduled.discard(cid)
+        self._suspended.add(cid)
+        assert state == AsynCoro._Await_ or state == AsynCoro._Suspended
+        coro._state = state
         self._lock.release()
         return 0
 
@@ -2198,11 +2282,11 @@ class AsynCoro(object):
             self._lock.release()
             logging.warning('invalid coroutine %s to resume', cid)
             return -1
-        elif coro._state != state:
+        if coro._state != state:
+            assert state == AsynCoro._Suspended
+            coro._resumes.append((state, update))
             self._lock.release()
-            logging.warning('invalid coroutine %s/%s to resume (%s != %s)', coro.name, cid,
-                            coro._state, state)
-            return -1
+            return 0
         coro._timeout = None
         coro._value = update
         self._suspended.discard(cid)
@@ -2231,8 +2315,8 @@ class AsynCoro(object):
         coro._timeout = None
         coro._exception = args
         if coro._state == AsynCoro._Await_ or coro._state == AsynCoro._Suspended:
-            self._suspended.discard(id(coro))
-            self._scheduled.add(id(coro))
+            self._suspended.discard(cid)
+            self._scheduled.add(cid)
         coro._state = AsynCoro._Scheduled
         if len(self._scheduled) == 1:
             self._notifier.interrupt()
@@ -2261,6 +2345,35 @@ class AsynCoro(object):
         coro._state = AsynCoro._Scheduled
         if len(self._scheduled) == 1:
             self._notifier.interrupt()
+        self._lock.release()
+        return 0
+
+    def _swap_generator(self, coro, generator):
+        """Internal use only.
+        """
+        self._lock.acquire()
+        cid = id(coro)
+        coro = self._coros.get(cid, None)
+        if coro is None:
+            logging.warning('invalid coroutine %s to terminate', cid)
+            self._lock.release()
+            return -1
+        # TODO: prevent overwriting another generator already queued?
+        if coro._callers or coro._state not in [AsynCoro._Scheduled, AsynCoro._Suspended] or \
+               not coro._hot_swappable:
+            logging.debug('postponing hot swapping of %s/%s', coro.name, cid)
+            coro._new_generator = generator
+            self._lock.release()
+            return 1
+        else:
+            coro._timeout = None
+            coro._exception = (HotSwap, HotSwap(generator))
+            if coro._state == AsynCoro._Suspended:
+                self._suspended.discard(cid)
+                self._scheduled.add(cid)
+                coro._state = AsynCoro._Scheduled
+                if len(self._scheduled) == 1:
+                    self._notifier.interrupt()
         self._lock.release()
         return 0
 
@@ -2298,8 +2411,8 @@ class AsynCoro(object):
                                         coro.name, id(coro), coro._state)
                         continue
                     coro._timeout = None
-                    self._suspended.discard(id(coro))
-                    self._scheduled.add(id(coro))
+                    self._suspended.discard(cid)
+                    self._scheduled.add(cid)
                     coro._state = AsynCoro._Scheduled
                     coro._value = alarm_value
             scheduled = [self._coros.get(cid, None) for cid in self._scheduled]
@@ -2340,6 +2453,27 @@ class AsynCoro(object):
                             else:
                                 coro._value = v
                         coro._exception = None
+                    elif coro._exception[0] == HotSwap:
+                        v = coro._exception[1].args
+                        if isinstance(v, tuple) and len(v) == 1 and inspect.isgenerator(v[0]) and \
+                               coro._hot_swappable and not coro._callers:
+                            try:
+                                coro._generator.close()
+                            except:
+                                logging.warning('closing %s raised exception: %s',
+                                                coro._generator.__name__, traceback.format_exc())
+                            coro._generator = v[0]
+                            coro.name = coro._generator.__name__
+                            coro._exception = None
+                            coro._value = None
+                            # coro._resumes is not reset, so new
+                            # generator can process pending messages
+                            coro._state = AsynCoro._Scheduled
+                        else:
+                            logging.warning('invalid HotSwap exception from %s/%s ignored',
+                                            coro.name, id(coro))
+                        self._lock.release()
+                        continue
 
                     if coro._callers:
                         # return to caller
@@ -2388,7 +2522,12 @@ class AsynCoro(object):
                         # updated with the 'update' value
                         coro._value = retval
 
-                    if isinstance(retval, types.GeneratorType):
+                    if coro._new_generator is not None and not coro._callers and \
+                           coro._hot_swappable and coro._state in [AsynCoro._Scheduled,
+                                                                   AsynCoro._Suspended]:
+                        coro._exception = (HotSwap, HotSwap(coro._new_generator))
+                        coro._new_generator = None
+                    elif isinstance(retval, types.GeneratorType):
                         # push current generator onto stack and activate
                         # new generator
                         coro._callers.append((coro._generator, coro._value))
@@ -2560,7 +2699,3 @@ class AsynCoroDBCursor(object):
         coro = self._asyncoro.cur_coro()
         self._thread_pool.async_task(coro, self._exec_task,
                                      functools.partial(self._cursor.callproc, proc, args))
-
-# initialize AsynCoro so all components are setup correctly
-scheduler = AsynCoro()
-del scheduler
