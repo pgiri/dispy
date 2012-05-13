@@ -72,8 +72,9 @@ class _Scheduler(object):
     """
     __metaclass__ = MetaSingleton
 
-    def __init__(self, loglevel, nodes=[], ip_addr=None, port=None, node_port=None,
-                 scheduler_port=0, pulse_interval=None, ping_interval=None,
+    def __init__(self, loglevel, nodes=[], ip_addr=None, ext_ip_addr=None,
+                 port=None, node_port=None, scheduler_port=None,
+                 pulse_interval=None, ping_interval=None,
                  node_secret='', node_keyfile=None, node_certfile=None,
                  cluster_secret='', cluster_keyfile=None, cluster_certfile=None,
                  dest_path_prefix=None, max_file_size=None, zombie_interval=60):
@@ -84,16 +85,27 @@ class _Scheduler(object):
             logging.basicConfig(format='%(asctime)s %(message)s', level=loglevel)
             if ip_addr:
                 ip_addr = _node_ipaddr(ip_addr)
+                if not ip_addr:
+                    raise Exception('invalid ip_addr')
             else:
                 ip_addr = socket.gethostbyname(socket.gethostname())
-            if port is None:
+            if ext_ip_addr:
+                ext_ip_addr = _node_ipaddr(ext_ip_addr)
+                if not ext_ip_addr:
+                    raise Exception('invalid ext_ip_addr')
+            else:
+                ext_ip_addr = ip_addr
+            if not port:
                 port = 51347
             if not node_port:
                 node_port = 51348
+            if not scheduler_port:
+                scheduler_port = 51349
             if not nodes:
                 nodes = ['*']
 
             self.ip_addr = ip_addr
+            self.ext_ip_addr = ext_ip_addr
             self.port = port
             self.node_port = node_port
             self.scheduler_port = scheduler_port
@@ -156,14 +168,16 @@ class _Scheduler(object):
 
             self.timer_coro = Coro(self.timer_task)
 
-            self.request_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.request_sock.bind((self.ip_addr, self.scheduler_port))
-            self.scheduler_port = self.request_sock.getsockname()[1]
-            self.request_sock.listen(32)
+            self.scheduler_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.scheduler_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.scheduler_sock.bind((self.ip_addr, self.scheduler_port))
+            self.scheduler_port = self.scheduler_sock.getsockname()[1]
+            self.scheduler_sock.listen(32)
 
             self.job_result_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
-            self.job_result_sock.bind((self.ip_addr, 0))
+            self.job_result_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.job_result_sock.bind((self.ip_addr, self.port))
+            self.port = self.job_result_sock.getsockname()[1]
             self.job_result_sock.listen(50)
             self.job_result_sock = AsynCoroSocket(self.job_result_sock, blocking=False,
                                                   keyfile=self.node_keyfile,
@@ -174,19 +188,20 @@ class _Scheduler(object):
             self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.udp_sock.bind(('', self.port))
             self.udp_sock = AsynCoroSocket(self.udp_sock, blocking=False)
-            logging.debug('UDP server at %s:%s' % (self.udp_sock.getsockname()))
             self.udp_coro = Coro(self.udp_server)
 
-            logging.debug('TCP port is %s:%s', self.ip_addr, self.scheduler_port)
             self.scheduler_coro = Coro(self._schedule_jobs)
+
+            logging.info('UDP server at %s:%s', self.ip_addr, self.port)
+            logging.info('Job scheduler is at %s:%s', self.ip_addr, self.scheduler_port)
+            logging.info('Job result server is at %s:%s', self.ip_addr, self.port)
 
             # TODO: wait for scheduler and udp servers to start
             bc_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
-            ping_request = pickle.dumps({'scheduler_ip_addr':self.ip_addr,
-                                          'scheduler_port':self.port,
-                                          'version':_dispy_version})
+            ping_request = pickle.dumps({'scheduler_ip_addr':self.ext_ip_addr,
+                                         'scheduler_port':self.port, 'version':_dispy_version})
             node_spec = _parse_nodes(nodes)
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             for node_spec, node_info in node_spec.iteritems():
@@ -215,6 +230,7 @@ class _Scheduler(object):
         coro.set_daemon()
         while True:
             msg, addr = yield self.udp_sock.recvfrom(1024)
+            logging.debug('udp from %s', str(addr))
             # no need to create coros to process these requests
             if msg.startswith('PULSE:'):
                 msg = msg[len('PULSE:'):]
@@ -235,7 +251,7 @@ class _Scheduler(object):
                     if node is not None:
                         # assert 0 <= info['cpus'] <= node.cpus
                         node.last_pulse = time.time()
-                        msg = 'PULSE:' + pickle.dumps({'ip_addr':self.ip_addr})
+                        msg = 'PULSE:' + pickle.dumps({'ip_addr':self.ext_ip_addr})
                         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                         sock = AsynCoroSocket(sock, blocking=False)
                         sock.settimeout(1)
@@ -279,10 +295,6 @@ class _Scheduler(object):
                         continue
                     for node_spec, host in compute.node_spec.iteritems():
                         if re.match(node_spec, node.ip_addr):
-                            if host['name'] is None or host['name'].find('*') >= 0:
-                                node.name = node.ip_addr
-                            else:
-                                node.name = host['name']
                             node_computes.append(compute)
                             break
                 if node_computes:
@@ -328,7 +340,7 @@ class _Scheduler(object):
                     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                     sock = AsynCoroSocket(sock, blocking=False)
                     sock.settimeout(1)
-                    reply = {'ip_addr':self.ip_addr, 'port':self.scheduler_port,
+                    reply = {'ip_addr':self.ext_ip_addr, 'port':self.scheduler_port,
                              'sign':self.sign, 'version':_dispy_version}
                     yield sock.sendto(pickle.dumps(reply), (req['ip_addr'], req['port']))
                     sock.close()
@@ -341,8 +353,8 @@ class _Scheduler(object):
 
     def send_ping_cluster(self, cluster, coro=None):
         # generator
-        ping_request = pickle.dumps({'scheduler_ip_addr':self.ip_addr,
-                                      'scheduler_port':self.port, 'version':_dispy_version})
+        ping_request = pickle.dumps({'scheduler_ip_addr':self.ext_ip_addr,
+                                     'scheduler_port':self.port, 'version':_dispy_version})
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock = AsynCoroSocket(sock, blocking=False)
         sock.settimeout(1)
@@ -537,7 +549,7 @@ class _Scheduler(object):
             cluster.client_scheduler_ip_addr = compute.scheduler_ip_addr
             cluster.client_scheduler_port = compute.scheduler_port
             compute.job_result_port = self.job_result_sock.getsockname()[1]
-            compute.scheduler_ip_addr = self.ip_addr
+            compute.scheduler_ip_addr = self.ext_ip_addr
             compute.scheduler_port = self.port
             yield self._sched_cv.acquire()
             compute.id = cluster.id = self.cluster_id
@@ -709,7 +721,7 @@ class _Scheduler(object):
                     if _job.uid == job.uid:
                         del cluster._jobs[i]
                         self.unsched_jobs -= 1
-                        reply = _JobReply(_job, self.ip_addr, status=DispyJob.Cancelled)
+                        reply = _JobReply(_job, self.ext_ip_addr, status=DispyJob.Cancelled)
                         Coro(self.send_job_result, _job.uid, compute.id,
                              cluster.client_scheduler_ip_addr, cluster.client_job_result_port,
                              reply)
@@ -875,7 +887,7 @@ class _Scheduler(object):
 
         logging.debug('Received reply for job %s from %s' % (reply.uid, addr[0]))
         yield self._sched_cv.acquire()
-        node = self._nodes.get(addr[0], None)
+        node = self._nodes.get(reply.ip_addr, None)
         if node is None:
             self._sched_cv.release()
             logging.warning('Ignoring invalid reply for job %s from %s',
@@ -910,7 +922,7 @@ class _Scheduler(object):
         if reply.status != DispyJob.ProvisionalResult:
             del self._sched_jobs[_job.uid]
             _job.node.busy -= 1
-            assert compute.nodes[addr[0]] == _job.node
+            assert compute.nodes[reply.ip_addr] == _job.node
             if reply.status != DispyJob.Terminated:
                 _job.node.jobs += 1
             _job.node.cpu_time += _job.job.end_time - _job.job.start_time
@@ -938,10 +950,6 @@ class _Scheduler(object):
                 break
             except:
                 logging.debug(traceback.format_exc())
-                continue
-            if addr[0] not in self._nodes:
-                logging.warning('Ignoring results from %s', addr[0])
-                conn.close()
                 continue
             conn.settimeout(2)
             Coro(self.job_result_task, conn, addr)
@@ -1066,7 +1074,7 @@ class _Scheduler(object):
             for node in compute.nodes.itervalues():
                 node.close(compute)
             for _job in cluster._jobs:
-                reply = _JobReply(_job, self.ip_addr, status=DispyJob.Terminated)
+                reply = _JobReply(_job, self.ext_ip_addr, status=DispyJob.Terminated)
                 Coro(self.send_job_result, _job.uid, compute.id, cluster.client_scheduler_ip_addr,
                      cluster.client_job_result_port, reply)
             cluster._jobs = []
@@ -1085,7 +1093,7 @@ class _Scheduler(object):
                 logging.debug('shutting down scheduler ...')
                 coros = []
                 for uid, _job in self._sched_jobs.iteritems():
-                    reply = _JobReply(_job, self.ip_addr, status=DispyJob.Terminated)
+                    reply = _JobReply(_job, self.ext_ip_addr, status=DispyJob.Terminated)
                     cluster = self._clusters[_job.compute_id]
                     compute = cluster._compute
                     coros.append(Coro(self.send_job_result, _job.uid, compute.id,
@@ -1186,6 +1194,8 @@ if __name__ == '__main__':
                         help='name or IP address used for all computations; repeat for multiple nodes')
     parser.add_argument('-i', '--ip_addr', dest='ip_addr', default=None,
                         help='IP address to use (may be needed in case of multiple interfaces)')
+    parser.add_argument('--ext_ip_addr', dest='ext_ip_addr', default=None,
+                        help='External IP address to use (may be needed in case of firewall)')
     parser.add_argument('-p', '--port', dest='port', type=int, default=51347,
                         help='port number to use')
     parser.add_argument('--node_port', dest='node_port', type=int, default=51348,
@@ -1228,7 +1238,7 @@ if __name__ == '__main__':
     scheduler = _Scheduler(**config)
     while True:
         try:
-            conn, addr = scheduler.request_sock.accept()
+            conn, addr = scheduler.scheduler_sock.accept()
         except KeyboardInterrupt:
             # TODO: terminate even if jobs are scheduled?
             logging.info('Interrupted; terminating')

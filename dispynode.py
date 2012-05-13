@@ -135,8 +135,9 @@ def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
 class _DispyNode(object):
     """Internal use only.
     """
-    def __init__(self, cpus, ip_addr='', node_port=51348, scheduler_node=None, scheduler_port=51347,
-                  dest_path_prefix='', secret='', keyfile=None, certfile=None,
+    def __init__(self, cpus, ip_addr=None, ext_ip_addr=None, node_port=51348,
+                 scheduler_node=None, scheduler_port=None,
+                 dest_path_prefix='', secret='', keyfile=None, certfile=None,
                  max_file_size=None, zombie_interval=60):
         assert 0 < cpus <= multiprocessing.cpu_count()
         self.cpus = cpus
@@ -144,14 +145,24 @@ class _DispyNode(object):
             ip_addr = _node_ipaddr(ip_addr)
             if not ip_addr:
                 raise Exception('invalid ip_addr')
-            try:
-                self.name = socket.gethostbyaddr(ip_addr)[0]
-            except:
-                self.name = None
         else:
             self.name = socket.gethostname()
             ip_addr = socket.gethostbyname(self.name)
+        if ext_ip_addr:
+            ext_ip_addr = _node_ipaddr(ext_ip_addr)
+            if not ext_ip_addr:
+                raise Exception('invalid ext_ip_addr')
+        else:
+            ext_ip_addr = ip_addr
+        try:
+            self.name = socket.gethostbyaddr(ext_ip_addr)[0]
+        except:
+            self.name = socket.gethostname()
+        if not scheduler_port:
+            scheduler_port = 51347
+
         self.ip_addr = ip_addr
+        self.ext_ip_addr = ext_ip_addr
         self.scheduler_port = scheduler_port
         self.pulse_interval = None
         self.keyfile = keyfile
@@ -164,7 +175,8 @@ class _DispyNode(object):
         self.asyncoro = AsynCoro()
 
         self.tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.tcp_sock.bind((ip_addr, 0))
+        self.tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.tcp_sock.bind((self.ip_addr, node_port))
         self.address = self.tcp_sock.getsockname()
         self.tcp_sock.listen(30)
 
@@ -214,7 +226,7 @@ class _DispyNode(object):
         ping_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         ping_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         ping_sock = AsynCoroSocket(ping_sock, blocking=False)
-        pong_msg = {'ip_addr':self.ip_addr, 'name':self.name, 'port':self.address[1],
+        pong_msg = {'ip_addr':self.ext_ip_addr, 'name':self.name, 'port':self.address[1],
                     'cpus':self.cpus, 'sign':self.signature, 'version':_dispy_version}
         pong_msg = 'PONG:' + pickle.dumps(pong_msg)
         yield ping_sock.sendto(pong_msg, ('<broadcast>', self.scheduler_port))
@@ -225,7 +237,7 @@ class _DispyNode(object):
         coro.set_daemon()
         if self.avail_cpus == self.cpus:
             yield self.send_pong_msg(coro=coro)
-        pong_msg = {'ip_addr':self.ip_addr, 'name':self.name, 'port':self.address[1],
+        pong_msg = {'ip_addr':self.ext_ip_addr, 'name':self.name, 'port':self.address[1],
                     'cpus':self.cpus, 'sign':self.signature, 'version':_dispy_version}
         pong_msg = 'PONG:' + pickle.dumps(pong_msg)
 
@@ -287,6 +299,8 @@ class _DispyNode(object):
                 logging.warning('Ignoring ping message from %s', addr[0])
 
     def tcp_serve_task(self, conn, addr, coro=None):
+        conn = AsynCoroSocket(conn, blocking=False,
+                              keyfile=self.keyfile, certfile=self.certfile)
         def job_request_task(msg):
             assert coro is not None
             try:
@@ -298,8 +312,7 @@ class _DispyNode(object):
             yield self.lock.acquire()
             compute = self.computations.get(_job.compute_id, None)
             if compute is not None:
-                if compute.scheduler_ip_addr != self.scheduler_ip_addr or \
-                       addr[0] != compute.scheduler_ip_addr:
+                if compute.scheduler_ip_addr != self.scheduler_ip_addr:
                     compute = None
             yield self.lock.release()
             if self.avail_cpus == 0:
@@ -317,12 +330,11 @@ class _DispyNode(object):
                     pass
                 raise StopIteration
 
-            reply_addr = (addr[0], self.computations[_job.compute_id].job_result_port)
+            reply_addr = (compute.scheduler_ip_addr, compute.job_result_port)
             logging.debug('New job id %s from %s', _job.uid, addr[0])
             files = []
             for f in _job.files:
-                tgt = os.path.join(self.computations[compute.id].dest_path,
-                                   os.path.basename(f['name']))
+                tgt = os.path.join(compute.dest_path, os.path.basename(f['name']))
                 try:
                     fd = open(tgt, 'wb')
                     fd.write(f['data'])
@@ -339,7 +351,7 @@ class _DispyNode(object):
             _job.files = files
 
             if compute.type == _Compute.func_type:
-                reply = _JobReply(_job, self.ip_addr)
+                reply = _JobReply(_job, self.ext_ip_addr)
                 job_info = _DispyJobInfo(reply, reply_addr, compute)
                 args = (job_info, self.certfile, self.keyfile,
                         _job.args, _job.kwargs, self.reply_Q,
@@ -366,7 +378,7 @@ class _DispyNode(object):
                     logging.warning('Failed to send response for new job to %s',
                                     str(addr))
                     raise StopIteration
-                reply = _JobReply(_job, self.ip_addr)
+                reply = _JobReply(_job, self.ext_ip_addr)
                 job_info = _DispyJobInfo(reply, reply_addr, compute)
                 job_info.job_reply.status = DispyJob.Running
                 yield self.lock.acquire()
@@ -618,7 +630,7 @@ class _DispyNode(object):
                     logging.warning('Could not kill process %s', compute.name)
                     raise StopIteration
             reply_addr = (addr[0], compute.job_result_port)
-            reply = _JobReply(_job, self.ip_addr)
+            reply = _JobReply(_job, self.ext_ip_addr)
             job_info = _DispyJobInfo(reply, reply_addr, compute)
             reply.status = DispyJob.Terminated
             yield self._send_job_reply(job_info, resending=False, coro=coro)
@@ -690,8 +702,6 @@ class _DispyNode(object):
                     pass
 
         # tcp_serve_task starts
-        conn = AsynCoroSocket(conn, blocking=False,
-                              keyfile=self.keyfile, certfile=self.certfile)
         try:
             req = yield conn.recvall(len(self.auth_code))
             assert req == self.auth_code
@@ -771,7 +781,7 @@ class _DispyNode(object):
                 assert n >= 0
                 if n > 0 and self.scheduler_ip_addr:
                     last_pulse_time = now
-                    msg = 'PULSE:' + pickle.dumps({'ip_addr':self.ip_addr,
+                    msg = 'PULSE:' + pickle.dumps({'ip_addr':self.ext_ip_addr,
                                                     'port':self.udp_sock.getsockname()[1], 'cpus':n})
                     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                     sock = AsynCoroSocket(sock, blocking=False)
@@ -1017,8 +1027,10 @@ if __name__ == '__main__':
                         help='number of cpus used by dispy; if negative, that many cpus are not used')
     parser.add_argument('-d', action='store_true', dest='loglevel', default=False,
                         help='if True, debug messages are printed')
-    parser.add_argument('-i', '--ip_addr', dest='ip_addr', default='',
+    parser.add_argument('-i', '--ip_addr', dest='ip_addr', default=None,
                         help='IP address to use (may be needed in case of multiple interfaces)')
+    parser.add_argument('--ext_ip_addr', dest='ext_ip_addr', default=None,
+                        help='External IP address to use (may be needed in case of firewall)')
     parser.add_argument('-p', '--node_port', dest='node_port', type=int, default=51348,
                         help='port number to use')
     parser.add_argument('--dest_path_prefix', dest='dest_path_prefix',
