@@ -40,9 +40,9 @@ dispy is a framework, developed
 in <a href="http://www.python.org">Python</a>, for parallel execution
 of computations by distributing them across multiple processors on a
 single machine (SMP), among many machines in a cluster or grid.  dispy
-is well suited for data parallellism (SIMD paradigm) where a
-computation is evaluated with different (large) datasets
-independently. Salient features of dispy are:
+is well suited for data parallell (SIMD) paradigm where a computation
+is evaluated with different (large) datasets independently. Salient
+features of dispy are:
 </p>
 <ul>
 
@@ -62,8 +62,7 @@ independently. Salient features of dispy are:
     remote). For security, either simple hash based authentication or
     SSL encryption can be used.</li>
 
-<li>A computation may specify which nodes are allowed to execute it
-    (for now, using simple patterns of IP addresses).</li>
+<li>A computation may specify which nodes are allowed to execute it.</li>
 
 <li>After each execution is finished, the results of execution, output,
     errors and exception trace are made available for further
@@ -166,7 +165,7 @@ if __name__ == '__main__':
 Now run the above program, which creates a cluster with function
 'compute'. dispy schedules this computation with various arguments to
 all the nodes running 'dispynode'; each time computation is submitted,
-dispy returns an instnce of DispyJob, or job for short. The nodes
+dispy returns an instance of DispyJob, or job for short. The nodes
 execute the computation with the job's arguments in isolation -
 computations shouldn't depend on global state, such as modules
 imported outside of computations, global variables etc. In this case,

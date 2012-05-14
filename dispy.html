@@ -57,13 +57,12 @@ be used to schedule jobs by specifying arguments to invoke the
 computations.
 </p>
 
-<ul>
-  <li>
+<h4>JobCluster</h4>
 <tt>JobCluster(computation, nodes=['*'], depends=[], callback=None,
-           ip_addr=None, port=51347, node_port=51348, fault_recover=False,
-           dest_path=None, loglevel=logging.WARNING, cleanup=True,
-           pulse_interval=None, ping_interval=None, reentrant=False,
-           secret='', keyfile=None, certfile=None)</tt><br/>
+           ip_addr=None, ext_ip_addr=None, port=51347, node_port=51348,
+           fault_recover=False, dest_path=None, loglevel=logging.WARNING,
+           cleanup=True, pulse_interval=None, ping_interval=None,
+           reentrant=False, secret='', keyfile=None, certfile=None)</tt><br/>
 where
 <ul>
 <li>
@@ -72,25 +71,28 @@ where
   computation is sent to nodes in the given cluster.
 </li>
 <li>
-  <tt>nodes</tt> is list of nodes, where each node is either IP
-  address or host name. This list serves two purposes: dispy initially
-  sends a request to all the nodes listed to find out information
-  about them (e.g., number of processing units available for dispy),
-  then sends given computation to only those nodes that match the
-  listed nodes (dispy may know about nodes not listed in this
-  computation, as it also broadcasts identification request).
-  Wildcard '*' can be used to match (part of) any IP address; e.g.,
-  '192.168.3.*' matches any node whose IP address starts with
-  '192.168.3'.  If there are any nodes beyond local network, then all
-  such nodes should be mentioned in <tt>nodes</tt>. If there are many
-  such nodes (on outside local network), it may be cumbersome to list
-  them all (it is not possible to send identification request to
-  outside networks with wildcard in them); in that
-  case, <a href="dispynetrelay.html">dispynetrelay</a> may be started
-  on one of the nodes on that network and the node running
-  dispynetrelay should be added to nodes list (and a wildcard for that
-  network, so that other nodes on that network match that wildcard);
-  see below for examples.
+  <tt>nodes</tt> is list. Each element must be either a string or a
+  pair (tuple of two elements). If element is a string, it must be
+  either IP address or host name. If element is a pair, first element
+  of pair must be IP address or name and second element must be port
+  number where that node is serving (needed if it is different from
+  default 51348). This list serves two purposes: dispy initially sends
+  a request to all the nodes listed to find out information about them
+  (e.g., number of processing units available for dispy), then sends
+  given computation to only those nodes that match the listed nodes
+  (dispy may know about nodes not listed in this computation, as it
+  also broadcasts identification request).  Wildcard '*' can be used
+  to match (part of) any IP address; e.g., '192.168.3.*' matches any
+  node whose IP address starts with '192.168.3'.  If there are any
+  nodes beyond local network, then all such nodes should be mentioned
+  in <tt>nodes</tt>. If there are many such nodes (on outside local
+  network), it may be cumbersome to list them all (it is not possible
+  to send identification request to outside networks with wildcard in
+  them); in that case, <a href="dispynetrelay.html">dispynetrelay</a>
+  may be started on one of the nodes on that network and the node
+  running dispynetrelay should be added to nodes list (and a wildcard
+  for that network, so that other nodes on that network match that
+  wildcard); see below for examples.
 </li>
 <li>
   <tt>depends</tt> is list of dependencies needed
@@ -116,6 +118,14 @@ where
   <tt>ip_addr</tt> is IP address to use for (client)
   communication. This may be needed in case the client has multiple
   interfaces and default interface is not the right choice.
+</li>
+<li>
+  <tt>ext_ip_addr</tt> is external IP address to use for (client)
+  communication. This may be needed in case the client is behind a NAT
+  firewall/gateway and (some) nodes are outside. Typically, in such a
+  case, ext_ip_addr must be the address of NAT firewall/gateway and
+  the NAT firewall/gateway must forward ports to ip_addr
+  appropriately. See below for more information.
 </li>
 <li>
   <tt>port</tt> is port to use for (client) communication. Usually not
@@ -204,12 +214,13 @@ where
   'ssl' module).
 </li>
 </ul>
-</li>
 
-<li>
-  SharedJobCluster has almost the same syntax, except as noted below:<br />
+<h4>SharedJobCluster</h4>
+<p>
+  SharedJobCluster has almost the same syntax, except as noted below.
+  </p>
 <tt>SharedJobCluster(computation, nodes=['*'], depends=[], ip_addr=None,
-                 scheduler_node=None, port=51347,
+                 ext_ip_addr=None, scheduler_node=None, port=51347,
                  dest_path=None, loglevel=logging.WARNING, cleanup=True,
                  reentrant=False, secret='', keyfile=None, certfile=None)</tt><br/>
 where all arguments common to <tt>JobCluster</tt> are same, and
@@ -230,8 +241,9 @@ where all arguments common to <tt>JobCluster</tt> are same, and
   handshaking of communication with dispyscheduler.
 </li>
 </ul>
-</li>
 
+A cluster has following methods:
+<ul>
 <li>
   <tt>cluster.submit</tt> method is available for the cluster returned
   from JobCluster. This method should be called with the arguments
@@ -275,14 +287,16 @@ where all arguments common to <tt>JobCluster</tt> are same, and
   <tt>cluster.stats()</tt> will print statistics about nodes, time
   each node spent executing jobs etc.
 </li>
+</ul>
 
-<li>
+<h4>Fault Recovery</h4>
+<p>
 As noted above, if 'fault_recover' option is used when creating a
 cluster, dispy stores information about scheduled but unfinished jobs
 in a file. If user program then terminates unexpectedly, the nodes
 that execute those jobs can't send the results back to dispy. In such
 cases, the results for the jobs can be retrieved from the nodes with
-the function in dispy:<br/>
+the function in dispy</p>
 <tt>fault_recover_jobs(fault_recover_file, ip_addr=None, secret='', node_port=51348,
                        certfile=None, keyfile=None)</tt>
 where
@@ -308,6 +322,7 @@ where
   should be same as the one used when creating JobCluster.</li>
 </ul>
 
+<p>
 This function reads the information about jobs in the
 fault_recover_file, retrieves DispyJob instance (that contains
 results, stdout, stderr, status etc.) for each job that was scheduled
@@ -323,9 +338,7 @@ DispyJob.Running and the results for this job can be retrieved again
 need JobCluster or SharedJobCluster instance. In fact,
 'fault_recover_jobs' function must not be used when a cluster that
 uses same recover file is currently running.
-</li>
-
-</ul>
+</p>
 
 <p>
 Note that dispy sends only the given computation and its dependencies
@@ -334,9 +347,10 @@ is a python function, it must import all the modules used by it, even
 if the program imported those modules before cluster is created.
 </p>
 
+<h4>Provisional Results</h4>
 <p>
   'dispy_provisional_result' function can be used in computations
-  (python functions) to send provisional results back to the
+  (Python functions) to send provisional results back to the
   client. For example, in optimization computations, there may be many
   (sub) optimal results that the computations can inform the client
   (program) that may cancel computations, or create additional
@@ -391,6 +405,40 @@ if __name__ == '__main__':
   0.005, job_callback deems it acceptable and terminates computations.
   </p>
 
+<h4>NAT/Firewall Forwarding</h4>
+<p>
+By default dispy client uses UDP and TCP ports 51347, dispynode uses
+UDP and TCP ports 51348, and dispyscheduler uses UDP and TCP pots
+51347 and TCP port 51348. If client/node/scheduler are behind a NAT
+firewall/gateway, then these ports must be forwarded appropriately and
+'ext_ip_addr' option must be used. For example, if dispy client is
+behdind NAT firewall/gateway, JobCluster/SharedJobCluster must set
+'ext_ip_addr' to the NAT firewall/gateway address and forward UDP and
+TCP ports 51347 to the IP address where client is running. Similarly,
+if dispynode is behind NAT firewall/gateway, 'ext_ip_addr' option must
+be used.
+  </p>
+<p>
+  For example, ext_ip_addr feature can be used with Amazon EC2 cloud
+  computing service. With EC2 service, a node has a private IP address
+  (called 'Private DNS Address') that uses private network of the form
+  10.x.x.x and public IP address (called 'Public DNS Address') that is
+  of the form ec2-x-x-x-x.x.amazonaws.com. After launching
+  instance(s), one can copy dispy files to the node(s) and run
+  dispynode as
+  <tt>dispynode.py --ext_ip_addr ec2-x-x-x-x.y.amazonaws.com</tt>
+  (this address can't be used with
+  '-i'/'--ip_addr' option, as the network interface for instance uses
+  private IP address only). This node can then be used by dispy client
+  by specifying ec2-x-x-x-x.x.amazonaws.com in the 'nodes'
+  list. Roughly, dispy uses 'ext_ip_addr' similar to NAT - it
+  announces ext_ip_addr to other services instead of the configured
+  ip_addr so that external services send requests to ext_ip_addr and
+  if firewall/gateway forwards packets appropriately, dispy will
+  process them.
+  </p>
+
+<h4>Examples</h4>
 <p>
   Below are some examples on various use cases of creating clusters:
 </p>
@@ -417,6 +465,17 @@ if __name__ == '__main__':
       <tt>cluster = dispy.JobCluster(compute, nodes=['192.168.3.5', '192.168.8.20', '172.16.2.99', '*'])</tt>
       In this case, dispy will send identification request to nodes with IP address '192.168.3.5', '192.168.8.20' and '172.16.2.99'. If these nodes all are running dispynetrelay, then all the nodes on those networks are eligible for executing this computation, as wildcard '*' matches IP addresses of those nodes. In addition, computation is also sent to all nodes on local network (since they also match wildcard '*' and identification request is broadcast on local network).
     </li>
+    <li>
+      Assuming that 192.168.1.39 is the (private) IP address where
+      dispy client is used, a.b.c.d is the (public) IP address of NAT
+      firewall/gateway (that can be reached from outside) and
+      dispynode is running at another public IP address e.f.g.h (so
+      that a.b.c.d and e.f.g.h can communicate, but e.f.g.h can't
+      communicate with 192.168.1.39),
+      <tt>cluster = dispy.JobCluster(compute, ip_addr='192.168.1.39', ext_ip_addr='a.b.c.d', nodes=['e.f.g.h'])</tt>
+      would work if NAT firewall/gateway forwards UDP and TCP ports 51347 to
+      192.168.1.39.
+      </li>
   </ol>
 
 	  </div> 

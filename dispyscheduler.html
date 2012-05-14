@@ -48,6 +48,24 @@
     node2</tt> etc. sends handshake messages when dispyscheduler
     starts. This is not needed if scheduler and nodes are on same
     network.</li>
+    <li><tt>-i addr</tt> or <tt>--ip_addr=addr</tt> directs
+    dispyscheduler to use given <tt>addr</tt> for communication,
+    instead of the IP address associated with the host name.</li>
+    <li>
+      <tt>--ext_ip_addr=addr</tt> directs dispyscheduler to
+      announce <tt>addr</tt> in network communication so that the scheduler
+      can be used if it is behind NAT firewall/gateway that is
+      configured to use <tt>addr</tt>. See below.
+      </li>
+    <li><tt>-p n</tt> or <tt>--port=n</tt> directs dispyscheduler to
+    use given port <tt>n</tt> instead of default port 51347 for
+    UDP and TCP communication for job results.</li>
+    <li><tt>--scheduler_port=n</tt> directs dispyscheduler to
+    use given port <tt>n</tt> instead of default port 51349 for
+    job scheduler.</li>
+    <li><tt>--node_port=n</tt> directs dispyscheduler to use given
+    port <tt>n</tt> instead of default port 51348 where dispynodes
+    must be running.</li>
     <li><tt>--node_secret secret</tt> directs dispyscheduler to use
     'secret' for hashing handshake communication with nodes.</li>
     <li><tt>--cluster_secret secret</tt> directs dispyscheduler to use
@@ -83,6 +101,26 @@
     <li><tt>-d</tt> enables debug messages that show trace of
     execution. This may not be very useful to end users.</li>
 </ul>
+
+<h4>NAT/Firewall Forwarding</h4>
+
+<p>
+As explained in <a href="dispy.html">dispy</a>
+and <a href="dispynode.html">dispynode</a>documentation, 'ext_ip_addr'
+can be used to use services behind NAT firewall/gateway. This option
+can be used with dispyscheduler, too. This is especially useful if
+there are many nodes in a network behind NAT firewall/gateway
+(otherwise, as explained in dispynode documentation, each dispynode
+should be started with a different port and all those ports forwarded
+appropriately). Assuming that dispyscheduler is to run on a node with
+(private) IP address 192.168.20.55 and it is behind NAT
+firewall/gateway at (public) IP address a.b.c.d, dispyscheduler can be
+invoked as <tt>dispynode.py -i 192.168.20.55 --ext_ip_addr
+a.b.c.d</tt> and setup NAT to forward UDP and TCP ports 51347 and TCP
+port 51349 to 192.168.20.55.  Then dispy clients can use nodes in this
+network with
+<tt>cluster = SharedJobCluster(compute, nodes=['*'], scheduler_node='a.b.c.d')</tt>
+</p>
 
 	  </div>
 	</div> 

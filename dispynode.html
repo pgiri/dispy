@@ -54,6 +54,12 @@
     <li><tt>-i addr</tt> or <tt>--ip_addr=addr</tt> directs dispynode
     to use given <tt>addr</tt> for communication, instead of the IP
     address associated with the host name.</li>
+    <li>
+      <tt>--ext_ip_addr=addr</tt> directs dispynode to
+      announce <tt>addr</tt> in network communication so that the node
+      can be used if it is behind NAT firewall/gateway that is
+      configured to use <tt>addr</tt>. See below.
+      </li>
     <li><tt>-p n</tt> or <tt>--node_port=n</tt> directs dispynode to
     use given port <tt>n</tt> instead of default port 51348.</li>
     <li><tt>-s secret</tt> or <tt>--secret=secret</tt> directs
@@ -95,6 +101,28 @@
     <li><tt>-d</tt> enables debug messages that show trace of
     execution. This may not be very useful to end users.</li>
 </ul>
+
+<h4>NAT/Firewall Forwarding</h4>
+
+<p>
+As explained in <a href="dispy.html">dispy</a> documentation,
+'ext_ip_addr' can be used in case dispynode is behding a NAT
+firewall/gateway and the NAT forwards UDP and TCP ports 51348 to the
+IP address where dispynode is running. Thus, assuming NAT
+firewall/gateway is at (public) IP address a.b.c.d, dispynode is to
+run at (private) IP address 192.168.5.33 and NAT forwards UDP and TCP
+ports 51348 to 192.168.5.33, dispynode can be invoked as
+<tt>dispynode.py -i 192.168.5.33 --ext_ip_addr a.b.c.d</tt>. If
+multiple dispynodes are needed behind a.b.c.d, then each must be
+started with different 'port' argument and those ports must be
+forwarded to nodes appropriately. For example, to continue the
+example, if 192.168.5.34 is another node that can run dispynode, then
+it can be started on it as
+<tt>dispynode.py -i 192.168.5.34 -p 51350 --ext_ip_addr a.b.c.d</tt>
+and configure NAT to forward UDP and TCP ports 51350 to
+192.168.5.34. Then dispy client can use the nodes with
+<tt>cluster = JobCluster(compute, nodes=[('a.b.c.d', 51347), ('a.b.c.d', 51350)])</tt>
+</p>
 
 	  </div> 
 	</div> 
