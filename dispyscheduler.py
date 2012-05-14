@@ -230,7 +230,6 @@ class _Scheduler(object):
         coro.set_daemon()
         while True:
             msg, addr = yield self.udp_sock.recvfrom(1024)
-            logging.debug('udp from %s', str(addr))
             # no need to create coros to process these requests
             if msg.startswith('PULSE:'):
                 msg = msg[len('PULSE:'):]
@@ -335,7 +334,7 @@ class _Scheduler(object):
                 try:
                     req = pickle.loads(msg[len('SERVERPORT:'):])
                     logging.debug('Sending %s:%s to %s:%s',
-                                  self.ip_addr, self.scheduler_port,
+                                  self.ext_ip_addr, self.scheduler_port,
                                   req['ip_addr'], req['port'])
                     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                     sock = AsynCoroSocket(sock, blocking=False)
@@ -1045,7 +1044,6 @@ class _Scheduler(object):
                 yield self._sched_cv.release()
                 break
 
-            logging.debug('Pending jobs: %s', self.unsched_jobs)
             # TODO: strategy to pick a cluster?
             for cid in node.clusters:
                 if self._clusters[cid]._jobs:
@@ -1195,11 +1193,13 @@ if __name__ == '__main__':
     parser.add_argument('-i', '--ip_addr', dest='ip_addr', default=None,
                         help='IP address to use (may be needed in case of multiple interfaces)')
     parser.add_argument('--ext_ip_addr', dest='ext_ip_addr', default=None,
-                        help='External IP address to use (may be needed in case of firewall)')
+                        help='External IP address to use (needed in case of NAT firewall/gateway)')
     parser.add_argument('-p', '--port', dest='port', type=int, default=51347,
-                        help='port number to use')
+                        help='port number for UDP data and job results')
     parser.add_argument('--node_port', dest='node_port', type=int, default=51348,
                         help='port number used by nodes')
+    parser.add_argument('--scheduler_port', dest='scheduler_port', type=int, default=51349,
+                        help='port number for scheduler')
     parser.add_argument('--node_secret', dest='node_secret', default='',
                         help='authentication secret for handshake with dispy clients')
     parser.add_argument('--node_keyfile', dest='node_keyfile', default=None,

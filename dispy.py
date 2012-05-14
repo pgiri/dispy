@@ -45,7 +45,7 @@ import Queue as queue
 import asyncoro
 from asyncoro import Coro, AsynCoro, AsynCoroSocket, MetaSingleton
 
-_dispy_version = '3.0'
+_dispy_version = '3.1'
 
 class DispyJob(object):
     """Job scheduled for execution with dispy.
@@ -439,7 +439,7 @@ class _Cluster(object):
                     raise Exception('invalid ext_ip_addr')
             else:
                 ext_ip_addr = ip_addr
-            if not port:
+            if port is None:
                 port = 51347
             if not node_port:
                 node_port = 51348
@@ -478,7 +478,7 @@ class _Cluster(object):
                                              keyfile=self.keyfile, certfile=self.certfile)
             job_result_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             job_result_sock.bind((self.ip_addr, self.port))
-            # self.port = job_result_sock.getsockname()[1]
+            self.port = job_result_sock.getsockname()[1]
             job_result_sock.listen(32)
             self.job_result_coro = Coro(self.job_result_server, job_result_sock)
 
@@ -494,13 +494,13 @@ class _Cluster(object):
                 udp_sock = AsynCoroSocket(udp_sock, blocking=False)
                 udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 udp_sock.bind(('', self.port))
-                logging.debug('dispy client at %s, %s', self.ip_addr, self.port)
+                logging.debug('dispy client at %s:%s', self.ip_addr, self.port)
                 self.udp_coro = Coro(self.udp_server, udp_sock)
 
     def send_ping_cluster(self, cluster, coro=None):
         # generator
         ping_request = pickle.dumps({'scheduler_ip_addr':self.ext_ip_addr,
-                                      'scheduler_port':self.port, 'version':_dispy_version})
+                                     'scheduler_port':self.port, 'version':_dispy_version})
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock = AsynCoroSocket(sock, blocking=False)
         sock.settimeout(1)
@@ -1188,7 +1188,7 @@ class _Cluster(object):
             yield self.finish_job(_job, DispyJob.Cancelled, cluster)
             self._sched_cv.release()
             logging.debug('Cancelled (removed) job %s', _job.uid)
-            yield 0; raise StopIteration
+            raise StopIteration(0)
         elif not (_job.job.status == DispyJob.Running or \
                   _job.job.status == DispyJob.ProvisionalResult):
             self._sched_cv.release()
@@ -1240,12 +1240,13 @@ class _Cluster(object):
             else:
                 self._sched_cv.release()
 
-        Coro(_shutdown, self).value()
-        self._scheduler.value()
-        self.worker_Q.join()
-        self.asyncoro.join()
-        self.asyncoro.terminate()
-        logging.debug('shutdown complete')
+        if self.terminate_scheduler is False:
+            Coro(_shutdown, self).value()
+            self._scheduler.value()
+            self.worker_Q.join()
+            self.asyncoro.join()
+            self.asyncoro.terminate()
+            logging.debug('shutdown complete')
 
     def stats(self, compute, wall_time=None):
         print()
@@ -1324,6 +1325,9 @@ class JobCluster(object):
           with the 'hostname' is used.
           If no value for @port is given (default), number 51347 is used.
 
+        @ext_ip_addr is the IP address of NAT firewall/gateway if
+          dispy client is behind that firewall/gateway.
+        
         @node_port indicates port on which node servers are listening
           for ping messages. The client (JobCluster instance) broadcasts
           ping requests to this port.
@@ -1654,7 +1658,7 @@ class SharedJobCluster(JobCluster):
 
         self.scheduler_ip_addr = scheduler_node
         JobCluster.__init__(self, computation, nodes='dummy', depends=depends,
-                            callback=callback, ip_addr=ip_addr, port=port, ext_ip_addr=ext_ip_addr,
+                            callback=callback, ip_addr=ip_addr, port=0, ext_ip_addr=ext_ip_addr,
                             cleanup=cleanup, pulse_interval=None,
                             reentrant=reentrant, loglevel=loglevel, fault_recover=fault_recover)
         if pulse_interval is not None:
@@ -1680,7 +1684,8 @@ class SharedJobCluster(JobCluster):
         else:
             self.scheduler_ip_addr = self.ext_ip_addr
 
-        port = self._compute.scheduler_port
+        if not port:
+            port = 51347
         srv_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         srv_sock.settimeout(2)
         srv_sock.bind((self.ip_addr, 0))
@@ -1706,7 +1711,7 @@ class SharedJobCluster(JobCluster):
         else:
             srv_sock.close()
             raise Exception('Could not connect to scheduler at %s:%s' % \
-                            self.scheduler_ip_addr, port)
+                            (self.scheduler_ip_addr, port))
         srv_sock.close()
         sock = AsynCoroSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), blocking=True,
                               keyfile=self.keyfile, certfile=self.certfile)

@@ -135,7 +135,7 @@ def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
 class _DispyNode(object):
     """Internal use only.
     """
-    def __init__(self, cpus, ip_addr=None, ext_ip_addr=None, node_port=51348,
+    def __init__(self, cpus, ip_addr=None, ext_ip_addr=None, node_port=None,
                  scheduler_node=None, scheduler_port=None,
                  dest_path_prefix='', secret='', keyfile=None, certfile=None,
                  max_file_size=None, zombie_interval=60):
@@ -158,6 +158,8 @@ class _DispyNode(object):
             self.name = socket.gethostbyaddr(ext_ip_addr)[0]
         except:
             self.name = socket.gethostname()
+        if not node_port:
+            node_port = 51348
         if not scheduler_port:
             scheduler_port = 51347
 
@@ -207,8 +209,7 @@ class _DispyNode(object):
         self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.udp_sock.bind(('', node_port))
-        logging.info('serving %s cpus at %s:%s',
-                     self.cpus, self.address[0], node_port)
+        logging.info('serving %s cpus at %s:%s', self.cpus, self.ip_addr, node_port)
         logging.debug('tcp server at %s:%s', self.address[0], self.address[1])
         self.udp_sock = AsynCoroSocket(self.udp_sock, blocking=False)
 
@@ -1030,7 +1031,7 @@ if __name__ == '__main__':
     parser.add_argument('-i', '--ip_addr', dest='ip_addr', default=None,
                         help='IP address to use (may be needed in case of multiple interfaces)')
     parser.add_argument('--ext_ip_addr', dest='ext_ip_addr', default=None,
-                        help='External IP address to use (may be needed in case of firewall)')
+                        help='External IP address to use (needed in case of NAT firewall/gateway)')
     parser.add_argument('-p', '--node_port', dest='node_port', type=int, default=51348,
                         help='port number to use')
     parser.add_argument('--dest_path_prefix', dest='dest_path_prefix',
