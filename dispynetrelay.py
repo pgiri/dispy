@@ -31,6 +31,13 @@ import cPickle as pickle
 
 from dispy import _node_ipaddr, _dispy_version
 
+logger = logging.getLogger('dispynetrelay')
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler()
+handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(message)s'))
+logger.addHandler(handler)
+del handler
+
 class DispyNetRelay(object):
     """Internal use only.
     """
@@ -61,7 +68,7 @@ class DispyNetRelay(object):
                 assert netmask > 0
                 netaddr = (struct.unpack('>L', socket.inet_aton(ip_addr))[0]) & netmask
             except:
-                logging.warning('Invalid netmask')
+                logger.warning('Invalid netmask')
 
         try:
             socket.inet_ntoa(struct.pack('>L', netaddr))
@@ -88,7 +95,7 @@ class DispyNetRelay(object):
         pong_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         pong_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         pong_sock.bind(('', scheduler_port))
-        logging.info('Listening on %s:%s', ip_addr, node_port)
+        logger.info('Listening on %s:%s', ip_addr, node_port)
         last_ping = 0
         while True:
             ready = select.select([ping_sock, pong_sock], [], [])[0]
@@ -96,17 +103,17 @@ class DispyNetRelay(object):
                 if sock == ping_sock:
                     msg, addr = ping_sock.recvfrom(1024)
                     if not msg.startswith('PING:'):
-                        logging.debug('Ignoring message "%s" from %s',
+                        logger.debug('Ignoring message "%s" from %s',
                                       msg[:max(len(msg), 5)], addr[0])
                         continue
                     if netaddr and (struct.unpack('>L', socket.inet_aton(addr[0]))[0] & netmask) == netaddr:
-                        logging.debug('Ignoring own ping (from %s)', addr[0])
+                        logger.debug('Ignoring own ping (from %s)', addr[0])
                         continue
                     if (time.time() - last_ping) < 10:
-                        logging.warning('Ignoring ping (from %s) for 10 more seconds', addr[0])
+                        logger.warning('Ignoring ping (from %s) for 10 more seconds', addr[0])
                         time.sleep(10)
                     last_ping = time.time()
-                    logging.debug('Ping message from %s (%s)', addr[0], addr[1])
+                    logger.debug('Ping message from %s (%s)', addr[0], addr[1])
                     try:
                         data = pickle.loads(msg[len('PING:'):])
                         scheduler_ip_addr = data['scheduler_ip_addr']
@@ -115,7 +122,7 @@ class DispyNetRelay(object):
                         assert isinstance(scheduler_ip_addr, str)
                         assert isinstance(scheduler_port, int)
                     except:
-                        logging.debug('Ignoring ping message from %s (%s)',
+                        logger.debug('Ignoring ping message from %s (%s)',
                                       addr[0], addr[1])
                         continue
                     relay_request = pickle.dumps({'scheduler_ip_addr':scheduler_ip_addr,
@@ -126,16 +133,16 @@ class DispyNetRelay(object):
                     assert sock == pong_sock
                     msg, addr = pong_sock.recvfrom(1024)
                     if not msg.startswith('PONG:'):
-                        logging.debug('Ignoring pong message "%s" from %s',
+                        logger.debug('Ignoring pong message "%s" from %s',
                                       msg[:max(len(msg), 5)], addr[0])
                         continue
                     # if netaddr and (struct.unpack('>L', socket.inet_aton(addr[0]))[0] & netmask) == netaddr:
-                    #     logging.debug('Ignoring own pong (from %s)', addr[0])
+                    #     logger.debug('Ignoring own pong (from %s)', addr[0])
                     #     continue
                     if not (scheduler_ip_addr and scheduler_port):
-                        logging.debug('Ignoring pong message from %s', str(addr))
+                        logger.debug('Ignoring pong message from %s', str(addr))
                         continue
-                    logging.debug('Pong message from %s (%s)', addr[0], addr[1])
+                    logger.debug('Pong message from %s (%s)', addr[0], addr[1])
                     try:
                         pong = pickle.loads(msg[len('PONG:'):])
                         assert isinstance(pong['host'], str)
@@ -150,15 +157,15 @@ class DispyNetRelay(object):
                         relay_sock.close()
                     except:
                         # raise
-                        logging.debug('Ignoring pong message from %s (%s)',
+                        logger.debug('Ignoring pong message from %s (%s)',
                                       addr[0], addr[1])
 
 if __name__ == '__main__':
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('-d', action='store_true', dest='loglevel', default=False,
-                        help='if True, debug messages are printed')
+    parser.add_argument('-d', '--debug', action='store_true', dest='loglevel', default=False,
+                        help='if given, debug messages are printed')
     parser.add_argument('-i', '--ip_addr', dest='ip_addr', default='',
                         help='IP address to use (may be needed in case of multiple interfaces)')
     parser.add_argument('--scheduler_node', dest='scheduler_node', default='',
@@ -173,12 +180,10 @@ if __name__ == '__main__':
     # print config
 
     if config['loglevel']:
-        loglevel = logging.DEBUG
+        logger.setLevel(logging.DEBUG)
     else:
-        loglevel = logging.INFO
+        logger.setLevel(logging.INFO)
     del config['loglevel']
-
-    logging.basicConfig(format='%(asctime)s %(message)s', level=loglevel)
 
     node = DispyNetRelay()
     node.relay_pings(**config)
