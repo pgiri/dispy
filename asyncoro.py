@@ -68,6 +68,12 @@ class _AsynCoroSocket(object):
     only. Use AsynCoroSocket, defined below, instead.
     """
 
+    __slots__ = ('_rsock', '_keyfile', '_certfile', '_ssl_version', '_fileno', '_timeout',
+                 '_timeout_id', '_read_coro', '_read_task', '_read_result', '_write_coro',
+                 '_write_task', '_write_result', '_asyncoro', '_notifier', 'recvall', 'sendall',
+                 'recv_msg', 'send_msg', '_blocking', 'recv', 'send', 'recvfrom', 'sendto',
+                 'accept', 'connect')
+
     _default_timeout = None
 
     def __init__(self, sock, blocking=False, keyfile=None, certfile=None,
@@ -88,7 +94,8 @@ class _AsynCoroSocket(object):
 
         if isinstance(sock, AsynCoroSocket):
             logger.warning('Socket %s is already AsynCoroSocket', sock._fileno)
-            self.__dict__ = sock.__dict__
+            for k in sock.__slots__:
+                setattr(self, k, getattr(sock, k))
         else:
             self._rsock = sock
             self._keyfile = keyfile
@@ -272,23 +279,24 @@ class _AsynCoroSocket(object):
                 coro._proceed_(buf)
 
         self._read_task = functools.partial(_recv, self, bufsize, *args)
+        self._read_coro = self._asyncoro.cur_coro()
+        self._read_coro._await_()
         self._notifier.add(self, _AsyncPoller._Read)
-        if not self._certfile:
+        if self._certfile and self._rsock.pending():
             try:
                 buf = self._rsock.recv(bufsize)
             except socket.error as err:
                 if err.args[0] != EWOULDBLOCK:
                     self._read_task = None
                     self._notifier.clear(self, _AsyncPoller._Read)
-                    raise
+                    coro, self._read_coro = self._read_coro, None
+                    coro.throw(*sys.exc_info())
             else:
                 if buf:
                     self._read_task = None
                     self._notifier.clear(self, _AsyncPoller._Read)
-                    return buf
-
-        self._read_coro = self._asyncoro.cur_coro()
-        self._read_coro._await_()
+                    coro, self._read_coro = self._read_coro, None
+                    coro._proceed_(buf)
 
     def _async_recvall(self, bufsize, *args):
         """Internal use only; use 'recvall' with 'yield' instead.
@@ -325,27 +333,29 @@ class _AsynCoroSocket(object):
 
         self._read_result = bytearray(bufsize)
         view = memoryview(self._read_result)
+        self._read_task = functools.partial(_recvall, self, view, *args)
+        self._read_coro = self._asyncoro.cur_coro()
+        self._read_coro._await_()
         self._notifier.add(self, _AsyncPoller._Read)
-        if not self._certfile:
+        if self._certfile and self._rsock.pending():
             try:
                 recvd = self._rsock.recv_into(view, bufsize)
             except socket.error as err:
                 if err.args[0] != EWOULDBLOCK:
                     self._read_task = self._read_result = None
                     self._notifier.clear(self, _AsyncPoller._Read)
-                    raise
+                    coro, self._read_coro = self._read_coro, None
+                    coro.throw(*sys.exc_info())
             else:
                 if recvd == bufsize:
                     buf = str(self._read_result)
                     self._read_task = self._read_result = None
                     self._notifier.clear(self, _AsyncPoller._Read)
-                    return buf
+                    coro, self._read_coro = self._read_coro, None
+                    coro._proceed_(buf)
                 elif recvd:
                     view = view[recvd:]
-
-        self._read_task = functools.partial(_recvall, self, view, *args)
-        self._read_coro = self._asyncoro.cur_coro()
-        self._read_coro._await_()
+                    self._read_task = functools.partial(_recvall, self, view, *args)
 
     def _sync_recvall(self, bufsize, *args):
         """Internal use only; use 'recvall' instead.
@@ -384,20 +394,9 @@ class _AsynCoroSocket(object):
                 coro._proceed_(res)
 
         self._read_task = functools.partial(_recvfrom, self, *args)
-        self._notifier.add(self, _AsyncPoller._Read)
-        try:
-            res = self._rsock.recvfrom(*args)
-        except socket.error as err:
-            if err.args[0] != EWOULDBLOCK:
-                self._read_task = None
-                self._notifier.clear(self, _AsyncPoller._Read)
-                raise
-        else:
-            self._read_task = None
-            self._notifier.clear(self, _AsyncPoller._Read)
-            return res
         self._read_coro = self._asyncoro.cur_coro()
         self._read_coro._await_()
+        self._notifier.add(self, _AsyncPoller._Read)
 
     def _async_send(self, *args):
         """Internal use only; use 'send' with 'yield' instead.
@@ -588,12 +587,12 @@ class _AsynCoroSocket(object):
         self._write_task = functools.partial(_connect, self, *args)
         self._write_coro = self._asyncoro.cur_coro()
         self._write_coro._await_()
+        self._notifier.add(self, _AsyncPoller._Write)
         try:
             self._rsock.connect(*args)
         except socket.error as e:
             if e.args[0] not in [EINPROGRESS, EWOULDBLOCK]:
                 raise
-        self._notifier.add(self, _AsyncPoller._Write)
 
     def _async_send_msg(self, data):
         """Internal use only; use 'send_msg' with 'yield' instead.
@@ -1012,6 +1011,9 @@ if platform.system() == 'Windows':
             Windows). See _AsynCoroSocket above for more details.  UDP
             traffic is handled by _AsyncPoller.
             """
+
+            __slots__ = _AsynCoroSocket.__slots__ + ('_read_overlap', '_write_overlap')
+
             def __init__(self, *args, **kwargs):
                 self._read_overlap = None
                 self._write_overlap = None
@@ -1512,12 +1514,12 @@ if not isinstance(getattr(sys.modules[__name__], '_AsyncNotifier', None), MetaSi
                         continue
                     if event & _AsyncPoller._Read:
                         if fd._read_task is None:
-                            logger.error('fd %s is not registered for read!', fd._fileno)
+                            logger.debug('fd %s is not registered for read!', fd._fileno)
                         else:
                             fd._read_task()
                     if event & _AsyncPoller._Write:
                         if fd._write_task is None:
-                            logger.error('fd %s is not registered for write!', fd._fileno)
+                            logger.debug('fd %s is not registered for write!', fd._fileno)
                         else:
                             fd._write_task()
             except:
@@ -1735,6 +1737,11 @@ class Coro(object):
     value) None. When the function is called, that argument will be
     this object.
     """
+
+    __slots__ = ('_generator', 'name', '_state', '_value', '_exceptions', '_callers',
+                 '_timeout', '_daemon', '_complete', '_msgs', '_monitor', '_new_generator',
+                 '_hot_swappable', '_asyncoro')
+
     def __init__(self, target, *args, **kwargs):
         self._generator = self.__get_generator__(target, *args, **kwargs)
         self.name = target.__name__
