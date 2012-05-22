@@ -173,6 +173,10 @@ class _Scheduler(object):
             self.timer_coro = Coro(self.timer_task)
 
             self.scheduler_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            if self.cluster_certfile:
+                self.scheduler_sock = ssl.wrap_socket(self.scheduler_sock,
+                                                      keyfile=self.cluster_keyfile,
+                                                      certfile=self.cluster_certfile)
             self.scheduler_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.scheduler_sock.bind((self.ip_addr, self.scheduler_port))
             self.scheduler_port = self.scheduler_sock.getsockname()[1]

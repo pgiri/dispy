@@ -184,6 +184,9 @@ class _DispyNode(object):
         self.asyncoro = AsynCoro()
 
         self.tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        if self.certfile:
+            self.tcp_sock = ssl.wrap_socket(self.tcp_sock, keyfile=self.keyfile,
+                                            certfile=self.certfile)
         self.tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.tcp_sock.bind((self.ip_addr, node_port))
         self.address = self.tcp_sock.getsockname()
@@ -894,7 +897,7 @@ class _DispyNode(object):
         assert coro is not None
         job_reply = job_info.job_reply
         logger.debug('Sending result for job %s (%s) to %s',
-                      job_reply.uid, job_reply.status, str(job_info.reply_addr))
+                     job_reply.uid, job_reply.status, str(job_info.reply_addr))
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock = AsynCoroSocket(sock, blocking=False, certfile=self.certfile, keyfile=self.keyfile)
         sock.settimeout(2)
