@@ -36,7 +36,7 @@ import atexit
 import traceback
 import cPickle as pickle
 
-from dispy import _Compute, DispyJob, _DispyJob_, _Node, _JobReply, \
+from dispy import _Compute, DispyJob, _DispyJob_, _Node, _JobReply, serialize, unserialize, \
      _xor_string, _parse_nodes, _node_ipaddr, _XferFile, _dispy_version
 
 import asyncoro
@@ -208,8 +208,8 @@ class _Scheduler(object):
             bc_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
-            ping_request = pickle.dumps({'scheduler_ip_addr':self.ext_ip_addr,
-                                         'scheduler_port':self.port, 'version':_dispy_version})
+            ping_request = serialize({'scheduler_ip_addr':self.ext_ip_addr,
+                                      'scheduler_port':self.port, 'version':_dispy_version})
             node_spec = _parse_nodes(nodes)
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             for node_spec, node_info in node_spec.iteritems():
@@ -242,7 +242,7 @@ class _Scheduler(object):
             if msg.startswith('PULSE:'):
                 msg = msg[len('PULSE:'):]
                 try:
-                    info = pickle.loads(msg)
+                    info = unserialize(msg)
                 except:
                     logger.warning('Ignoring pulse message from %s', addr[0])
                     continue
@@ -258,7 +258,7 @@ class _Scheduler(object):
                     if node is not None:
                         # assert 0 <= info['cpus'] <= node.cpus
                         node.last_pulse = time.time()
-                        msg = 'PULSE:' + pickle.dumps({'ip_addr':self.ext_ip_addr})
+                        msg = 'PULSE:' + serialize({'ip_addr':self.ext_ip_addr})
                         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                         sock = AsynCoroSocket(sock, blocking=False)
                         sock.settimeout(1)
@@ -266,14 +266,14 @@ class _Scheduler(object):
                         sock.close()
             elif msg.startswith('PONG:'):
                 try:
-                    status = pickle.loads(msg[len('PONG:'):])
+                    status = unserialize(msg[len('PONG:'):])
                     assert status['port'] > 0 and status['cpus'] > 0
                     assert status['version'] == _dispy_version
                 except:
                     logger.debug('Ignoring node %s', addr[0])
                     continue
                 logger.debug('Discovered %s:%s with %s cpus',
-                              status['ip_addr'], status['port'], status['cpus'])
+                             status['ip_addr'], status['port'], status['cpus'])
                 if status['cpus'] <= 0:
                     logger.debug('Ignoring node %s', status['ip_addr'])
                     continue
@@ -309,7 +309,7 @@ class _Scheduler(object):
                 yield self._sched_cv.release()
             elif msg.startswith('TERMINATED:'):
                 try:
-                    data = pickle.loads(msg[len('TERMINATED:'):])
+                    data = unserialize(msg[len('TERMINATED:'):])
                     yield self._sched_cv.acquire()
                     node = self._nodes.pop(data['ip_addr'], None)
                     if not node:
@@ -330,8 +330,8 @@ class _Scheduler(object):
                                 node.clusters.discard(cid)
                             except:
                                 logger.debug('Cluster %s/%s is already removed from %s',
-                                              cluster._compute.name, cluster._compute.id,
-                                              node.ip_addr)
+                                             cluster._compute.name, cluster._compute.id,
+                                             node.ip_addr)
                                 pass
                     self._sched_cv.notify()
                     yield self._sched_cv.release()
@@ -340,28 +340,26 @@ class _Scheduler(object):
                     logger.debug('Removing node failed: %s', traceback.format_exc())
             elif msg.startswith('SERVERPORT:'):
                 try:
-                    req = pickle.loads(msg[len('SERVERPORT:'):])
-                    logger.debug('Sending %s:%s to %s:%s',
-                                  self.ext_ip_addr, self.scheduler_port,
-                                  req['ip_addr'], req['port'])
+                    req = unserialize(msg[len('SERVERPORT:'):])
+                    logger.debug('Sending %s:%s to %s:%s', self.ext_ip_addr, self.scheduler_port,
+                                 req['ip_addr'], req['port'])
                     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                     sock = AsynCoroSocket(sock, blocking=False)
                     sock.settimeout(1)
                     reply = {'ip_addr':self.ext_ip_addr, 'port':self.scheduler_port,
                              'sign':self.sign, 'version':_dispy_version}
-                    yield sock.sendto(pickle.dumps(reply), (req['ip_addr'], req['port']))
+                    yield sock.sendto(serialize(reply), (req['ip_addr'], req['port']))
                     sock.close()
                 except:
                     logger.debug(traceback.format_exc())
                     # pass
             else:
-                logger.debug('Ignoring UDP message %s from: %s',
-                              msg[:min(5, len(msg))], addr[0])
+                logger.debug('Ignoring UDP message %s from: %s', msg[:min(5, len(msg))], addr[0])
 
     def send_ping_cluster(self, cluster, coro=None):
         # generator
-        ping_request = pickle.dumps({'scheduler_ip_addr':self.ext_ip_addr,
-                                     'scheduler_port':self.port, 'version':_dispy_version})
+        ping_request = serialize({'scheduler_ip_addr':self.ext_ip_addr,
+                                  'scheduler_port':self.port, 'version':_dispy_version})
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock = AsynCoroSocket(sock, blocking=False)
         sock.settimeout(1)
@@ -415,7 +413,7 @@ class _Scheduler(object):
             r = yield node.setup(compute, coro=coro)
             if r:
                 logger.warning('Failed to setup %s for computation "%s"',
-                                node.ip_addr, compute.name)
+                               node.ip_addr, compute.name)
             else:
                 yield self._sched_cv.acquire()
                 if node.ip_addr not in compute.nodes:
@@ -431,7 +429,7 @@ class _Scheduler(object):
             r = yield node.setup(compute, coro=coro)
             if r:
                 logger.warning('Failed to setup %s for computation "%s"',
-                                node.ip_addr, compute.name)
+                               node.ip_addr, compute.name)
             else:
                 yield self._sched_cv.acquire()
                 if node.ip_addr not in compute.nodes:
@@ -449,7 +447,7 @@ class _Scheduler(object):
         sock.settimeout(2)
         try:
             yield sock.connect((ip, port))
-            yield sock.send_msg(pickle.dumps(result))
+            yield sock.send_msg(serialize(result))
             ack = yield sock.recv_msg()
             assert ack == 'ACK'
         except:
@@ -482,14 +480,13 @@ class _Scheduler(object):
             cluster = self._clusters[_job.compute_id]
             del self._sched_jobs[_job.uid]
             if cluster._compute.reentrant:
-                logger.debug('Rescheduling job %s from %s',
-                              _job.uid, _job.node.ip_addr)
+                logger.debug('Rescheduling job %s from %s', _job.uid, _job.node.ip_addr)
                 _job.job.status = DispyJob.Created
                 cluster._jobs.append(_job)
                 self.unsched_jobs += 1
             else:
                 logger.debug('Terminating job %s scheduled on %s',
-                              _job.uid, _job.node.ip_addr)
+                             _job.uid, _job.node.ip_addr)
                 reply = _JobReply(_job, _job.node.ip_addr, status=DispyJob.Terminated)
                 cluster._pending_jobs -= 1
                 if cluster._pending_jobs == 0:
@@ -502,7 +499,7 @@ class _Scheduler(object):
         def _job_request_task(self, msg):
             # generator
             try:
-                _job = pickle.loads(msg)
+                _job = unserialize(msg)
             except:
                 logger.debug('Ignoring job request from %s', addr[0])
                 raise StopIteration
@@ -514,25 +511,25 @@ class _Scheduler(object):
             job = type('DispyJob', (), {'status':DispyJob.Created,
                                         'start_time':None, 'end_time':None})
             setattr(_job, 'job', job)
-            resp = pickle.dumps(_job.uid)
+            resp = serialize(_job.uid)
             try:
                 yield conn.send_msg(resp)
             except:
                 logger.warning('Failed to send response to %s: %s',
-                                str(addr), traceback.format_exc())
+                               str(addr), traceback.format_exc())
                 raise StopIteration
             try:
                 msg = yield conn.recv_msg()
                 assert msg == 'ACK'
             except:
                 logger.warning('Invalid reply for job: %s, %s',
-                                _job.uid, traceback.format_exc())
+                               _job.uid, traceback.format_exc())
                 raise StopIteration
             yield self._sched_cv.acquire()
             cluster = self._clusters.get(_job.compute_id, None)
             if cluster is None:
                 logger.debug('cluster %s is not valid anymore for job %s',
-                              _job.compute_id, _job.uid)
+                             _job.compute_id, _job.uid)
                 self._sched_cv.release()
                 raise StopIteration
             cluster._jobs.append(_job)
@@ -545,7 +542,7 @@ class _Scheduler(object):
         def _compute_task(self, msg):
             # generator
             try:
-                compute = pickle.loads(msg)
+                compute = unserialize(msg)
             except:
                 logger.debug('Ignoring compute request from %s', addr[0])
                 raise StopIteration(None)
@@ -575,7 +572,7 @@ class _Scheduler(object):
             for xf in compute.xfer_files:
                 if self.max_file_size and xf.stat_buf.st_size > self.max_file_size:
                     logger.warning('transfer file "%s" is too big (%s)',
-                                    xf.name, xf.stat_buf.st_size)
+                                   xf.name, xf.stat_buf.st_size)
                     self._sched_cv.release()
                     conn.close()
                     raise StopIteration
@@ -584,15 +581,15 @@ class _Scheduler(object):
             self._sched_cv.release()
             resp = {'ID':compute.id,
                     'pulse_interval':(self.zombie_interval / 5.0) if self.zombie_interval else None}
-            resp = pickle.dumps(resp)
+            resp = serialize(resp)
             logger.debug('New computation %s: %s, %s', compute.id, compute.name,
-                          len(compute.xfer_files))
+                         len(compute.xfer_files))
             yield resp
 
         def _xfer_file_task(self, msg):
             # generator
             try:
-                xf = pickle.loads(msg)
+                xf = unserialize(msg)
             except:
                 logger.debug('Ignoring file trasnfer request from %s', addr[0])
                 raise StopIteration
@@ -609,7 +606,7 @@ class _Scheduler(object):
                     raise StopIteration
             tgt = os.path.join(dest_path, os.path.basename(xf.name))
             logger.debug('Copying file %s to %s (%s)', xf.name,
-                          tgt, xf.stat_buf.st_size)
+                         tgt, xf.stat_buf.st_size)
             try:
                 fd = open(tgt, 'wb')
                 n = 0
@@ -620,8 +617,7 @@ class _Scheduler(object):
                     fd.write(data)
                     n += len(data)
                     if self.max_file_size and n > self.max_file_size:
-                        logger.warning('File "%s" is too big (%s); it is truncated',
-                                        tgt, n)
+                        logger.warning('File "%s" is too big (%s); it is truncated', tgt, n)
                         break
                 fd.close()
                 if n < xf.stat_buf.st_size:
@@ -633,7 +629,7 @@ class _Scheduler(object):
                     os.chmod(tgt, stat.S_IMODE(xf.stat_buf.st_mode))
             except:
                 logger.warning('Copying file "%s" failed with "%s"',
-                                xf.name, traceback.format_exc())
+                               xf.name, traceback.format_exc())
                 resp = 'NACK'
             if resp:
                 try:
@@ -659,7 +655,7 @@ class _Scheduler(object):
                 raise StopIteration
         except:
             logger.warning('Failed to read message from %s: %s',
-                            str(addr), traceback.format_exc())
+                           str(addr), traceback.format_exc())
             conn.close()
             raise StopIteration
         if msg.startswith('JOB:'):
@@ -673,11 +669,11 @@ class _Scheduler(object):
             msg = msg[len('ADD_COMPUTE:'):]
             yield self._sched_cv.acquire()
             try:
-                req = pickle.loads(msg)
+                req = unserialize(msg)
                 cluster = self._clusters[req['ID']]
                 for xf in cluster._compute.xfer_files:
                     assert os.path.isfile(xf.name)
-                resp = pickle.dumps(cluster._compute.id)
+                resp = serialize(cluster._compute.id)
                 Coro(self.add_cluster, cluster)
             except:
                 logger.debug('Ignoring compute request from %s', addr[0])
@@ -689,7 +685,7 @@ class _Scheduler(object):
             msg = msg[len('DEL_COMPUTE:'):]
             conn.close()
             try:
-                req = pickle.loads(msg)
+                req = unserialize(msg)
                 assert isinstance(req['ID'], int)
             except:
                 logger.warning('Invalid compuation for deleting')
@@ -710,7 +706,7 @@ class _Scheduler(object):
             msg = msg[len('TERMINATE_JOB:'):]
             conn.close()
             try:
-                job = pickle.loads(msg)
+                job = unserialize(msg)
             except:
                 logger.warning('Invalid job cancel message')
                 raise StopIteration
@@ -737,13 +733,13 @@ class _Scheduler(object):
                     logger.debug('Invalid job %s!', job.uid)
             else:
                 _job.job.status = DispyJob.Cancelled
-                Coro(_job.node.send, _job.uid, 'TERMINATE_JOB:' + pickle.dumps(_job),
+                Coro(_job.node.send, _job.uid, 'TERMINATE_JOB:' + serialize(_job),
                      reply=False)
             yield self._sched_cv.release()
         elif msg.startswith('RETRIEVE_JOB:'):
             req = msg[len('RETRIEVE_JOB:'):]
             try:
-                req = pickle.loads(req)
+                req = unserialize(req)
                 assert req['uid'] is not None
                 assert req['hash'] is not None
                 assert req['compute_id'] is not None
@@ -754,7 +750,7 @@ class _Scheduler(object):
                     job_reply = pickle.load(fd)
                     fd.close()
                     if job_reply.hash == req['hash']:
-                        yield conn.send_msg(pickle.dumps(job_reply))
+                        yield conn.send_msg(serialize(job_reply))
                         ack = yield conn.recv_msg()
                         assert ack == 'ACK'
                         try:
@@ -772,9 +768,9 @@ class _Scheduler(object):
                             logger.debug('Could not remove "%s"', result_file)
                         raise StopIteration
                     else:
-                        resp = pickle.dumps('Invalid job')
+                        resp = serialize('Invalid job')
             except:
-                resp = pickle.dumps('Invalid job')
+                resp = serialize('Invalid job')
                 # logger.debug(traceback.format_exc())
         else:
             logger.debug('Ignoring invalid command')
@@ -784,7 +780,7 @@ class _Scheduler(object):
                 yield conn.send_msg(resp)
             except:
                 logger.warning('Failed to send response to %s: %s',
-                                str(addr), traceback.format_exc())
+                               str(addr), traceback.format_exc())
             conn.close()
         # end of _request_task
 
@@ -820,7 +816,7 @@ class _Scheduler(object):
                 for node in self._nodes.itervalues():
                     if node.busy and node.last_pulse + self.pulse_timeout < now:
                         logger.warning('Node %s is not responding; removing it (%s, %s, %s)',
-                                        node.ip_addr, node.busy, node.last_pulse, now)
+                                       node.ip_addr, node.busy, node.last_pulse, now)
                         dead_nodes[node.ip_addr] = node
                 for ip_addr in dead_nodes:
                     del self._nodes[ip_addr]
@@ -848,7 +844,7 @@ class _Scheduler(object):
                            if cluster.zombie and cluster._pending_jobs == 0]
                 for cluster in zombies:
                     logger.debug('Deleting zombie computation "%s" / %s',
-                                  cluster._compute.name, cluster._compute.id)
+                                 cluster._compute.name, cluster._compute.id)
                     self.cleanup_computation(cluster)
                 phoenix = [cluster for cluster in self._clusters.itervalues() \
                            if not cluster.zombie and cluster.pending_results]
@@ -885,7 +881,7 @@ class _Scheduler(object):
         try:
             msg = yield conn.recv_msg()
             yield conn.send_msg('ACK')
-            reply = pickle.loads(msg)
+            reply = unserialize(msg)
         except:
             logger.warning('Failed to read job results from %s', str(addr))
             raise StopIteration
@@ -897,8 +893,7 @@ class _Scheduler(object):
         node = self._nodes.get(reply.ip_addr, None)
         if node is None:
             self._sched_cv.release()
-            logger.warning('Ignoring invalid reply for job %s from %s',
-                            reply.uid, addr[0])
+            logger.warning('Ignoring invalid reply for job %s from %s', reply.uid, addr[0])
             raise StopIteration
         node.last_pulse = time.time()
         _job = self._sched_jobs.get(reply.uid, None)
@@ -946,7 +941,7 @@ class _Scheduler(object):
         assert coro is not None
         coro.set_daemon()
         logger.debug('Job results port is %s:%s',
-                      self.ip_addr, self.job_result_sock.getsockname()[1])
+                     self.ip_addr, self.job_result_sock.getsockname()[1])
         while True:
             try:
                 conn, addr = yield self.job_result_sock.accept()
@@ -1006,7 +1001,7 @@ class _Scheduler(object):
             yield _job.run(coro=coro)
         except EnvironmentError:
             logger.warning('Failed to run job %s on %s for computation %s; removing this node',
-                            _job.uid, _job.node.ip_addr, cluster._compute.name)
+                           _job.uid, _job.node.ip_addr, cluster._compute.name)
             yield self._sched_cv.acquire()
             if cluster._compute.nodes.pop(_job.node.ip_addr, None) is not None:
                 _job.node.clusters.discard(cluster._compute.id)
@@ -1022,7 +1017,7 @@ class _Scheduler(object):
         except:
             logger.debug(traceback.format_exc())
             logger.warning('Failed to run job %s on %s for computation %s; rescheduling it',
-                            _job.uid, _job.node.ip_addr, cluster._compute.name)
+                           _job.uid, _job.node.ip_addr, cluster._compute.name)
             # TODO: delay executing again for some time?
             yield self._sched_cv.acquire()
             # this job might have been deleted already due to timeout
@@ -1063,7 +1058,7 @@ class _Scheduler(object):
             cluster = self._clusters[_job.compute_id]
             _job.node = node
             logger.debug('Scheduling job %s on %s (load: %.3f)',
-                          _job.uid, node.ip_addr, float(node.busy) / node.cpus)
+                         _job.uid, node.ip_addr, float(node.busy) / node.cpus)
             assert node.busy < node.cpus
             # _job.ip_addr = node.ip_addr
             self._sched_jobs[_job.uid] = _job
@@ -1073,8 +1068,7 @@ class _Scheduler(object):
             Coro(self.run_job, _job, cluster)
             yield self._sched_cv.release()
         yield self._sched_cv.acquire()
-        logger.debug('scheduler quitting (%s / %s)',
-                      len(self._sched_jobs), self.unsched_jobs)
+        logger.debug('scheduler quitting (%s / %s)', len(self._sched_jobs), self.unsched_jobs)
         for cid, cluster in self._clusters.iteritems():
             compute = cluster._compute
             for node in compute.nodes.itervalues():
@@ -1158,8 +1152,8 @@ class _Scheduler(object):
         if not cluster.zombie:
             return
         if cluster._pending_jobs:
-            logger.debug('pedning jobs for "%s" / %s: %s',
-                          cluster._compute.name, cluster._compute.id, cluster._pending_jobs)
+            logger.debug('pedning jobs for "%s" / %s: %s', cluster._compute.name,
+                         cluster._compute.id, cluster._pending_jobs)
             if cluster._pending_jobs > 0:
                 return
 

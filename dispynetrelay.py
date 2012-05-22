@@ -29,7 +29,7 @@ import select
 import logging
 import cPickle as pickle
 
-from dispy import _node_ipaddr, _dispy_version
+from dispy import _node_ipaddr, _dispy_version, serialize, unserialize
 
 logger = logging.getLogger('dispynetrelay')
 logger.setLevel(logging.INFO)
@@ -84,9 +84,9 @@ class DispyNetRelay(object):
 
         scheduler_ip_addr = _node_ipaddr(scheduler_node)
         if scheduler_ip_addr and scheduler_port:
-            relay_request = pickle.dumps({'scheduler_ip_addr':scheduler_ip_addr,
-                                           'scheduler_port':scheduler_port,
-                                           'version':scheduler_version})
+            relay_request = serialize({'scheduler_ip_addr':scheduler_ip_addr,
+                                       'scheduler_port':scheduler_port,
+                                       'version':scheduler_version})
             bc_sock.sendto('PING:%s' % relay_request, ('<broadcast>', node_port))
 
         ping_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -104,7 +104,7 @@ class DispyNetRelay(object):
                     msg, addr = ping_sock.recvfrom(1024)
                     if not msg.startswith('PING:'):
                         logger.debug('Ignoring message "%s" from %s',
-                                      msg[:max(len(msg), 5)], addr[0])
+                                     msg[:max(len(msg), 5)], addr[0])
                         continue
                     if netaddr and (struct.unpack('>L', socket.inet_aton(addr[0]))[0] & netmask) == netaddr:
                         logger.debug('Ignoring own ping (from %s)', addr[0])
@@ -115,26 +115,25 @@ class DispyNetRelay(object):
                     last_ping = time.time()
                     logger.debug('Ping message from %s (%s)', addr[0], addr[1])
                     try:
-                        data = pickle.loads(msg[len('PING:'):])
+                        data = unserialize(msg[len('PING:'):])
                         scheduler_ip_addr = data['scheduler_ip_addr']
                         scheduler_port = data['scheduler_port']
                         scheduler_version = data['version']
                         assert isinstance(scheduler_ip_addr, str)
                         assert isinstance(scheduler_port, int)
                     except:
-                        logger.debug('Ignoring ping message from %s (%s)',
-                                      addr[0], addr[1])
+                        logger.debug('Ignoring ping message from %s (%s)', addr[0], addr[1])
                         continue
-                    relay_request = pickle.dumps({'scheduler_ip_addr':scheduler_ip_addr,
-                                                   'scheduler_port':scheduler_port,
-                                                   'version':scheduler_version})
+                    relay_request = serialize({'scheduler_ip_addr':scheduler_ip_addr,
+                                               'scheduler_port':scheduler_port,
+                                               'version':scheduler_version})
                     bc_sock.sendto('PING:%s' % relay_request, ('<broadcast>', node_port))
                 else:
                     assert sock == pong_sock
                     msg, addr = pong_sock.recvfrom(1024)
                     if not msg.startswith('PONG:'):
                         logger.debug('Ignoring pong message "%s" from %s',
-                                      msg[:max(len(msg), 5)], addr[0])
+                                     msg[:max(len(msg), 5)], addr[0])
                         continue
                     # if netaddr and (struct.unpack('>L', socket.inet_aton(addr[0]))[0] & netmask) == netaddr:
                     #     logger.debug('Ignoring own pong (from %s)', addr[0])
@@ -144,21 +143,20 @@ class DispyNetRelay(object):
                         continue
                     logger.debug('Pong message from %s (%s)', addr[0], addr[1])
                     try:
-                        pong = pickle.loads(msg[len('PONG:'):])
+                        pong = unserialize(msg[len('PONG:'):])
                         assert isinstance(pong['host'], str)
                         assert isinstance(pong['port'], int)
                         assert isinstance(pong['cpus'], int)
-                        relay_request = pickle.dumps({'scheduler_ip_addr':scheduler_ip_addr,
-                                                       'scheduler_port':scheduler_port,
-                                                       'version':scheduler_version})
+                        relay_request = serialize({'scheduler_ip_addr':scheduler_ip_addr,
+                                                   'scheduler_port':scheduler_port,
+                                                   'version':scheduler_version})
                         relay_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                         relay_sock.sendto('PING:%s' % relay_request,
                                           (pong['host'], node_port))
                         relay_sock.close()
                     except:
                         # raise
-                        logger.debug('Ignoring pong message from %s (%s)',
-                                      addr[0], addr[1])
+                        logger.debug('Ignoring pong message from %s (%s)', addr[0], addr[1])
 
 if __name__ == '__main__':
     import argparse

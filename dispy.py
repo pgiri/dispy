@@ -45,7 +45,7 @@ import Queue as queue
 import asyncoro
 from asyncoro import Coro, AsynCoro, AsynCoroSocket, MetaSingleton
 
-_dispy_version = '3.1'
+_dispy_version = '3.2'
 
 logger = logging.getLogger('dispy')
 logger.setLevel(logging.INFO)
@@ -53,6 +53,12 @@ handler = logging.StreamHandler()
 handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(message)s'))
 logger.addHandler(handler)
 del handler
+
+def serialize(obj):
+    return pickle.dumps(obj, pickle.HIGHEST_PROTOCOL)
+
+def unserialize(pkl):
+    return pickle.loads(pkl)
 
 class DispyJob(object):
     """Job scheduled for execution with dispy.
@@ -84,6 +90,10 @@ class DispyJob(object):
     available.
 
     """
+
+    __slots__ = ('id', 'result', 'stdout', 'stderr', 'exception', 'start_time', 'end_time',
+                 'status', 'ip_addr', 'finish', '_dispy_job_')
+
     Created = 1
     Running = 2
     ProvisionalResult = 3
@@ -95,6 +105,7 @@ class DispyJob(object):
     Cancelled = 8
     Terminated = 9
     Finished = 10
+
     def __init__(self):
         # id can be assigned by user as appropriate (e.g., to distinguish jobs)
         self.id = None
@@ -227,20 +238,20 @@ class _Node(object):
         self.certfile = certfile
         self.last_pulse = None
         logger.debug('Auth for %s: %s, %s, %s', ip_addr, self.auth_code,
-                      self.keyfile, self.certfile)
+                     self.keyfile, self.certfile)
 
     def setup(self, compute, coro=None):
         # generator
         assert coro is not None
         logger.debug('Sending computation "%s" to %s:%s', compute.name, self.ip_addr, self.port)
-        resp = yield self.send('COMPUTE:' + pickle.dumps(compute), coro=coro)
+        resp = yield self.send('COMPUTE:' + serialize(compute), coro=coro)
 
         if isinstance(resp, str) and resp.startswith('ACK'):
             resp = resp[len('ACK'):]
             if resp.startswith(':XFER_FILES:'):
                 resp = resp[len(':XFER_FILES:'):]
                 try:
-                    xfer_files = pickle.loads(resp)
+                    xfer_files = unserialize(resp)
                 except:
                     logger.error("Couldn't transfer file '%s'", xf.name)
                     raise StopIteration(-1)
@@ -277,7 +288,7 @@ class _Node(object):
                 resp = None
         except:
             logger.error("Couldn't connect to %s:%s, %s",
-                          self.ip_addr, self.port, traceback.format_exc())
+                         self.ip_addr, self.port, traceback.format_exc())
             raise
             # TODO: mark this node down, reschedule on different node?
             resp = None
@@ -295,7 +306,7 @@ class _Node(object):
         try:
             yield sock.connect((self.ip_addr, self.port))
             yield sock.sendall(self.auth_code)
-            yield sock.send_msg('FILEXFER:' + pickle.dumps(xf))
+            yield sock.send_msg('FILEXFER:' + serialize(xf))
             fd = open(xf.name, 'rb')
             while True:
                 data = fd.read(10240000)
@@ -318,17 +329,20 @@ class _Node(object):
         # generator
         assert coro is not None
         logger.debug('Closing node %s for %s / %s / %s', self.ip_addr, compute.name, compute.id,
-                      compute.cleanup)
-        msg = 'DEL_COMPUTE:' + pickle.dumps({'ID':compute.id})
+                     compute.cleanup)
+        msg = 'DEL_COMPUTE:' + serialize({'ID':compute.id})
         try:
             v = yield self.send(msg, reply=False, coro=coro)
         except:
             logger.debug('Deleting computation %s/%s from %s failed',
-                          compute.id, compute.name, self.ip_addr)
+                         compute.id, compute.name, self.ip_addr)
 
 class _DispyJob_(object):
     """Internal use only.
     """
+
+    __slots__ = ('job', 'uid', 'compute_id', 'hash', 'node', 'files', 'args', 'kwargs', 'code')
+
     def __init__(self, compute_id, args, kwargs):
         self.job = DispyJob()
         self.job._dispy_job_ = self
@@ -340,8 +354,8 @@ class _DispyJob_(object):
         job_deps = kwargs.pop('dispy_job_depends', [])
         if not isinstance(job_deps, list):
             job_deps = list(job_deps)
-        self.args = pickle.dumps(args)
-        self.kwargs = pickle.dumps(kwargs)
+        self.args = serialize(args)
+        self.kwargs = serialize(kwargs)
         depend_ids = {}
         for dep in job_deps:
             if isinstance(dep, str) or inspect.ismodule(dep):
@@ -391,12 +405,16 @@ class _DispyJob_(object):
                  'args':self.args, 'kwargs':self.kwargs, 'files':self.files}
         return state
 
+    def __setstate__(self, state):
+        for k, v in state.iteritems():
+            setattr(self, k, v)
+
     def run(self, coro=None):
         # generator
         assert coro is not None
         logger.debug('running job %s on %s', self.uid, self.node.ip_addr)
         self.job.start_time = time.time()
-        resp = yield self.node.send('JOB:' + pickle.dumps(self), coro=coro)
+        resp = yield self.node.send('JOB:' + serialize(self), coro=coro)
         # TODO: deal with NAKs (reschedule?)
         if resp != 'ACK':
             logger.warning('Failed to run %s on %s', self.uid, self.node.ip_addr)
@@ -506,7 +524,7 @@ class _Cluster(object):
 
     def send_ping_cluster(self, cluster, coro=None):
         # generator
-        ping_request = pickle.dumps({'scheduler_ip_addr':self.ext_ip_addr,
+        ping_request = serialize({'scheduler_ip_addr':self.ext_ip_addr,
                                      'scheduler_port':self.port, 'version':_dispy_version})
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock = AsynCoroSocket(sock, blocking=False)
@@ -604,7 +622,7 @@ class _Cluster(object):
                                   keyfile=cluster.keyfile, certfile=cluster.certfile)
             sock.settimeout(2)
             yield sock.connect((cluster.scheduler_ip_addr, cluster.scheduler_port))
-            req = 'DEL_COMPUTE:' + pickle.dumps({'ID':cluster._compute.id})
+            req = 'DEL_COMPUTE:' + serialize({'ID':cluster._compute.id})
             yield sock.sendall(cluster.auth_code)
             yield sock.send_msg(req)
             sock.close()
@@ -722,8 +740,7 @@ class _Cluster(object):
             yield self._sched_cv.acquire()
             if r:
                 node.clusters.discard(compute.id)
-                logger.warning('Failed to setup %s for compute "%s"',
-                                node.ip_addr, compute)
+                logger.warning('Failed to setup %s for compute "%s"', node.ip_addr, compute)
             else:
                 if node.ip_addr not in compute.nodes:
                     compute.nodes[node.ip_addr] = node
@@ -747,7 +764,7 @@ class _Cluster(object):
             yield _job.run(coro=coro)
         except EnvironmentError:
             logger.warning('Failed to run job %s on %s for computation %s; removing this node',
-                            _job.uid, _job.node.ip_addr, cluster._compute.name)
+                           _job.uid, _job.node.ip_addr, cluster._compute.name)
             yield self._sched_cv.acquire()
             if cluster._compute.nodes.pop(_job.node.ip_addr, None) is not None:
                 _job.node.clusters.discard(cluster.compute.id)
@@ -762,7 +779,7 @@ class _Cluster(object):
             yield self._sched_cv.release()
         except:
             logger.warning('Failed to run job %s on %s for computation %s; rescheduling it',
-                            _job.uid, _job.node.ip_addr, cluster._compute.name)
+                           _job.uid, _job.node.ip_addr, cluster._compute.name)
             logger.debug(traceback.format_exc())
             # TODO: delay executing again for some time?
             yield self._sched_cv.acquire()
@@ -784,11 +801,11 @@ class _Cluster(object):
             if msg.startswith('PULSE:'):
                 msg = msg[len('PULSE:'):]
                 try:
-                    info = pickle.loads(msg)
+                    info = unserialize(msg)
                     node = self._nodes[info['ip_addr']]
                     assert 0 <= info['cpus'] <= node.cpus
                     node.last_pulse = time.time()
-                    msg = 'PULSE:' + pickle.dumps({'ip_addr':self.ext_ip_addr})
+                    msg = 'PULSE:' + serialize({'ip_addr':self.ext_ip_addr})
                     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                     sock = AsynCoroSocket(sock, blocking=False)
                     sock.settimeout(1)
@@ -800,7 +817,7 @@ class _Cluster(object):
                     continue
             elif msg.startswith('PONG:'):
                 try:
-                    status = pickle.loads(msg[len('PONG:'):])
+                    status = unserialize(msg[len('PONG:'):])
                     assert status['port'] > 0 and status['cpus'] > 0
                     assert len(status['ip_addr']) > 0
                     assert status['version'] == _dispy_version
@@ -808,7 +825,7 @@ class _Cluster(object):
                     logger.debug('Ignoring node %s', addr[0])
                     continue
                 logger.debug('Discovered %s:%s with %s cpus',
-                              status['ip_addr'], status['port'], status['cpus'])
+                             status['ip_addr'], status['port'], status['cpus'])
                 if status['cpus'] <= 0:
                     logger.debug('Ignoring node %s', status['ip_addr'])
                     continue
@@ -843,7 +860,7 @@ class _Cluster(object):
                     Coro(self.setup_node, node, node_computations)
             elif msg.startswith('TERMINATED:'):
                 try:
-                    data = pickle.loads(msg[len('TERMINATED:'):])
+                    data = unserialize(msg[len('TERMINATED:'):])
                     yield self._sched_cv.acquire()
                     node = self._nodes.pop(data['ip_addr'], None)
                     if not node:
@@ -868,7 +885,7 @@ class _Cluster(object):
                     pass
             else:
                 logger.debug('Ignoring UDP message %s from: %s',
-                              msg[:min(5, len(msg))], addr[0])
+                             msg[:min(5, len(msg))], addr[0])
 
     def job_result_server(self, job_result_sock, coro=None):
         coro.set_daemon()
@@ -895,10 +912,10 @@ class _Cluster(object):
         try:
             msg = yield sock.recv_msg()
             yield sock.send_msg('ACK')
-            reply = pickle.loads(msg)
+            reply = unserialize(msg)
         except:
             logger.warning('Failed to read job result from %s: %s',
-                            str(addr), traceback.format_exc())
+                           str(addr), traceback.format_exc())
             raise StopIteration
         finally:
             sock.close()
@@ -909,7 +926,7 @@ class _Cluster(object):
         if (node is None and self.shared is False) or (_job is None):
             self._sched_cv.release()
             logger.warning('Ignoring invalid reply for job %s from %s',
-                            reply.uid, addr[0])
+                           reply.uid, addr[0])
             raise StopIteration
         logger.debug('Received reply for job %s from %s', _job.uid, addr[0])
         cluster = self._clusters.get(_job.compute_id, None)
@@ -940,8 +957,7 @@ class _Cluster(object):
                 job.ip_addr = node.ip_addr
                 node.last_pulse = time.time()
         except:
-            logger.warning('Invalid job result for %s from %s',
-                            _job.uid, addr[0])
+            logger.warning('Invalid job result for %s from %s', _job.uid, addr[0])
             logger.debug('%s, %s', str(reply), traceback.format_exc())
             raise StopIteration
 
@@ -978,14 +994,12 @@ class _Cluster(object):
             cluster = self._clusters[_job.compute_id]
             del self._sched_jobs[_job.uid]
             if cluster._compute.reentrant:
-                logger.debug('Rescheduling job %s from %s',
-                              _job.uid, _job.node.ip_addr)
+                logger.debug('Rescheduling job %s from %s', _job.uid, _job.node.ip_addr)
                 _job.job.status = DispyJob.Created
                 cluster._jobs.append(_job)
                 self.unsched_jobs += 1
             else:
-                logger.debug('Terminating job %s scheduled on %s',
-                              _job.uid, _job.node.ip_addr)
+                logger.debug('Terminating job %s scheduled on %s', _job.uid, _job.node.ip_addr)
                 if _job.job.status == DispyJob.Running:
                     status = DispyJob.Terminated
                 else:
@@ -1023,7 +1037,7 @@ class _Cluster(object):
                         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                         sock = AsynCoroSocket(sock, blocking=False)
                         sock.settimeout(1)
-                        yield sock.sendto('PULSE:' + pickle.dumps(msg),
+                        yield sock.sendto('PULSE:' + serialize(msg),
                                           (cluster.scheduler_ip_addr, cluster.scheduler_udp_port))
                         sock.close()
                 else:
@@ -1033,7 +1047,7 @@ class _Cluster(object):
                         if node.busy and node.last_pulse is not None and \
                                (node.last_pulse + self.pulse_timeout) <= now:
                             logger.warning('Node %s is not responding; removing it (%s, %s, %s)',
-                                            node.ip_addr, node.busy, node.last_pulse, now)
+                                           node.ip_addr, node.busy, node.last_pulse, now)
                             dead_nodes[node.ip_addr] = node
                     for ip_addr in dead_nodes:
                         del self._nodes[ip_addr]
@@ -1121,7 +1135,7 @@ class _Cluster(object):
             cluster = self._clusters[_job.compute_id]
             _job.node = node
             logger.debug('Scheduling job %s on %s (load: %.3f, %s)',
-                          _job.uid, node.ip_addr, float(node.busy) / node.cpus, node.busy)
+                         _job.uid, node.ip_addr, float(node.busy) / node.cpus, node.busy)
             assert node.busy < node.cpus
             self._sched_jobs[_job.uid] = _job
             _job.job.status = DispyJob.Running
@@ -1130,8 +1144,7 @@ class _Cluster(object):
             Coro(self.run_job, _job, cluster)
             yield self._sched_cv.release()
         yield self._sched_cv.acquire()
-        logger.debug('scheduler quitting (%s / %s)',
-                      len(self._sched_jobs), self.unsched_jobs)
+        logger.debug('scheduler quitting (%s / %s)', len(self._sched_jobs), self.unsched_jobs)
         for cid, cluster in self._clusters.iteritems():
             if not hasattr(cluster, '_compute'):
                 # cluster is closed
@@ -1185,7 +1198,7 @@ class _Cluster(object):
         cluster = self._clusters.get(_job.compute_id, None)
         if not cluster:
             logger.warning('Invalid job %s for cluster "%s"!',
-                            _job.uid, cluster._compute.name)
+                           _job.uid, cluster._compute.name)
             self._sched_cv.release()
             raise StopIteration(-1)
         assert cluster._pending_jobs >= 1
@@ -1205,7 +1218,7 @@ class _Cluster(object):
         yield self._sched_cv.release()
         if _job.node is not None:
             try:
-                yield _job.node.send('TERMINATE_JOB:' + pickle.dumps(_job), reply=False, coro=coro)
+                yield _job.node.send('TERMINATE_JOB:' + serialize(_job), reply=False, coro=coro)
                 logger.debug('Job %s is being terminated', _job.uid)
             except:
                 logger.warning('Terminating job %s failed: %s', _job.uid, traceback.format_exc())
@@ -1402,7 +1415,7 @@ class JobCluster(object):
                 raise Exception('"nodes" must be list of IP addresses or host names')
         if reentrant != True and reentrant != False:
             logger.warning('Invalid value for reentrant (%s) is ignored; ' \
-                            'it must be either True or False' % reentrant)
+                           'it must be either True or False' % reentrant)
             reentrant = False
         if ping_interval is not None:
             try:
@@ -1590,7 +1603,7 @@ class JobCluster(object):
             _job = _DispyJob_(self._compute.id, args, kwargs)
         except:
             logger.warning('Creating job for "%s", "%s" failed with "%s"',
-                            str(args), str(kwargs), traceback.format_exc())
+                           str(args), str(kwargs), traceback.format_exc())
             return None
         Coro(self._cluster.submit_job, _job).value()
         return _job.job
@@ -1670,7 +1683,7 @@ class SharedJobCluster(JobCluster):
                             reentrant=reentrant, fault_recover=fault_recover)
         if pulse_interval is not None:
             logger.warning('pulse_interval is not used in SharedJobCluster; ' \
-                            'dispyscheduler should be started appropriately.')
+                           'dispyscheduler should be started appropriately.')
         def _terminate_scheduler(self, coro=None):
             yield self._cluster._sched_cv.acquire()
             self._cluster.terminate_scheduler = True
@@ -1696,13 +1709,13 @@ class SharedJobCluster(JobCluster):
         srv_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         srv_sock.settimeout(2)
         srv_sock.bind((self.ip_addr, 0))
-        port_req = pickle.dumps({'ip_addr':self.ext_ip_addr, 'port':srv_sock.getsockname()[1]})
+        port_req = serialize({'ip_addr':self.ext_ip_addr, 'port':srv_sock.getsockname()[1]})
         for x in xrange(5):
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 sock.sendto('SERVERPORT:' + port_req, (self.scheduler_ip_addr, port))
                 reply, addr = srv_sock.recvfrom(1024)
-                reply = pickle.loads(reply)
+                reply = unserialize(reply)
                 logger.debug('Scheduler is %s:%s' % (reply['ip_addr'], reply['port']))
                 if reply['version'] != _dispy_version:
                     raise Exception('dispyscheduler version "%s" is different from dispy version "%s"' % \
@@ -1725,12 +1738,12 @@ class SharedJobCluster(JobCluster):
         sock.settimeout(3)
         try:
             sock.connect((self.scheduler_ip_addr, self.scheduler_port))
-            req = 'COMPUTE:' + pickle.dumps(self._compute)
+            req = 'COMPUTE:' + serialize(self._compute)
             sock.sendall(self.auth_code)
             sock.send_msg(req)
             msg = sock.recv_msg()
             sock.close()
-            resp = pickle.loads(msg)
+            resp = unserialize(msg)
             self._compute.id = resp['ID']
             assert self._compute.id is not None
         except:
@@ -1751,7 +1764,7 @@ class SharedJobCluster(JobCluster):
             sock.settimeout(5)
             try:
                 sock.connect((self.scheduler_ip_addr, self.scheduler_port))
-                msg = 'FILEXFER:' + pickle.dumps(xf)
+                msg = 'FILEXFER:' + serialize(xf)
                 sock.sendall(self.auth_code)
                 sock.send_msg(msg)
                 fd = open(xf.name, 'rb')
@@ -1772,12 +1785,12 @@ class SharedJobCluster(JobCluster):
                               keyfile=self.keyfile, certfile=self.certfile)
         sock.settimeout(3)
         sock.connect((self.scheduler_ip_addr, self.scheduler_port))
-        req = 'ADD_COMPUTE:' + pickle.dumps({'ID':self._compute.id})
+        req = 'ADD_COMPUTE:' + serialize({'ID':self._compute.id})
         sock.sendall(self.auth_code)
         sock.send_msg(req)
         msg = sock.recv_msg()
         sock.close()
-        resp = pickle.loads(msg)
+        resp = unserialize(msg)
         if resp == self._compute.id:
             logger.debug('Computation %s created with %s', self._compute.name, self._compute.id)
             Coro(self._cluster.add_cluster, self).value()
@@ -1799,7 +1812,7 @@ class SharedJobCluster(JobCluster):
             _job = _DispyJob_(self._compute.id, args, kwargs)
         except:
             logger.warning('Creating job for "%s", "%s" failed with "%s"',
-                            str(args), str(kwargs), traceback.format_exc())
+                           str(args), str(kwargs), traceback.format_exc())
             return None
 
         def _submit_job(self, _job, coro=None):
@@ -1809,11 +1822,11 @@ class SharedJobCluster(JobCluster):
             sock.settimeout(5)
             try:
                 yield sock.connect((self.scheduler_ip_addr, self.scheduler_port))
-                req = 'JOB:' + pickle.dumps(_job)
+                req = 'JOB:' + serialize(_job)
                 yield sock.sendall(self.auth_code)
                 yield sock.send_msg(req)
                 msg = yield sock.recv_msg()
-                _job.uid = pickle.loads(msg)
+                _job.uid = unserialize(msg)
                 yield self._cluster._sched_cv.acquire()
                 self._cluster._sched_jobs[_job.uid] = _job
                 self._pending_jobs += 1
@@ -1833,7 +1846,7 @@ class SharedJobCluster(JobCluster):
                 yield _job.job
             except:
                 logger.warning('Creating job for "%s", "%s" failed with "%s"',
-                                str(args), str(kwargs), traceback.format_exc())
+                               str(args), str(kwargs), traceback.format_exc())
                 _job.job._dispy_job_ = None
                 del _job.job
                 yield None
@@ -1861,7 +1874,7 @@ class SharedJobCluster(JobCluster):
             sock.settimeout(5)
             try:
                 yield sock.connect((self.scheduler_ip_addr, self.scheduler_port))
-                req = 'TERMINATE_JOB:' + pickle.dumps(_job)
+                req = 'TERMINATE_JOB:' + serialize(_job)
                 yield sock.sendall(self.auth_code)
                 yield sock.send_msg(req)
                 logger.debug('Job %s is cancelled', _job.uid)
@@ -1924,7 +1937,7 @@ def fault_recover_jobs(fault_recover_file, port=51348,
     srv_sock.settimeout(2)
     srv_sock.bind((ip_addr, 0))
 
-    port_req = pickle.dumps({'ip_addr':ip_addr, 'port':srv_sock.getsockname()[1]})
+    port_req = serialize({'ip_addr':ip_addr, 'port':srv_sock.getsockname()[1]})
     node_infos = {}
     for uid, job_info in shelf.iteritems():
         if job_info['ip_addr'] in node_infos:
@@ -1935,7 +1948,7 @@ def fault_recover_jobs(fault_recover_file, port=51348,
             sock.sendto('SERVERPORT:' + port_req, (job_info['ip_addr'], port))
             try:
                 reply, addr = srv_sock.recvfrom(1024)
-                reply = pickle.loads(reply)
+                reply = unserialize(reply)
                 # print('Port for %s is: %s' % (reply['ip_addr'], reply['port']))
                 if reply['version'] != _dispy_version:
                     raise Exception('peer version "%s" is different from dispy version "%s"' % \
@@ -1965,13 +1978,13 @@ def fault_recover_jobs(fault_recover_file, port=51348,
         sock.settimeout(2)
         try:
             sock.connect((job_info['ip_addr'], node_info['port']))
-            req = 'RETRIEVE_JOB:' + pickle.dumps({'uid':int(uid), 'hash':job_info['hash'],
-                                                   'compute_id':job_info['compute_id']})
+            req = 'RETRIEVE_JOB:' + serialize({'uid':int(uid), 'hash':job_info['hash'],
+                                               'compute_id':job_info['compute_id']})
             sock.sendall(node_info['auth_code'])
             sock.send_msg(req)
             resp = sock.recv_msg()
             sock.send_msg('ACK')
-            reply = pickle.loads(resp)
+            reply = unserialize(resp)
             if not isinstance(reply, _JobReply):
                 print('Failed to get reply for %s: %s' % (uid, reply))
                 continue
@@ -1983,8 +1996,8 @@ def fault_recover_jobs(fault_recover_file, port=51348,
             job.stderr = reply.stderr
             job.exception = reply.exception
             job.ip_addr = job_info['ip_addr']
-            setattr(job, 'args', pickle.loads(job_info['args']))
-            setattr(job, 'kwargs', pickle.loads(job_info['kwargs']))
+            setattr(job, 'args', unserialize(job_info['args']))
+            setattr(job, 'kwargs', unserialize(job_info['kwargs']))
             jobs.append(job)
             if job.status in [DispyJob.Finished, DispyJob.Terminated]:
                 done.append(uid)
