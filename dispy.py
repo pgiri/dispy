@@ -45,7 +45,7 @@ import Queue as queue
 import asyncoro
 from asyncoro import Coro, AsynCoro, AsynCoroSocket, MetaSingleton
 
-_dispy_version = '3.2'
+_dispy_version = '3.3'
 
 logger = logging.getLogger('dispy')
 logger.setLevel(logging.INFO)
@@ -128,13 +128,6 @@ class DispyJob(object):
         if clear:
             self.finish.clear()
         return self.result
-
-def _xor_string(data, key):
-    """Internal use only.
-    """
-    if not key:
-        return data
-    return ''.join(hex(ord(x) ^ ord(y))[2:] for (x, y) in zip(data, itertools.cycle(key)))
 
 def _node_ipaddr(node):
     """Internal use only.
@@ -231,7 +224,7 @@ class _Node(object):
         self.busy = 0
         self.files_xferred = {}
         self.compute_files_xferred = {}
-        self.auth_code = hashlib.sha1(_xor_string(sign, secret)).hexdigest()
+        self.auth_code = hashlib.sha1(sign + secret).hexdigest()
         self.sign = sign
         self.secret = secret
         self.keyfile = keyfile
@@ -839,8 +832,7 @@ class _Cluster(object):
                     self._nodes[node.ip_addr] = node
                 else:
                     node.last_pulse = time.time()
-                    h = _xor_string(status['sign'], self._secret)
-                    h = hashlib.sha1(h).hexdigest()
+                    h = hashlib.sha1(status['sign'] + self._secret).hexdigest()
                     if node.port == status['port'] and node.auth_code == h:
                         yield self._sched_cv.release()
                         continue
@@ -867,8 +859,7 @@ class _Cluster(object):
                         yield self._sched_cv.release()
                         continue
                     logger.debug('Removing node %s', node.ip_addr)
-                    h = _xor_string(data['sign'], self._secret)
-                    auth_code = hashlib.sha1(h).hexdigest()
+                    auth_code = hashlib.sha1(data['sign'] + self._secret).hexdigest()
                     if auth_code != node.auth_code:
                         logger.warning('Invalid signature from %s', node.ip_addr)
                     dead_jobs = [_job for _job in self._sched_jobs.itervalues() \
@@ -1721,7 +1712,7 @@ class SharedJobCluster(JobCluster):
                     raise Exception('dispyscheduler version "%s" is different from dispy version "%s"' % \
                                     reply['version'], _dispy_version)
                 self.scheduler_port = reply['port']
-                self.auth_code = hashlib.sha1(_xor_string(reply['sign'], secret)).hexdigest()
+                self.auth_code = hashlib.sha1(reply['sign'] + secret).hexdigest()
                 logger.debug('auth_code: %s', self.auth_code)
                 break
             except:
@@ -1955,7 +1946,7 @@ def fault_recover_jobs(fault_recover_file, port=51348,
                                     reply['version'], _dispy_version)
                 if reply['ip_addr'] in node_infos:
                     continue
-                auth_code = hashlib.sha1(_xor_string(reply['sign'], secret)).hexdigest()
+                auth_code = hashlib.sha1(reply['sign'] + secret).hexdigest()
                 node_infos[reply['ip_addr']] = {'port':reply['port'], 'auth_code':auth_code}
                 if reply['ip_addr'] == job_info['ip_addr']:
                     break

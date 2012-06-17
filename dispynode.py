@@ -40,7 +40,7 @@ import cPickle as pickle
 import cStringIO as io
 
 from dispy import _DispyJob_, _JobReply, DispyJob, serialize, unserialize, \
-     _Compute, _XferFile, _xor_string, _node_ipaddr, _dispy_version
+     _Compute, _XferFile, _node_ipaddr, _dispy_version
 
 import asyncoro
 from asyncoro import Coro, AsynCoro, AsynCoroSocket, MetaSingleton
@@ -211,7 +211,7 @@ class _DispyNode(object):
         self.lock = asyncoro.Lock()
         self.terminate = False
         self.signature = os.urandom(20).encode('hex')
-        self.auth_code = hashlib.sha1(_xor_string(self.signature, secret)).hexdigest()
+        self.auth_code = hashlib.sha1(self.signature + secret).hexdigest()
         self.zombie_interval = 60 * zombie_interval
 
         logger.debug('auth_code for %s: %s', ip_addr, self.auth_code)
