@@ -37,7 +37,7 @@ import traceback
 import cPickle as pickle
 
 from dispy import _Compute, DispyJob, _DispyJob_, _Node, _JobReply, serialize, unserialize, \
-     _xor_string, _parse_nodes, _node_ipaddr, _XferFile, _dispy_version
+     _parse_nodes, _node_ipaddr, _XferFile, _dispy_version
 
 import asyncoro
 from asyncoro import Coro, AsynCoro, AsynCoroSocket, MetaSingleton
@@ -163,7 +163,7 @@ class _Scheduler(object):
             self._sched_cv = asyncoro.Condition()
             self._terminate_scheduler = False
             self.sign = os.urandom(20).encode('hex')
-            self.auth_code = hashlib.sha1(_xor_string(self.sign, self.cluster_secret)).hexdigest()
+            self.auth_code = hashlib.sha1(self.sign + self.cluster_secret).hexdigest()
             logger.debug('auth_code: %s', self.auth_code)
 
             #self.select_job_node = self.fast_node_schedule
@@ -287,8 +287,7 @@ class _Scheduler(object):
                     self._nodes[node.ip_addr] = node
                 else:
                     node.last_pulse = time.time()
-                    h = _xor_string(status['sign'], self.node_secret)
-                    h = hashlib.sha1(h).hexdigest()
+                    h = hashlib.sha1(status['sign'] + self.node_secret).hexdigest()
                     if node.port == status['port'] and node.auth_code == h:
                         yield self._sched_cv.release()
                         logger.debug('Node %s is already known', node.ip_addr)
@@ -316,8 +315,7 @@ class _Scheduler(object):
                         yield self._sched_cv.release()
                         continue
                     logger.debug('Removing node %s', node.ip_addr)
-                    h = _xor_string(data['sign'], self.node_secret)
-                    auth_code = hashlib.sha1(h).hexdigest()
+                    auth_code = hashlib.sha1(data['sign'] + self.node_secret).hexdigest()
                     if auth_code != node.auth_code:
                         logger.warning('Invalid signature from %s', node.ip_addr)
                     dead_jobs = [_job for _job in self._sched_jobs.itervalues() \
@@ -405,7 +403,6 @@ class _Scheduler(object):
                     continue
                 if re.match(node_spec, ip_addr):
                     compute_nodes.append(node)
-                    break
         # self._sched_cv.notify()
         yield self._sched_cv.release()
 
