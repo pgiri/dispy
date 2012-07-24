@@ -45,7 +45,7 @@ import Queue as queue
 import asyncoro
 from asyncoro import Coro, AsynCoro, AsynCoroSocket, MetaSingleton
 
-_dispy_version = '3.3'
+_dispy_version = '3.4'
 
 logger = logging.getLogger('dispy')
 logger.setLevel(logging.INFO)
@@ -960,7 +960,7 @@ class _Cluster(object):
             if self.shared:
                 node = self._nodes.get(job.ip_addr, None)
                 if node is None:
-                    node = _Node(job.ip_addr, 0, getattr(reply, 'cpus', 0), '', None,
+                    node = _Node(job.ip_addr, 0, getattr(reply, 'cpus', 0), '', self._secret,
                                  keyfile=None, certfile=None)
                     self._nodes[job.ip_addr] = node
                     compute.nodes[job.ip_addr] = node
@@ -1101,39 +1101,38 @@ class _Cluster(object):
     def _schedule_jobs(self, coro=None):
         # generator
         assert coro is not None
-        while True:
+        while not self.terminate_scheduler:
             yield self._sched_cv.acquire()
             # n = sum(len(cluster._jobs) for cluster in self._clusters.itervalues())
             # assert self.unsched_jobs == n, '%s != %s' % (self.unsched_jobs, n)
-            while not self.terminate_scheduler:
+            while True:
                 logger.debug('Pending jobs: %s', self.unsched_jobs)
                 node = self.select_job_node()
-                if node:
+                if not node:
                     break
-                logger.debug('No nodes/jobs')
-                yield self._sched_cv.wait()
-            if self.terminate_scheduler:
-                yield self._sched_cv.release()
-                break
-            # TODO: strategy to pick a cluster?
-            for cid in node.clusters:
-                if self._clusters[cid]._jobs:
-                    _job = self._clusters[cid]._jobs.pop(0)
-                    break
-            else:
-                yield self._sched_cv.release()
-                continue
-            cluster = self._clusters[_job.compute_id]
-            _job.node = node
-            logger.debug('Scheduling job %s on %s (load: %.3f, %s)',
-                         _job.uid, node.ip_addr, float(node.busy) / node.cpus, node.busy)
-            assert node.busy < node.cpus
-            self._sched_jobs[_job.uid] = _job
-            _job.job.status = DispyJob.Running
-            self.unsched_jobs -= 1
-            node.busy += 1
-            Coro(self.run_job, _job, cluster)
-            yield self._sched_cv.release()
+                # TODO: strategy to pick a cluster?
+                for cid in node.clusters:
+                    if self._clusters[cid]._jobs:
+                        _job = self._clusters[cid]._jobs.pop(0)
+                        break
+                else:
+                    yield self._sched_cv.release()
+                    continue
+                cluster = self._clusters[_job.compute_id]
+                _job.node = node
+                logger.debug('Scheduling job %s on %s (load: %.3f, %s)',
+                             _job.uid, node.ip_addr, float(node.busy) / node.cpus, node.busy)
+                assert node.busy < node.cpus
+                self._sched_jobs[_job.uid] = _job
+                _job.job.status = DispyJob.Running
+                self.unsched_jobs -= 1
+                node.busy += 1
+                Coro(self.run_job, _job, cluster)
+                
+            logger.debug('No nodes/jobs')
+            yield self._sched_cv.wait()
+            self._sched_cv.release()
+
         yield self._sched_cv.acquire()
         logger.debug('scheduler quitting (%s / %s)', len(self._sched_jobs), self.unsched_jobs)
         for cid, cluster in self._clusters.iteritems():
@@ -1153,11 +1152,14 @@ class _Cluster(object):
                     status = DispyJob.Cancelled
                 yield self.finish_job(_job, status, cluster)
             cluster._jobs = []
-
+        clusters = self._clusters.values()
+        self._clusters = {}
         self._nodes = {}
         self.unsched_jobs = 0
         self._sched_jobs = {}
         yield self._sched_cv.release()
+        for cluster in clusters:
+            yield self.del_cluster(cluster, coro=coro)
         logger.debug('scheduler quit')
 
     def submit_job(self, _job, coro=None):
@@ -1226,25 +1228,8 @@ class _Cluster(object):
                 raise StopIteration
             yield self._sched_cv.acquire()
             if self.terminate_scheduler is False:
-                self.terminate_scheduler = True
                 logger.debug('shutting down scheduler ...')
-                clusters = self._clusters.values()
-                self._sched_cv.release()
-                for cluster in clusters:
-                    yield self.del_cluster(cluster, coro=coro)
-
-                yield self._sched_cv.acquire()
-                for uid, _job in self._sched_jobs.iteritems():
-                    # TODO: handle shared scheduler jobs appropriately
-                    if _job.job.status == DispyJob.Running:
-                        # TODO: send terminate request to nodes?
-                        status = DispyJob.Terminated
-                    else:
-                        status = DispyJob.Cancelled
-                    yield self.finish_job(_job, status, self._clusters[_job.compute_id])
-
-                self._clusters = {}
-                self._sched_jobs = {}
+                self.terminate_scheduler = True
                 self._sched_cv.notify()
                 yield self._sched_cv.release()
                 self.worker_Q.put((99, None, None))
@@ -1255,7 +1240,7 @@ class _Cluster(object):
             Coro(_shutdown, self).value()
             self._scheduler.value()
             self.worker_Q.join()
-            self.asyncoro.join()
+            self.asyncoro.join(show_running=False)
             self.asyncoro.terminate()
             logger.debug('shutdown complete')
 

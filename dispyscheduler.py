@@ -1064,18 +1064,29 @@ class _Scheduler(object):
             node.busy += 1
             Coro(self.run_job, _job, cluster)
             yield self._sched_cv.release()
+
         yield self._sched_cv.acquire()
         logger.debug('scheduler quitting (%s / %s)', len(self._sched_jobs), self.unsched_jobs)
-        for cid, cluster in self._clusters.iteritems():
+        for uid, _job in self._sched_jobs.iteritems():
+            reply = _JobReply(_job, self.ext_ip_addr, status=DispyJob.Terminated)
+            cluster = self._clusters[_job.compute_id]
             compute = cluster._compute
-            for node in compute.nodes.itervalues():
-                node.close(compute)
+            Coro(self.send_job_result, _job.uid, compute.id,
+                 cluster.client_scheduler_ip_addr, cluster.client_job_result_port, reply)
+        for cid, cluster in self._clusters.iteritems():
             for _job in cluster._jobs:
                 reply = _JobReply(_job, self.ext_ip_addr, status=DispyJob.Terminated)
                 Coro(self.send_job_result, _job.uid, compute.id, cluster.client_scheduler_ip_addr,
                      cluster.client_job_result_port, reply)
             cluster._jobs = []
+        clusters = self._clusters.values()
+        self._clusters = {}
+        self._sched_jobs = {}
         yield self._sched_cv.release()
+        for cluster in clusters:
+            compute = cluster._compute
+            for node in compute.nodes.itervalues():
+                yield node.close(compute, coro=coro)
         logger.debug('scheduler quit')
 
     def shutdown(self):
@@ -1086,33 +1097,16 @@ class _Scheduler(object):
             # pending tasks to complete?
             yield self._sched_cv.acquire()
             if self._terminate_scheduler is False:
-                self._terminate_scheduler = True
                 logger.debug('shutting down scheduler ...')
-                coros = []
-                for uid, _job in self._sched_jobs.iteritems():
-                    reply = _JobReply(_job, self.ext_ip_addr, status=DispyJob.Terminated)
-                    cluster = self._clusters[_job.compute_id]
-                    compute = cluster._compute
-                    coros.append(Coro(self.send_job_result, _job.uid, compute.id,
-                                      cluster.client_scheduler_ip_addr,
-                                      cluster.client_job_result_port, reply))
-                clusters = self._clusters.values()
-                self._clusters = {}
-                self._sched_jobs = {}
+                self._terminate_scheduler = True
                 self._sched_cv.notify()
-                yield self._sched_cv.release()
-
-                for cluster in clusters:
-                    compute = cluster._compute
-                    for node in compute.nodes.itervalues():
-                        yield node.close(compute, coro=coro)
-                for coro in coros:
-                    coro.value()
+                self._sched_cv.release()
             else:
                 self._sched_cv.release()
 
         if self._terminate_scheduler is False:
             Coro(_shutdown, self).value()
+            self.scheduler_coro.value()
             self.asyncoro.join()
             self.asyncoro.terminate()
 
