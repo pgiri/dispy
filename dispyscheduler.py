@@ -1,26 +1,19 @@
 #!/usr/bin/env python
 
-# dispyscheduler: Schedule jobs to nodes running 'dispynode';
-# needed when multiple processes may use same nodes simultaneously
-# in which case SharedJobCluster should be used;
-# see accompanying 'dispy' for more details.
+"""
+dispyscheduler: Schedule jobs to nodes running 'dispynode'; needed
+when multiple processes may use same nodes simultaneously with
+SharedJobCluster; see accompanying 'dispy' for more details.
+"""
 
-# Copyright (C) 2011 Giridhar Pemmasani (pgiri@yahoo.com)
-
-# This file is part of dispy.
-
-# dispy is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Lesser General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-
-# dispy is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Lesser General Public License for more details.
-
-# You should have received a copy of the GNU Lesser General Public License
-# along with dispy.  If not, see <http://www.gnu.org/licenses/>.
+__author__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
+__email__ = "pgiri@yahoo.com"
+__copyright__ = "Copyright 2011, Giridhar Pemmasani"
+__contributors__ = []
+__maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
+__license__ = "MIT"
+__url__ = "http://dispy.sourceforge.net"
+__status__ = "Production"
 
 import os
 import sys
@@ -36,13 +29,16 @@ import atexit
 import traceback
 import cPickle as pickle
 
-from dispy import _Compute, DispyJob, _DispyJob_, _Node, _JobReply, serialize, unserialize, \
+from dispy import _Compute, DispyJob, _DispyJob_, _Node, _JobReply, \
      _parse_nodes, _node_ipaddr, _XferFile, _dispy_version
 
 import asyncoro
-from asyncoro import Coro, AsynCoro, AsynCoroSocket, MetaSingleton
+from asyncoro import Coro, AsynCoro, AsynCoroSocket, MetaSingleton, serialize, unserialize
 
 from dispynode import _same_file
+
+__version__ = _dispy_version
+__all__ = []
 
 MaxFileSize = 10240000
 

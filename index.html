@@ -47,12 +47,12 @@ features of dispy are:
 <ul>
 
 <li>dispy is implemented with <a href="asyncoro.html">asyncoro</a>, an
-  independent framework for asynchronous, concurrent programming with
-  coroutines (without threads). asyncoro uses non-blocking sockets
-  with I/O notification mechanisms epoll, kqueue and poll, and Windows
-  I/O Completion Ports (IOCP) for high performance and scalability, so
-  dispy scales well from a single node to large cluster(s) of
-  nodes.</li>
+  independent framework for asynchronous, concurrent, distributed,
+  network programming with coroutines (without threads). asyncoro uses
+  non-blocking sockets with I/O notification mechanisms epoll, kqueue
+  and poll, and Windows I/O Completion Ports (IOCP) for high
+  performance and scalability, so dispy works efficiently with a
+  single node or large cluster(s) of nodes.</li>
 
 <li>Computations (Python functions or standalone programs) and their
     dependencies (files, Python functions, classes, modules) are
@@ -181,10 +181,9 @@ SharedJobCluster is similar):
 
 <ul>
   <li>
-  <tt>cluster = dispy.JobCluster('/some/program',
-    nodes=['192.168.3.*'])</tt><br /> distributes '/some/program' (an
-    executable program, instead of python function) to all nodes whose
-    IP address starts with '192.168.3'.</li>
+  <tt>cluster = dispy.JobCluster('/some/program', nodes=['192.168.3.*'])</tt><br />
+  distributes '/some/program' (an executable program, instead of python function)
+  to all nodes whose IP address starts with '192.168.3'.</li>
 
   <li><tt>cluster = dispy.JobCluster(compute, depends=[ClassA, moduleB, 'file1'])</tt><br />
     distributes 'compute' along with ClassA (python object), moduleB (python object) and
@@ -203,7 +202,7 @@ SharedJobCluster is similar):
   communication using SSL certificate stored in 'mycert' file and key
   stored in 'mykey' file. In this case, dispynode must also use same
   certificate and key; i.e., each dispynode must be invoked with
-  'dispynode --certfile="mycert" --keyfile="mykey"'<br/>
+  <tt>dispynode --certfile="mycert" --keyfile="mykey"'</tt><br/>
 
     If both certificate and key are stored in same file, say,
     'mycertkey', they are expected to be in certfile:<br />

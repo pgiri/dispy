@@ -1,24 +1,18 @@
 #!/usr/bin/env python
 
-# dispynode: Execute computations on behalf of dispy clients;
-# see accompanying 'dispy' for more details.
+"""
+dispynode: Execute computations on behalf of dispy clients;
+see accompanying 'dispy' for more details.
+"""
 
-# Copyright (C) 2011 Giridhar Pemmasani (pgiri@yahoo.com)
-
-# This file is part of dispy.
-
-# dispy is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Lesser General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-
-# dispy is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Lesser General Public License for more details.
-
-# You should have received a copy of the GNU Lesser General Public License
-# along with dispy.  If not, see <http://www.gnu.org/licenses/>.
+__author__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
+__email__ = "pgiri@yahoo.com"
+__copyright__ = "Copyright 2011, Giridhar Pemmasani"
+__contributors__ = []
+__maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
+__license__ = "MIT"
+__url__ = "http://dispy.sourceforge.net"
+__status__ = "Production"
 
 import os
 import sys
@@ -39,11 +33,14 @@ import shelve
 import cPickle as pickle
 import cStringIO as io
 
-from dispy import _DispyJob_, _JobReply, DispyJob, serialize, unserialize, \
-     _Compute, _XferFile, _node_ipaddr, _dispy_version
+from dispy import _DispyJob_, _JobReply, DispyJob, _Compute, _XferFile, \
+     _node_ipaddr, _dispy_version
 
 import asyncoro
-from asyncoro import Coro, AsynCoro, AsynCoroSocket, MetaSingleton
+from asyncoro import Coro, AsynCoro, AsynCoroSocket, MetaSingleton, serialize, unserialize
+
+__version__ = _dispy_version
+__all__ = []
 
 MaxFileSize = 102400000
 

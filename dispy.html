@@ -47,9 +47,10 @@
   by each, causing conflicts. Instead, <tt>SharedJobCluster</tt> must
   be used. In this
   case, <a href="dispyscheduler.html">dispyscheduler</a> must also be
-  running on some computer and <tt>SharedJobCluster</tt> must be
-  initialized with the node running dispyscheduler (default is the
-  host that calls <tt>SharedJobCluster</tt>).
+  running on some computer and <tt>SharedJobCluster</tt> must
+  set <tt>scheduler_node</tt> parameter with the node running
+  dispyscheduler (default is the host that
+  calls <tt>SharedJobCluster</tt>).
   </p>
 
 <p>Once an instance of JobCluster/SharedJobCluster is created, it can
@@ -58,11 +59,16 @@ computations.
 </p>
 
 <h4>JobCluster</h4>
-<tt>JobCluster(computation, nodes=['*'], depends=[], callback=None,
-           ip_addr=None, ext_ip_addr=None, port=51347, node_port=51348,
-           fault_recover=False, dest_path=None, loglevel=logging.WARNING,
-           cleanup=True, pulse_interval=None, ping_interval=None,
-           reentrant=False, secret='', keyfile=None, certfile=None)</tt><br/>
+
+Although JobCluster and SharedJobCluster have many parameters, most
+are optional and in many cases, specifying just <tt>computation</tt>,
+and possibly <tt>depends</tt>, may be sufficient.
+
+<code>JobCluster(computation, nodes=['*'], depends=[], callback=None, ip_addr=None, ext_ip_addr=None,
+           port=51347, node_port=51348, fault_recover=False, dest_path=None, loglevel=logging.WARNING,
+           cleanup=True, pulse_interval=None, ping_interval=None, reentrant=False,
+           secret='', keyfile=None, certfile=None)
+</code>
 where
 <ul>
 <li>
@@ -115,9 +121,10 @@ where
   global variables in programs that created cluster(s).
 </li>
 <li>
-  <tt>ip_addr</tt> is IP address to use for (client)
-  communication. This may be needed in case the client has multiple
-  interfaces and default interface is not the right choice.
+  <tt>ip_addr</tt> is IP address to use for (client) communication. If
+  it is not set, IP address set for the host calling JobCluster is
+  used. If the host has multiple interfaces and default address is not
+  the right choice, this parameter can be set to correct address.
 </li>
 <li>
   <tt>ext_ip_addr</tt> is external IP address to use for (client)
@@ -219,10 +226,10 @@ where
 <p>
   SharedJobCluster has almost the same syntax, except as noted below.
   </p>
-<tt>SharedJobCluster(computation, nodes=['*'], depends=[], ip_addr=None,
-                 ext_ip_addr=None, scheduler_node=None, port=51347,
-                 dest_path=None, loglevel=logging.WARNING, cleanup=True,
-                 reentrant=False, secret='', keyfile=None, certfile=None)</tt><br/>
+<code>SharedJobCluster(computation, nodes=['*'], depends=[], ip_addr=None, ext_ip_addr=None, scheduler_node=None,
+                 port=51347, dest_path=None, loglevel=logging.WARNING, cleanup=True, reentrant=False,
+                 secret='', keyfile=None, certfile=None)
+</code>
 where all arguments common to <tt>JobCluster</tt> are same, and
 <ul>
 <li>
@@ -379,6 +386,7 @@ def job_callback(job):
     # job.result would be None
     if job.result is not None:
         if job.result[1] < 0.005:
+            # acceptable result; terminate jobs
             print '%s computed: %s' % (job.result[0], job.result[1])
             global jobs, cluster
             for j in jobs:
@@ -419,23 +427,23 @@ if dispynode is behind NAT firewall/gateway, 'ext_ip_addr' option must
 be used.
   </p>
 <p>
-  For example, ext_ip_addr feature can be used with Amazon EC2 cloud
-  computing service. With EC2 service, a node has a private IP address
-  (called 'Private DNS Address') that uses private network of the form
-  10.x.x.x and public IP address (called 'Public DNS Address') that is
-  of the form ec2-x-x-x-x.x.amazonaws.com. After launching
-  instance(s), one can copy dispy files to the node(s) and run
-  dispynode as
+  For example, <tt>ext_ip_addr</tt> option can be used to work with
+  Amazon EC2 cloud computing service. With EC2 service, a node has a
+  private IP address (called 'Private DNS Address') that uses private
+  network of the form 10.x.x.x and public IP address (called 'Public
+  DNS Address') that is of the form ec2-x-x-x-x.x.amazonaws.com. After
+  launching instance(s), one can copy dispy files to the node(s) and
+  run dispynode as
   <tt>dispynode.py --ext_ip_addr ec2-x-x-x-x.y.amazonaws.com</tt>
-  (this address can't be used with
-  '-i'/'--ip_addr' option, as the network interface for instance uses
-  private IP address only). This node can then be used by dispy client
-  by specifying ec2-x-x-x-x.x.amazonaws.com in the 'nodes'
-  list. Roughly, dispy uses 'ext_ip_addr' similar to NAT - it
-  announces ext_ip_addr to other services instead of the configured
-  ip_addr so that external services send requests to ext_ip_addr and
-  if firewall/gateway forwards packets appropriately, dispy will
-  process them.
+  (this address can't be used with '-i'/'--ip_addr' option, as the
+  network interface is configured with private IP address only). This
+  node can then be used by dispy client from outside EC2 network by
+  specifying ec2-x-x-x-x.x.amazonaws.com in the 'nodes' list (thus,
+  using EC2 servers to augment processing units). Roughly, dispy uses
+  'ext_ip_addr' similar to NAT - it announces 'ext_ip_addr' to
+  other services instead of the configured 'ip_addr' so that external
+  services send requests to 'ext_ip_addr' and if firewall/gateway
+  forwards them appropriately, dispy will process them.
   </p>
 
 <h4>Examples</h4>
@@ -454,15 +462,17 @@ be used.
       dispy can't send identification request to outside networks with wildcard)
     </li>
     <li>
-      <tt>cluster = dispy.JobCluster(compute, nodes=['192.168.3.5', '192.168.3.22', '172.16.11.22', 'node39', '192.168.2.*'])</tt>
+      <code>cluster = dispy.JobCluster(compute, nodes=['192.168.3.5', '192.168.3.22',
+                                       '172.16.11.22', 'node39', '192.168.2.*'])</code>
       sends computation to nodes with IP addresses '192.168.3.5', '192.168.3.22', '172.16.11.22' and node 'node39' (since explicit names / IP addresses are listed, they could be on different networks), all nodes whose IP address starts with '192.168.2' (local network).
     </li>
     <li>
-      <tt>cluster = dispy.JobCluster(compute, nodes=['192.168.3.5', '192.168.3.*', '192.168.2.*'])</tt>
+      <code>cluster = dispy.JobCluster(compute, nodes=['192.168.3.5', '192.168.3.*', '192.168.2.*'])</code>
       In this case, dispy will send identification request to node with IP address '192.168.3.5'. If this node is running 'dispynetrelay', then all the nodes on that network are eligible for executing this computation, as wildcard '192.168.3.*' matches IP addresses of those nodes. In addition, computation is also sent to all nodes whose IP address starts with '192.168.2' (local network).
     </li>
     <li>
-      <tt>cluster = dispy.JobCluster(compute, nodes=['192.168.3.5', '192.168.8.20', '172.16.2.99', '*'])</tt>
+      <code>cluster = dispy.JobCluster(compute, nodes=['192.168.3.5', '192.168.8.20',
+                                            '172.16.2.99', '*'])</code>
       In this case, dispy will send identification request to nodes with IP address '192.168.3.5', '192.168.8.20' and '172.16.2.99'. If these nodes all are running dispynetrelay, then all the nodes on those networks are eligible for executing this computation, as wildcard '*' matches IP addresses of those nodes. In addition, computation is also sent to all nodes on local network (since they also match wildcard '*' and identification request is broadcast on local network).
     </li>
     <li>
@@ -471,8 +481,9 @@ be used.
       firewall/gateway (that can be reached from outside) and
       dispynode is running at another public IP address e.f.g.h (so
       that a.b.c.d and e.f.g.h can communicate, but e.f.g.h can't
-      communicate with 192.168.1.39),
-      <tt>cluster = dispy.JobCluster(compute, ip_addr='192.168.1.39', ext_ip_addr='a.b.c.d', nodes=['e.f.g.h'])</tt>
+      communicate with 192.168.1.39),<br />
+      <code>cluster = dispy.JobCluster(compute, ip_addr='192.168.1.39', ext_ip_addr='a.b.c.d',
+	                               nodes=['e.f.g.h'])</code>
       would work if NAT firewall/gateway forwards UDP and TCP ports 51347 to
       192.168.1.39.
       </li>

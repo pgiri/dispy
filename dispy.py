@@ -1,25 +1,23 @@
 #!/usr/bin/env python
 
-# dispy: Distribute computations among CPUs/cores on a single machine or
-# machines in cluster(s), grid, cloud etc. for parallel execution.
+"""
+dispy: Distribute computations among CPUs/cores on a single machine or
+machines in cluster(s), grid, cloud etc. for parallel execution.
+See http://dispy.sourceforge.net for details.
+"""
 
-# Copyright (C) 2011 Giridhar Pemmasani (pgiri@yahoo.com)
+__author__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
+__email__ = "pgiri@yahoo.com"
+__copyright__ = "Copyright 2011, Giridhar Pemmasani"
+__contributors__ = []
+__maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
+__license__ = "MIT"
+__url__ = "http://dispy.sourceforge.net"
+__status__ = "Production"
+__version__ = "3.5"
 
-# This file is part of dispy.
+__all__ = ['logger', 'DispyJob', 'JobCluster', 'SharedJobCluster']
 
-# dispy is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Lesser General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-
-# dispy is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Lesser General Public License for more details.
-
-# You should have received a copy of the GNU Lesser General Public License
-# along with dispy.  If not, see <http://www.gnu.org/licenses/>.
-                                
 import os
 import sys
 import time
@@ -43,9 +41,9 @@ import cPickle as pickle
 import Queue as queue
 
 import asyncoro
-from asyncoro import Coro, AsynCoro, AsynCoroSocket, MetaSingleton
+from asyncoro import Coro, AsynCoro, AsynCoroSocket, MetaSingleton, serialize, unserialize
 
-_dispy_version = '3.4'
+_dispy_version = __version__
 
 logger = logging.getLogger('dispy')
 logger.setLevel(logging.INFO)
@@ -53,12 +51,6 @@ handler = logging.StreamHandler()
 handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(message)s'))
 logger.addHandler(handler)
 del handler
-
-def serialize(obj):
-    return pickle.dumps(obj, pickle.HIGHEST_PROTOCOL)
-
-def unserialize(pkl):
-    return pickle.loads(pkl)
 
 class DispyJob(object):
     """Job scheduled for execution with dispy.
