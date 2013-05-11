@@ -42,7 +42,7 @@ from asyncoro import Coro, AsynCoro, AsynCoroSocket, MetaSingleton, serialize, u
 __version__ = _dispy_version
 __all__ = []
 
-MaxFileSize = 102400000
+MaxFileSize = 10*1024*1024
 
 logger = logging.getLogger('dispynode')
 logger.setLevel(logging.INFO)
@@ -70,7 +70,7 @@ def dispy_provisional_result(result):
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock = AsynCoroSocket(sock, blocking=True, keyfile=__dispy_job_keyfile,
                           certfile=__dispy_job_certfile)
-    sock.settimeout(2)
+    sock.settimeout(5)
     try:
         sock.connect(__dispy_job_info.reply_addr)
         sock.send_msg(serialize(__dispy_job_reply))
@@ -152,6 +152,11 @@ class _DispyNode(object):
         else:
             self.name = socket.gethostname()
             ip_addr = socket.gethostbyname(self.name)
+        if ip_addr.startswith('127.'):
+            logger.warning('node IP address %s seems to be loopback address; this will prevent'
+                           'communication with clients on other machines. '
+                           'Use "ip_addr" option to specify network IP address to'
+                           'allow communication with other nodes' % ip_addr)
         if ext_ip_addr:
             ext_ip_addr = _node_ipaddr(ext_ip_addr)
             if not ext_ip_addr:
@@ -889,15 +894,15 @@ class _DispyNode(object):
                      job_reply.uid, job_reply.status, str(job_info.reply_addr))
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock = AsynCoroSocket(sock, blocking=False, certfile=self.certfile, keyfile=self.keyfile)
-        sock.settimeout(2)
+        sock.settimeout(10)
         try:
             yield sock.connect(job_info.reply_addr)
             yield sock.send_msg(serialize(job_reply))
             ack = yield sock.recv_msg()
             assert ack == 'ACK'
         except:
-            logger.error("Couldn't send results for %s to %s",
-                         job_reply.uid, str(job_info.reply_addr))
+            logger.error("Couldn't send results for %s to %s : %s",
+                         job_reply.uid, str(job_info.reply_addr), traceback.format_exc())
             # store job result even if computation has not enabled
             # fault recovery; user may be able to access node and
             # retrieve result manually
