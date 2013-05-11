@@ -14,7 +14,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "MIT"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "3.5"
+__version__ = "3.7"
 
 __all__ = ['logger', 'DispyJob', 'JobCluster', 'SharedJobCluster']
 
@@ -368,12 +368,9 @@ class _DispyJob_(object):
                 fd.close()
                 self.files.append({'name':dep, 'stat':sbuf, 'data':data})
                 depend_ids[dep] = dep
-            elif inspect.isfunction(dep) or inspect.ismethod(dep) or \
-                     inspect.isclass(dep) or hasattr(dep, '__class__'):
+            elif inspect.isfunction(dep) or inspect.isclass(dep) or hasattr(dep, '__class__'):
                 if inspect.isfunction(dep) or inspect.isclass(dep):
                     pass
-                elif inspect.ismethod(dep):
-                    dep = dep.im_class
                 elif hasattr(dep, '__class__') and inspect.isclass(dep.__class__):
                     dep = dep.__class__
                 if id(dep) in depend_ids:
@@ -453,6 +450,14 @@ class _Cluster(object):
                 port = 51347
             if not node_port:
                 node_port = 51348
+
+            if ip_addr.startswith('127.'):
+                logger.warning('dispy client IP address %s seems to be loopback address; '
+                               'this will prevent communication with other nodes. '
+                               'Use "ip_addr" option to specify network IP address to '
+                               'allow communication with other nodes' % ip_addr)
+            else:
+                logger.debug('dispy client IP address: %s' % ip_addr)
 
             self.ip_addr = ip_addr
             self.ext_ip_addr = ext_ip_addr
@@ -750,9 +755,10 @@ class _Cluster(object):
         except EnvironmentError:
             logger.warning('Failed to run job %s on %s for computation %s; removing this node',
                            _job.uid, _job.node.ip_addr, cluster._compute.name)
+            logger.debug(traceback.format_exc())
             yield self._sched_cv.acquire()
             if cluster._compute.nodes.pop(_job.node.ip_addr, None) is not None:
-                _job.node.clusters.discard(cluster.compute.id)
+                _job.node.clusters.discard(cluster._compute.id)
                 # TODO: remove the node from all clusters and globally?
             # this job might have been deleted already due to timeout
             if self._sched_jobs.pop(_job.uid, None) == _job:
@@ -1457,7 +1463,7 @@ class JobCluster(object):
         self.ip_addr = self._cluster.ip_addr
         self.ext_ip_addr = self._cluster.ext_ip_addr
 
-        if inspect.isfunction(computation) or inspect.ismethod(computation):
+        if inspect.isfunction(computation):
             func = computation
             compute = _Compute(_Compute.func_type, func.func_name)
             lines = inspect.getsourcelines(func)[0]
@@ -1496,12 +1502,9 @@ class JobCluster(object):
                     depend_ids[dep] = dep
                 except:
                     raise Exception('File "%s" is not valid' % dep)
-            elif inspect.isfunction(dep) or inspect.ismethod(dep) or \
-                     inspect.isclass(dep) or hasattr(dep, '__class__'):
+            elif inspect.isfunction(dep) or inspect.isclass(dep) or hasattr(dep, '__class__'):
                 if inspect.isfunction(dep) or inspect.isclass(dep):
                     pass
-                elif inspect.ismethod(dep):
-                    dep = dep.im_class
                 elif hasattr(dep, '__class__') and inspect.isclass(dep.__class__):
                     dep = dep.__class__
                 if id(dep) in depend_ids:
@@ -1513,7 +1516,7 @@ class JobCluster(object):
                 compute.code += '\n' + ''.join(lines)
                 depend_ids[id(dep)] = id(dep)
             else:
-                raise Exception('Invalid function/method: %s' % dep)
+                raise Exception('Invalid function: %s' % dep)
         if compute.code:
             # make sure code can be compiled
             code = compile(compute.code, '<string>', 'exec')
