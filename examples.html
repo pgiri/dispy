@@ -72,9 +72,9 @@ if __name__ == '__main__':
     # nodes node1 and node2 have 'doc1', 'doc2' etc. on their
     # local storage under /tmp, so no need to transfer them
     map_cluster = dispy.JobCluster(mapper, nodes=['node1', 'node2'], pulse_interval=2,
-                                   resubmit=True)
+                                   reentrant=True)
     reduce_cluster = dispy.JobCluster(reducer, nodes=['*'], pulse_interval=2,
-                                      resubmit=True)
+                                      reentrant=True)
     map_jobs = []
     for f in ['doc1', 'doc2', 'doc3', 'doc4', 'doc5']:
         job = map_cluster.submit(f)
