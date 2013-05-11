@@ -12,10 +12,10 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "MIT"
 __url__ = "http://asyncoro.sourceforge.net"
 __status__ = "Production"
-__version__ = "1.2"
+__version__ = "1.3"
 
 __all__ = ['AsynCoroSocket', 'Coro', 'AsynCoro', 'Lock', 'RLock', 'Event', 'Condition', 'Semaphore',
-           'HotSwapException', 'MonitorException', 'Location', 'AsyncChannel', 'SyncChannel',
+           'HotSwapException', 'MonitorException', 'Location', 'Channel', 'UnbufferedChannel',
            'AsynCoroThreadPool', 'AsynCoroDBCursor', 'MetaSingleton']
 
 import time
@@ -1995,7 +1995,7 @@ class Coro(object):
                  '_hot_swappable', '_asyncoro', '_location')
 
     def __init__(self, target, *args, **kwargs):
-        self._generator = self.__get_generator__(target, *args, **kwargs)
+        self._generator = self.__get_generator(target, *args, **kwargs)
         self.name = target.__name__
         self._id = id(self)
         self._state = None
@@ -2005,7 +2005,7 @@ class Coro(object):
         self._timeout = None
         self._daemon = False
         self._complete = threading.Event()
-        self._msgs = []
+        self._msgs = collections.deque()
         self._monitor = None
         self._new_generator = None
         self._hot_swappable = False
@@ -2013,7 +2013,7 @@ class Coro(object):
         self._location = self._asyncoro._location
         self._asyncoro._add(self)
 
-    def __get_generator__(self, target, *args, **kwargs):
+    def __get_generator(self, target, *args, **kwargs):
         if not inspect.isgeneratorfunction(target):
             raise Exception('%s is not a generator!' % target.__name__)
         if not args and kwargs:
@@ -2254,7 +2254,7 @@ class Coro(object):
         'alarm_value').
         """
         try:
-            generator = self.__get_generator__(target, *args, **kwargs)
+            generator = self.__get_generator(target, *args, **kwargs)
         except:
             logger.warning('%s is not a generator!' % target.__name__)
             return -1
@@ -2309,7 +2309,7 @@ class Coro(object):
             except:
                 logger.warning('closing %s raised exception: %s',
                                self._generator.__name__, traceback.format_exc())
-        self._generator = self.__get_generator__(target, *args, **kwargs)
+        self._generator = self.__get_generator(target, *args, **kwargs)
         self.name = target.__name__
         self._value = None
         self._exceptions = []
@@ -2377,14 +2377,14 @@ class _NetRequest(object):
         for k, v in state.iteritems():
             setattr(self, k, v)
 
-class _ChannelMessage(object):
-    """ Message sent over channel. Instances of _ChannelMessage are
+class ChannelMessage(object):
+    """ Message sent over channel. Instances of ChannelMessage are
     created by asyncoro.
 
     Recipients may receive messages from multiple channels. A
     recipient may want to know not just the message, but on which
     channel it is received, so when delivering messages, asyncoro
-    wraps them with _ChannelMessage. Users can get channel name with
+    wraps them with ChannelMessage. Users can get channel name with
     'channel' and message with 'message' attributes.
     """
 
@@ -2392,18 +2392,19 @@ class _ChannelMessage(object):
 
     def __init__(self, channel, message):
         self.channel = channel
-        if isinstance(message, _ChannelMessage):
+        if isinstance(message, ChannelMessage):
             self.message = message.message
         else:
             self.message = message
 
-class AsyncChannel(object):
-    """Asynchronous channel. Broadcasts a message to all registered
-    subscribers, whether they are currently waiting for message or
-    not. To get a message, a coro must use 'yield coro.receive()',
-    with timeout and alarm_value, if necessary.
+class Channel(object):
+    """Subscription based channel. Broadcasts a message to all
+    registered subscribers, whether they are currently waiting for
+    message or not. Messages are queued (buffered) at receiving
+    coroutines. To get a message, a coro must use 'yield
+    coro.receive()', with timeout and alarm_value, if necessary.
 
-    AsyncChannels can be hierarchical, and subscribers can be remote!
+    Channels can be hierarchical, and subscribers can be remote.
     """
 
     def __init__(self, name, transform=None):
@@ -2484,7 +2485,7 @@ class AsyncChannel(object):
             kwargs = {'name':self.name}
             if isinstance(subscriber, Coro):
                 kwargs['coro'] = subscriber
-            elif isinstance(subscriber, AsyncChannel):
+            elif isinstance(subscriber, Channel):
                 kwargs['channel'] = subscriber
             else:
                 raise Exception('invalid subscribe request')
@@ -2515,10 +2516,10 @@ class AsyncChannel(object):
                         subscriber = s
                         break
                 self._subscribers.discard(subscriber)
-            elif isinstance(subscriber, AsyncChannel):
+            elif isinstance(subscriber, Channel):
                 # remote channel
                 for s in self._subscribers:
-                    if isinstance(s, AsyncChannel) and \
+                    if isinstance(s, Channel) and \
                            s.name == subscriber.name and s._location == subscriber._location:
                         subscriber = s
                         break
@@ -2529,7 +2530,7 @@ class AsyncChannel(object):
             kwargs = {'name':self.name}
             if isinstance(subscriber, Coro):
                 kwargs['coro'] = subscriber
-            elif isinstance(subscriber, AsyncChannel):
+            elif isinstance(subscriber, Channel):
                 kwargs['channel'] = subscriber
             else:
                 raise Exception('invalid unsubscribe request')
@@ -2551,7 +2552,7 @@ class AsyncChannel(object):
             if message is None:
                 return 0
         if self._location == self._asyncoro._location:
-            msg = _ChannelMessage(self.name, message)
+            msg = ChannelMessage(self.name, message)
             # remote subscriber may call unsubscribe during send, so make copy
             subscribers = self._subscribers.copy()
             for subscriber in subscribers:
@@ -2599,7 +2600,7 @@ class AsyncChannel(object):
                     timeout -= _time() - start
                     if timeout <= 0:
                         raise StopIteration(alarm_value)
-            msg = _ChannelMessage(self.name, message)
+            msg = ChannelMessage(self.name, message)
             # during delivery, other subscribers may join, so make copy
             subscribers = self._subscribers.copy()
             count = {'pending':len(subscribers), 'reply':0}
@@ -2621,7 +2622,7 @@ class AsyncChannel(object):
                     if subscriber.send(msg) == 0:
                         count['reply'] += 1
                     count['pending'] -= 1
-                elif isinstance(subscriber, SyncChannel):
+                elif isinstance(subscriber, UnbufferedChannel):
                     assert self._location == subscriber._location
                     reply = yield subscriber.deliver(msg, timeout)
                     if reply:
@@ -2656,13 +2657,13 @@ class AsyncChannel(object):
                 Coro(_unsub, self, self._asyncoro._rchannels.values())
                 raise StopIteration(0)
 
-class SyncChannel(object):
-    """Synchronous channel. Broadcasts a message to currently waiting
+class UnbufferedChannel(object):
+    """Unbuffered channel. Broadcasts a message to currently waiting
     coros. To receive a message, a coro should use
     'yield channel.receive(coro)', with timeout and alarm_value, if
     necessary.
 
-    SyncChannel can not be sent over network.
+    UnbufferedChannel can not be sent over network (for now).
     """
 
     def __init__(self, name, transform=None):
@@ -2702,7 +2703,7 @@ class SyncChannel(object):
             message = self._transform(self.name, message)
             if message is None:
                 return 0
-        msg = _ChannelMessage(self.name, message)
+        msg = ChannelMessage(self.name, message)
         for c in self._recipients:
             c._proceed_(msg)
         self._recipients = []
@@ -2729,7 +2730,7 @@ class SyncChannel(object):
                 timeout -= _time() - start
                 if timeout <= 0:
                     raise StopIteration(alarm_value)
-        msg = _ChannelMessage(self.name, message)
+        msg = ChannelMessage(self.name, message)
         for c in self._recipients:
             c._proceed_(msg)
         n = len(self._recipients)
@@ -2994,7 +2995,7 @@ class AsynCoro(object):
         if state == AsynCoro._AwaitMsg_ and coro._msgs:
             s, update = coro._msgs[0]
             if s == state:
-                del coro._msgs[0]
+                coro._msgs.popleft()
                 self._lock.release()
                 return update
         if timeout is None:
@@ -3308,7 +3309,7 @@ class AsynCoro(object):
                                         # which needs (recursive) lock
                                         self._netreq_q_work.set()
                             else:
-                                coro._msgs = []
+                                coro._msgs.clear()
                         else:
                             logger.warning('coro %s/%s already removed?', coro.name, cid)
                     self._lock.release()
