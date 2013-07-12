@@ -726,8 +726,7 @@ class _Scheduler(object):
                     logger.debug('Invalid job %s!', job.uid)
             else:
                 _job.job.status = DispyJob.Cancelled
-                Coro(_job.node.send, _job.uid, 'TERMINATE_JOB:' + serialize(_job),
-                     reply=False)
+                Coro(_job.node.send, 'TERMINATE_JOB:' + serialize(_job), reply=False)
             yield self._sched_cv.release()
         elif msg.startswith('RETRIEVE_JOB:'):
             req = msg[len('RETRIEVE_JOB:'):]
