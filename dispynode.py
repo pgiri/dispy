@@ -169,12 +169,14 @@ class _DispyNode(object):
             self.name = socket.gethostname()
         if not node_port:
             node_port = 51348
-        if not scheduler_port:
-            scheduler_port = 51347
+
+        self.scheduler_addr = {'ip':_node_ipaddr(scheduler_node), 'port':scheduler_port,
+                               'auth':None}
+        if not self.scheduler_addr['port']:
+            self.scheduler_addr['port'] = 51347
 
         self.ip_addr = ip_addr
         self.ext_ip_addr = ext_ip_addr
-        self.scheduler_port = scheduler_port
         self.pulse_interval = None
         self.keyfile = keyfile
         self.certfile = certfile
@@ -207,7 +209,6 @@ class _DispyNode(object):
 
         self.avail_cpus = self.cpus
         self.computations = {}
-        self.scheduler_ip_addr = None
         self.file_uses = {}
         self.job_infos = {}
         self.lock = asyncoro.Lock()
@@ -225,7 +226,6 @@ class _DispyNode(object):
         logger.debug('tcp server at %s:%s', self.address[0], self.address[1])
         self.udp_sock = AsynCoroSocket(self.udp_sock, blocking=False)
 
-        scheduler_ip_addr = _node_ipaddr(scheduler_node)
 
         self.reply_Q = multiprocessing.Queue()
         self.reply_Q_thread = threading.Thread(target=self.__reply_Q)
@@ -233,7 +233,7 @@ class _DispyNode(object):
 
         self.timer_coro = Coro(self.timer_task)
         # self.tcp_coro = Coro(self.tcp_server)
-        self.udp_coro = Coro(self.udp_server, scheduler_ip_addr)
+        self.udp_coro = Coro(self.udp_server)
 
     def send_pong_msg(self, coro=None):
         ping_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -242,10 +242,10 @@ class _DispyNode(object):
         pong_msg = {'ip_addr':self.ext_ip_addr, 'name':self.name, 'port':self.address[1],
                     'cpus':self.cpus, 'sign':self.signature, 'version':_dispy_version}
         pong_msg = 'PONG:' + serialize(pong_msg)
-        yield ping_sock.sendto(pong_msg, ('<broadcast>', self.scheduler_port))
+        yield ping_sock.sendto(pong_msg, ('<broadcast>', self.scheduler_addr['port']))
         ping_sock.close()
 
-    def udp_server(self, scheduler_ip_addr, coro=None):
+    def udp_server(self, coro=None):
         assert coro is not None
         coro.set_daemon()
         if self.avail_cpus == self.cpus:
@@ -254,13 +254,13 @@ class _DispyNode(object):
                     'cpus':self.cpus, 'sign':self.signature, 'version':_dispy_version}
         pong_msg = 'PONG:' + serialize(pong_msg)
 
-        if scheduler_ip_addr:
+        if self.scheduler_addr['ip']:
             sock = AsynCoroSocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
             try:
-                yield sock.sendto(pong_msg, (scheduler_ip_addr, self.scheduler_port))
+                yield sock.sendto(pong_msg, (self.scheduler_addr['ip'], self.scheduler_addr['port']))
             except:
                 logger.warning("Couldn't send ping message to %s:%s",
-                               scheduler_ip_addr, self.scheduler_port)
+                               self.scheduler_addr['ip'], self.scheduler_addr['port'])
             finally:
                 sock.close()
 
@@ -270,8 +270,8 @@ class _DispyNode(object):
             # exceptions are contained?
             if msg.startswith('PING:'):
                 if self.cpus != self.avail_cpus:
-                    logger.debug('Busy (%s/%s); ignoring ping message from %s',
-                                 self.cpus, self.avail_cpus, addr[0])
+                    logger.debug('Busy (%s/%s); ignoring ping message from %s:%s',
+                                 self.cpus, self.avail_cpus, addr[0], addr[1])
                     continue
                 try:
                     info = unserialize(msg[len('PING:'):])
@@ -287,7 +287,7 @@ class _DispyNode(object):
             elif msg.startswith('PULSE:'):
                 try:
                     info = unserialize(msg[len('PULSE:'):])
-                    assert info['ip_addr'] == self.scheduler_ip_addr
+                    assert info['ip_addr'] == self.scheduler_addr['ip']
                     yield self.lock.acquire()
                     for compute in self.computations.itervalues():
                         compute.last_pulse = time.time()
@@ -324,7 +324,12 @@ class _DispyNode(object):
             yield self.lock.acquire()
             compute = self.computations.get(_job.compute_id, None)
             if compute is not None:
-                if compute.scheduler_ip_addr != self.scheduler_ip_addr:
+                if compute.scheduler_ip_addr != self.scheduler_addr['ip'] or \
+                       compute.scheduler_port != self.scheduler_addr['port'] or \
+                       compute.scheduler_auth != self.scheduler_addr['auth']:
+                    logger.debug('invalid scheduler IP address: scheduler %s:%s != %s:%s' % \
+                                 compute.scheduler_ip_addr, compute.scheduler_port,
+                                 self.scheduler_addr['ip'], self.scheduler_addr['port'])
                     compute = None
             yield self.lock.release()
             if self.avail_cpus == 0:
@@ -417,11 +422,12 @@ class _DispyNode(object):
                     logger.warning('Failed to send reply to %s', str(addr))
                 raise StopIteration
             yield self.lock.acquire()
-            if not ((self.scheduler_ip_addr is None) or
-                    (self.scheduler_ip_addr == compute.scheduler_ip_addr and \
-                     self.scheduler_port == compute.scheduler_port)):
+            if not ((self.scheduler_addr['ip'] is None and self.scheduler_addr['auth'] is None) or
+                    (self.scheduler_addr['ip'] == compute.scheduler_ip_addr and \
+                     self.scheduler_addr['port'] == compute.scheduler_port and \
+                     self.scheduler_addr['auth'] == compute.scheduler_auth)):
                 logger.debug('Ignoring computation request from %s: %s, %s, %s',
-                             compute.scheduler_ip_addr, self.scheduler_ip_addr,
+                             compute.scheduler_ip_addr, self.scheduler_addr['ip'],
                              self.avail_cpus, self.cpus)
                 self.lock.release()
                 try:
@@ -500,13 +506,18 @@ class _DispyNode(object):
                     resp = 'NACK (file "%s" too big)' % xf.name
                 else:
                     xfer_files.append(xf)
-            if resp == 'ACK' and ((self.scheduler_ip_addr is not None) and \
-                                  (self.scheduler_ip_addr != compute.scheduler_ip_addr)):
+
+            if resp == 'ACK' and \
+                   not ((self.scheduler_addr['ip'] == None) or \
+                        (self.scheduler_addr['ip'] == compute.scheduler_ip_addr and \
+                         self.scheduler_addr['port'] == compute.scheduler_port and \
+                         self.scheduler_addr['auth'] == compute.scheduler_auth)):
                 resp = 'NACK (busy)'
             if resp == 'ACK':
                 self.computations[compute.id] = compute
-                self.scheduler_ip_addr = compute.scheduler_ip_addr
-                self.scheduler_port = compute.scheduler_port
+                self.scheduler_addr['ip'] = compute.scheduler_ip_addr
+                self.scheduler_addr['port'] = compute.scheduler_port
+                self.scheduler_addr['auth'] = compute.scheduler_auth
                 self.pulse_interval = compute.pulse_interval
                 self.lock.release()
                 if xfer_files:
@@ -514,11 +525,10 @@ class _DispyNode(object):
                 try:
                     yield conn.send_msg(resp)
                 except:
-                    assert self.scheduler_ip_addr == compute.scheduler_ip_addr
                     yield self.lock.acquire()
                     del self.computations[compute.id]
-                    self.scheduler_ip_addr = None
-                    self.scheduler_port = None
+                    self.scheduler_addr['ip'] = None
+                    self.scheduler_addr['auth'] = None
                     self.pulse_interval = None
                     self.lock.release()
                 else:
@@ -784,14 +794,14 @@ class _DispyNode(object):
             if self.pulse_interval and (now - last_pulse_time) >= self.pulse_interval:
                 n = self.cpus - self.avail_cpus
                 assert n >= 0
-                if n > 0 and self.scheduler_ip_addr:
+                if n > 0 and self.scheduler_addr['ip']:
                     last_pulse_time = now
                     msg = 'PULSE:' + serialize({'ip_addr':self.ext_ip_addr,
                                                 'port':self.udp_sock.getsockname()[1], 'cpus':n})
                     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                     sock = AsynCoroSocket(sock, blocking=False)
                     sock.settimeout(1)
-                    yield sock.sendto(msg, (self.scheduler_ip_addr, self.scheduler_port))
+                    yield sock.sendto(msg, (self.scheduler_addr['ip'], self.scheduler_addr['port']))
                     sock.close()
             if self.zombie_interval and (now - last_zombie_time) >= self.zombie_interval:
                 last_zombie_time = now
@@ -840,7 +850,7 @@ class _DispyNode(object):
                     yield sock.sendto('TERMINATED:%s' % data, (compute.scheduler_ip_addr,
                                                                compute.scheduler_port))
                     sock.close()
-                if self.scheduler_ip_addr is None and self.avail_cpus == self.cpus:
+                if self.scheduler_addr['ip'] is None and self.avail_cpus == self.cpus:
                     self.pulse_interval = None
                     reset = True
                     yield self.send_pong_msg(coro=coro)
@@ -950,14 +960,17 @@ class _DispyNode(object):
                 return
 
         del self.computations[compute.id]
-        if compute.scheduler_ip_addr == self.scheduler_ip_addr and \
-               all(c.scheduler_ip_addr != self.scheduler_ip_addr \
+        if compute.scheduler_ip_addr == self.scheduler_addr['ip'] and \
+           compute.scheduler_port == self.scheduler_addr['port'] and \
+           compute.scheduler_auth == self.scheduler_addr['auth'] and \
+               all(c.scheduler_ip_addr != self.scheduler_addr['ip'] \
                    for c in self.computations.itervalues()):
             assert self.avail_cpus == self.cpus
-            self.scheduler_ip_addr = None
+            self.scheduler_addr['ip'] = None
+            self.scheduler_addr['auth'] = None
             self.pulse_interval = None
 
-        if self.scheduler_ip_addr is None and self.avail_cpus == self.cpus:
+        if self.scheduler_addr['ip'] is None and self.avail_cpus == self.cpus:
             self.timer_coro.resume(True)
             Coro(self.send_pong_msg)
         if compute.cleanup is False:

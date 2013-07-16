@@ -157,7 +157,7 @@ class _Scheduler(object):
             self.job_uid = 1
             self._sched_jobs = {}
             self._sched_cv = asyncoro.Condition()
-            self._terminate_scheduler = False
+            self.terminate = False
             self.sign = os.urandom(20).encode('hex')
             self.auth_code = hashlib.sha1(self.sign + self.cluster_secret).hexdigest()
             logger.debug('auth_code: %s', self.auth_code)
@@ -548,6 +548,7 @@ class _Scheduler(object):
             compute.job_result_port = self.job_result_sock.getsockname()[1]
             compute.scheduler_ip_addr = self.ext_ip_addr
             compute.scheduler_port = self.port
+            compute.scheduler_auth = self.auth_code
             yield self._sched_cv.acquire()
             compute.id = cluster.id = self.cluster_id
             self._clusters[cluster.id] = cluster
@@ -685,6 +686,7 @@ class _Scheduler(object):
                 raise StopIteration
             yield self._sched_cv.acquire()
             cluster = self._clusters.get(req['ID'], None)
+            logger.debug('deleting computation: %s/%s' % (cluster._compute.id, cluster._compute.name))
             if cluster is None:
                 # this cluster is closed
                 self._sched_cv.release()
@@ -1026,39 +1028,37 @@ class _Scheduler(object):
         assert coro is not None
         while True:
             yield self._sched_cv.acquire()
+            if self.terminate:
+                self._sched_cv.release()
+                break
             # n = sum(len(cluster._jobs) for cluster in self._clusters.itervalues())
             # assert self.unsched_jobs == n, '%s != %s' % (self.unsched_jobs, n)
-            while not self._terminate_scheduler:
+            while not self.terminate:
                 logger.debug('Pending jobs: %s', self.unsched_jobs)
                 node = self.select_job_node()
-                if node:
-                    break
-                logger.debug('No nodes/jobs')
-                yield self._sched_cv.wait()
-            if self._terminate_scheduler:
-                yield self._sched_cv.release()
-                break
-
-            # TODO: strategy to pick a cluster?
-            for cid in node.clusters:
-                if self._clusters[cid]._jobs:
-                    _job = self._clusters[cid]._jobs.pop(0)
-                    break
-            else:
-                yield self._sched_cv.release()
-                continue
-            cluster = self._clusters[_job.compute_id]
-            _job.node = node
-            logger.debug('Scheduling job %s on %s (load: %.3f)',
-                         _job.uid, node.ip_addr, float(node.busy) / node.cpus)
-            assert node.busy < node.cpus
-            # _job.ip_addr = node.ip_addr
-            self._sched_jobs[_job.uid] = _job
-            _job.job.status = DispyJob.Running
-            self.unsched_jobs -= 1
-            node.busy += 1
-            Coro(self.run_job, _job, cluster)
-            yield self._sched_cv.release()
+                if not node:
+                    yield self._sched_cv.wait()
+                    continue
+                # TODO: strategy to pick a cluster?
+                for cid in node.clusters:
+                    if self._clusters[cid]._jobs:
+                        _job = self._clusters[cid]._jobs.pop(0)
+                        break
+                else:
+                    yield self._sched_cv.wait()
+                    continue
+                cluster = self._clusters[_job.compute_id]
+                _job.node = node
+                logger.debug('Scheduling job %s on %s (load: %.3f)',
+                             _job.uid, node.ip_addr, float(node.busy) / node.cpus)
+                assert node.busy < node.cpus
+                self._sched_jobs[_job.uid] = _job
+                _job.job.status = DispyJob.Running
+                self.unsched_jobs -= 1
+                node.busy += 1
+                Coro(self.run_job, _job, cluster)
+                # break
+            self._sched_cv.release()
 
         yield self._sched_cv.acquire()
         logger.debug('scheduler quitting (%s / %s)', len(self._sched_jobs), self.unsched_jobs)
@@ -1091,15 +1091,15 @@ class _Scheduler(object):
             # TODO: send shutdown notification to clients? Or wait for all
             # pending tasks to complete?
             yield self._sched_cv.acquire()
-            if self._terminate_scheduler is False:
+            if self.terminate is False:
                 logger.debug('shutting down scheduler ...')
-                self._terminate_scheduler = True
+                self.terminate = True
                 self._sched_cv.notify()
                 self._sched_cv.release()
             else:
                 self._sched_cv.release()
 
-        if self._terminate_scheduler is False:
+        if self.terminate is False:
             Coro(_shutdown, self).value()
             self.scheduler_coro.value()
             self.asyncoro.join()

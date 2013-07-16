@@ -177,13 +177,12 @@ class _Compute(object):
         self.dest_path = None
         self.xfer_files = []
         self.cleanup = True
-        self.auth_code = None
-        self.node_ip = None
         self.nodes = {}
         self.node_spec = None
         self.reentrant = False
         self.scheduler_ip_addr = None
         self.scheduler_port = None
+        self.scheduler_auth = None
         self.job_result_port = None
         self.pulse_interval = None
 
@@ -433,7 +432,6 @@ class _Cluster(object):
                  shared=False, secret='', keyfile=None, certfile=None):
         if not hasattr(self, 'ip_addr'):
             self.asyncoro = AsynCoro()
-            atexit.register(self.shutdown)
             if ip_addr:
                 ip_addr = _node_ipaddr(ip_addr)
                 if not ip_addr:
@@ -470,6 +468,7 @@ class _Cluster(object):
             self.shared = shared
             self.pulse_interval = None
             self.ping_interval = None
+            self.terminate = False
 
             self.fault_recover_lock = asyncoro.Lock()
             self._clusters = {}
@@ -477,7 +476,6 @@ class _Cluster(object):
             self.job_uid = 1
             self._sched_jobs = {}
             self._sched_cv = asyncoro.Condition()
-            self.terminate_scheduler = False
             self.auth_code = os.urandom(20).encode('hex')
 
             self.timer_coro = Coro(self.timer_task)
@@ -1099,22 +1097,26 @@ class _Cluster(object):
     def _schedule_jobs(self, coro=None):
         # generator
         assert coro is not None
-        while not self.terminate_scheduler:
+        while True:
             yield self._sched_cv.acquire()
+            if self.terminate:
+                self._sched_cv.release()
+                break
             # n = sum(len(cluster._jobs) for cluster in self._clusters.itervalues())
             # assert self.unsched_jobs == n, '%s != %s' % (self.unsched_jobs, n)
-            while True:
+            while not self.terminate:
                 logger.debug('Pending jobs: %s', self.unsched_jobs)
                 node = self.select_job_node()
                 if not node:
-                    break
+                    yield self._sched_cv.wait()
+                    continue
                 # TODO: strategy to pick a cluster?
                 for cid in node.clusters:
                     if self._clusters[cid]._jobs:
                         _job = self._clusters[cid]._jobs.pop(0)
                         break
                 else:
-                    yield self._sched_cv.release()
+                    yield self._sched_cv.wait()
                     continue
                 cluster = self._clusters[_job.compute_id]
                 _job.node = node
@@ -1126,9 +1128,7 @@ class _Cluster(object):
                 self.unsched_jobs -= 1
                 node.busy += 1
                 Coro(self.run_job, _job, cluster)
-                
-            logger.debug('No nodes/jobs')
-            yield self._sched_cv.wait()
+                # break
             self._sched_cv.release()
 
         yield self._sched_cv.acquire()
@@ -1172,7 +1172,7 @@ class _Cluster(object):
         self.unsched_jobs += 1
         cluster._pending_jobs += 1
         cluster._complete.clear()
-        logger.debug('adding job %s', _job.uid)
+        logger.debug('added job %s', _job.uid)
         self._sched_cv.notify()
         yield self._sched_cv.release()
 
@@ -1225,21 +1225,23 @@ class _Cluster(object):
             if not hasattr(self, '_scheduler'):
                 raise StopIteration
             yield self._sched_cv.acquire()
-            if self.terminate_scheduler is False:
+            if self.terminate is False:
                 logger.debug('shutting down scheduler ...')
-                self.terminate_scheduler = True
+                self.terminate = True
                 self._sched_cv.notify()
-                yield self._sched_cv.release()
+                self._sched_cv.release()
                 self.worker_Q.put((99, None, None))
             else:
                 self._sched_cv.release()
 
-        if self.terminate_scheduler is False:
+        if self.terminate is False:
             Coro(_shutdown, self).value()
             self._scheduler.value()
             self.worker_Q.join()
-            self.asyncoro.join(show_running=False)
-            self.asyncoro.terminate()
+        if self.asyncoro:
+            # self.asyncoro.join(show_running=True)
+            self.asyncoro.terminate(False)
+            self.asyncoro = None
             logger.debug('shutdown complete')
 
     def stats(self, compute, wall_time=None):
@@ -1460,6 +1462,7 @@ class JobCluster(object):
                                  ext_ip_addr=ext_ip_addr, shared=shared, secret=secret,
                                  keyfile=keyfile, certfile=certfile)
 
+        atexit.register(self.shutdown)
         self.ip_addr = self._cluster.ip_addr
         self.ext_ip_addr = self._cluster.ext_ip_addr
 
@@ -1538,6 +1541,7 @@ class JobCluster(object):
 
         compute.scheduler_ip_addr = self.ext_ip_addr
         compute.scheduler_port = self._cluster.port
+        compute.scheduler_auth = self._cluster.auth_code
         compute.job_result_port = self._cluster.port
         compute.cleanup = cleanup
         compute.reentrant = reentrant
@@ -1619,6 +1623,12 @@ class JobCluster(object):
             logger.debug('Computation "%s" deleted', self._compute.name)
             del self._compute
 
+    def shutdown(self):
+        if hasattr(self, '_compute'):
+            self._complete.wait()
+            Coro(self._cluster.del_cluster, self).value()
+            self._cluster.shutdown()
+
 class SharedJobCluster(JobCluster):
     """SharedJobCluster should be used (instead of JobCluster) if two
     or more processes can simultaneously use dispy. In this case,
@@ -1657,7 +1667,7 @@ class SharedJobCluster(JobCluster):
                            'dispyscheduler should be started appropriately.')
         def _terminate_scheduler(self, coro=None):
             yield self._cluster._sched_cv.acquire()
-            self._cluster.terminate_scheduler = True
+            self._cluster.terminate = True
             self._cluster._sched_cv.notify()
             yield self._cluster._sched_cv.release()
         Coro(_terminate_scheduler, self)
