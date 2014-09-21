@@ -26,9 +26,9 @@ import signal
 import ssl
 import traceback
 import hashlib
-import atexit
 import logging
 import marshal
+import tempfile
 import shelve
 import cPickle as pickle
 import cStringIO as io
@@ -67,6 +67,7 @@ def dispy_provisional_result(result):
                  __dispy_job_reply.uid, __dispy_job_info.reply_addr)
     __dispy_job_reply.status = DispyJob.ProvisionalResult
     __dispy_job_reply.result = result
+    __dispy_job_reply.end_time = time.time()
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock = AsynCoroSocket(sock, blocking=True, keyfile=__dispy_job_keyfile,
                           certfile=__dispy_job_certfile)
@@ -133,6 +134,7 @@ def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
                 logger.debug('Could not remove "%s"', f)
     __dispy_job_reply.stdout = sys.stdout.getvalue()
     __dispy_job_reply.stderr = sys.stderr.getvalue()
+    __dispy_job_reply.end_time = time.time()
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     __dispy_reply_Q.put(__dispy_job_reply)
 
@@ -144,7 +146,7 @@ class _DispyNode(object):
                  dest_path_prefix='', secret='', keyfile=None, certfile=None,
                  max_file_size=None, zombie_interval=60):
         assert 0 < cpus <= multiprocessing.cpu_count()
-        self.cpus = cpus
+        self.num_cpus = cpus
         if ip_addr:
             ip_addr = _node_ipaddr(ip_addr)
             if not ip_addr:
@@ -153,10 +155,8 @@ class _DispyNode(object):
             self.name = socket.gethostname()
             ip_addr = socket.gethostbyname(self.name)
         if ip_addr.startswith('127.'):
-            logger.warning('node IP address %s seems to be loopback address; this will prevent'
-                           'communication with clients on other machines. '
-                           'Use "ip_addr" option to specify network IP address to'
-                           'allow communication with other nodes' % ip_addr)
+            logger.warning('node IP address %s seems to be loopback address; this will prevent '
+                           'communication with clients on other machines. ' % ip_addr)
         if ext_ip_addr:
             ext_ip_addr = _node_ipaddr(ext_ip_addr)
             if not ext_ip_addr:
@@ -170,12 +170,8 @@ class _DispyNode(object):
         if not node_port:
             node_port = 51348
 
-        self.scheduler_addr = {'ip':_node_ipaddr(scheduler_node), 'port':scheduler_port,
-                               'auth':None}
-        if not self.scheduler_addr['port']:
-            self.scheduler_addr['port'] = 51347
+        self.scheduler = {'ip':None, 'port':51347, 'auth':None}
 
-        self.ip_addr = ip_addr
         self.ext_ip_addr = ext_ip_addr
         self.pulse_interval = None
         self.keyfile = keyfile
@@ -192,14 +188,15 @@ class _DispyNode(object):
             self.tcp_sock = ssl.wrap_socket(self.tcp_sock, keyfile=self.keyfile,
                                             certfile=self.certfile)
         self.tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.tcp_sock.bind((self.ip_addr, node_port))
+        self.tcp_sock.bind((ip_addr, node_port))
         self.address = self.tcp_sock.getsockname()
+        self.port = self.address[1]
         self.tcp_sock.listen(30)
 
         if dest_path_prefix:
             self.dest_path_prefix = dest_path_prefix.strip().rstrip(os.sep)
         else:
-            self.dest_path_prefix = os.path.join(os.sep, 'tmp', 'dispy')
+            self.dest_path_prefix = os.path.join(os.sep, tempfile.gettempdir(), 'dispy')
         if not os.path.isdir(self.dest_path_prefix):
             os.makedirs(self.dest_path_prefix)
             os.chmod(self.dest_path_prefix, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
@@ -207,25 +204,23 @@ class _DispyNode(object):
             max_file_size = MaxFileSize
         self.max_file_size = max_file_size
 
-        self.avail_cpus = self.cpus
+        self.avail_cpus = self.num_cpus
         self.computations = {}
         self.file_uses = {}
         self.job_infos = {}
-        self.lock = asyncoro.Lock()
+        self.thread_lock = threading.Lock()
         self.terminate = False
         self.signature = os.urandom(20).encode('hex')
+        self.secret = secret
         self.auth_code = hashlib.sha1(self.signature + secret).hexdigest()
         self.zombie_interval = 60 * zombie_interval
-
-        logger.debug('auth_code for %s: %s', ip_addr, self.auth_code)
 
         self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.udp_sock.bind(('', node_port))
-        logger.info('serving %s cpus at %s:%s', self.cpus, self.ip_addr, node_port)
+        logger.info('serving %s cpus at %s:%s', self.num_cpus, self.ext_ip_addr, node_port)
         logger.debug('tcp server at %s:%s', self.address[0], self.address[1])
         self.udp_sock = AsynCoroSocket(self.udp_sock, blocking=False)
-
 
         self.reply_Q = multiprocessing.Queue()
         self.reply_Q_thread = threading.Thread(target=self.__reply_Q)
@@ -233,105 +228,122 @@ class _DispyNode(object):
 
         self.timer_coro = Coro(self.timer_task)
         # self.tcp_coro = Coro(self.tcp_server)
-        self.udp_coro = Coro(self.udp_server)
+        if not scheduler_port:
+            scheduler_port = 51347
+        self.udp_coro = Coro(self.udp_server, _node_ipaddr(scheduler_node), scheduler_port)
 
-    def send_pong_msg(self, coro=None):
-        ping_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        ping_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        ping_sock = AsynCoroSocket(ping_sock, blocking=False)
-        pong_msg = {'ip_addr':self.ext_ip_addr, 'name':self.name, 'port':self.address[1],
-                    'cpus':self.cpus, 'sign':self.signature, 'version':_dispy_version}
-        pong_msg = 'PONG:' + serialize(pong_msg)
-        yield ping_sock.sendto(pong_msg, ('<broadcast>', self.scheduler_addr['port']))
-        ping_sock.close()
+    def broadcast_ping_msg(self, coro=None):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        sock = AsynCoroSocket(sock)
+        sock.settimeout(2)
+        ping_msg = {'ip_addr':self.ext_ip_addr, 'port':self.port, 'sign':self.signature,
+                    'version':_dispy_version, 'scheduler_ip_addr':None}
+        try:
+            yield sock.sendto('PING:' + serialize(ping_msg), ('<broadcast>', self.scheduler['port']))
+        except:
+            logger.debug(traceback.format_exc())
+            pass
+        sock.close()
 
-    def udp_server(self, coro=None):
-        assert coro is not None
+    def udp_server(self, scheduler_ip, scheduler_port, coro=None):
         coro.set_daemon()
-        if self.avail_cpus == self.cpus:
-            yield self.send_pong_msg(coro=coro)
-        pong_msg = {'ip_addr':self.ext_ip_addr, 'name':self.name, 'port':self.address[1],
-                    'cpus':self.cpus, 'sign':self.signature, 'version':_dispy_version}
-        pong_msg = 'PONG:' + serialize(pong_msg)
+        if self.avail_cpus == self.num_cpus:
+            yield self.broadcast_ping_msg(coro=coro)
+        ping_msg = {'ip_addr':self.ext_ip_addr, 'port':self.port, 'sign':self.signature,
+                    'version':_dispy_version}
+        pong_msg = {'ip_addr':self.ext_ip_addr, 'port':self.port, 'sign':self.signature,
+                    'version':_dispy_version, 'cpus':self.num_cpus, 'name':self.name}
 
-        if self.scheduler_addr['ip']:
+        def send_ping_msg(self, addr, coro=None):
             sock = AsynCoroSocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
+            sock.settimeout(2)
             try:
-                yield sock.sendto(pong_msg, (self.scheduler_addr['ip'], self.scheduler_addr['port']))
+                yield sock.sendto('PING:' + serialize(ping_msg), addr)
             except:
-                logger.warning("Couldn't send ping message to %s:%s",
-                               self.scheduler_addr['ip'], self.scheduler_addr['port'])
+                pass
+            finally:
+                sock.close()
+            sock = AsynCoroSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
+            sock.settimeout(2)
+            try:
+                yield sock.connect(addr)
+                yield sock.send_msg('PING:' + serialize(ping_msg))
+            except:
+                pass
             finally:
                 sock.close()
 
+        def send_pong_msg(self, addr, auth_code, coro=None):
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock = AsynCoroSocket(sock, certfile=self.certfile, keyfile=self.keyfile)
+            sock.settimeout(2)
+            try:
+                pong_msg['scheduler_ip_addr'] = addr[0]
+                pong_msg['auth_code'] = auth_code
+                yield sock.connect(addr)
+                yield sock.send_msg('PONG:' + serialize(pong_msg))
+            except:
+                # logger.debug(traceback.format_exc())
+                pass
+            sock.close()
+
+        if scheduler_ip:
+            Coro(send_ping_msg, self, (scheduler_ip, scheduler_port))
+
         while True:
-            msg, addr = yield self.udp_sock.recvfrom(1024)
+            msg, addr = yield self.udp_sock.recvfrom(1000)
             # TODO: process each message as separate Coro, so
             # exceptions are contained?
             if msg.startswith('PING:'):
-                if self.cpus != self.avail_cpus:
+                if self.num_cpus != self.avail_cpus or self.scheduler['ip'] != None:
                     logger.debug('Busy (%s/%s); ignoring ping message from %s:%s',
-                                 self.cpus, self.avail_cpus, addr[0], addr[1])
+                                 self.num_cpus, self.avail_cpus, addr[0], addr[1])
                     continue
                 try:
                     info = unserialize(msg[len('PING:'):])
-                    socket.inet_aton(info['scheduler_ip_addr'])
-                    assert isinstance(info['scheduler_port'], int)
                     assert info['version'] == _dispy_version
-                    addr = (info['scheduler_ip_addr'], info['scheduler_port'])
+                    if info['ip_addr'] is None:
+                        addr = (addr[0], info['port'])
+                    else:
+                        addr = (info['ip_addr'], info['port'])
                 except:
-                    # raise
                     logger.debug('Ignoring ping message from %s (%s)', addr[0], addr[1])
                     continue
-                yield self.udp_sock.sendto(pong_msg, addr)
+                if info['sign']:
+                    auth_code = hashlib.sha1(info['sign'] + self.secret).hexdigest()
+                    Coro(send_pong_msg, self, addr, auth_code)
+                else:
+                    Coro(send_ping_msg, self, addr)
             elif msg.startswith('PULSE:'):
                 try:
                     info = unserialize(msg[len('PULSE:'):])
-                    assert info['ip_addr'] == self.scheduler_addr['ip']
-                    yield self.lock.acquire()
+                    assert info['ip_addr'] == self.scheduler['ip']
+                    now = time.time()
                     for compute in self.computations.itervalues():
-                        compute.last_pulse = time.time()
-                    yield self.lock.release()
+                        compute.last_pulse = now
                 except:
                     logger.warning('Ignoring PULSE from %s', addr[0])
-            elif msg.startswith('SERVERPORT:'):
-                try:
-                    req = unserialize(msg[len('SERVERPORT:'):])
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                    reply = {'ip_addr':self.address[0], 'port':self.address[1],
-                             'sign':self.signature, 'version':_dispy_version}
-                    sock = AsynCoroSocket(sock, blocking=False)
-                    sock.settimeout(1)
-                    yield sock.sendto(serialize(reply), (req['ip_addr'], req['port']))
-                    sock.close()
-                except:
-                    logger.debug(traceback.format_exc())
-                    # pass
             else:
                 logger.warning('Ignoring ping message from %s', addr[0])
 
     def tcp_serve_task(self, conn, addr, coro=None):
-        conn = AsynCoroSocket(conn, blocking=False,
-                              keyfile=self.keyfile, certfile=self.certfile)
         def job_request_task(msg):
-            assert coro is not None
             try:
                 _job = unserialize(msg)
             except:
                 logger.debug('Ignoring job request from %s', addr[0])
-                logger.debug(traceback.format_exc())
+                # logger.debug(traceback.format_exc())
                 raise StopIteration
-            yield self.lock.acquire()
             compute = self.computations.get(_job.compute_id, None)
             if compute is not None:
-                if compute.scheduler_ip_addr != self.scheduler_addr['ip'] or \
-                       compute.scheduler_port != self.scheduler_addr['port'] or \
-                       compute.scheduler_auth != self.scheduler_addr['auth']:
+                if compute.scheduler_ip_addr != self.scheduler['ip'] or \
+                       compute.scheduler_port != self.scheduler['port'] or \
+                       compute.scheduler_auth != self.scheduler['auth']:
                     logger.debug('invalid scheduler IP address: scheduler %s:%s != %s:%s' % \
                                  compute.scheduler_ip_addr, compute.scheduler_port,
-                                 self.scheduler_addr['ip'], self.scheduler_addr['port'])
+                                 self.scheduler['ip'], self.scheduler['port'])
                     compute = None
-            yield self.lock.release()
             if self.avail_cpus == 0:
                 logger.warning('All cpus busy')
                 try:
@@ -348,7 +360,7 @@ class _DispyNode(object):
                 raise StopIteration
 
             reply_addr = (compute.scheduler_ip_addr, compute.job_result_port)
-            logger.debug('New job id %s from %s', _job.uid, addr[0])
+            logger.debug('New job id %s from %s/%s', _job.uid, addr[0], compute.scheduler_ip_addr)
             files = []
             for f in _job.files:
                 tgt = os.path.join(compute.dest_path, os.path.basename(f['name']))
@@ -369,6 +381,7 @@ class _DispyNode(object):
 
             if compute.type == _Compute.func_type:
                 reply = _JobReply(_job, self.ext_ip_addr)
+                reply.start_time = time.time()
                 job_info = _DispyJobInfo(reply, reply_addr, compute)
                 args = (job_info, self.certfile, self.keyfile,
                         _job.args, _job.kwargs, self.reply_Q,
@@ -380,11 +393,11 @@ class _DispyNode(object):
                     raise StopIteration
                 job_info.job_reply.status = DispyJob.Running
                 job_info.proc = multiprocessing.Process(target=_dispy_job_func, args=args)
-                yield self.lock.acquire()
                 self.avail_cpus -= 1
                 compute.pending_jobs += 1
+                self.thread_lock.acquire()
                 self.job_infos[_job.uid] = job_info
-                self.lock.release()
+                self.thread_lock.release()
                 job_info.proc.start()
                 raise StopIteration
             elif compute.type == _Compute.prog_type:
@@ -394,13 +407,14 @@ class _DispyNode(object):
                     logger.warning('Failed to send response for new job to %s', str(addr))
                     raise StopIteration
                 reply = _JobReply(_job, self.ext_ip_addr)
+                reply.start_time = time.time()
                 job_info = _DispyJobInfo(reply, reply_addr, compute)
                 job_info.job_reply.status = DispyJob.Running
-                yield self.lock.acquire()
+                self.thread_lock.acquire()
                 self.job_infos[_job.uid] = job_info
+                self.thread_lock.release()
                 self.avail_cpus -= 1
                 compute.pending_jobs += 1
-                yield self.lock.release()
                 prog_thread = threading.Thread(target=self.__job_program, args=(_job, job_info))
                 prog_thread.start()
                 raise StopIteration
@@ -411,7 +425,6 @@ class _DispyNode(object):
                     logger.warning('Failed to send response for new job to %s', str(addr))
 
         def add_computation_task(msg):
-            assert coro is not None
             try:
                 compute = unserialize(msg)
             except:
@@ -421,15 +434,13 @@ class _DispyNode(object):
                 except:
                     logger.warning('Failed to send reply to %s', str(addr))
                 raise StopIteration
-            yield self.lock.acquire()
-            if not ((self.scheduler_addr['ip'] is None and self.scheduler_addr['auth'] is None) or
-                    (self.scheduler_addr['ip'] == compute.scheduler_ip_addr and \
-                     self.scheduler_addr['port'] == compute.scheduler_port and \
-                     self.scheduler_addr['auth'] == compute.scheduler_auth)):
+            if not ((self.scheduler['ip'] is None and self.scheduler['auth'] is None) or
+                    (self.scheduler['ip'] == compute.scheduler_ip_addr and \
+                     self.scheduler['port'] == compute.scheduler_port and \
+                     self.scheduler['auth'] == compute.scheduler_auth)):
                 logger.debug('Ignoring computation request from %s: %s, %s, %s',
-                             compute.scheduler_ip_addr, self.scheduler_addr['ip'],
-                             self.avail_cpus, self.cpus)
-                self.lock.release()
+                             compute.scheduler_ip_addr, self.scheduler['ip'],
+                             self.avail_cpus, self.num_cpus)
                 try:
                     yield conn.send_msg('Busy')
                 except:
@@ -440,7 +451,7 @@ class _DispyNode(object):
             if compute.dest_path and isinstance(compute.dest_path, str):
                 compute.dest_path = compute.dest_path.strip(os.sep)
             else:
-                for x in xrange(20):
+                for x in range(20):
                     compute.dest_path = os.urandom(8).encode('hex')
                     if compute.dest_path.find(os.sep) >= 0:
                         continue
@@ -448,22 +459,19 @@ class _DispyNode(object):
                         break
                 else:
                     logger.warning('Failed to create unique dest_path: %s', compute.dest_path)
-                    resp = 'NACK'
+                    resp = 'NAK'
             compute.dest_path = os.path.join(self.dest_path_prefix, compute.dest_path)
-            try:
-                os.makedirs(compute.dest_path)
-                os.chmod(compute.dest_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
-                logger.debug('dest_path for "%s": %s', compute.name, compute.dest_path)
-            except:
-                logger.warning('Invalid destination path: "%s"', compute.dest_path)
-                if os.path.isdir(compute.dest_path):
-                    os.rmdir(compute.dest_path)
-                self.lock.release()
+            logger.debug('dest_path for "%s": %s', compute.name, compute.dest_path)
+            if not os.path.isdir(compute.dest_path):
                 try:
-                    yield conn.send_msg('NACK (Invalid dest_path)')
+                    os.makedirs(compute.dest_path)
+                    os.chmod(compute.dest_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
                 except:
-                    logger.warning('Failed to send reply to %s', str(addr))
-                raise StopIteration
+                    try:
+                        yield conn.send_msg('NAK (Invalid dest_path)')
+                    except:
+                        logger.warning('Failed to send reply to %s', str(addr))
+                    raise StopIteration
             if compute.id in self.computations:
                 logger.warning('Computation "%s" (%s) is being replaced',
                                compute.name, compute.id)
@@ -471,7 +479,7 @@ class _DispyNode(object):
             setattr(compute, 'pending_jobs', 0)
             setattr(compute, 'pending_results', 0)
             setattr(compute, 'zombie', False)
-            logger.debug('xfer_files given: %s', ','.join(xf.name for xf in compute.xfer_files))
+            # logger.debug('xfer_files given: %s', ','.join(xf.name for xf in compute.xfer_files))
             if compute.type == _Compute.func_type:
                 try:
                     code = compile(compute.code, '<string>', 'exec')
@@ -479,9 +487,8 @@ class _DispyNode(object):
                     logger.warning('Computation "%s" could not be compiled', compute.name)
                     if os.path.isdir(compute.dest_path):
                         os.rmdir(compute.dest_path)
-                    self.lock.release()
                     try:
-                        yield conn.send_msg('NACK (Compilation failed)')
+                        yield conn.send_msg('NAK (Compilation failed)')
                     except:
                         logger.warning('Failed to send reply to %s', str(addr))
                     raise StopIteration
@@ -503,38 +510,38 @@ class _DispyNode(object):
                 except:
                     pass
                 if self.max_file_size and xf.stat_buf.st_size > self.max_file_size:
-                    resp = 'NACK (file "%s" too big)' % xf.name
+                    resp = 'NAK (file "%s" too big)' % xf.name
                 else:
                     xfer_files.append(xf)
-
             if resp == 'ACK' and \
-                   not ((self.scheduler_addr['ip'] == None) or \
-                        (self.scheduler_addr['ip'] == compute.scheduler_ip_addr and \
-                         self.scheduler_addr['port'] == compute.scheduler_port and \
-                         self.scheduler_addr['auth'] == compute.scheduler_auth)):
-                resp = 'NACK (busy)'
+                   not ((self.scheduler['ip'] == None) or \
+                        (self.scheduler['ip'] == compute.scheduler_ip_addr and \
+                         self.scheduler['port'] == compute.scheduler_port and \
+                         self.scheduler['auth'] == compute.scheduler_auth)):
+                resp = 'NAK (busy)'
             if resp == 'ACK':
                 self.computations[compute.id] = compute
-                self.scheduler_addr['ip'] = compute.scheduler_ip_addr
-                self.scheduler_addr['port'] = compute.scheduler_port
-                self.scheduler_addr['auth'] = compute.scheduler_auth
+                self.scheduler['ip'] = compute.scheduler_ip_addr
+                self.scheduler['port'] = compute.scheduler_port
+                self.scheduler['auth'] = compute.scheduler_auth
                 self.pulse_interval = compute.pulse_interval
-                self.lock.release()
+                if self.zombie_interval:
+                    if self.pulse_interval:
+                        self.pulse_interval = min(self.pulse_interval, self.zombie_interval / 5.0)
+                    else:
+                        self.pulse_interval = self.zombie_interval / 5.0
                 if xfer_files:
                     resp += ':XFER_FILES:' + serialize(xfer_files)
                 try:
                     yield conn.send_msg(resp)
                 except:
-                    yield self.lock.acquire()
                     del self.computations[compute.id]
-                    self.scheduler_addr['ip'] = None
-                    self.scheduler_addr['auth'] = None
+                    self.scheduler['ip'] = None
+                    self.scheduler['auth'] = None
                     self.pulse_interval = None
-                    self.lock.release()
                 else:
                     self.timer_coro.resume(True)
             else:
-                self.lock.release()
                 if os.path.isdir(compute.dest_path):
                     os.rmdir(compute.dest_path)
                 try:
@@ -543,7 +550,6 @@ class _DispyNode(object):
                     pass
 
         def xfer_file_task(msg):
-            assert coro is not None
             try:
                 xf = unserialize(msg)
             except:
@@ -557,12 +563,10 @@ class _DispyNode(object):
                                os.path.basename(xf.name))
             if os.path.isfile(tgt):
                 if _same_file(tgt, xf):
-                    yield self.lock.acquire()
                     if tgt in self.file_uses:
                         self.file_uses[tgt] += 1
                     else:
                         self.file_uses[tgt] = 1
-                    yield self.lock.release()
                     resp = 'ACK'
                 else:
                     logger.warning('File "%s" already exists with different status as "%s"',
@@ -573,7 +577,7 @@ class _DispyNode(object):
                     fd = open(tgt, 'wb')
                     n = 0
                     while n < xf.stat_buf.st_size:
-                        data = yield conn.recvall(min(xf.stat_buf.st_size-n, 10240000))
+                        data = yield conn.recvall(min(xf.stat_buf.st_size-n, 1024000))
                         if not data:
                             break
                         fd.write(data)
@@ -593,7 +597,7 @@ class _DispyNode(object):
                 except:
                     logger.warning('Copying file "%s" failed with "%s"',
                                    xf.name, traceback.format_exc())
-                    resp = 'NACK'
+                    resp = 'NAK'
                 try:
                     yield conn.send_msg(resp)
                 except:
@@ -601,18 +605,17 @@ class _DispyNode(object):
             raise StopIteration # xfer_file_task
 
         def terminate_job_task(msg):
-            assert coro is not None
-            yield self.lock.acquire()
             try:
                 _job = unserialize(msg)
                 compute = self.computations[_job.compute_id]
-                assert addr[0] == compute.scheduler_ip_addr
+                # assert addr[0] == compute.scheduler_ip_addr
+                self.thread_lock.acquire()
                 job_info = self.job_infos.pop(_job.uid, None)
+                self.thread_lock.release()
             except:
-                logger.debug('Ignoring job request from %s', addr[0])
+                logger.debug('Ignoring job request from %s, %s', addr[0], compute.scheduler_ip_addr)
+                # logger.debug(traceback.format_exc())
                 raise StopIteration
-            finally:
-                self.lock.release()
             if job_info is None:
                 logger.debug('Job %s completed; ignoring cancel request from %s',
                              _job.uid, addr[0])
@@ -620,7 +623,7 @@ class _DispyNode(object):
             logger.debug('Terminating job %s', _job.uid)
             job_info.proc.terminate()
             if isinstance(job_info.proc, multiprocessing.Process):
-                for x in xrange(20):
+                for x in range(20):
                     if job_info.proc.is_alive():
                         yield coro.sleep(0.1)
                     else:
@@ -631,7 +634,7 @@ class _DispyNode(object):
                     raise StopIteration
             else:
                 assert isinstance(job_info.proc, subprocess.Popen)
-                for x in xrange(20):
+                for x in range(20):
                     rc = job_info.proc.poll()
                     logger.debug('Program "%s" for job %s terminated with %s',
                                  compute.name, _job.uid, rc)
@@ -644,20 +647,60 @@ class _DispyNode(object):
                 else:
                     logger.warning('Could not kill process %s', compute.name)
                     raise StopIteration
-            reply_addr = (addr[0], compute.job_result_port)
-            reply = _JobReply(_job, self.ext_ip_addr)
-            job_info = _DispyJobInfo(reply, reply_addr, compute)
-            reply.status = DispyJob.Terminated
+            reply_addr = (compute.scheduler_ip_addr, compute.job_result_port)
+            job_info.job_reply.end_time = time.time()
+            job_info.job_reply.status = DispyJob.Terminated
             yield self._send_job_reply(job_info, resending=False, coro=coro)
 
+        def ping_job_task(conn, msg, addr):
+            # if self.num_cpus == self.avail_cpus:
+            #     raise StopIteration
+            # logger.debug('tcp ping from %s:%s' % addr)
+            if self.num_cpus != self.avail_cpus or self.scheduler['ip'] != None:
+                logger.debug('Busy (%s/%s); ignoring ping message from %s:%s',
+                             self.num_cpus, self.avail_cpus, addr[0], addr[1])
+                raise StopIteration
+            pong_msg = {'ip_addr':self.ext_ip_addr, 'port':self.port, 'name':self.name,
+                        'cpus':self.num_cpus, 'sign':self.signature}
+            try:
+                info = unserialize(msg)
+                assert info['version'] == _dispy_version
+                if info['ip_addr']:
+                    pong_msg['scheduler_ip_addr'] = info['ip_addr']
+                else:
+                    pong_msg['scheduler_ip_addr'] = addr[0]
+                pong_msg['auth_code'] = hashlib.sha1(info['sign'] + self.secret).hexdigest()
+            except:
+                # logger.debug(traceback.format_exc())
+                raise StopIteration
+
+            sock = AsynCoroSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
+            sock.settimeout(5)
+            try:
+                yield sock.connect((pong_msg['scheduler_ip_addr'], info['port']))
+                yield sock.send_msg('PONG:' + serialize(pong_msg))
+            except:
+                # logger.debug(traceback.format_exc())
+                pass
+            finally:
+                sock.close()
+
+        def poll_job_task(conn):
+            done = []
+            for uid, job_info in self.job_infos.iteritems():
+                if job_info.job_reply.status in (DispyJob.Finished, DispyJob.Terminated):
+                    done.append(uid)
+            if done:
+                yield conn.send_msg('done:' + serialize(done))
+
         def retrieve_job_task(msg):
-            assert coro is not None
             try:
                 req = unserialize(msg)
                 assert req['uid'] is not None
                 assert req['hash'] is not None
                 assert req['compute_id'] is not None
             except:
+                # logger.debug(traceback.format_exc())
                 resp = serialize('Invalid job')
                 try:
                     yield conn.send_msg(resp)
@@ -665,14 +708,28 @@ class _DispyNode(object):
                     pass
                 raise StopIteration
 
+            self.thread_lock.acquire()
             job_info = self.job_infos.get(req['uid'], None)
+            self.thread_lock.release()
             resp = None
             if job_info is not None:
                 try:
                     yield conn.send_msg(serialize(job_info.job_reply))
                     ack = yield conn.recv_msg()
-                    # no need to check ack
+                    assert ack == 'ACK'
+                    self.thread_lock.acquire()
+                    self.job_infos.pop(req['uid'], None)
+                    self.thread_lock.release()
+                    info_file = os.path.join(self.dest_path_prefix, job_info.compute_dest_path,
+                                             '_dispy_job_reply_%s' % req['uid'])
+                    if os.path.isfile(info_file):
+                        try:
+                            os.remove(info_file)
+                        except:
+                            # logger.debug(traceback.format_exc())
+                            logger.debug('Could not remove "%s"', info_file)
                 except:
+                    # logger.debug(traceback.format_exc())
                     logger.debug('Could not send reply for job %s', req['uid'])
                 raise StopIteration
 
@@ -691,19 +748,20 @@ class _DispyNode(object):
                             yield conn.send_msg(serialize(job_reply))
                             ack = yield conn.recv_msg()
                             assert ack == 'ACK'
+                            self.thread_lock.acquire()
+                            self.job_infos.pop(req['uid'], None)
+                            self.thread_lock.release()
                         except:
                             logger.debug('Could not send reply for job %s', req['uid'])
                             raise StopIteration
                         try:
                             os.remove(info_file)
-                            yield self.lock.acquire()
                             compute = self.computations.get(req['compute_id'], None)
                             if compute is not None:
                                 compute.pending_results -= 1
                                 if compute.pending_results == 0:
                                     compute.zombie = True
                                     self.cleanup_computation(compute)
-                            self.lock.release()
                         except:
                             logger.debug('Could not remove "%s"', info_file)
                         raise StopIteration
@@ -719,9 +777,26 @@ class _DispyNode(object):
         # tcp_serve_task starts
         try:
             req = yield conn.recvall(len(self.auth_code))
-            assert req == self.auth_code
         except:
             logger.warning('Ignoring request; invalid client authentication?')
+            conn.close()
+            raise StopIteration
+        if req != self.auth_code:
+            msg = yield conn.recv_msg()
+            if msg.startswith('PING:'):
+                yield ping_job_task(conn, msg[len('PING:'):], addr)
+            elif msg.startswith('RECOVER:'):
+                try:
+                    req = unserialize(msg[len('RECOVER:'):])
+                    if req['version'] == _dispy_version:
+                        reply = serialize({'ip_addr':self.ext_ip_addr, 'port':self.port,
+                                           'sign':self.signature})
+                        yield conn.send_msg(reply)
+                except:
+                    # logger.debug(traceback.format_exc())
+                    pass
+            else:
+                logger.warning('Ignoring request; invalid client authentication?')
             conn.close()
             raise StopIteration
         msg = yield conn.recv_msg()
@@ -736,6 +811,9 @@ class _DispyNode(object):
             msg = msg[len('COMPUTE:'):]
             yield add_computation_task(msg)
             conn.close()
+        elif msg.startswith('POLL_JOB:'):
+            yield poll_job_task(conn)
+            conn.close()
         elif msg.startswith('FILEXFER:'):
             msg = msg[len('FILEXFER:'):]
             yield xfer_file_task(msg)
@@ -745,14 +823,12 @@ class _DispyNode(object):
             try:
                 info = unserialize(msg)
                 compute_id = info['ID']
-                yield self.lock.acquire()
                 compute = self.computations.get(compute_id, None)
                 if compute is None:
                     logger.warning('Computation "%s" is not valid', compute_id)
                 else:
                     compute.zombie = True
                     self.cleanup_computation(compute)
-                self.lock.release()
             except:
                 logger.debug('Deleting computation failed with %s', traceback.format_exc())
                 # raise
@@ -764,6 +840,21 @@ class _DispyNode(object):
         elif msg.startswith('RETRIEVE_JOB:'):
             msg = msg[len('RETRIEVE_JOB:'):]
             yield retrieve_job_task(msg)
+            conn.close()
+        elif msg.startswith('PONG:'):
+            try:
+                info = unserialize(msg[len('PONG:'):])
+                pong_msg = {'ip_addr':self.ext_ip_addr, 'port':self.port, 'sign':self.signature,
+                            'version':_dispy_version, 'name':self.name, 'cpus':self.num_cpus}
+                pong_msg['auth_code'] = hashlib.sha1(info['sign'] + self.secret).hexdigest()
+                if info['ip_addr']:
+                    pong_msg['scheduler_ip_addr'] = info['ip_addr']
+                else:
+                    pong_msg['scheduler_ip_addr'] = addr[0]
+                yield conn.send_msg(serialize(pong_msg))
+            except:
+                # logger.debug(traceback.format_exc())
+                pass
             conn.close()
         else:
             logger.warning('Invalid request "%s" from %s',
@@ -777,50 +868,34 @@ class _DispyNode(object):
 
     def timer_task(self, coro=None):
         coro.set_daemon()
-        reset = True
         last_pulse_time = last_zombie_time = time.time()
         while True:
+            reset = yield coro.suspend(self.pulse_interval)
             if reset:
-                if self.pulse_interval and self.zombie_interval:
-                    timeout = min(self.pulse_interval, self.zombie_interval)
-                    self.zombie_interval = max(5 * self.pulse_interval, self.zombie_interval)
-                else:
-                    timeout = max(self.pulse_interval, self.zombie_interval)
-                    self.zombie_interval = self.zombie_interval
-
-            reset = yield coro.suspend(timeout)
+                continue
 
             now = time.time()
             if self.pulse_interval and (now - last_pulse_time) >= self.pulse_interval:
-                n = self.cpus - self.avail_cpus
+                n = self.num_cpus - self.avail_cpus
                 assert n >= 0
-                if n > 0 and self.scheduler_addr['ip']:
+                if n > 0 and self.scheduler['ip']:
                     last_pulse_time = now
-                    msg = 'PULSE:' + serialize({'ip_addr':self.ext_ip_addr,
-                                                'port':self.udp_sock.getsockname()[1], 'cpus':n})
+                    msg = 'PULSE:' + serialize({'ip_addr':self.ext_ip_addr, 'port':self.port,
+                                                'cpus':n, 'scheduler_ip_addr':self.scheduler['ip']})
                     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                     sock = AsynCoroSocket(sock, blocking=False)
                     sock.settimeout(1)
-                    yield sock.sendto(msg, (self.scheduler_addr['ip'], self.scheduler_addr['port']))
+                    yield sock.sendto(msg, (self.scheduler['ip'], self.scheduler['port']))
                     sock.close()
-            if self.zombie_interval and (now - last_zombie_time) >= self.zombie_interval:
-                last_zombie_time = now
-                yield self.lock.acquire()
-                for compute in self.computations.itervalues():
-                    if (now - compute.last_pulse) > self.zombie_interval:
-                        compute.zombie = True
-                zombies = [compute for compute in self.computations.itervalues() \
-                           if compute.zombie and compute.pending_jobs == 0]
-                for compute in zombies:
-                    logger.debug('Deleting zombie computation "%s"', compute.name)
-                    self.cleanup_computation(compute)
-                phoenix = [compute for compute in self.computations.itervalues() \
-                           if not compute.zombie and compute.pending_results]
-                for compute in phoenix:
+
+                resend = [compute for compute in self.computations.itervalues() \
+                          if not compute.zombie and compute.pending_results and \
+                          ((now - compute.last_pulse) < (10 * self.pulse_interval))]
+                for compute in resend:
                     files = [f for f in os.listdir(compute.dest_path) \
                              if f.startswith('_dispy_job_reply_')]
                     # limit number queued so as not to take up too much time
-                    files = files[:min(len(files), 128)]
+                    files = files[:min(len(files), 64)]
                     for f in files:
                         result_file = os.path.join(compute.dest_path, f)
                         try:
@@ -829,7 +904,7 @@ class _DispyNode(object):
                             fd.close()
                         except:
                             logger.debug('Could not load "%s"', result_file)
-                            logger.debug(traceback.format_exc())
+                            # logger.debug(traceback.format_exc())
                             continue
                         try:
                             os.remove(result_file)
@@ -839,28 +914,37 @@ class _DispyNode(object):
                         job_info = _DispyJobInfo(job_result, (compute.scheduler_ip_addr,
                                                               compute.job_result_port), compute)
                         Coro(self._send_job_reply, job_info, resending=True)
-                self.lock.release()
+
+            if self.zombie_interval and (now - last_zombie_time) >= self.zombie_interval:
+                last_zombie_time = now
+                for compute in self.computations.itervalues():
+                    if (now - compute.last_pulse) > self.zombie_interval:
+                        logger.warning('computation "%s" is marked as zombie' % compute.name)
+                        compute.zombie = True
+                zombies = [compute for compute in self.computations.itervalues() \
+                           if compute.zombie and compute.pending_jobs == 0]
+                for compute in zombies:
+                    logger.warning('Deleting zombie computation "%s"', compute.name)
+                    self.cleanup_computation(compute)
                 for compute in zombies:
                     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                     sock = AsynCoroSocket(sock, blocking=False)
                     sock.settimeout(1)
                     logger.debug('Sending TERMINATE to %s', compute.scheduler_ip_addr)
-                    data = serialize({'ip_addr':self.address[0], 'port':self.address[1],
+                    data = serialize({'ip_addr':self.ext_ip_addr, 'port':self.port,
                                       'sign':self.signature})
                     yield sock.sendto('TERMINATED:%s' % data, (compute.scheduler_ip_addr,
                                                                compute.scheduler_port))
                     sock.close()
-                if self.scheduler_addr['ip'] is None and self.avail_cpus == self.cpus:
+                if self.scheduler['ip'] is None and self.avail_cpus == self.num_cpus:
                     self.pulse_interval = None
-                    reset = True
-                    yield self.send_pong_msg(coro=coro)
+                    yield self.broadcast_ping_msg(coro=coro)
 
     def __job_program(self, _job, job_info):
         compute = self.computations[_job.compute_id]
         program = [compute.name]
         args = unserialize(_job.args)
         program.extend(args)
-        logger.debug('Executing "%s"', str(program))
         reply = job_info.job_reply
         try:
             os.chdir(compute.dest_path)
@@ -875,9 +959,9 @@ class _DispyNode(object):
             reply.result = job_info.proc.returncode
             reply.status = DispyJob.Finished
         except:
-            logger.debug('Executing %s failed with %s', str(program), str(sys.exc_info()))
             reply.exception = traceback.format_exc()
             reply.status = DispyJob.Terminated
+        reply.end_time = time.time()
         self.reply_Q.put(reply)
 
     def __reply_Q(self):
@@ -885,7 +969,9 @@ class _DispyNode(object):
             job_reply = self.reply_Q.get()
             if job_reply is None:
                 break
-            job_info = self.job_infos.pop(job_reply.uid, None)
+            self.thread_lock.acquire()
+            job_info = self.job_infos.get(job_reply.uid, None)
+            self.thread_lock.release()
             if job_info is not None:
                 if job_info.proc is not None:
                     if isinstance(job_info.proc, multiprocessing.Process):
@@ -893,64 +979,60 @@ class _DispyNode(object):
                     else:
                         job_info.proc.wait()
                 job_info.job_reply = job_reply
-                Coro(self._send_job_reply, job_info, resending=False).value()
+                Coro(self._send_job_reply, job_info, resending=False)
 
     def _send_job_reply(self, job_info, resending=False, coro=None):
         """Internal use only.
         """
-        assert coro is not None
         job_reply = job_info.job_reply
         logger.debug('Sending result for job %s (%s) to %s',
                      job_reply.uid, job_reply.status, str(job_info.reply_addr))
+        if not resending:
+            self.avail_cpus += 1
+            assert self.avail_cpus <= self.num_cpus
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock = AsynCoroSocket(sock, blocking=False, certfile=self.certfile, keyfile=self.keyfile)
-        sock.settimeout(10)
+        sock.settimeout(5)
         try:
             yield sock.connect(job_info.reply_addr)
             yield sock.send_msg(serialize(job_reply))
             ack = yield sock.recv_msg()
             assert ack == 'ACK'
+            self.thread_lock.acquire()
+            self.job_infos.pop(job_reply.uid, None)
+            self.thread_lock.release()
+            compute = self.computations.get(job_info.compute_id, None)
+            if compute is not None:
+                compute.last_pulse = time.time()
         except:
-            logger.error("Couldn't send results for %s to %s : %s",
-                         job_reply.uid, str(job_info.reply_addr), traceback.format_exc())
-            # store job result even if computation has not enabled
-            # fault recovery; user may be able to access node and
-            # retrieve result manually
-            f = os.path.join(job_info.compute_dest_path, '_dispy_job_reply_%s' % job_reply.uid)
-            logger.debug('storing results for job %s', job_reply.uid)
-            try:
-                fd = open(f, 'wb')
-                pickle.dump(job_reply, fd)
-                fd.close()
-            except:
-                logger.debug('Could not save results for job %s', job_reply.uid)
-            else:
-                yield self.lock.acquire()
-                compute = self.computations.get(job_info.compute_id, None)
-                if compute is not None:
-                    compute.pending_results += 1
-                self.lock.release()
+            if job_reply.uid in self.job_infos:
+                logger.error("Couldn't send results for %s to %s : %s",
+                             job_reply.uid, str(job_info.reply_addr), traceback.format_exc())
+                # store job result even if computation has not enabled
+                # fault recovery; user may be able to access node and
+                # retrieve result manually
+                f = os.path.join(job_info.compute_dest_path, '_dispy_job_reply_%s' % job_reply.uid)
+                logger.debug('storing results for job %s', job_reply.uid)
+                try:
+                    fd = open(f, 'wb')
+                    pickle.dump(job_reply, fd)
+                    fd.close()
+                except:
+                    logger.debug('Could not save results for job %s', job_reply.uid)
+                else:
+                    compute = self.computations.get(job_info.compute_id, None)
+                    if compute is not None:
+                        compute.pending_results += 1
         finally:
             sock.close()
             if not resending:
-                yield self.lock.acquire()
-                self.avail_cpus += 1
                 compute = self.computations.get(job_info.compute_id, None)
-                if compute is None:
-                    logger.warning('Computation for %s / %s is invalid!',
-                                   job_reply.uid, job_info.compute_id)
-                else:
-                    # technically last_pulse should be updated only
-                    # when successfully sent reply, but no harm if done
-                    # otherwise, too
-                    compute.last_pulse = time.time()
+                if compute is not None:
                     compute.pending_jobs -= 1
                     if compute.pending_jobs == 0 and compute.zombie:
                         self.cleanup_computation(compute)
-                self.lock.release()
 
     def cleanup_computation(self, compute):
-        # called with lock held
         if not compute.zombie:
             return
         if compute.pending_jobs != 0:
@@ -960,19 +1042,19 @@ class _DispyNode(object):
                 return
 
         del self.computations[compute.id]
-        if compute.scheduler_ip_addr == self.scheduler_addr['ip'] and \
-           compute.scheduler_port == self.scheduler_addr['port'] and \
-           compute.scheduler_auth == self.scheduler_addr['auth'] and \
-               all(c.scheduler_ip_addr != self.scheduler_addr['ip'] \
+        if compute.scheduler_ip_addr == self.scheduler['ip'] and \
+           compute.scheduler_port == self.scheduler['port'] and \
+           compute.scheduler_auth == self.scheduler['auth'] and \
+               all(c.scheduler_ip_addr != self.scheduler['ip'] \
                    for c in self.computations.itervalues()):
-            assert self.avail_cpus == self.cpus
-            self.scheduler_addr['ip'] = None
-            self.scheduler_addr['auth'] = None
+            assert self.avail_cpus == self.num_cpus
+            self.scheduler['ip'] = None
+            self.scheduler['auth'] = None
             self.pulse_interval = None
 
-        if self.scheduler_addr['ip'] is None and self.avail_cpus == self.cpus:
-            self.timer_coro.resume(True)
-            Coro(self.send_pong_msg)
+        if self.scheduler['ip'] is None and self.avail_cpus == self.num_cpus:
+            self.timer_coro.resume(None)
+            Coro(self.broadcast_ping_msg)
         if compute.cleanup is False:
             return
         for xf in compute.xfer_files:
@@ -1006,15 +1088,14 @@ class _DispyNode(object):
 
     def shutdown(self):
         def _shutdown(self, coro=None):
-            assert coro is not None
-            yield self.lock.acquire()
+            self.thread_lock.acquire()
             job_infos = self.job_infos
             self.job_infos = {}
             computations = self.computations.items()
             self.computations = {}
             if self.reply_Q:
                 self.reply_Q.put(None)
-            self.lock.release()
+            self.thread_lock.release()
             for uid, job_info in job_infos.iteritems():
                 job_info.proc.terminate()
                 logger.debug('process for %s is killed', uid)
@@ -1023,19 +1104,22 @@ class _DispyNode(object):
                 else:
                     job_info.proc.wait()
             for cid, compute in computations:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock = AsynCoroSocket(sock, blocking=False)
                 sock.settimeout(2)
                 logger.debug('Sending TERMINATE to %s', compute.scheduler_ip_addr)
-                data = serialize({'ip_addr':self.address[0], 'port':self.address[1],
-                                  'sign':self.signature})
-                yield sock.sendto('TERMINATED:' + data, (compute.scheduler_ip_addr,
-                                                         compute.scheduler_port))
+                info = {'ip_addr':self.ext_ip_addr, 'port':self.port, 'sign':self.signature}
+                try:
+                    yield sock.connect((compute.scheduler_ip_addr, compute.scheduler_port))
+                    yield sock.send_msg('TERMINATED:' + serialize(info))
+                except:
+                    pass
                 sock.close()
 
-        Coro(_shutdown, self).value()
-        self.asyncoro.join()
-        self.asyncoro.terminate()
+        if hasattr(self, 'job_infos'):
+            Coro(_shutdown, self).value()
+            # self.asyncoro.join()
+            self.asyncoro.finish()
 
 if __name__ == '__main__':
     import argparse
@@ -1051,8 +1135,7 @@ if __name__ == '__main__':
                         help='External IP address to use (needed in case of NAT firewall/gateway)')
     parser.add_argument('-p', '--node_port', dest='node_port', type=int, default=51348,
                         help='port number to use')
-    parser.add_argument('--dest_path_prefix', dest='dest_path_prefix',
-                        default=os.path.join(os.sep, 'tmp', 'dispy'),
+    parser.add_argument('--dest_path_prefix', dest='dest_path_prefix', default=None,
                         help='path prefix where files sent by dispy are stored')
     parser.add_argument('--scheduler_node', dest='scheduler_node', default=None,
                         help='name or IP address of scheduler to announce when starting')
@@ -1108,4 +1191,5 @@ if __name__ == '__main__':
         except:
             logger.debug(traceback.format_exc())
             continue
+        conn = AsynCoroSocket(conn, blocking=False, keyfile=node.keyfile, certfile=node.certfile)
         Coro(node.tcp_serve_task, conn, addr)
