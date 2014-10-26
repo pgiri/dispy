@@ -6,42 +6,61 @@
     <meta name="description" content="Python module for distributing computations across multiple processors on a single machine, among many machines in a cluster or grid. The computations can be standalone programs or python functions." /> 
     <meta name="keywords" content="dispy, python, parallel processing, distributed computing, cluster computing" /> 
     <title> 
-      dispy - Distribute Computations for Parallel Execution
+      dispy - Distributed and Parallel Computing with Python
     </title> 
 
 <link rel="stylesheet" type="text/css" href="style.css" />
  
   </head> 
   <body> 
-    <center><h4>dispy : Distribute Computations for Parallel Execution</h4></center>
-    <div id="content-mask">
-      <div id="content-container"> 
-	<div id="content-menu">
-	  <ul>
-            <li><a href="index.html">Project Page</a></li> 
-            <li><a href="asyncoro.html">asyncoro</a></li>
-            <li><a href="dispynode.html">dispynode</a></li> 
-            <li><a href="dispyscheduler.html">dispyscheduler</a></li> 
-            <li><a href="dispynetrelay.html">dispynetrelay</a></li>
-	  </ul>
-	  <hr />
-	  <ul>
-            <li><a href="http://sourceforge.net/projects/dispy/files">Download dispy</a></li> 
-            <li><a href="http://sourceforge.net/projects/dispy/">Project details</a></li> 
-            <li><a href="http://sourceforge.net/projects/dispy/support">Get support</a></li>
-	  </ul>
-	</div> 
+    <div id="page"> 
+      <center><div class="title">dispy : Python Framework for Distributed and Parallel Computing</div></center>
+      <div id="menu">
+	<ul>
+          <li><a href="http://sourceforge.net/projects/dispy/files">Download</a></li> 
+          <li><a href="http://sourceforge.net/projects/dispy/">Project Details</a></li> 
+          <li><a href="http://sourceforge.net/p/dispy/discussion">Forums</a></li>
+	</ul>
+	<hr />
+	<ul>
+          <li><a href="index.html">Project Page</a></li> 
+          <li><a href="examples.html">Examples</a></li>
+          <li><a href="dispynode.html">dispynode</a></li> 
+          <li><a href="dispyscheduler.html">dispyscheduler</a></li> 
+          <li><a href="dispynetrelay.html">dispynetrelay</a></li>
+	</ul>
+      </div> 
 
-	<div id="content-wrap"> 
-	  <div id="content"> 
-        <center><h2>dispy</h2></center>
+    <div id="content"> 
+<center><h2>dispy</h2></center>
+
+<p>A dispy client program should first create a cluster for a
+  computation, which can be either a Python function or a standalone
+  program. The cluster can also specify which nodes can execute
+  it. Once the cluster is created, the computation can be evaluated as
+  many times as necessary, each time with different data, by
+  invoking <em>submit</em> method on the cluster. Each
+  time <em>submit</em> method is called, it returns <em>DispyJob</em>
+  or job, which can later be examined for result of execution, output
+  or error messages etc.
+</p>
+
+<p>
+  While dispy and other components have various options that cover
+  rather comprehensive use cases, making it seem complex, most of the
+  options have default values that likely work for common cases. For
+  example, starting 'dispynode.py' program on each of the nodes on a
+  local network and using JobCluster with <tt>computation</tt>, and
+  possibly <tt>depends</tt> parameters may be sufficient.
+</p>
+
 <p>
   There are two ways to create clusters with
   dispy: <tt>JobCluster</tt> and <tt>SharedJobCluster</tt>. If only
   one instance of dispy may be running at anytime,
   <tt>JobCluster</tt> is simple to use; it already contains a
   scheduler that will schedule jobs to nodes running 'dispynode'. If,
-  however, multiple programs using dispy may be running at anytime,
+  however, multiple programs using dispy may be running simultaneously,
   <tt>JobCluster</tt> cannot be used - each of the schedulers in each
   instance of dispy will assume the nodes are controlled exclusively
   by each, causing conflicts. Instead, <tt>SharedJobCluster</tt> must
@@ -51,30 +70,25 @@
   set <tt>scheduler_node</tt> parameter with the node running
   dispyscheduler (default is the host that
   calls <tt>SharedJobCluster</tt>).
-  </p>
-
-<p>Once an instance of JobCluster/SharedJobCluster is created, it can
-be used to schedule jobs by specifying arguments to invoke the
-computations.
 </p>
 
 <h4>JobCluster</h4>
 
-Although JobCluster and SharedJobCluster have many parameters, most
-are optional and in many cases, specifying just <tt>computation</tt>,
-and possibly <tt>depends</tt>, may be sufficient.
-
 <code>JobCluster(computation, nodes=['*'], depends=[], callback=None, ip_addr=None, ext_ip_addr=None,
            port=51347, node_port=51348, fault_recover=False, dest_path=None, loglevel=logging.WARNING,
-           cleanup=True, pulse_interval=None, ping_interval=None, reentrant=False,
+           setup=None, cleanup=True, pulse_interval=None, ping_interval=None, reentrant=False,
            secret='', keyfile=None, certfile=None)
 </code>
 where
 <ul>
 <li>
-  <tt>computation</tt> is either name of Python function or a
-  string. If it is a string, it must be path to executable program. This
-  computation is sent to nodes in the given cluster.
+  <tt>computation</tt> is either a Python function or a string. If it
+  is a string, it must be path to executable program. This computation
+  is sent to nodes in the given cluster. When a job is submitted (to
+  invoke computation with arguments), dispynode executes the
+  computation with those arguments in isolation - the computation
+  should not depend on global state, such as modules imported in the
+  main program or global variables etc.
 </li>
 <li>
   <tt>nodes</tt> is list. Each element must be either a string or a
@@ -122,17 +136,20 @@ where
 </li>
 <li>
   <tt>ip_addr</tt> is IP address to use for (client) communication. If
-  it is not set, IP address set for the host calling JobCluster is
-  used. If the host has multiple interfaces and default address is not
-  the right choice, this parameter can be set to correct address.
+  it is not set, all configured network interfaces are used. If it is
+  a string, it must be either a host name or IP address, in which case
+  corresponding interface address is used. If it is a list, each must
+  be a string of host name or IP address, in which case interface
+  addresses for each of those is used.
 </li>
 <li>
-  <tt>ext_ip_addr</tt> is external IP address to use for (client)
+  <tt>ext_ip_addr</tt> is a string or list of strings of host names or
+  IP addresses to use as return address for node to client
   communication. This may be needed in case the client is behind a NAT
   firewall/gateway and (some) nodes are outside. Typically, in such a
   case, ext_ip_addr must be the address of NAT firewall/gateway and
   the NAT firewall/gateway must forward ports to ip_addr
-  appropriately. See below for more information.
+  appropriately. See below for more on NAT/firewall information.
 </li>
 <li>
   <tt>port</tt> is port to use for (client) communication. Usually not
@@ -155,28 +172,77 @@ where
 <li>
   <tt>fault_recover</tt> must be either True or a string. If it is a
   string, dispy uses it as path to file where it stores information
-  about jobs scheduled but not finished yet. In case user program
-  terminates unexpectedly (for example, because of network failure,
-  uncaught exception), the results of submitted jobs can be later
-  retrieved through 'fault_recover_jobs' function (see below). If this
-  option is True, dispy will store information about jobs in a file of
-  the form '_dispy_fault_recover_YYYYMMDDHHMMSS' in the current
-  directory. Note that dispy keeps information about only the jobs
-  that have been submitted for execution but not finished yet. Once a
-  job is finished (i.e., job result is received by dispy's scheduler),
-  its information is lost. If it is necessary to keep the information
-  about finished jobs, callbacks can be used to persist job results.
+  about running jobs (jobs scheduled but not finished yet). In case
+  user program terminates unexpectedly (for example, because of
+  network failure, uncaught exception), the results of submitted jobs
+  can be later retrieved through 'fault_recover_jobs' function (see
+  below). If this option is True, dispy will store information about
+  jobs in a file of the form '_dispy_fault_recover_YYYYMMDDHHMMSS' in
+  the current directory. Note that dispy keeps information about only
+  the jobs that have been submitted for execution but not finished
+  yet. Once a job is finished (i.e., job result is received by dispy's
+  scheduler), dispy deletes its information (for time and space
+  efficiency). If it is necessary to keep the information about
+  finished jobs, callbacks can be used to persist job results.
 </li>
 <li>
-  <tt>loglevel</tt> is message priority for logging module.
+  <tt>loglevel</tt> is message priority
+  for <a href="http://docs.python.org/2/library/logging.html">logging</a>
+  module.
 </li>
 <li>
-  <tt>cleanup</tt>: Whether any files transferred should be deleted
-  after the computation is done. If it is False, the files are left on
-  the nodes; this may speedup if same files are needed for another
-  cluster later. However, this can be security risk and/or require
-  manual cleanup. If same files are used for multiple clusters, then
-  cleanup may be set to False and same <tt>dest_path</tt> used.
+  <p>
+  <tt>setup</tt>, if not None, must be a Python function that takes no
+  arguments. This function is transferred, along with dependencies and
+  computation, to each node and called after all dependencies have
+  been copied to <tt>dest_path</tt> and working directory has also
+  been set to <tt>dest_path</tt> (which would also be the working
+  directory  when computation jobs are executed).</p>
+
+  <p>
+  The setup function is called exactly once before any jobs are
+  executed; the function should return 0 to indicate successful
+  initialization. This function can be used, for example, to prepare
+  data as needed to execute jobs (efficiently). Under Linux, OS X (and
+  other Unix variants, but not Windows), child processes (that execute
+  computation jobs) inherit parent's address space (among other
+  things), so the setup function can even copy data in to global
+  variables; these variables can be used (as read-only data) in
+  jobs. If this feature is used, care must be taken not to share same
+  node with other computations, as one computation's global variables
+  may interfere with another computation's, and <tt>cleanup</tt>
+  function may be provided, for example, to delete the global
+  variables initialized.
+  </p>
+
+  <p>Unlike the job functions which are executed in separate
+  processes, the setup and cleanup functions are executed within the
+  dispynode process itself so global variables created in setup
+  function are seen in job functions
+  (see <a href="examples.html">examples</a>). Consequently, when
+  setup/cleanup functions are used, a node should not be shared by
+  more than one computaiton; otherwise, one computation's jobs may
+  have access to another computation's jobs. Moreover, cleanup
+  function may not be able to undo all the steps done in setup
+  function (e.g., unloading modules imported in setup may leak
+  memory). So it may be necessary in some cases to restart dispynode
+  when setup/cleanup functions are used.
+    </p>
+</li>
+<li>
+  <tt>cleanup</tt>: If True (default value), any files (dependencies)
+  transferred will be deleted after the computation is done. If it is
+  False, the files are left on the nodes; this may speedup if same
+  files are needed for another cluster later. However, this can be
+  security risk and/or require manual cleanup. If same files are used
+  for multiple clusters, then cleanup may be set to False and
+  same <tt>dest_path</tt> used.<br />
+
+  If <tt>cleanup</tt> is neither True nor False, it must be a Python
+  function that takes no arguments. This function is executed before
+  deleting files as mentiond above. If <tt>setup</tt> function creates
+  global variables, for example, then <tt>cleanup</tt> function may
+  delete those variables.
 </li>
 <li>
   <tt>pulse_interval</tt> is number of seconds between 'pulse'
@@ -226,12 +292,22 @@ where
 <p>
   SharedJobCluster has almost the same syntax, except as noted below.
   </p>
-<code>SharedJobCluster(computation, nodes=['*'], depends=[], ip_addr=None, ext_ip_addr=None, scheduler_node=None,
-                 port=51347, dest_path=None, loglevel=logging.WARNING, cleanup=True, reentrant=False,
-                 secret='', keyfile=None, certfile=None)
+<code>SharedJobCluster(computation, nodes=['*'], depends=[], ip_addr=None, port=None,
+          scheduler_node=None, scheduler_port=None, ext_ip_addr=None
+          dest_path=None, loglevel=logging.WARNING, cleanup=True, reentrant=False,
+          secret='', keyfile=None, certfile=None)
 </code>
 where all arguments common to <tt>JobCluster</tt> are same, and
 <ul>
+<li>
+  <tt>port</tt> is client's port (which is 51347 in the case of
+  JobCluster) is, by default, choosen randomly to an unused port. This
+  is so that in case dispyscheduler is running on the same computer,
+  the client port would be different from the port used by
+  dispyscheduler. In case the client needs to get results from
+  dispyscheduler in remote network and port forwarding is used, a
+  specific port (e.g., 51347) can be given.
+<li>
 <li>
   <tt>scheduler_node</tt> is either IP address or host name
   where <a href="dispyscheduler.html">dispyscheduler</a> is running; if
@@ -263,9 +339,10 @@ A cluster has following methods:
   class in dispy.py for an example). If 'computation' is a program, then
   all arguments must be strings.
 
-  <tt>submit</tt> returns a 'job' object. Results from execution of
-  computation with given arguments will be available in the 'job' object
-  after execution finishes.
+  <tt>submit</tt> returns a <tt>DispyJob</tt> object (see below for
+  useful fields of this object). Results from execution of computation
+  with given arguments will be available in the job object after
+  execution finishes.
 </li>
 
 <li>
@@ -296,6 +373,57 @@ A cluster has following methods:
 </li>
 </ul>
 
+<h4>DispyJob</h4>
+
+<p>
+ The result of <tt>submit</tt> call of a cluster is an instance of
+DispyJob (see dispy.py), which can be used to examine status of job
+execution, retrieve job results etc. The job instance has <tt>id</tt>
+field that can be used to set any value appropriate (rest of the
+fields are either read-only, or not meant for user programs). For
+example, <tt>id</tt> field can be set to a unique value to distinguish
+one job from another.
+</p>
+
+<p>
+Job's <tt>status</tt> field is read-only field; its value is one of
+<tt>Created</tt>, <tt>Running</tt>, <tt>Finished</tt>, <tt>Cancelled</tt>
+or <tt>Terminated</tt>, indicating current status of job.  If job is
+created for SharedJobCluster, <tt>status</tt> is not updated to
+<tt>Running</tt> when job is actually running.
+</p>
+  
+<p>
+When a submitted job is called with job(), it returns that job's
+execution result, possibly waiting until the job is finished. After a
+job is complete,
+</p>
+<ul>
+  <li>job.result will have computation's result - return value if
+  computation is a function and exit status if it is a
+  program. job.result is same as return value of job() </li>
+  <li>job.stdout and job.stderr will have stdout and stderr strings</li>
+  <li>job.exception will have exception trace if computation raises
+    any exception; in this case the result of job.result will
+    be <tt>None</tt></li>
+  <li>job.start_time will be the time when job is scheduled for execution on a node</li>
+  <li>job.end_time will be time when results became available</li>
+  </ul>
+
+Job's result, stdout and stderr should not be large - these are
+buffered and hence will consume memory (not stored on disk). Moreover,
+like args and kwargs, result should be serializable (picklable
+object). If result is (or has) an instance of python class, that class
+may have to provide __getstate__ function to serialize the object.
+
+<p>
+After jobs are submitted, cluster.wait() can be used to wait until all
+submitted jobs for that cluster have finished. If necessary, results
+of execution can be retrieved by either job() or job.result, as
+described above.
+</p>
+
+
 <h4>Fault Recovery</h4>
 <p>
 As noted above, if 'fault_recover' option is used when creating a
@@ -304,8 +432,8 @@ in a file. If user program then terminates unexpectedly, the nodes
 that execute those jobs can't send the results back to dispy. In such
 cases, the results for the jobs can be retrieved from the nodes with
 the function in dispy</p>
-<tt>fault_recover_jobs(fault_recover_file, ip_addr=None, secret='', node_port=51348,
-                       certfile=None, keyfile=None)</tt>
+<code>fault_recover_jobs(fault_recover_file, ip_addr=None, secret='', node_port=51348,
+                    certfile=None, keyfile=None)</code>
 where
 <ul>
   <li><tt>fault_recover_file</tt> is path to the file used or created
@@ -354,20 +482,22 @@ is a python function, it must import all the modules used by it, even
 if the program imported those modules before cluster is created.
 </p>
 
-<h4>Provisional Results</h4>
+<h4>Provisional/Intermediate Results</h4>
 <p>
-  'dispy_provisional_result' function can be used in computations
-  (Python functions) to send provisional results back to the
-  client. For example, in optimization computations, there may be many
-  (sub) optimal results that the computations can inform the client
-  (program) that may cancel computations, or create additional
-  computations, etc. 'dispy_provisional_result' can be used to send
-  any information, any number of times, back to the client. As an
-  illustrative example, consider:
+  <em>dispy_provisional_result</em> function can be used in
+  computations (Python functions) to send provisional or intermediate
+  results back to the client. For example, in optimization
+  computations, there may be many (sub) optimal results that the
+  computations can inform the client. The client may ignore, cancel
+  computations or create additional computations based on provisional
+  result. When computation calls
+  <em>dispy_provisional_result(result)</em>, the Python
+  object <em>result</em> (which must be serializable) is sent back to
+  the client and computation continues to execute. The client should
+  use callback option to process the information, as shown in the
+  example:
   </p>
-<code>#!/usr/bin/env python
-
-import random, dispy
+<pre><code>import random, dispy
 
 def compute(n, threshold):
     import random, time, socket
@@ -382,15 +512,14 @@ def compute(n, threshold):
     return None
 
 def job_callback(job):
-    # callback is called for Terminated status, too, in which case
-    # job.result would be None
-    if job.result is not None:
+    if job.status == dispy.DispyJob.ProvisionalResult:
         if job.result[1] < 0.005:
             # acceptable result; terminate jobs
             print '%s computed: %s' % (job.result[0], job.result[1])
-            global jobs, cluster
+            # global jobs, cluster
             for j in jobs:
-                if j.status == dispy.DispyJob.ProvisionalResult:
+                if j.status in [dispy.DispyJob.Created, dispy.DispyJob.Running,
+			        dispy.DispyJob.ProvisionalResult]:
                     cluster.cancel(j)
 
 if __name__ == '__main__':
@@ -406,14 +535,14 @@ if __name__ == '__main__':
     cluster.wait()
     cluster.stats()
     cluster.close()
-  </code>
+  </code></pre>
 <p>
   In the above example, computations send provisional result if
-  computed number is <= threshold (0.2). If the number computed is <
+  computed number is &lt;= threshold (0.2). If the number computed is &lt;
   0.005, job_callback deems it acceptable and terminates computations.
   </p>
 
-<h4>NAT/Firewall Forwarding</h4>
+<h4><a name="NAT" />NAT/Firewall Forwarding</h4>
 <p>
 By default dispy client uses UDP and TCP ports 51347, dispynode uses
 UDP and TCP ports 51348, and dispyscheduler uses UDP and TCP pots
@@ -426,14 +555,16 @@ TCP ports 51347 to the IP address where client is running. Similarly,
 if dispynode is behind NAT firewall/gateway, 'ext_ip_addr' option must
 be used.
   </p>
+
+<h4><a name="ec2" />Cloud Computing with Amazon EC2</h4>
 <p>
-  For example, <tt>ext_ip_addr</tt> option can be used to work with
-  Amazon EC2 cloud computing service. With EC2 service, a node has a
-  private IP address (called 'Private DNS Address') that uses private
-  network of the form 10.x.x.x and public IP address (called 'Public
-  DNS Address') that is of the form ec2-x-x-x-x.x.amazonaws.com. After
-  launching instance(s), one can copy dispy files to the node(s) and
-  run dispynode as
+  <tt>ext_ip_addr</tt> option can be used to work with Amazon EC2
+  cloud computing service. With EC2 service, a node has a private IP
+  address (called 'Private DNS Address') that uses private network of
+  the form 10.x.x.x and public address (called 'Public DNS Address')
+  that is of the form ec2-x-x-x-x.x.amazonaws.com. After launching
+  instance(s), one can copy dispy files to the node(s) and run
+  dispynode as
   <tt>dispynode.py --ext_ip_addr ec2-x-x-x-x.y.amazonaws.com</tt>
   (this address can't be used with '-i'/'--ip_addr' option, as the
   network interface is configured with private IP address only). This
@@ -446,51 +577,20 @@ be used.
   forwards them appropriately, dispy will process them.
   </p>
 
-<h4>Examples</h4>
-<p>
-  Below are some examples on various use cases of creating clusters:
-</p>
-  <ol>
-    <li>
-      <tt>cluster = dispy.JobCluster(compute, nodes=['node20', '192.168.2.21', 'node24'])</tt>
-      sends computation to nodes 'node20', 'node24' and node with IP address '192.168.2.21'; in this case, these nodes could be in different networks, as explicit names / IP addresses are listed.
-    </li>
-    <li>
-      <tt>cluster = dispy.JobCluster(compute, nodes=['192.168.2.*'])</tt>
-      sends computation to all nodes whose IP address starts with '192.168.2'.
-      In this case, it is assumed that '192.168.2' is local network (since
-      dispy can't send identification request to outside networks with wildcard)
-    </li>
-    <li>
-      <code>cluster = dispy.JobCluster(compute, nodes=['192.168.3.5', '192.168.3.22',
-                                       '172.16.11.22', 'node39', '192.168.2.*'])</code>
-      sends computation to nodes with IP addresses '192.168.3.5', '192.168.3.22', '172.16.11.22' and node 'node39' (since explicit names / IP addresses are listed, they could be on different networks), all nodes whose IP address starts with '192.168.2' (local network).
-    </li>
-    <li>
-      <code>cluster = dispy.JobCluster(compute, nodes=['192.168.3.5', '192.168.3.*', '192.168.2.*'])</code>
-      In this case, dispy will send identification request to node with IP address '192.168.3.5'. If this node is running 'dispynetrelay', then all the nodes on that network are eligible for executing this computation, as wildcard '192.168.3.*' matches IP addresses of those nodes. In addition, computation is also sent to all nodes whose IP address starts with '192.168.2' (local network).
-    </li>
-    <li>
-      <code>cluster = dispy.JobCluster(compute, nodes=['192.168.3.5', '192.168.8.20',
-                                            '172.16.2.99', '*'])</code>
-      In this case, dispy will send identification request to nodes with IP address '192.168.3.5', '192.168.8.20' and '172.16.2.99'. If these nodes all are running dispynetrelay, then all the nodes on those networks are eligible for executing this computation, as wildcard '*' matches IP addresses of those nodes. In addition, computation is also sent to all nodes on local network (since they also match wildcard '*' and identification request is broadcast on local network).
-    </li>
-    <li>
-      Assuming that 192.168.1.39 is the (private) IP address where
-      dispy client is used, a.b.c.d is the (public) IP address of NAT
-      firewall/gateway (that can be reached from outside) and
-      dispynode is running at another public IP address e.f.g.h (so
-      that a.b.c.d and e.f.g.h can communicate, but e.f.g.h can't
-      communicate with 192.168.1.39),<br />
-      <code>cluster = dispy.JobCluster(compute, ip_addr='192.168.1.39', ext_ip_addr='a.b.c.d',
-	                               nodes=['e.f.g.h'])</code>
-      would work if NAT firewall/gateway forwards UDP and TCP ports 51347 to
-      192.168.1.39.
-      </li>
-  </ol>
 
-	  </div> 
-	</div> 
+<p>
+dispy can also be used as a command line tool; in this case the
+computations should only be programs and dependencies should only be
+files.
+</p>
+
+  <tt>dispy.py -f /some/file1 -f file2 -a "arg11 arg12" -a "arg21 arg22" -a "arg3" /some/program</tt><br />
+
+  will distribute '/some/program' with dependencies '/some/file1' and
+  'file2' and then execute '/some/program' in parallel with arg11 and arg12 (two
+  arguments to the program), arg21 and arg22 (two arguments), and arg3
+  (one argument).
+
       </div> 
     </div> 
     <div id="footer"> 
@@ -518,5 +618,6 @@ be used.
         </a> 
       </p> 
     </div> 
+
   </body> 
 </html> 

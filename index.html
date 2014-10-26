@@ -6,53 +6,118 @@
     <meta name="description" content="Python module for distributing computations across multiple processors on a single machine, among many machines in a cluster or grid. The computations can be standalone programs or python functions." /> 
     <meta name="keywords" content="dispy, python, parallel processing, parallel computing, distributed computing, cluster computing" /> 
     <title> 
-      dispy - Distribute Computations for Parallel Execution
+      dispy - Distributed and Parallel Computing with Python
     </title> 
 
-<link rel="stylesheet" type="text/css" href="style.css" />
+    <link rel="stylesheet" type="text/css" href="style.css" />
+
+    <!-- Twitter -->
+    <script src="//platform.twitter.com/widgets.js" type="text/javascript"></script>
+    <!-- Google +1 -->
+    <script type="text/javascript">
+      (function() {
+      var po = document.createElement('script'); po.type = 'text/javascript'; po.async = true;
+      po.src = '//apis.google.com/js/plusone.js';
+      var s = document.getElementsByTagName('script')[0]; s.parentNode.insertBefore(po, s);
+      })();
+    </script>
+    <!-- Facebook -->
+    <script type="text/javascript">
+      (function(d, s, id) {
+      var js, fjs = d.getElementsByTagName(s)[0];
+      if (d.getElementById(id)) {return;}
+      js = d.createElement(s); js.id = id;
+      js.src = "//connect.facebook.net/en_US/all.js#xfbml=1";
+      fjs.parentNode.insertBefore(js, fjs);
+      }(document, 'script', 'facebook-jssdk'));
+    </script>
+<!--
+    <script src="//platform.linkedin.com/in.js" type="text/javascript"></script>
+-->
 
   </head> 
   <body> 
-    <center><h4>dispy : Distribute Computations for Parallel Execution</h4></center>
-    <div id="content-mask">
-      <div id="content-container"> 
-	<div id="content-menu">
-	  <ul>
-            <li><a href="asyncoro.html">asyncoro</a></li>
-            <li><a href="dispy.html">dispy</a></li> 
-            <li><a href="dispynode.html">dispynode</a></li> 
-            <li><a href="dispyscheduler.html">dispyscheduler</a></li> 
-            <li><a href="dispynetrelay.html">dispynetrelay</a></li>
-	  </ul>
-	  <hr />
-	  <ul>
-            <li><a href="http://sourceforge.net/projects/dispy/files">Download dispy</a></li> 
-            <li><a href="http://sourceforge.net/projects/dispy/">Project details</a></li> 
-            <li><a href="http://sourceforge.net/projects/dispy/support">Get support</a></li>
-	  </ul>
-	</div> 
+    <div id="page"> 
+      <center><div class="title">dispy : Python Framework for Distributed and Parallel Computing</div></center>
+      <div id="menu">
+	<ul>
+          <li><a href="http://sourceforge.net/projects/dispy/files">Download</a></li> 
+          <li><a href="http://sourceforge.net/projects/dispy/">Project Details</a></li> 
+          <li><a href="http://sourceforge.net/p/dispy/discussion">Forums</a></li>
+	</ul>
+	<hr />
+	<ul>
+          <li><a href="examples.html">Examples</a></li>
+          <li><a href="dispy.html">dispy</a></li>
+          <li><a href="dispynode.html">dispynode</a></li>
+          <li><a href="dispyscheduler.html">dispyscheduler</a></li>
+          <li><a href="dispynetrelay.html">dispynetrelay</a></li>
+	</ul>
 
-	<div id="content-wrap"> 
-	  <div id="content"> 
-<center><h2>dispy</h2></center>
+	<hr />
+	<div id="social">
+	  <div style="margin-top:5px;margin-bottom:5px;text-decoration:underline;font-weight:bold;">Share / Recommend dispy</div>
+	  <ol style="position:relative;margin-top:20px;list-style-type:none;">
+	    <li style="float:left;margin-left:20px;">
+              <script type="IN/Share" data-counter="right"></script>
+	    </li>
+	    <li style="float:left;margin-left:20px;padding-top:10px;">
+	      <a href="https://twitter.com/share"
+		 class="twitter-share-button"
+		 data-count="horizontal"
+		 data-url="http://dispy.sourceforge.net"
+		 data-counturl="http://dispy.sourceforge.net"
+		 data-via="sourceforge"
+		 data-text="dispy : Python framework for distributed and parallel computing"></a>
+	    </li>
+	    <li style="float:left;margin-left:20px;padding-top:10px;">
+	      <div class="g-plusone" align="left"  style="float:left;"
+		   data-size="medium"
+		   data-annotation="bubble"
+		   data-href="http://dispy.sourceforge.net"></div>
+	    </li>
+	    <li style="float:left;margin-left:20px;padding-top:10px;">
+	      <fb:like send="false"
+		       layout="button_count"
+		       width="55"
+		       show_faces="false"
+		       href="http://dispy.sourceforge.net"></fb:like>
+	    </li>
+	  </ol>
+	  <div style="clear:both;"></div>
+	</div>
+      </div>
+
+      <div id="content"> 
 <p>
-dispy is a framework, developed
-in <a href="http://www.python.org">Python</a>, for parallel execution
-of computations by distributing them across multiple processors on a
-single machine (SMP), among many machines in a cluster or grid.  dispy
-is well suited for data parallell (SIMD) paradigm where a computation
-is evaluated with different (large) datasets independently. Salient
-features of dispy are:
+dispy is a <a href="http://www.python.org">Python</a> framework for
+parallel execution of computations by distributing them across
+multiple processors in a single machine (SMP), among many machines in
+a cluster, grid or cloud.  dispy is well suited for data parallel
+(SIMD) paradigm where a computation is evaluated with different
+(large) datasets independently with no communication among computation
+tasks (except for computation tasks sending intermediate results to
+the client). If communication/cooperation among tasks is
+needed, <a href="http://asyncoro.sourceforge.net">asyncoro</a>
+framework could be used.
+</p>
+
+<p>Salient features of dispy are:
 </p>
 <ul>
 
-<li>dispy is implemented with <a href="asyncoro.html">asyncoro</a>, an
+<li>dispy is implemented
+  with <a href="http://asyncoro.sourceforge.net">asyncoro</a>, an
   independent framework for asynchronous, concurrent, distributed,
   network programming with coroutines (without threads). asyncoro uses
   non-blocking sockets with I/O notification mechanisms epoll, kqueue
   and poll, and Windows I/O Completion Ports (IOCP) for high
   performance and scalability, so dispy works efficiently with a
-  single node or large cluster(s) of nodes.</li>
+  single node or large cluster(s) of nodes. asyncoro itself has
+  support for distributed/parallel computing, including transferring
+  computations, files etc., and message passing (for communicating
+  with client and other computation tasks), although it doesn't
+  include job scheduling.</li>
 
 <li>Computations (Python functions or standalone programs) and their
     dependencies (files, Python functions, classes, modules) are
@@ -62,8 +127,6 @@ features of dispy are:
     remote). For security, either simple hash based authentication or
     SSL encryption can be used.</li>
 
-<li>A computation may specify which nodes are allowed to execute it.</li>
-
 <li>After each execution is finished, the results of execution, output,
     errors and exception trace are made available for further
     processing.</li>
@@ -72,8 +135,8 @@ features of dispy are:
     whenever a node is available and computations can use that node.</li>
 
 <li>If callback function is provided, dispy executes that function
-    when a job is finished; this feature is useful for processing
-    job results.</li>
+    when a job is finished; this can be used for processing job
+    results as they become available.</li>
 
 <li>Client-side and server-side fault recovery are supported:<br/>
 
@@ -90,16 +153,48 @@ features of dispy are:
 
 <li>dispy can be used in a single process to use all the nodes
     exclusively (with <tt>JobCluster</tt> - simpler to use) or in
-    multiple processes sharing the nodes
-    (with <tt>ShareJobCluster</tt>
+    multiple processes simultaneously sharing the nodes
+    (with <tt>SharedJobCluster</tt>
     and <a href="dispyscheduler.html">dispyscheduler</a>).</li>
 
+<li>Amazon cloud computing platform EC2 can be used as compute nodes,
+  either exclusively or in addition to any local compute nodes;
+  see <a href="dispy.html#ec2">dispy</a> for details.</li>
+
+<!--
+<li>A computation may specify which nodes are allowed to execute it.</li>
+-->
+
   </ul>
+
+<p>
+  dispy works with Python versions 2.7+ and 3.1+ and tested on Linux,
+OS X and Windows; it may work on other platforms too.</p>
+
+<h3>Download/Installation</h3>
+
+<p>dispy is availble
+through <a href="https://pypi.python.org/pypi/dispy">PyPI (Python
+Package Index)</a> so it can be easily installed for Python 2.7+
+with <tt>pip install dispy</tt> and/or for Python 3.1+ with <tt>pip3
+install dispy</tt>.</p>
+
+<p>dispy can also be downloaded
+from <a href="http://sourceforge.net/projects/dispy/files">Sourceforge
+Files</a>.  Files in 'py2' directory in the downloaded package are to
+be used with Python 2.7+ and files in 'py3' directory are to be used
+with Python 3.1+.</p>
+
+<h3>Quick Guide</h3> 
+<p> Below is a quick guide on how to use dispy. More details
+are available in <a href="dispy.html">dispy</a> document.
+</p>
+
 <p>
 dispy consists of 4 components:
 </p>
 <ol>
-  <li><a href="dispy.html">dispy.py</a> (client) provides two ways of
+  <li><a href="dispy.html">dispy</a> (client) provides two ways of
   creating "clusters": <tt>JobCluster</tt> when only one
   instance of dispy may run and <tt>SharedJobCluster</tt> when
   multiple instances may run (in separate
@@ -107,38 +202,30 @@ dispy consists of 4 components:
   within <tt>dispy.py</tt> will distribute jobs on the server nodes;
   if <tt>SharedJobCluster</tt> is used, a separate scheduler
   (<a href="dispyscheduler.html">dispyscheduler</a>) must be running.</li>
-  <li><a href="dispynode.html">dispynode.py</a> executes jobs on behalf of
+  <li><a href="dispynode.html">dispynode</a> executes jobs on behalf of
   dispy. dispynode must be running on each of the (server) nodes that
   form the cluster.</li>
-  <li><a href="dispyscheduler.html">dispyscheduler.py</a> is needed only
+  <li><a href="dispyscheduler.html">dispyscheduler</a> is needed only
   when <tt>SharedJobCluster</tt> is used; this provides a scheduler
-  that can be shared by multiple dispy users.</li>
-  <li><a href="dispynetrelay.html">dispynetrelay.py</a> is needed when
-  nodes are located across different networks; this relays information
-  about nodes on a network to the scheduler. If all the nodes are on
-  same network, there is no need for dispynetrelay - the scheduler and
-  nodes automatically discover each other.</li>
+  that can be shared by multiple dispy clients simultaneously.</li>
+  <li><a href="dispynetrelay.html">dispynetrelay</a> is needed when
+  nodes are located across different networks. If all nodes are on
+  local network or if all remote nodes can be listed in 'nodes'
+  parameter when creating cluster, there is no need for dispynetrelay
+  - the scheduler can discover such nodes automatically. However, if
+  there are many nodes on remote network(s), dispynetrelay can be used
+  to relay information about the nodes on that network to scheduler,
+  without having to list all nodes in 'nodes' parameter.</li>
 </ol>
- dispy has been tested with Python versions 2.7 and 3.2 on Linux, OS X and Windows.
-
-        <h3> 
-          Quick Guide
-        </h3> 
-        <p> Below is a quick guide on how to use dispy. More details
-are available in <a href="dispy.html">dispy</a> document.
-</p>
 
 <p>
-As a tutorial, consider the following program, in which 'compute' is
-distributed to nodes on a local network for parallel execution. First,
-run 'dispynode' program on each of the nodes on the network. If
-parallelizing on an SMP (single node with multiple cores), then start
-'dispynode' on that node (which also runs dispy client).
+As a tutorial, consider the following program, in which function
+'compute' is distributed to nodes on a local network for parallel
+execution. First, run dispynode program ('dispynode.py') on each of
+the nodes on the network.
 </p>
 
-<code>#!/usr/bin/env python
-
-def compute(n):
+<pre><code>def compute(n):
     import time, socket
     time.sleep(n)
     host = socket.gethostname()
@@ -159,119 +246,32 @@ if __name__ == '__main__':
         # other fields of 'job' that may be useful:
         # print job.stdout, job.stderr, job.exception, job.ip_addr, job.start_time, job.end_time
     cluster.stats()
-</code>
+</code></pre>
 
 <p>
 Now run the above program, which creates a cluster with function
-'compute'. dispy schedules this computation with various arguments to
-all the nodes running 'dispynode'; each time computation is submitted,
-dispy returns an instance of DispyJob, or job for short. The nodes
-execute the computation with the job's arguments in isolation -
-computations shouldn't depend on global state, such as modules
-imported outside of computations, global variables etc. In this case,
-'compute' needs modules 'time' and 'socket', so it must import
-them. The program then retrieves results of execution for each job
-with 'job()'.
+'compute'; this cluster is then used to create jobs to execute
+'compute' with a random number 20 times. dispy schedules these jobs on
+the processors in the nodes running dispynode. The nodes execute each
+job with the job's arguments in isolation - computations shouldn't
+depend on global state, such as modules imported outside of
+computations, global variables etc. In this case, 'compute' needs
+modules 'time' and 'socket', so it must import them. The program then
+retrieves results of execution for each job with 'job()'. If
+necessary, a persistence mechanism, such as file or database, could be
+used to store/retrieve global state.
 </p>
 
 <p>
-Further examples on how to create cluster using JobCluster (using
-SharedJobCluster is similar):
-</p>
-
-<ul>
-  <li>
-  <tt>cluster = dispy.JobCluster('/some/program', nodes=['192.168.3.*'])</tt><br />
-  distributes '/some/program' (an executable program, instead of python function)
-  to all nodes whose IP address starts with '192.168.3'.</li>
-
-  <li><tt>cluster = dispy.JobCluster(compute, depends=[ClassA, moduleB, 'file1'])</tt><br />
-    distributes 'compute' along with ClassA (python object), moduleB (python object) and
-    'file1'. Presumably ClassA, moduleB and file1 are needed by 'compute'.</li>
-
-  <li><tt>cluster = dispy.JobCluster(compute, secret='super') </tt><br />
-    distributes 'compute' to nodes that also use secret 'super' (i.e.,
-    nodes started with 'dispynode -s super')<br/> Note that secret is
-    used only for establishing communication initially, but not used
-    to encrypt programs or code for python objects. This can be useful
-    to prevent other users from (inadvertantly) using the nodes. If
-    encryption is needed, use SSL; see below.</li>
-
-  <li><tt>cluster = dispy.JobCluster(compute, certfile='mycert',
-  keyfile='mykey')</tt><br /> distributes 'compute' and encrypts all
-  communication using SSL certificate stored in 'mycert' file and key
-  stored in 'mykey' file. In this case, dispynode must also use same
-  certificate and key; i.e., each dispynode must be invoked with
-  <tt>dispynode --certfile="mycert" --keyfile="mykey"'</tt><br/>
-
-    If both certificate and key are stored in same file, say,
-    'mycertkey', they are expected to be in certfile:<br />
-      <tt>cluster = dispy.JobCluster(compute, certfile='mycertkey')</tt></li>
-
-  <li><tt>cluster1 = dispy.JobCluster(compute1, nodes=['192.168.3.2', '192.168.3.5'])</tt><br/>
-<tt>cluster2 = dispy.JobCluster(compute2, nodes=['192.168.3.10',
-    '192.168.3.11'])</tt><br /> distributes 'compute1' to nodes
-    192.168.3.2 and 192.168.3.5, and 'compute2' to nodes 192.168.3.10
-    and 192.168.3.11. With this setup, specific computations can be
-    scheduled on certain node(s). As mentioned above, with JobCluster,
-    the set of nodes for one cluster must be disjoint with set of
-    nodes in any other cluster running at the same time. Otherwise,
-    <a href="dispy.html">SharedJobCluster</a> must be used.</li>
-</ul>
-
-<p>
-  See <a href="examples.html">examples</a> for more complete/concrete examples.
+  See <a href="dispy.html">dispy</a>
+  and <a href="examples.html">examples</a> for more details and
+  examples.
   </p>
 
 <p>
-After a cluster is created for a computation, it can be evaluated with
-multiple instances of data by calling cluster.submit function. The
-result is a 'job', which is an instance of DispyJob (see
-dispy.py). User can set its 'id' field to any value appropriate. This
-may be useful, for example, to distinguish one job from another. In
-the above example, 'id' is set to unique number, although dispy
-doesn't require this field to be unique - dispy doesn't use 'id'
-field, at all.
-</p>
-
-<p>
-Job's 'status' field is read-only field; its value is one of Created,
-Running, Finished, Cancelled or Terminated, indicating current status
-of job.  If job is created for SharedJobCluster, status is not updated
-to Running when job is actually running.
-</p>
-  
-<p>
-When a submitted job is called with job(), it returns that job's
-execution result, possibly waiting until the job is finished. After a
-job is complete,
-</p>
-<ul>
-  <li>job.result will have function's return value (job.result is same
-  as return value of job()) </li>
-  <li>job.stdout and job.stderr will have stdout and stderr strings</li>
-  <li>job.exception will have exception trace if executing job raises any exception;
-    in this case the result of job.result will be <tt>None</tt></li>
-  <li>job.start_time will be the time when job is scheduled for execution on a node</li>
-  <li>job.end_time will be time when results became available</li>
-  </ul>
-
-result, stdout and stderr should not be large - these are buffered and
-hence will consume memory (not stored on disk). Moreover, like args
-and kwargs, result should be serializable (picklable object). If
-result is (or has) an instance of python class, that class may have to
-provide __getstate__ function to serialize the object.
-
-<p>
-After jobs are submitted, cluster.wait() can be used to wait until all
-submitted jobs for that cluster have finished. If necessary, results
-of execution can be retrieved by either job() or job.result, as
-described above.
-</p>
-
-<p>
-dispy can also be used as a tool; in this case the computations should only be programs
-and dependencies should only be files.
+dispy can also be used as a command line tool; in this case the
+computations should only be programs and dependencies should only be
+files.
 </p>
 
   <tt>dispy.py -f /some/file1 -f file2 -a "arg11 arg12" -a "arg21 arg22" -a "arg3" /some/program</tt><br />
@@ -281,10 +281,9 @@ and dependencies should only be files.
   arguments to the program), arg21 and arg22 (two arguments), and arg3
   (one argument).
 
-	  </div>
-	</div> 
-      </div> 
     </div> 
+    </div> 
+
     <div id="footer"> 
       <p> 
         <a href="http://sourceforge.net/"> 
@@ -310,5 +309,6 @@ and dependencies should only be files.
         </a> 
       </p> 
     </div> 
+
   </body> 
 </html> 

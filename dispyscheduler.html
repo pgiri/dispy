@@ -6,107 +6,108 @@
     <meta name="description" content="Python module for distributing computations across multiple processors on a single machine, among many machines in a cluster or grid. The computations can be standalone programs or python functions." /> 
     <meta name="keywords" content="dispy, python, parallel processing, distributed computing, cluster computing" /> 
     <title> 
-      dispy - Distribute Computations for Parallel Execution
+      dispy - Distributed and Parallel Computing with Python
     </title> 
 
 <link rel="stylesheet" type="text/css" href="style.css" />
  
   </head> 
   <body> 
-    <center><h4>dispy : Distribute Computations for Parallel Execution</h4></center>
-    <div id="content-mask">
-      <div id="content-container"> 
-	<div id="content-menu">
-	  <ul>
-            <li><a href="index.html">Project Page</a></li> 
-            <li><a href="asyncoro.html">asyncoro</a></li>
-            <li><a href="dispy.html">dispy</a></li> 
-            <li><a href="dispynode.html">dispynode</a></li> 
-            <li><a href="dispynetrelay.html">dispynetrelay</a></li>
-	  </ul>
-	  <hr />
-	  <ul>
-            <li><a href="http://sourceforge.net/projects/dispy/files">Download dispy</a></li> 
-            <li><a href="http://sourceforge.net/projects/dispy/">Project details</a></li> 
-            <li><a href="http://sourceforge.net/projects/dispy/support">Get support</a></li>
-	  </ul>
-	</div> 
+    <div id="page"> 
+      <center><div class="title">dispy : Python Framework for Distributed and Parallel Computing</div></center>
+      <div id="menu">
+	<ul>
+          <li><a href="http://sourceforge.net/projects/dispy/files">Download</a></li> 
+          <li><a href="http://sourceforge.net/projects/dispy/">Project Details</a></li> 
+          <li><a href="http://sourceforge.net/p/dispy/discussion">Forums</a></li>
+	</ul>
+	<hr />
+	<ul>
+          <li><a href="index.html">Project Page</a></li> 
+          <li><a href="examples.html">Examples</a></li>
+          <li><a href="dispy.html">dispy</a></li> 
+          <li><a href="dispynode.html">dispynode</a></li> 
+          <li><a href="dispynetrelay.html">dispynetrelay</a></li>
+	</ul>
+      </div> 
 
-	<div id="content-wrap"> 
-	  <div id="content"> 
-        <center><h2>dispyscheduler</h2></center>
+    <div id="content"> 
+      <center><h2>dispyscheduler</h2></center>
 <p>
-  dispyscheduler schedules jobs submitted to SharedJobCluster
-  (see <a href="dispy.html">dispy</a>). 
-  
+  As mentioned in <a href="dispy.html">dispy</a>
+  and <a href="index.html">Project Page</a>, if jobs are submitted
+  with <tt>JobCluster</tt> instead of <tt>SharedJobCluster</tt>, then
+  dispyscheduler is not needed; <tt>JobCluster</tt> includes the
+  scheduler. If there is a need to use same node by more than one
+  cluster at the same time (e.g., multiple client programs need to run
+  simultaneously), then <tt>SharedJobCluster</tt> must be used, along
+  with running 'dispyscheduler' on a node. Usually, no options are
+  needed when invoking this program.
 </p>
 
 <p>Below are various options to invoking dispyscheduler:
   </p>
   <ul>
+    <li><tt>-d</tt> enables debug messages that show trace of
+      execution.</li>
     <li><tt>-n node1 -n node2</tt> or <tt>--nodes node1 --nodes
-    node2</tt> etc. sends handshake messages when dispyscheduler
-    starts. This is not needed if scheduler and nodes are on same
-    network.</li>
+	node2</tt> etc. sends handshake messages when dispyscheduler
+	starts. This is not needed if scheduler and nodes are on same
+	network.</li>
     <li><tt>-i addr</tt> or <tt>--ip_addr=addr</tt> directs
-    dispyscheduler to use given <tt>addr</tt> for communication,
-    instead of the IP address associated with the host name.</li>
-    <li>
-      <tt>--ext_ip_addr=addr</tt> directs dispyscheduler to
-      announce <tt>addr</tt> in network communication so that the scheduler
-      can be used if it is behind NAT firewall/gateway that is
-      configured to use <tt>addr</tt>. See below.
+      dispyscheduler to use given <tt>addr</tt> for communication,
+      instead of the IP address associated with the host name.</li>
+    <li><tt>--ext_ip_addr=addr</tt> directs dispyscheduler to
+      announce <tt>addr</tt> in network communication so that the
+      scheduler can be used if it is behind NAT firewall/gateway that
+      is configured to use <tt>addr</tt>. See below.
       </li>
     <li><tt>-p n</tt> or <tt>--port=n</tt> directs dispyscheduler to
-    use given port <tt>n</tt> instead of default port 51347 for
-    UDP and TCP communication for job results.</li>
-    <li><tt>--scheduler_port=n</tt> directs dispyscheduler to
-    use given port <tt>n</tt> instead of default port 51349 for
-    job scheduler.</li>
+      use given port <tt>n</tt> instead of default port 51347 for UDP
+      and TCP communication for job results.</li>
+    <li><tt>--scheduler_port=n</tt> directs dispyscheduler to use
+      given port <tt>n</tt> instead of default port 51349 for job
+      scheduler.</li>
     <li><tt>--node_port=n</tt> directs dispyscheduler to use given
-    port <tt>n</tt> instead of default port 51348 where dispynodes
-    must be running.</li>
+      port <tt>n</tt> instead of default port 51348 where dispynodes
+      must be running.</li>
     <li><tt>--node_secret secret</tt> directs dispyscheduler to use
     'secret' for hashing handshake communication with nodes.</li>
     <li><tt>--cluster_secret secret</tt> directs dispyscheduler to use
-    'secret' for hashing handshake communication with clusters.</li>
+      'secret' for hashing handshake communication with clusters.</li>
     <li><tt>--node_keyfile</tt> is file containing private key for SSL
-    communication (see Python 'ssl' module) with nodes. This key may
-    be stored in 'node_certfile' itself, in which case this can be
-    None.</li>
+      communication (see Python 'ssl' module) with nodes. This key may
+      be stored in 'node_certfile' itself, in which case this can be
+      None.</li>
     <li><tt>--node_certfile</tt> is file containing SSL certificate
-    (see Python 'ssl' module) with nodes.</li>
+      (see Python 'ssl' module) with nodes.</li>
     <li><tt>--cluster_keyfile</tt> is file containing private key for
-    SSL communication (see Python 'ssl' module) with clusters. This
-    key may be stored in cluster_certfile' itself, in which case this
-    can be None.</li>
+      SSL communication (see Python 'ssl' module) with clusters. This
+      key may be stored in cluster_certfile' itself, in which case
+      this can be None.</li>
     <li><tt>--cluster_certfile</tt> is file containing SSL certificate
-    (see Python 'ssl' module) with clusters.</li>
+      (see Python 'ssl' module) with clusters.</li>
     <li><tt>--pulse_interval n</tt> directs nodes it controls to send
-    pulse messages every <tt>n</tt> seconds; if a pulse message is not
-    received within 5*n, then a node is presumed dead. In that case,
-    if a cluster set 'reentrant=True', then jobs scheduled on that node
-    will be migrated to other node(s) if possible; if
-    'reentrant=False', then jobs are automatically
-    cancelled. <tt>n</tt> must be between 1 and 600.</li>
-      <li>
-	<tt>ping_interval</tt> is number of seconds.  Normally
-	dispyscheduler can locate nodes running dispynode by
-	broadcasting UDP ping messages on local network and
-	point-to-point UDP messages to nodes on remote
-	networks. However, UDP messages may get lost.  Ping interval
-	is number of seconds between repeated ping messages to find
-	any nodes that have missed previous ping messages.
-	</li>
-    <li><tt>-d</tt> enables debug messages that show trace of
-    execution. This may not be very useful to end users.</li>
+      pulse messages every <tt>n</tt> seconds; if a pulse message is
+      not received within 5*n, then a node is presumed dead. In that
+      case, if a cluster set 'reentrant=True', then jobs scheduled on
+      that node will be migrated to other node(s) if possible; if
+      'reentrant=False', then jobs are automatically
+      cancelled. <tt>n</tt> must be between 1 and 600.</li>
+    <li><tt>--ping_interval</tt> is number of seconds.  Normally
+      dispyscheduler can locate nodes running dispynode by
+      broadcasting UDP ping messages on local network and
+      point-to-point UDP messages to nodes on remote
+      networks. However, UDP messages may get lost.  Ping interval is
+      number of seconds between repeated ping messages to find any
+      nodes that have missed previous ping messages.</li>
 </ul>
 
 <h4>NAT/Firewall Forwarding</h4>
 
 <p>
 As explained in <a href="dispy.html">dispy</a>
-and <a href="dispynode.html">dispynode</a>documentation, 'ext_ip_addr'
+and <a href="dispynode.html">dispynode</a> documentation, 'ext_ip_addr'
 can be used to use services behind NAT firewall/gateway. This option
 can be used with dispyscheduler, too. This is especially useful if
 there are many nodes in a network behind NAT firewall/gateway
@@ -122,9 +123,7 @@ network with
 <tt>cluster = SharedJobCluster(compute, nodes=['*'], scheduler_node='a.b.c.d')</tt>
 </p>
 
-	  </div>
-	</div> 
-      </div> 
+    </div> 
     </div> 
     <div id="footer"> 
       <p> 
@@ -151,5 +150,6 @@ network with
         </a> 
       </p> 
     </div> 
+
   </body> 
 </html> 
