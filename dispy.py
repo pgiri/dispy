@@ -1865,8 +1865,8 @@ class SharedJobCluster(JobCluster):
                 if not ext_ip_addr:
                     break
                 
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock = AsyncSocket(sock, blocking=True)
+        sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), blocking=True,
+                           keyfile=self.keyfile, certfile=self.certfile)
         sock.connect((self.scheduler_ip_addr, scheduler_port))
         sock.sendall(self._cluster.auth_code)
         sock.send_msg('CLIENT:' + serialize({'version':_dispy_version, 'ip_addr':ext_ip_addr,
