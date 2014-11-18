@@ -1393,7 +1393,7 @@ if __name__ == '__main__':
     scheduler = _Scheduler(**config)
     while True:
         try:
-            sys.stdin.readline()
+            time.sleep(60)
         except KeyboardInterrupt:
             # TODO: terminate even if jobs are scheduled?
             logger.info('Interrupted; terminating')
