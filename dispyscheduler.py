@@ -31,6 +31,7 @@ import atexit
 import traceback
 import tempfile
 import cPickle as pickle
+import uuid
 
 from dispy import _Compute, DispyJob, _DispyJob_, _Node, _JobReply, \
      num_min, _parse_nodes, _node_ipaddr, _XferFile, _dispy_version
@@ -615,7 +616,7 @@ class _Scheduler(object):
             except:
                 logger.debug('Ignoring job request from %s', addr[0])
                 return
-            _job.uid = id(_job)
+            _job.uid = uuid.uuid4().hex
             setattr(_job, 'node', None)
             job = type('DispyJob', (), {'status':DispyJob.Created,
                                         'start_time':None, 'end_time':None})
