@@ -6,8 +6,6 @@ machines in cluster(s), grid, cloud etc. for parallel execution.
 See http://dispy.sourceforge.net for details.
 """
 
-from __future__ import print_function
-
 __author__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __email__ = "pgiri@yahoo.com"
 __copyright__ = "Copyright 2011, Giridhar Pemmasani"
@@ -1380,7 +1378,7 @@ class _Cluster(object):
             logger.debug('shutdown complete')
 
     def stats(self, compute, wall_time=None):
-        print()
+        print
         heading = ' %30s | %5s | %7s | %10s | %13s' % \
                   ('Node', 'CPUs', 'Jobs', 'Sec/Job', 'Node Time Sec')
         print(heading)
@@ -1400,12 +1398,12 @@ class _Cluster(object):
                 name = ip_addr
             print(' %-30.30s | %5s | %7s | %10.3f | %13.3f' % \
                   (name, node.cpus, node.jobs, secs_per_job, node.cpu_time))
-        print()
+        print
         msg = 'Total job time: %.3f sec' % cpu_time
         if wall_time:
             msg += ', wall time: %.3f sec, speedup: %.3f' % (wall_time, cpu_time / wall_time)
         print(msg)
-        print()
+        print
 
 class JobCluster(object):
     """Create an instance of cluster for a specific computation.

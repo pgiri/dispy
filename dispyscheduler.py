@@ -6,8 +6,6 @@ when multiple processes may use same nodes simultaneously with
 SharedJobCluster; see accompanying 'dispy' for more details.
 """
 
-from __future__ import print_function
-
 __author__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __email__ = "pgiri@yahoo.com"
 __copyright__ = "Copyright 2011, Giridhar Pemmasani"
@@ -1148,7 +1146,7 @@ class _Scheduler(object):
                     node.ip_addr not in self._clusters[cluster_id]._compute.nodes) \
                    for cluster_id in node.clusters):
                 continue
-            # logger.debug('load: %s, %s, %s' % (node.ip_addr, node.busy, node.cpus))
+            logger.debug('load: %s, %s, %s' % (node.ip_addr, node.busy, node.cpus))
             if (load is None) or ((float(node.busy) / node.cpus) < load):
                 host = node
                 load = float(node.busy) / node.cpus

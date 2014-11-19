@@ -17,7 +17,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "MIT"
 __url__ = "http://asyncoro.sourceforge.net"
 __status__ = "Production"
-__version__ = "3.0"
+__version__ = "3.1"
 
 __all__ = ['AsyncSocket', 'AsynCoroSocket', 'Coro', 'AsynCoro',
            'Lock', 'RLock', 'Event', 'Condition', 'Semaphore',
@@ -2215,12 +2215,8 @@ class Coro(object):
             request = _NetRequest('send', kwargs={'coro':self._id, 'message':message},
                                   dst=self._location, timeout=2)
             # request is queued for asynchronous processing
-            if _Peer.send_req(request):
+            if _Peer.send_req(request) != 0:
                 logger.warning('remote coro at %s may not be valid', self._location)
-                # def _unsub(self, rchannels, coro=None):
-                #     for rchannel in rchannels:
-                #         yield rchannel.unsubscribe(self)
-                # Coro(_unsub, self, Coro._asyncoro._rchannels.values())
                 return -1
             else:
                 return 0
@@ -2228,25 +2224,22 @@ class Coro(object):
     def deliver(self, message, timeout=None):
         """Must be used with 'yield' as 'yield coro.deliver(message)'.
 
-        Deliver message to coroutine to the 'real' coroutine to which
-        this instance refers to and return number of coroutines that
-        received the message.
-
         Can also be used on remotely running coroutines.
+
+        Return value indicates status of delivering the message: If it
+        is 1, then message has been delivered, if it is 0, it couldn't
+        be delivered before timeout, and if it is < 0, then the
+        (remote) coroutine is not valid.
         """
         if self._location == Coro._asyncoro._location:
             reply = Coro._asyncoro._resume(self, message, AsynCoro._AwaitMsg_)
         else:
             request = _NetRequest('deliver', kwargs={'coro':self._id, 'message':message},
                                   dst=self._location, timeout=timeout)
+            request.reply = -1
             reply = yield Coro._asyncoro._sync_reply(request, alarm_value=0)
             if reply < 0:
                 logger.warning('remote coro at %s may not be valid', self._location)
-                # def _unsub(self, rchannels, coro=None):
-                #     for rchannel in rchannels:
-                #         yield rchannel.unsubscribe(self)
-                # Coro(_unsub, self, Coro._asyncoro._rchannels.values())
-                reply = 0
         raise StopIteration(reply)
 
     def receive(self, timeout=None, alarm_value=None):
@@ -2330,7 +2323,7 @@ class Coro(object):
         else:
             request = _NetRequest('terminate_coro', kwargs={'coro':self._id},
                                   dst=self._location, timeout=2)
-            if _Peer.send_req(request):
+            if _Peer.send_req(request) != 0:
                 logger.warning('remote coro at %s may not be valid', self._location)
                 return -1
             return 0
@@ -2664,19 +2657,23 @@ class Channel(object):
                     message = None
                 if message is None:
                     return 0
+            invalid = []
             for subscriber in self._subscribers:
-                subscriber.send(message)
+                if subscriber.send(message) != 0:
+                    invalid.append(subscriber)
+            if invalid:
+                def _unsub(self, subscriber, coro=None):
+                    logger.debug('remote subscriber %s is not valid; unsubscribing it' % subscriber)
+                    yield self.unsubscribe(subscriber)
+                for subscriber in invalid:
+                    Coro(_unsub, self, subscriber)
         else:
             # remote channel
             request = _NetRequest('send', kwargs={'channel':self._name, 'message':message},
                                   dst=self._location, timeout=2)
             # request is queued for asynchronous processing
-            if _Peer.send_req(request):
+            if _Peer.send_req(request) != 0:
                 logger.warning('remote channel at %s may not be valid', self._location)
-                # def _unsub(channel, rchannels, coro=None):
-                #     for rchannel in rchannels:
-                #         yield rchannel.unsubscribe(channel)
-                # Coro(_unsub, self, Channel._asyncoro._rchannels.values())
                 return -1
         return 0
 
@@ -2713,49 +2710,55 @@ class Channel(object):
                             raise StopIteration(0)
             # during delivery, _subscribers may change, so make copy
             subscribers = list(self._subscribers)
-            count = {'reply':0, 'pending':len(subscribers), 'success':0}
-            done = Event()
+            info = {'reply':0, 'pending':len(subscribers), 'success':0,
+                    'done':Event(), 'invalid':[]}
 
-            def _deliver(subscriber, c, n, event, timeout, coro=None):
+            def _deliver(subscriber, info, timeout, n, coro=None):
                 try:
                     reply = yield subscriber.deliver(message, timeout=timeout)
                     if reply > 0:
-                        c['reply'] += reply
-                        c['success'] += 1
-                        if n > 0 and c['success'] >= n:
-                            event.set()
+                        info['reply'] += reply
+                        info['success'] += 1
+                        if n > 0 and info['success'] >= n:
+                            info['done'].set()
+                    elif reply < 0:
+                        info['invalid'].append(subscriber)
                 except:
                     pass
-                c['pending'] -= 1
-                if c['pending'] == 0:
-                    event.set()
+                info['pending'] -= 1
+                if info['pending'] == 0:
+                    info['done'].set()
             for subscriber in subscribers:
                 if isinstance(subscriber, Coro) and self._location == subscriber._location:
                     if subscriber.send(message) == 0:
-                        count['reply'] += 1
-                        count['success'] += 1
-                    count['pending'] -= 1
+                        info['reply'] += 1
+                        info['success'] += 1
+                    info['pending'] -= 1
                 else:
                     # channel/remote coro
-                    Coro(_deliver, subscriber, count, n, done, timeout)
-            if count['pending'] == 0:
-                done.set()
-            if n == 0 or count['success'] < n:
-                yield done.wait(timeout)
-            raise StopIteration(count['reply'])
+                    Coro(_deliver, subscriber, info, timeout, n)
+            if info['pending'] == 0:
+                info['done'].set()
+            if n == 0 or info['success'] < n:
+                yield info['done'].wait(timeout)
+
+            if info['invalid']:
+                def _unsub(self, subscriber, coro=None):
+                    logger.debug('remote subscriber %s is not valid; unsubscribing it' % subscriber)
+                    yield self.unsubscribe(subscriber)
+                for subscriber in info['invalid']:
+                    Coro(_unsub, self, subscriber)
+
+            raise StopIteration(info['reply'])
         else:
             # remote channel
             request = _NetRequest('deliver', kwargs={'channel':self._name, 'message':message, 'n':n},
                                   dst=self._location, timeout=timeout)
+            request.reply = -1
             reply = yield Channel._asyncoro._sync_reply(request, alarm_value=0)
             if reply < 0:
                 logger.warning('remote channel "%s" at %s may have gone away!',
                                self._name, self._location)
-                # def _unsub(channel, rchannels, coro=None):
-                #     for rchannel in rchannels:
-                #         yield rchannel.unsubscribe(channel)
-                # Coro(_unsub, self, Channel._asyncoro._rchannels.values())
-                reply = 0
             raise StopIteration(reply)
 
     def close(self):
@@ -2782,7 +2785,7 @@ class Channel(object):
         return s
 
 class CategorizeMessages(object):
-    """Splits messages to coroutine in to categories so that they can
+    """Splits messages to coroutine into categories so that they can
     be processed on priority basis, for example.
     """
 
@@ -2833,7 +2836,7 @@ class CategorizeMessages(object):
             msg = c.popleft()
             raise StopIteration(msg)
         if timeout:
-            start = time.time()
+            start = _time()
         while True:
             msg = yield self._coro.receive(timeout=timeout, alarm_value=alarm_value)
             if msg == alarm_value:
@@ -2851,7 +2854,7 @@ class CategorizeMessages(object):
             else:
                 self._categories[None].append(msg)
             if timeout:
-                now = time.time()
+                now = _time()
                 timeout -= now - start
                 start = now
 
