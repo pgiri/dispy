@@ -296,7 +296,7 @@ class _DispyNode(object):
             # TODO: process each message as separate Coro, so
             # exceptions are contained?
             if msg.startswith('PING:'):
-                if self.num_cpus != self.avail_cpus or self.scheduler['ip'] != None:
+                if self.num_cpus != self.avail_cpus:
                     logger.debug('Busy (%s/%s); ignoring ping message from %s:%s',
                                  self.num_cpus, self.avail_cpus, addr[0], addr[1])
                     continue
