@@ -220,7 +220,7 @@ class _DispyNode(object):
         self.udp_sock.bind(('', node_port))
         logger.info('serving %s cpus at %s:%s', self.num_cpus, self.ext_ip_addr, node_port)
         logger.debug('tcp server at %s:%s', self.address[0], self.address[1])
-        self.udp_sock = AsyncSocket(self.udp_sock, blocking=False)
+        self.udp_sock = AsyncSocket(self.udp_sock)
 
         self.reply_Q = multiprocessing.Queue()
         self.reply_Q_thread = threading.Thread(target=self.__reply_Q)
@@ -264,7 +264,8 @@ class _DispyNode(object):
                 pass
             finally:
                 sock.close()
-            sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
+            sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                               keyfile=self.keyfile, certfile=self.certfile)
             sock.settimeout(2)
             try:
                 yield sock.connect(addr)
@@ -276,7 +277,7 @@ class _DispyNode(object):
 
         def send_pong_msg(self, addr, auth_code, coro=None):
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock = AsyncSocket(sock, certfile=self.certfile, keyfile=self.keyfile)
+            sock = AsyncSocket(sock, keyfile=self.keyfile, certfile=self.certfile)
             sock.settimeout(2)
             try:
                 pong_msg['scheduler_ip_addr'] = addr[0]
@@ -696,7 +697,8 @@ class _DispyNode(object):
                 # logger.debug(traceback.format_exc())
                 raise StopIteration
 
-            sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
+            sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                               keyfile=self.keyfile, certfile=self.certfile)
             sock.settimeout(5)
             try:
                 yield sock.connect((pong_msg['scheduler_ip_addr'], info['port']))
@@ -908,8 +910,7 @@ class _DispyNode(object):
                     last_pulse_time = now
                     msg = 'PULSE:' + serialize({'ip_addr':self.ext_ip_addr, 'port':self.port,
                                                 'cpus':n, 'scheduler_ip_addr':self.scheduler['ip']})
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                    sock = AsyncSocket(sock, blocking=False)
+                    sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
                     sock.settimeout(1)
                     yield sock.sendto(msg, (self.scheduler['ip'], self.scheduler['port']))
                     sock.close()
@@ -953,8 +954,7 @@ class _DispyNode(object):
                     logger.warning('Deleting zombie computation "%s"', compute.name)
                     self.cleanup_computation(compute)
                 for compute in zombies:
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                    sock = AsyncSocket(sock, blocking=False)
+                    sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
                     sock.settimeout(1)
                     logger.debug('Sending TERMINATE to %s', compute.scheduler_ip_addr)
                     data = serialize({'ip_addr':self.ext_ip_addr, 'port':self.port,
@@ -1020,7 +1020,7 @@ class _DispyNode(object):
             self.avail_cpus += 1
             assert self.avail_cpus <= self.num_cpus
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock = AsyncSocket(sock, blocking=False, certfile=self.certfile, keyfile=self.keyfile)
+        sock = AsyncSocket(sock, keyfile=self.keyfile, certfile=self.certfile)
         sock.settimeout(5)
         try:
             yield sock.connect(job_info.reply_addr)
@@ -1144,7 +1144,7 @@ class _DispyNode(object):
                     job_info.proc.wait()
             for cid, compute in computations:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock = AsyncSocket(sock, blocking=False)
+                sock = AsyncSocket(sock, keyfile=self.keyfile, certfile=self.certfile)
                 sock.settimeout(2)
                 logger.debug('Sending TERMINATE to %s', compute.scheduler_ip_addr)
                 info = {'ip_addr':self.ext_ip_addr, 'port':self.port, 'sign':self.signature}
@@ -1230,5 +1230,5 @@ if __name__ == '__main__':
         except:
             logger.debug(traceback.format_exc())
             continue
-        conn = AsyncSocket(conn, blocking=False, keyfile=node.keyfile, certfile=node.certfile)
+        conn = AsyncSocket(conn, keyfile=node.keyfile, certfile=node.certfile)
         Coro(node.tcp_serve_task, conn, addr)

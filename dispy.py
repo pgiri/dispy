@@ -14,7 +14,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "MIT"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "3.18"
+__version__ = "3.20"
 
 __all__ = ['logger', 'DispyJob', 'JobCluster', 'SharedJobCluster']
 
@@ -410,7 +410,7 @@ class _DispyJob_(object):
         return self.uid < other.uid
 
     def __eq__(self, other):
-        return self.uid == other.uid
+        return isinstance(other, _DispyJob_) and self.uid == other.uid
 
     def run(self, coro=None):
         # generator
@@ -747,7 +747,7 @@ class _Cluster(object):
 
         if self.shared:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock = AsyncSocket(sock, keyfile=cluster.keyfile, certfile=cluster.certfile)
+            sock = AsyncSocket(sock, keyfile=self.keyfile, certfile=self.certfile)
             sock.settimeout(2)
             yield sock.connect((cluster.scheduler_ip_addr, cluster.scheduler_port))
             req = 'DEL_COMPUTE:' + serialize({'ID':cluster._compute.id})
@@ -938,7 +938,8 @@ class _Cluster(object):
                     if node.auth_code == info['auth_code']:
                         continue
                 def _get_pong(self, info, coro=None):
-                    sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
+                    sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                                       keyfile=self.keyfile, certfile=self.certfile)
                     sock.settimeout(2)
                     try:
                         pong_msg = {'ip_addr':info['scheduler_ip_addr'], 'port':self.port,
@@ -1026,7 +1027,8 @@ class _Cluster(object):
                 if node:
                     if node.auth_code == info['auth_code']:
                         raise StopIteration
-                sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
+                sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                                   keyfile=self.keyfile, certfile=self.certfile)
                 sock.settimeout(2)
                 try:
                     pong_msg = {'ip_addr':info['scheduler_ip_addr'], 'port':self.port,
@@ -1066,7 +1068,7 @@ class _Cluster(object):
                     # logger.debug(traceback.format_exc())
                     pass
             else:
-                logger.warning('invalid job reply from %s:%s ignored' % addr)
+                logger.warning('invalid message from %s:%s ignored' % addr)
                 logger.debug(traceback.format_exc())
         conn.close()
 
@@ -1833,7 +1835,8 @@ class SharedJobCluster(JobCluster):
         JobCluster.__init__(self, computation, nodes='dummy', depends=depends,
                             callback=callback, ip_addr=ip_addr, port=port, ext_ip_addr=ext_ip_addr,
                             loglevel=loglevel, setup=setup, cleanup=cleanup, pulse_interval=None,
-                            poll_interval=None, reentrant=reentrant, fault_recover=fault_recover)
+                            poll_interval=None, reentrant=reentrant, fault_recover=fault_recover,
+                            secret=secret, keyfile=keyfile, certfile=certfile)
         def _terminate_scheduler(self, coro=None):
             self._cluster.terminate = True
             yield self._cluster._sched_event.set()
@@ -1844,8 +1847,6 @@ class SharedJobCluster(JobCluster):
         self._compute.node_spec = nodes
         self.pulse_interval = None
         self.poll_interval = None
-        self.keyfile = keyfile
-        self.certfile = certfile
 
         if not scheduler_port:
             scheduler_port = 51349
@@ -1864,7 +1865,7 @@ class SharedJobCluster(JobCluster):
                     break
                 
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock = AsyncSocket(sock, blocking=True)
+        sock = AsyncSocket(sock, blocking=True, keyfile=keyfile, certfile=certfile)
         sock.connect((self.scheduler_ip_addr, scheduler_port))
         sock.sendall(self._cluster.auth_code)
         sock.send_msg('CLIENT:' + serialize({'version':_dispy_version, 'ip_addr':ext_ip_addr,
@@ -1880,7 +1881,7 @@ class SharedJobCluster(JobCluster):
         self.auth_code = hashlib.sha1(reply['sign'] + secret).hexdigest()
 
         sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), blocking=True,
-                           keyfile=self.keyfile, certfile=self.certfile)
+                           keyfile=keyfile, certfile=certfile)
         sock.settimeout(3)
         self._compute.scheduler_ip_addr = ext_ip_addr
         self._compute.scheduler_port = self._cluster.port
@@ -1907,7 +1908,7 @@ class SharedJobCluster(JobCluster):
             xf.compute_id = self._compute.id
             logger.debug('Sending file "%s"', xf.name)
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock = AsyncSocket(sock, blocking=True, keyfile=self.keyfile, certfile=self.certfile)
+            sock = AsyncSocket(sock, blocking=True, keyfile=keyfile, certfile=certfile)
             sock.settimeout(5)
             try:
                 sock.connect((self.scheduler_ip_addr, self.scheduler_port))
@@ -1929,7 +1930,7 @@ class SharedJobCluster(JobCluster):
             sock.close()
 
         sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), blocking=True,
-                           keyfile=self.keyfile, certfile=self.certfile)
+                           keyfile=keyfile, certfile=certfile)
         sock.settimeout(3)
         sock.connect((self.scheduler_ip_addr, self.scheduler_port))
         req = 'ADD_COMPUTE:' + serialize({'ID':self._compute.id})
@@ -1964,7 +1965,7 @@ class SharedJobCluster(JobCluster):
 
         def _submit_job(self, _job, coro=None):
             sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
-                               keyfile=self.keyfile, certfile=self.certfile)
+                               keyfile=self._cluster.keyfile, certfile=self._cluster.certfile)
             sock.settimeout(5)
             try:
                 yield sock.connect((self.scheduler_ip_addr, self.scheduler_port))
@@ -2005,9 +2006,9 @@ class SharedJobCluster(JobCluster):
                 raise StopIteration(-1)
 
             job.status = DispyJob.Cancelled
-            assert self._pending_jobs >= 1
+            # assert self._pending_jobs >= 1
             sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
-                               keyfile=self.keyfile, certfile=self.certfile)
+                               keyfile=self._cluster.keyfile, certfile=self._cluster.certfile)
             sock.settimeout(5)
             try:
                 yield sock.connect((self.scheduler_ip_addr, self.scheduler_port))

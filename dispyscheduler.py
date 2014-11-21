@@ -180,6 +180,12 @@ class _Scheduler(object):
             self.unsched_jobs = 0
             self._sched_jobs = {}
             self._sched_event = asyncoro.Event()
+            # once a _job is done (i.e., final result for it is
+            # received from node), it is added to done_jobs, so same
+            # object is not reused by Python (when a new job is
+            # submitted) until the result is sent back to client
+            # (otherwise, 'id' may be duplicate)
+            self.done_jobs = {}
             self.terminate = False
             self.sign = os.urandom(20).encode('hex')
             self.auth_code = hashlib.sha1(self.sign + self.cluster_secret).hexdigest()
@@ -251,8 +257,6 @@ class _Scheduler(object):
                         pass
                     bc_sock.close()
             else:
-                if node_info['ip_addr'] in cluster._compute.nodes:
-                    continue
                 port = node_info['port']
                 if not port:
                     port = self.node_port
@@ -278,7 +282,7 @@ class _Scheduler(object):
                         # logger.debug(traceback.format_exc())
                         pass
                     tcp_sock.close()
- 
+
         while True:
             msg, addr = yield self.udp_sock.recvfrom(1000)
             if msg.startswith('PULSE:'):
@@ -325,7 +329,8 @@ class _Scheduler(object):
                     if node.auth_code == info['auth_code']:
                         continue
                 def _get_pong(self, info, coro=None):
-                    sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
+                    sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                                       keyfile=self.node_keyfile, certfile=self.node_certfile)
                     sock.settimeout(2)
                     try:
                         pong_msg = {'ip_addr':info['scheduler_ip_addr'], 'port':self.port,
@@ -555,13 +560,16 @@ class _Scheduler(object):
         assert coro is not None
         logger.debug('Sending results for %s to %s, %s', uid, ip, port)
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock = AsyncSocket(sock)
+        sock = AsyncSocket(sock, keyfile=self.cluster_keyfile, certfile=self.cluster_certfile)
         sock.settimeout(5)
         try:
             yield sock.connect((ip, port))
             yield sock.send_msg(serialize(result))
             ack = yield sock.recv_msg()
             assert ack == 'ACK'
+            if result.status != DispyJob.ProvisionalResult:
+                if self.done_jobs.pop(uid, None) == None:
+                    logger.warning('job %s is not in "done"!' % uid)
         except:
             logger.debug(traceback.format_exc())
             f = os.path.join(self.dest_path_prefix, str(cid), '_dispy_job_reply_%s' % uid)
@@ -601,6 +609,7 @@ class _Scheduler(object):
                 cluster._pending_jobs -= 1
                 if cluster._pending_jobs == 0:
                     cluster.end_time = time.time()
+                self.done_jobs[_job.uid] = _job
                 Coro(self.send_job_result, _job.uid, cluster._compute.id,
                      cluster.client_ip_addr, cluster.client_job_result_port, reply)
 
@@ -983,7 +992,6 @@ class _Scheduler(object):
     def tcp_task(self, conn, addr, coro=None):
         # generator
         conn.settimeout(2)
-        msg = ''
         try:
             msg = yield conn.recv_msg()
             reply = unserialize(msg)
@@ -1013,7 +1021,8 @@ class _Scheduler(object):
                 if node:
                     if node.auth_code == info['auth_code']:
                         raise StopIteration
-                sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
+                sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                                   keyfile=self.node_keyfile, certfile=self.node_certfile)
                 sock.settimeout(2)
                 try:
                     pong_msg = {'ip_addr':info['scheduler_ip_addr'], 'port':self.port,
@@ -1053,7 +1062,7 @@ class _Scheduler(object):
                     # logger.debug(traceback.format_exc())
                     pass
             else:
-                logger.warning('invalid job reply from %s:%s ignored' % addr)
+                logger.warning('invalid message from %s:%s ignored' % addr)
                 logger.debug(traceback.format_exc())
         conn.close()
 
@@ -1102,6 +1111,7 @@ class _Scheduler(object):
         job.start_time = reply.start_time
         job.end_time = reply.end_time
         if reply.status != DispyJob.ProvisionalResult:
+            self.done_jobs[_job.uid] = _job
             del self._sched_jobs[_job.uid]
             if reply.status == DispyJob.Finished:
                 node.jobs += 1
@@ -1146,7 +1156,7 @@ class _Scheduler(object):
                     node.ip_addr not in self._clusters[cluster_id]._compute.nodes) \
                    for cluster_id in node.clusters):
                 continue
-            logger.debug('load: %s, %s, %s' % (node.ip_addr, node.busy, node.cpus))
+            # logger.debug('load: %s, %s, %s' % (node.ip_addr, node.busy, node.cpus))
             if (load is None) or ((float(node.busy) / node.cpus) < load):
                 host = node
                 load = float(node.busy) / node.cpus
@@ -1243,6 +1253,7 @@ class _Scheduler(object):
         clusters = self._clusters.values()
         self._clusters = {}
         self._sched_jobs = {}
+        self.done_jobs = {}
         for cluster in clusters:
             compute = cluster._compute
             for node in compute.nodes.itervalues():
@@ -1267,7 +1278,7 @@ class _Scheduler(object):
             self.asyncoro.finish()
 
     def stats(self):
-        print()
+        print
         heading = ' %30s | %5s | %7s | %13s' % ('Node', 'CPUs', 'Jobs', 'Node Time Sec')
         print(heading)
         print('-' * len(heading))
@@ -1283,9 +1294,9 @@ class _Scheduler(object):
             print(' %-30.30s | %5s | %7s | %13.3f' % \
                   (name, node.cpus, node.jobs, node.cpu_time))
         wall_time = time.time() - self.start_time
-        print()
+        print
         print('Total job time: %.3f sec' % (tot_cpu_time))
-        print()
+        print
 
     def close(self, compute_id):
         cluster = self._clusters.get(compute_id, None)
@@ -1390,7 +1401,8 @@ if __name__ == '__main__':
     scheduler = _Scheduler(**config)
     while True:
         try:
-            sys.stdin.readline()
+            # sys.stdin.readline()
+            time.sleep(300)
         except KeyboardInterrupt:
             # TODO: terminate even if jobs are scheduled?
             logger.info('Interrupted; terminating')
