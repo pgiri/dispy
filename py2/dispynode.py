@@ -752,7 +752,7 @@ class _DispyNode(object):
 
             sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                keyfile=self.keyfile, certfile=self.certfile)
-            sock.settimeout(2)
+            sock.settimeout(MsgTimeout)
             try:
                 yield sock.connect((pong_msg['scheduler_ip_addr'], info['port']))
                 yield sock.send_msg('PONG:' + serialize(pong_msg))
