@@ -1,0 +1,242 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    <link type="text/css" rel="stylesheet" href="dispy.css" />
+
+    <script type="text/javascript" src="jquery.js"></script>
+
+    <script type="text/javascript">
+    //<![CDATA[
+
+     jQuery.ajaxSettings.traditional = true;
+
+      var cluster = {};
+      var timer = null;
+      var timeout = 1000 * %(TIMEOUT)s;
+      var sort_key = 'ip_addr';
+      var sorted_keys = [];
+
+      function merge_sorted_uniq(suarr1, suarr2, compare) {
+        var result = Array(suarr1.length + suarr2.length);
+        var i =  0;
+        var j = 0;
+        var k = 0;
+        compare = compare || function(a, b) { return a.toString().localeCompare(b.toString()); };
+        while (i < suarr1.length && j < suarr2.length) {
+          var test = compare(suarr1[i], suarr2[j]);
+          if (test < 0) {
+            result[k++] = suarr1[i++];
+          } else {
+            result[k++] = suarr2[j++];
+            if (test == 0) {
+              i++;
+            }
+          }
+        }
+        while (i < suarr1.length) {
+          result[k++] = suarr1[i++];
+        }
+        while (j < suarr2.length) {
+          result[k++] = suarr2[j++];
+        }
+        if (k == (suarr1.length + suarr2.length)) {
+          return result;
+        } else {
+          result.splice(k, (suarr1.length + suarr2.length - k));
+          return result;
+        }
+      }
+
+      function show_cluster() {
+        if (sorted_keys.length == 0) {
+          var key_ids = $.map(cluster, function(node) {
+            return {key:node[sort_key], id:node.ip_addr};
+          });
+          sorted_keys = $.map(key_ids.sort(function(a, b) {
+                                  return a.key < b.key ? 1 : (a.key > b.key ? -1 : 0); }),
+                              function(key_id) {
+                                return key_id.id;
+                              });
+        }
+        var rows = '';
+        $.each(sorted_keys, function(i, key) {
+          var node = cluster[key];
+          rows += '<tr><td>' + (i + 1) + '</td>' +
+            '<td><a href="node.html?name_ip=' + node.ip_addr + '" ' + 'title="View jobs on ' +
+            node.ip_addr + '">' + node.ip_addr + '</a></td><td>' + node.name + '</td><td>' +
+            node.cpus + '</td><td>' + node.busy + '</td><td>' + node.done + '</td><td>' +
+            node.cpu_time.toFixed(2) + '</td><td>' +
+            (node.done > 0 ? (node.cpu_time / node.done).toFixed(2) : 0) +
+            '</td><td>' + node.last_update.toLocaleTimeString() + '</td></tr>';
+        });
+        $('#nodes').html(rows);
+      }
+
+      function sort_cmp(a, b) {
+        return a < b ? 1 : (a > b ? -1 : 0);
+      }
+
+      function cluster_status(request) {
+        $.ajax({
+          url: request,
+          method: 'GET',
+          dataType: 'json',
+          timeout: Math.min(5000, timeout)
+        })
+          .done(function(updates) {
+            var jobs = updates.jobs;
+
+            $('#jobs-submitted').text(jobs.submitted);
+            $('#jobs-done').text(jobs.done);
+            $('#jobs-pending').text(jobs.submitted - jobs.done);
+
+            if (updates.nodes.length > 0) {
+              $.each(updates.nodes, function(i, node) {
+                node.last_update = new Date(node.update_epoch_ms);
+                cluster[node.ip_addr] = node;
+              });
+              if (sort_key == 'ip_addr') {
+                var keys = $.map(updates.nodes, function(node) {
+                  return node.ip_addr;
+                });
+                sorted_keys = merge_sorted_uniq(sorted_keys, keys.sort(sort_cmp), sort_cmp);
+              } else {
+                sorted_keys = [];
+              }
+              show_cluster();
+            }
+            var now = new Date();
+            now = now.toLocaleTimeString();
+            $('#messages').html('<li>Status updated at ' + now + '</li>');
+
+            if (timeout > 1000) {
+              timer = setTimeout(function() { cluster_status('cluster_updates') }, timeout);
+            }
+          })
+
+          .fail(function(jqXHR, textStatus, errorThrown) {
+            $('#messages').append('<li>Could not get status from dispy cluster; ' +
+              'reload this page when cluster is ready</li>');
+            $('#timeout-div').hide();
+            if (timer != null) {
+              clearTimeout(timer);
+              timer = null;
+            }
+          })
+      }
+
+      $(document).ready(function() {
+
+        $('#cluster-name').text('compute');
+        cluster_status('cluster_status');
+
+        $('select[name="sort-key"]').val(sort_key);
+
+        $('#timeout-update').click(function() {
+          var update_sec = $('#timeout-value').val();
+          if (!$.isNumeric(update_sec)) {
+            $('#messages').append('<li>Invalid timeout value ignored.</li>');
+            $('#timeout-value').val(timeout / 1000);
+            return false;
+          }
+          update_sec = parseInt(update_sec);
+          if (timer != null) {
+            clearTimeout(timer);
+            timer = null;
+          }
+          if (update_sec < 1) {
+            update_sec = 0;
+            $('#messages').append('<li>Timed updates disabled.</li>');
+          }
+
+          if (timeout != (1000 * update_sec)) {
+            $.ajax({
+              url: '/set_poll_sec',
+              method: 'POST',
+              data: {timeout: update_sec},
+              timeout: 1000
+            });
+          }
+
+          $('#timeout-value').val(update_sec);
+          timeout = 1000 * update_sec;
+          cluster_status('cluster_updates');
+        });
+
+        $('select[name="sort-key"]').change(function() {
+          sort_key = $(this).val();
+          sorted_keys = [];
+          show_cluster();
+        });
+
+      });
+    //]]>
+    </script>
+
+  <title>dispy: Cluster Status</title>
+  </head>
+  <body>
+    <div id="page">
+      <nav style="margin:0 auto;" id="navigation" role="navigation">
+        <ul>
+          <li class="active"><a href="monitor.html">Monitor</a></li>
+          <li><a href="manage.html">Manage</a></li>
+          <li><a href="node.html">Node</a></li>
+        </ul>
+      </nav>
+
+      <h1><span class="title">dispy: Cluster Status</span></h1>
+
+      <table class="fancy shadow" style="text-align:right;margin:20px auto;">
+        <caption>
+          <span class="border" style="display:inline-block;margin-bottom:10px;">
+            <table>
+              <tr><td>Jobs Submitted : </td><td id="jobs-submitted">0</td></tr>
+              <tr><td>Jobs Done : </td><td id="jobs-done">0</td></tr>
+              <tr><td>Jobs Pending : </td><td id="jobs-pending">0</td></tr>
+            </table>
+          </span>
+        </caption>
+        <thead>
+          <tr>
+            <th></th><th>IP Address</th><th>Name</th><th>CPUs</th><th>Busy</th><th>Done</th>
+            <th>CPU Time</th><th>Sec/Job</th><th>Last Update</th>
+          </tr>
+        </thead>
+        <tbody id="nodes">
+        </tbody>
+      </table>
+
+      <hr style="margin:10px;" />
+
+      <div id="timeout-div" style="margin:10px auto;">
+        <span class="border" style="padding:10px;display:inline-block;">
+          <strong>Update Interval Seconds:</strong>
+          <input style="width:3em;" maxlength="6" type="text" id="timeout-value" value="%(TIMEOUT)s" />
+          <button type="button" id="timeout-update" style="margin-left:5px;">Update</button>
+        </span>
+      </div>
+      <div style="margin:10px auto;">
+        <span class="border" style="padding:10px;display:inline-block;">
+          <strong>Sort Nodes by : </strong>
+          <select name="sort-key" style="margin-left:5px;">
+            <option value="ip_addr">IP Address</option>
+            <option value="name">Name</option>
+            <option value="cpu_time">CPU Time</option>
+            <option value="done">Jobs Done</option>
+            <option value="last_update">Last Update</option>
+          </select>
+        </span>
+      </div>
+
+      <hr style="margin:10px;" />
+      <div>
+        <ul id="messages" style="margin:1em auto;display:inline-block;"></ul>
+      </div>
+
+    </div>
+  </body>
+</html>

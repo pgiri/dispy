@@ -1,0 +1,305 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    <link type="text/css" rel="stylesheet" href="dispy.css" />
+
+    <script type="text/javascript" src="jquery.js"></script>
+
+    <script type="text/javascript">
+    //<![CDATA[
+
+      jQuery.ajaxSettings.traditional = true;
+
+      var node_ip_addr = null;
+      var timer = null;
+      var timeout = 1000 * %(TIMEOUT)s;
+
+      function getLocationParam(param) {
+        param = param.replace(/[\[]/, '\\[').replace(/[\]]/, '\\]');
+        var regex = new RegExp('[\\?&]' + param + '=([^&#]*)'),
+        results = regex.exec(location.search);
+        return results === null ? '' : decodeURIComponent(results[1].replace(/\+/g, ' '));
+      }
+
+      function show_node(name_ip) {
+        $.ajax({
+          url: '/node_jobs',
+          method: 'POST',
+          data: {'name_ip':name_ip},
+          dataType: 'json',
+          timeout: Math.min(5000, timeout)
+        })
+
+          .done(function(data) {
+            $('#messages').html('');
+            var node = data.node;
+            if (node.hasOwnProperty('ip_addr')) {
+              node_ip_addr = node.ip_addr;
+              $('#node_ip_addr').text(node.ip_addr);
+              $('#node_name').text(node.name);
+              $('#node_avail_cpus').text(node.avail_cpus);
+              $('#node_cpus').text(node.cpus);
+              $('#node_done').text(node.done);
+              $('#node_cpu_time').text(node.cpu_time.toFixed(2));
+              $('#node_sec_job').text(node.done > 0 ? (node.cpu_time / node.done).toFixed(2) : 0);
+              $('#node_update').text((new Date(node.update_epoch_ms)).toLocaleTimeString());
+              if ($('#node').is(':hidden')) {
+                $('#node').show();
+                $('#timeout-div').show();
+              }
+
+              var jobs = data.jobs;
+              var rows = '';
+              $.each(jobs, function(i, job) {
+                var args = job.args;
+                if (job.kwargs.length > 0) {
+                  if (args.length > 0) {
+                    args += ', ';
+                  }
+	          args += job.kwargs;
+                }
+                rows += '<tr>' +
+                  '<td><input type="checkbox" name="job" value="' + job.uid + '_' + i + '" /></td>' +
+                  '<td>' + job.job_id + '</td><td>' + args + '</td>' +
+	          '<td>' + (new Date(job.sched_time_ms)).toLocaleTimeString() + '</td></tr>';
+              });
+              if (jobs.length > 0) {
+                if ($('#jobs').is(':hidden')) {
+                  $('#jobs').show();
+                }
+                $('#jobs-table tbody').html(rows);
+              } else {
+                $('#jobs').hide();
+                $('#messages').append('<li style="margin:10px 0;"><span class="border">' +
+                                      'No jobs running on this node.</span></li>');
+              }
+
+              var now = new Date();
+              $('#messages').append('<li>Status updated at ' + now.toLocaleTimeString() + '</li>');
+              if (timeout > 1000) {
+                timer = setTimeout(function() { show_node(node.ip_addr) }, timeout);
+              }
+            } else {
+              $('#messages').append('<li>Failed to get information about "' + name_ip + '"</li>');
+              $('#node').hide();
+              $('#timeout-div').hide();
+              $('#jobs').hide();
+            }
+
+          })
+
+          .fail(function(jqXHR, textStatus, errorThrown) {
+            $('#messages').append('<li>Node update failed</li>');
+            $('#jobs').hide();
+          });
+      }
+
+      $(document).ready(function() {
+        var name_ip = getLocationParam('name_ip');
+        $('#name_ip').val(name_ip);
+
+        if (!name_ip) {
+          $('#node').hide();
+          $('#timeout-div').hide();
+          $('#jobs').hide();
+        } else {
+          show_node(name_ip);
+        }
+	
+        $('#node-update').click(function() {
+          name_ip = $('#name_ip').val().trim();
+          // $(this).prop('disabled', true);
+          if (timer != null) {
+            clearTimeout(timer);
+            timer = null;
+          }
+          show_node(name_ip);
+        });
+
+        $('#timeout-update').click(function() {
+          var update_sec = $('#timeout-value').val();
+          if (!$.isNumeric(update_sec)) {
+            $('#messages').append('<li>Invalid timeout value ignored.</li>');
+            $('#timeout-value').val(timeout / 1000);
+            return false;
+          }
+          update_sec = parseInt(update_sec);
+          if (timer != null) {
+            clearTimeout(timer);
+            timer = null;
+          }
+
+          if (update_sec < 1) {
+            update_sec = 0;
+            $('#messages').append('<li>Timed updates disabled.</li>');
+          }
+
+          if (timeout != (1000 * update_sec)) {
+            $.ajax({
+              url: '/set_poll_sec',
+              method: 'POST',
+              data: {timeout: update_sec},
+              timeout: 1000
+            });
+          }
+
+          $('#timeout-value').val(update_sec);
+          timeout = 1000 * update_sec;
+          show_node(node_ip_addr);
+        });
+
+        $('#cancel-jobs').click(function() {
+          if ($('select[name="cancel-confirm"]').val() != 'Yes') {
+            $('#messages').append('<li>Terminate jobs not confirmed</li>');
+            return false;
+          }
+          var cancel_jobs = [];
+          $('input[type="checkbox"][name="job"]').each(function(i) {
+            if ($(this).prop('checked')) {
+              var uid = $(this).val();
+              uid = uid.substring(0, uid.lastIndexOf('_'));
+              cancel_jobs.push(uid);
+            }
+          });
+          if (cancel_jobs.length == 0) {
+            return false;
+          }
+
+          $(this).prop('disabled', true);
+          $('select[name="cancel-confirm"] > option[value=""]').prop('selected', true);
+
+          $.ajax({
+            url: '/cancel_jobs',
+            method: 'POST',
+            data: {uid:cancel_jobs},
+            dataType: 'json',
+            timeout: 5000
+          })
+
+            .done(function(data) {
+              $.each(data, function(i, uid) {
+                var row = $('input[type="checkbox"][name="job"][value^="' + uid + '_"]').val();
+                if (row) {
+                  row = row.substring(row.lastIndexOf('_') + 1);
+                  $('#jobs-table > tbody > tr:eq(' + row + ') td').each(function(i) {
+                    $(this).css('color', 'Gray');
+                    if (i == 3) {
+                      $(this).text('Terminated');
+                    }
+                  });
+                }
+              });
+              $('#cancel-jobs').prop('disabled', false);
+            })
+
+            .fail(function() {
+              $('#cancel-jobs').prop('disabled', false);
+              $('#messages').append('<li>Terminate jobs failed</li>');
+            });
+
+        });
+
+      });
+
+    //]]>
+    </script>
+
+  <title>dispy: Node Information</title>
+  </head>
+  <body>
+
+    <div id="page">
+      <nav style="margin:0 auto;" id="navigation" role="navigation">
+        <ul>
+          <li><a href="monitor.html">Monitor</a></li>
+          <li><a href="manage.html">Manage</a></li>
+          <li class="active"><a href="node.html">Node</a></li>
+        </ul>
+      </nav>
+
+      <h1 style="margin:2em 0;"><span class="title">dispy: Node Information</span></h1>
+
+      <table id="node" class="fancy shadow" style="margin:20px auto;text-align:left;font-weight:bold;">
+        <tbody>
+          <tr>
+            <td>IP Address</td><td id="node_ip_addr"></td>
+          </tr>
+          <tr>
+            <td>Name</td><td id="node_name"></td>
+          </tr>
+          <tr>
+            <td>Available CPUs</td><td id="node_avail_cpus"></td>
+          </tr>
+          <tr>
+            <td>CPUs Managed by dispy</td><td id="node_cpus"></td>
+          </tr>
+          <tr>
+            <td>Jobs Done</td><td id="node_done"></td>
+          </tr>
+          <tr>
+            <td>CPU Time Used Sec</td><td id="node_cpu_time"></td>
+          </tr>
+          <tr>
+            <td>CPU Time Sec / Job</td><td id="node_sec_job"></td>
+          </tr>
+          <tr>
+            <td>Last Update</td><td id="node_update"></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div id="jobs">
+
+        <table class="fancy shadow" style="margin:20px auto;" id="jobs-table">
+          <caption><span class="border" style="display:inline-block;">Jobs Running</span></caption>
+          <thead>
+            <tr><th>Select</th><th>Job ID</th><th>Arguments</th><th>Scheduled Time</th></tr>
+          </thead>
+          <tbody>
+          </tbody>
+        </table>
+
+        <div style="margin:10px auto;">
+          <span class="border" style="display:inline-block;">
+            <strong>Terminate Selected Jobs : </strong>
+            <select name="cancel-confirm" style="margin-left:5px;">
+              <option value="" selected="selected">Confirm</option>
+              <option value="No">No</option>
+              <option value="Yes">Yes</option>
+            </select>
+            <button type="button" id="cancel-jobs" style="margin-left:5px;">Terminate</button>
+          </span>
+        </div>
+
+      </div>
+
+      <hr style="margin:10px;" />
+
+      <div id="timeout-div" style="margin:10px auto;">
+        <span class="border" style="padding:10px;display:inline-block;">
+          <strong>Update Interval Seconds:</strong>
+          <input style="width:3em;" maxlength="6" type="text" id="timeout-value" value="%(TIMEOUT)s" />
+          <button type="button" id="timeout-update" style="margin-left:5px;">Update</button>
+        </span>
+      </div>
+
+      <div style="margin:10px auto;">
+        <span class="border" style="padding:10px;display:inline-block;">
+          <strong>Name or IP of Node to Show : </strong>
+          <input style="width:10em;" maxlength="32" type="text" id="name_ip" value="" />
+          <button type="button" id="node-update" style="margin-left:5px;">Update</button>
+        </span>
+      </div>
+
+      <hr style="margin:10px;" />
+
+      <div>
+        <ul id="messages" style="margin:1em auto;display:inline-block;"></ul>
+      </div>
+
+    </div>
+  </body>
+</html>

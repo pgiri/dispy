@@ -1,0 +1,204 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    <link type="text/css" rel="stylesheet" href="dispy.css" />
+
+    <script type="text/javascript" src="jquery.js"></script>
+
+    <script type="text/javascript">
+    //<![CDATA[
+
+      jQuery.ajaxSettings.traditional = true;
+
+      var cur_nodes = {};
+      var node_count = 5;
+
+      function show_nodes() {
+        $.ajax({
+          url: '/nodes',
+          method: 'GET',
+          dataType: 'json',
+          timeout: 5000
+        })
+
+          .done(function(nodes) {
+            if (nodes.length > 0) {
+              var rows = '';
+              cur_nodes = {};
+              $.each(nodes, function(i, node) {
+                cur_nodes[node.ip_addr] = node;
+                rows += '<tr><td>' + (i + 1) + '</td><td><a href="node.html?name_ip=' +
+                  node.ip_addr + '" title="View jobs on ' + node.ip_addr + '">' +
+                  node.ip_addr + '</a></td>' + '<td>' + node.name + '</td><td>' +
+                  node.avail_cpus + '</td>' + '<td><input style="width:4em" maxlength="6" ' +
+                  'type="text" name="cpus_' + node.ip_addr + '" value="' + node.cpus + '" /></td></tr>';
+              });
+              $('#cur-nodes > tbody').html(rows);
+              if ($('#cur-nodes-div').is(':hidden')) {
+                $('#cur-nodes-div').show();
+              }
+            } else {
+              $('#cur-nodes-div').hide();
+            }
+          })
+
+          .fail(function() {
+            $('#messages').append('<li>Failed to get nodes in cluster</li>');
+          });
+      }
+
+      $(document).ready(function() {
+
+        show_nodes();
+
+        $('#set-cpus').click(function() {
+          var cpus = {};
+          $.each(cur_nodes, function(i, node) {
+            var n = parseInt($('input[type="text"][name="cpus_' + node.ip_addr + '"]').val());
+            if (n == node.cpus) {
+              return true;
+            }
+            if ($.isNumeric(n) && (Math.abs(n) <= node.avail_cpus)) {
+              cpus[node.ip_addr] = n;
+            } else {
+              $('input[type="text"][name="cpus_' + node.ip_addr + '"]').val(node.cpus);
+              $('#messages').append('<li>Invalid CPUs ' + n + ' for ' + node.ip_addr +
+                                    ' ignored</li>');
+            }
+          });
+          if (Object.keys(cpus).length == 0) {
+            $('#messages').append('<li>No changes to cpus</li>');
+            return;
+          }
+          $.ajax({
+            url: '/set_cpus',
+            method: 'POST',
+            data: cpus,
+            dataType: 'json',
+            timeout: 5000
+          })
+
+            .done(function(data) {
+              $.each(data, function(ip_addr, n) {
+                $('input[type="text"][name="cpus_' + ip_addr + '"]').val(n);
+                cur_nodes[ip_addr].cpus = n;
+                $('#messages').append('<li>CPUs for ' + ip_addr + ' changed to ' + n + '</li>');
+              });
+            })
+
+            .fail(function() {
+              $('#messages').append('<li>Changing CPUs failed</li>');
+            });
+        });
+
+        var rows = '';
+
+        for (var i = 1; i <= node_count; i++) {
+          rows += '<tr><td>' + i + '</td>' +
+            '<td><input style="width:10em;" maxlength="32" type="text" name="name_ip_' + i + '" /></td>' +
+            '<td><input style="width:3em;" maxlength="6" type="text" name="cpus_' + i + '" /></td>' +
+            '<td><input style="width:4em;" maxlength="6" type="text" name="port_' + i + '" /></td>' +
+            '</tr>';
+        }
+        $('#new-nodes > tbody').html(rows);
+
+        $('#add-node').click(function() {
+          $('#messages').html('');
+          for (var i = 1; i <= node_count; i++) {
+            var node = {};
+            $('input[type="text"][name$="_' + i + '"]').each(function(i) {
+              var name = $(this).prop('name');
+              name = name.substring(0, name.lastIndexOf('_'));
+              node[name] = $(this).val().trim();
+            });
+            if (node.name_ip == '') {
+              // $('#messages').append('<li>ignoring node ' + i + '</li>');
+              continue;
+            }
+            node.id = i;
+            $.ajax({
+              url: '/add_node',
+              method: 'POST',
+              data: node,
+              dataType: 'json',
+              timeout: 1000
+            })
+
+              .done(function(node) {
+                $('#messages').append('<li>Node ' + node.id + ' with IP ' + node.name_ip +
+                                      ' requested</li>');
+              })
+
+              .fail(function(jqXHR, textStatus, errorThrown) {
+                $('#messages').append('<li>node ' + i + ' is invalid</li>');
+              })
+          }
+        });
+      });
+
+    //]]>
+    </script>
+
+  <title>dispy: Manage Nodes in Cluster</title>
+  </head>
+  <body>
+
+    <div id="page">
+      <nav style="margin:0 auto;" id="navigation" role="navigation">
+        <ul>
+          <li><a href="monitor.html">Monitor</a></li>
+          <li class="active"><a href="manage.html">Manage</a></li>
+          <li><a href="node.html">Node</a></li>
+        </ul>
+      </nav>
+
+      <h1 style="margin:2em 0;"><span class="title">dispy: Manage Nodes in Cluster</span></h1>
+
+      <div id="cur-nodes-div">
+        <table id="cur-nodes" class="fancy shadow" style="text-align:right;margin:20px auto;">
+          <caption>
+            <span class="border" style="display:inline-block;">Nodes in Cluster</span>
+          </caption>
+          <thead>
+            <tr><th></th><th>IP Address</th><th>Host Name</th>
+              <th>Available CPUs</th><th>dispy CPUs</th></tr>
+          </thead>
+          <tbody>
+          </tbody>
+        </table>
+
+        <div style="margin:20px auto;">
+          <button type="button" id="set-cpus">Set CPUs</button>
+        </div>
+
+        <hr style="margin:10px;" />
+
+      </div>
+
+      <table id="new-nodes" class="fancy shadow" style="text-align:right;margin:20px auto;">
+        <caption>
+          <span class="border" style="display:inline-block;">Add Nodes to Cluster</span>
+        </caption>
+        <thead>
+          <tr><th></th><th>Host Name or IP</th><th>CPUs</th><th>Port</th></tr>
+        </thead>
+        <tbody>
+        </tbody>
+      </table>
+
+      <div style="margin:20px auto;">
+        <button type="button" id="add-node">Add Nodes</button>
+      </div>
+
+      <hr style="margin:10px;" />
+
+      <div>
+        <ul id="messages" style="margin:1em auto;display:inline-block;"></ul>
+      </div>
+
+    </div>
+  </body>
+</html>

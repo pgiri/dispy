@@ -1,0 +1,232 @@
+body {
+    background:#e7e7e7;
+}
+
+h1 { margin: 2em auto; font-size: 150%; font-weight: bold; }
+h2 { margin-top: 1em; font-size: 120%; font-weight: bold; }
+h3 { margin-top: 1em; font-size: 100%; font-weight: bold; }
+
+#page {
+    text-align: center;
+}
+
+#navigation ul {
+    list-style: none;
+    background-color: #bcd;
+    border-radius: 8px;
+    box-shadow: 0px 2px 3px #999;
+    text-align: center;
+    padding: 5px;
+    margin: 0;
+    display: block;
+}
+
+#navigation li {
+    font-family: sans-serif;
+    font-weight: bold;
+    line-height: 2em;
+    font-size: 1.1em;
+    display: inline-block;
+}
+
+#navigation li + li {
+    border-left: 1px solid #888;
+}
+
+#navigation li a {
+    text-decoration: none;
+    color: #000;
+    margin: 0 10px;
+    padding: 0 10px;
+    display: block;
+    text-shadow: 1px 1px 1px #fff;
+    transition: .3s background-color;
+    border-radius: 8px;
+    border: 1px solid #aaa;
+}
+
+#navigation li:hover a {
+    background-color: #9ab;
+    border: 1px solid #e9e9e9;
+}
+
+#navigation li.active a {
+    background-color: #9ab;
+    cursor: default;
+    pointer-events: none;
+    border: 1px solid #e9e9e9;
+}
+
+code {
+    margin: 0.5em 2em;
+    padding: 0.5em;
+    text-align: left;
+    display: block;
+    overflow: auto;
+    font: 500 1em/1.5em monospace;
+    white-space: pre;
+    background: #f0f0f0;
+    border: 1px solid #999;
+    border-radius: 8px;
+}
+
+tt {
+    margin: 0.25em 0;
+    padding: 0.25em;
+    font: 500 1em/1.5em monospace;
+    background: #e0e0e0;
+    white-space: nowrap;
+}
+
+hr {
+    margin: 10px 0;
+    height: 0;
+    border-top: 1px solid #aaa;
+    border-bottom: 1px solid #fff;
+}
+
+.border {
+    padding: 5px;
+    border: #ccc 1px solid;
+    border-radius: 8px;
+}
+
+.shadow {
+    /*box-shadow: 0 3px 6px #888; -moz-box-shadow: 0 3px 6px #888; -webkit-box-shadow: 0 3px 6px #888;*/
+    box-shadow: 0px 0px 3px 2px #aaa;
+}
+
+table {
+    background: #bcd;
+    margin: 0; padding: 0;
+    border-spacing: 1px;
+    border-radius: 8px;
+    color: #000;
+}
+
+table th {
+    text-align: center;
+    font-weight: bold;
+    text-shadow: 1px 1px 1px #fff;
+    padding: 5px;
+    border: 1px solid #e9e9e9;
+}
+
+th:first-child {
+    border-top-left-radius: 8px;
+}
+
+th:last-child {
+    border-top-right-radius: 8px;
+}
+
+table td {
+    background: #eaeaea;
+    padding: 3px 5px;
+    vertical-align: middle;
+    color: #000;
+}
+
+td:last-child {
+    border-right: none;
+}
+
+tr:first-child td:first-child {
+    border-top-left-radius: 8px;
+}
+
+tr:first-child td:last-child {
+    border-top-right-radius: 8px;
+}
+
+tr:last-child td:first-child {
+    border-bottom-left-radius: 8px;
+}
+
+tr:last-child td:last-child {
+    border-bottom-right-radius: 8px;
+}
+
+table tr:last-child td {
+    border-bottom: none;
+}
+
+table.alt tr:nth-child(even) td {
+    background: #ddd;
+}
+
+table caption {
+    font-weight: bold;
+    margin-bottom: 10px;
+}
+
+caption table {
+    font-weight: bold;
+    background: transparent;
+    border-spacing: 0px;
+}
+
+caption table td {
+    text-align: right;
+    padding: 2px;
+}
+
+caption table tr:last-child td {
+    padding: 0;
+    margin: 0;
+}
+
+caption table tr + tr td {
+    border-top: 1px solid #bcd;
+}
+
+button {
+    font-weight: bold;
+    font-size: 1em;
+    padding: 3px;
+
+    color: #000;
+    text-shadow: 1px 1px 1px #fff;
+    background-color: #bcd;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    box-shadow: -1px 3px 1px #678;
+}
+
+button:enabled {
+    cursor: pointer;
+}
+
+button:hover:enabled {
+    background-color: #9ab;
+    border: 1px solid #9ab;
+}
+
+button:active:enabled {
+    background-color: #9ab;
+    border: 1px solid #9ab;
+    box-shadow: 0px 1px 1px #246;
+    transform: translateY(2px);
+}
+
+button:focus {
+    outline: 0;
+}
+
+button:disabled {
+    color: grey;
+    box-shadow: none;
+}
+
+input[type="text"] {
+    text-align: right;
+    background: #fff;
+    border: 1px solid #999;
+    border-radius: 4px;
+}
+
+.title {
+    padding: 10px;
+    border-radius: 8px;
+    box-shadow: 0px 0px 3px 2px #999;
+}
