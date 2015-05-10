@@ -40,6 +40,7 @@ import platform
 import pickle
 import queue
 import numbers
+import collections
 
 import asyncoro
 from asyncoro import Coro, AsynCoro, AsyncSocket, MetaSingleton, serialize, unserialize
@@ -270,6 +271,8 @@ class _XferFile(object):
 class _Node(object):
     """Internal use only.
     """
+    # TODO: maintain separate structure for stats in _Cluster so the
+    # time used by each cluster is accounted correctly
     def __init__(self, ip_addr, port, cpus, sign, secret, keyfile=None, certfile=None):
         self.ip_addr = ip_addr
         self.port = port
@@ -794,9 +797,11 @@ class _Cluster(object):
                         node.dispy_node = dispy_node
                         self._nodes[node.ip_addr] = node
                     cluster = self._clusters.get(info['compute_id'], None)
-                    if cluster and cluster.status:
-                        self.worker_Q.put((cluster.status,
-                                           (DispyNode.Initialized, dispy_node, None)))
+                    if cluster:
+                        cluster._compute.nodes[node.ip_addr] = node
+                        if cluster.status:
+                            self.worker_Q.put((cluster.status,
+                                               (DispyNode.Initialized, dispy_node, None)))
                 elif info['status'] == DispyNode.Closed:
                     cluster = self._clusters.get(info['compute_id'], None)
                     if cluster:
@@ -1599,34 +1604,6 @@ class _Cluster(object):
             self.asyncoro = None
             logger.debug('shutdown complete')
 
-    def stats(self, compute, wall_time=None):
-        print()
-        heading = ' %30s | %5s | %7s | %10s | %13s' % \
-                  ('Node', 'CPUs', 'Jobs', 'Sec/Job', 'Node Time Sec')
-        print(heading)
-        print('-' * len(heading))
-        cpu_time = 0.0
-        for ip_addr in sorted(compute.nodes, key=lambda addr: compute.nodes[addr].done,
-                              reverse=True):
-            node = compute.nodes[ip_addr]
-            if node.done:
-                secs_per_job = node.cpu_time / node.done
-            else:
-                secs_per_job = 0
-            cpu_time += node.cpu_time
-            if node.name:
-                name = ip_addr + ' (' + node.name + ')'
-            else:
-                name = ip_addr
-            print(' %-30.30s | %5s | %7s | %10.3f | %13.3f' % \
-                  (name, node.cpus, node.done, secs_per_job, node.cpu_time))
-        print()
-        msg = 'Total job time: %.3f sec' % cpu_time
-        if wall_time:
-            msg += ', wall time: %.3f sec, speedup: %.3f' % (wall_time, cpu_time / wall_time)
-        print(msg)
-        print()
-
 class JobCluster(object):
     """Create an instance of cluster for a specific computation.
     """
@@ -2023,18 +2000,66 @@ class JobCluster(object):
         self.close()
         return True
 
-    def stats(self):
-        """Show statistics for cluster(s).
-
-        Prints various statistics, such as number of nodes, CPUs in each node,
-        jobs performed by each node and time taken for each job and all jobs.
+    def stats_info(self, wall_time=None):
         """
-        if self.start_time is None or self.end_time is None:
-            time = None
-        else:
-            time = self.end_time - self.start_time
+        Return statstics (time used, jobs done etc.) about cluster and its nodes.
+        """
+        compute = self._compute
+        cluster_stats = collections.namedtuple('ClusterStats',
+                                               ['nodes', 'total_time', 'wall_time', 'speedup'])
+        node_stats = collections.namedtuple('NodeStats', ['ip_addr', 'cpus', 'cpu_time',
+                                                          'jobs_done', 'secs_per_job'])
+        cluster_stats.node_stats = len(compute.nodes) * [node_stats]
+        cluster_stats.total_time = 0.0
+        for i, ip_addr in enumerate(sorted(compute.nodes, key=lambda addr: compute.nodes[addr].done,
+                                           reverse=True)):
+            node = compute.nodes[ip_addr]
+            if node.done:
+                secs_per_job = node.cpu_time / node.done
+            else:
+                secs_per_job = 0
+            cluster_stats.total_time += node.cpu_time
+            if node.name:
+                name = ip_addr + ' (' + node.name + ')'
+            else:
+                name = ip_addr
+            node_info = cluster_stats.node_stats[i]
+            node_info.ip_addr = ip_addr
+            node_info.name = name
+            node_info.cpus = node.cpus
+            node_info.cpu_time = node.cpu_time
+            node_info.jobs_done = node.done
+            node_info.secs_per_job = secs_per_job
 
-        self._cluster.stats(self._compute, time)
+        cluster_stats.wall_time = wall_time
+        if wall_time:
+            cluster_stats.speedup = float(cluster_stats.total_time) / float(wall_time)
+        else:
+            cluster_stats.spedup = None
+
+        return cluster_stats
+
+    def stats(self, wall_time=None):
+        """
+        Prints statstics about cluster (see 'stats_info').
+        """
+        print()
+        heading = ' %30s | %5s | %7s | %10s | %13s' % \
+                  ('Node', 'CPUs', 'Jobs', 'Sec/Job', 'Node Time Sec')
+        print(heading)
+        print('-' * len(heading))
+        cluster_stats = self.stats_info(wall_time)
+        for node_stats in cluster_stats.node_stats:
+            print(' %-30.30s | %5s | %7s | %10.3f | %13.3f' % \
+                  (node_stats.name, node_stats.cpus, node_stats.jobs_done,
+                   node_stats.secs_per_job, node_stats.cpu_time))
+        print()
+        msg = 'Total job time: %.3f sec' % cluster_stats.total_time
+        if wall_time:
+            msg += ', wall time: %.3f sec, speedup: %.3f' % \
+                   (wall_time, cluster_stats.total_time / wall_time)
+        print(msg)
+        print()
 
     def wait(self):
         """Wait for scheduled jobs to complete.

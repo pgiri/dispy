@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/python
 
 """
 dispynetrelay: Relay ping messages from client(s) to nodes
@@ -78,14 +78,14 @@ class DispyNetRelay(object):
         scheduler_version = _dispy_version
 
         bc_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        bc_sock.bind(('', 0))
         bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
-        scheduler_ip_addr = _node_ipaddr(scheduler_node)
-        if scheduler_ip_addr and scheduler_port:
-            relay_request = serialize({'ip_addr':scheduler_ip_addr, 'port':scheduler_port,
-                                       'version':_dispy_version, 'sign':None})
-            bc_sock.sendto('PING:%s' % relay_request, ('<broadcast>', node_port))
+        scheduler_ip_addrs = list(filter(lambda ip: bool(ip), [_node_ipaddr(scheduler_node)]))
+        if scheduler_ip_addrs and scheduler_port:
+            relay_request = {'ip_addrs':scheduler_ip_addrs, 'port':scheduler_port,
+                             'version':_dispy_version, 'sign':None}
+            bc_sock.sendto('PING:' + serialize(relay_request), ('<broadcast>', node_port))
+        bc_sock.close()
 
         node_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         node_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -104,39 +104,43 @@ class DispyNetRelay(object):
                                      msg[:min(len(msg), 5)], addr[0])
                         continue
                     if netaddr and (struct.unpack('>L', socket.inet_aton(addr[0]))[0] & netmask) == netaddr:
-                        logger.debug('Ignoring own ping (from %s)', addr[0])
+                        logger.debug('Ignoring ping back (from %s)', addr[0])
                         continue
                     logger.debug('Ping message from %s (%s)', addr[0], addr[1])
                     try:
                         info = unserialize(msg[len('PING:'):])
-                        scheduler_ip_addr = info['ip_addr']
+                        if info['version'] != _dispy_version:
+                            logger.warning('Ignoring %s due to version mismatch: %s / %s',
+                                           info['ip_addrs'], info['version'], _dispy_version)
+                            continue
+                        scheduler_ip_addrs = info['ip_addrs'] + [addr[0]]
                         scheduler_port = info['port']
-                        assert info['version'] == _dispy_version
-                        # scheduler_sign = info['sign']
-                        assert isinstance(scheduler_port, int)
                     except:
                         logger.debug('Ignoring ping message from %s (%s)', addr[0], addr[1])
                         logger.debug(traceback.format_exc())
                         continue
-                    logger.debug('relaying ping from %s / %s' % (info['ip_addr'], addr[0]))
-                    if scheduler_ip_addr is None:
-                        info['ip_addr'] = scheduler_ip_addr = addr[0]
-                    relay_request = serialize(info)
-                    bc_sock.sendto('PING:%s' % relay_request, ('<broadcast>', node_port))
+                    logger.debug('relaying ping from %s / %s' % (info['ip_addrs'], addr[0]))
+                    bc_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                    bc_sock.sendto('PING:' + serialize(info), ('<broadcast>', node_port))
+                    bc_sock.close()
                 else:
                     assert sock == sched_sock
                     msg, addr = sched_sock.recvfrom(1024)
-                    if msg.startswith('PING:') and scheduler_ip_addr and scheduler_port:
+                    if msg.startswith('PING:') and scheduler_ip_addrs and scheduler_port:
                         try:
-                            info = unserialize(msg[len('PONG:'):])
+                            info = unserialize(msg[len('PING:'):])
+                            if netaddr and info.get('scheduler_ip_addr', None) and \
+                                   (struct.unpack('>L', socket.inet_aton(info['scheduler_ip_addr']))[0] & netmask) == netaddr:
+                                logger.debug('Ignoring ping back (from %s)' % addr[0])
+                                continue
                             assert info['version'] == _dispy_version
-                            assert isinstance(info['ip_addr'], str)
-                            assert isinstance(info['port'], int)
                             # assert isinstance(info['cpus'], int)
-                            info['scheduler_ip_addr'] = scheduler_ip_addr
+                            msg = {'ip_addrs':scheduler_ip_addrs, 'port':scheduler_port,
+                                   'version':_dispy_version}
                             relay_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                            relay_sock.sendto('PING:' + serialize(info),
-                                              (scheduler_ip_addr, scheduler_port))
+                            relay_sock.sendto('PING:' + serialize(msg),
+                                              (info['ip_addr'], info['port']))
                             relay_sock.close()
                         except:
                             logger.debug(traceback.format_exc())
