@@ -54,6 +54,45 @@ handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(message)s'))
 logger.addHandler(handler)
 del handler
 
+def isfunction(func, allow_method=False):
+    return inspect.isfunction(func) \
+                or allow_method and inspect.ismethod(func) \
+                or isinstance(func, str) and '\n' in func
+
+def get_function(func):
+    if isinstance(func, str):
+        env = {}
+        exec func in env
+        names = list(env.keys())
+        names.remove('__builtins__')
+        assert len(names) == 1, "Provided source code must only provide one function."
+        return env[names[0]]
+    return func
+
+def get_function_args(func, min_args=0, max_args=0):
+    func = get_function(func)
+    args = inspect.getargspec(func)
+    if type(func) == types.MethodType:
+        assert len(args.args) <= max_args+1, "Method `%s` has too many arguments (maximum allowed = %d)." % (func.func_name, max_args+1)
+        assert len(args.args) >= min_args+1, "Method `%s` has too few arguments (minimum alloed = %d)." % (func.func_name, min_args+1)
+        if args.args[0] != 'self':
+            logger.warning('First argument to callback method is not "self".')
+    else:
+        assert len(args.args) <= max_args, "Function `%s` has too many arguments (maximum allowed = %d)." % (func.func_name, max_args)
+        assert len(args.args) >= min_args, "Function `%s` has too few arguments (minimum allowed = %d)." % (func.func_name, min_args)
+    assert args.varargs is None
+    assert args.keywords is None
+    assert args.defaults is None
+    return args
+
+def get_function_source(func):
+    if isinstance(func, str):
+        return func.lstrip()
+    else:
+        lines = inspect.getsourcelines(func)[0]
+        lines[0] = lines[0].lstrip()
+        return ''.join(lines)
+
 class DispyJob(object):
     """Job scheduled for execution with dispy.
 
@@ -1172,7 +1211,7 @@ class _Cluster(object):
                     break
         if node_computations:
             Coro(self.setup_node, node, node_computations)
-                
+
     def worker(self):
         # used for user callbacks only
         while True:
@@ -1527,7 +1566,7 @@ class _Cluster(object):
             cpus = int(cpus)
         except ValueError:
             raise StopIteration(-1)
-        node = _node_ipaddr(node)        
+        node = _node_ipaddr(node)
         node = self._nodes.get(node, None)
         if node is None:
             cpus = -1
@@ -1684,7 +1723,7 @@ class JobCluster(object):
 
         @ext_ip_addr is the IP address of NAT firewall/gateway if
           dispy client is behind that firewall/gateway.
-        
+
         @node_port indicates port on which node servers are listening
           for ping messages. The client (JobCluster instance) broadcasts
           ping requests to this port.
@@ -1694,7 +1733,7 @@ class JobCluster(object):
           transferred to a server node when executing a job.  If
           @computation is a string, indicating a program, then that
           program is also transferred to @dest_path.
-        
+
         @loglevel indicates message priority for logging module.
 
         @cleanup indicates if the files transferred should be removed when
@@ -1791,16 +1830,7 @@ class JobCluster(object):
             assert inspect.isfunction(callback) or inspect.ismethod(callback), \
                    "callback must be a function or method"
             try:
-                args = inspect.getargspec(callback)
-                if inspect.isfunction(callback):
-                    assert len(args.args) == 1
-                else:
-                    assert len(args.args) == 2
-                    if args.args[0] != 'self':
-                        logger.warning('First argument to callback method is not "self"')
-                assert args.varargs is None
-                assert args.keywords is None
-                assert args.defaults is None
+                args = get_function_args(callback, min_args=1, max_args=1)
             except:
                 raise Exception('Invalid callback function; '
                                 'it must take excatly one argument - an instance of DispyJob')
@@ -1810,16 +1840,7 @@ class JobCluster(object):
             assert inspect.isfunction(cluster_status) or inspect.ismethod(cluster_status), \
                    "cluster_status must be a function or method"
             try:
-                args = inspect.getargspec(cluster_status)
-                if inspect.isfunction(cluster_status):
-                    assert len(args.args) == 3
-                else:
-                    assert len(args.args) == 4
-                    if args.args[0] != 'self':
-                        logger.warning('First argument to cluster_status method is not "self"')
-                assert args.varargs is None
-                assert args.keywords is None
-                assert args.defaults is None
+                args = get_function_args(cluster_status, min_args=3, max_args=3)
             except:
                 raise Exception('Invalid cluster_status function; '
                                 'it must take excatly 3 arguments')
@@ -1831,12 +1852,12 @@ class JobCluster(object):
             shared = False
 
         if setup:
-            assert inspect.isfunction(setup), "setup must be Python function"
+            assert isfunction(setup), "setup must be Python function or the string source thereof"
             depends.append(setup)
 
         if cleanup:
             if cleanup is not True:
-                assert inspect.isfunction(cleanup), "cleanup must be Python function"
+                assert isfunction(cleanup), "cleanup must be Python function or the string source thereof"
                 depends.append(cleanup)
 
         if fault_recover:
@@ -1873,12 +1894,10 @@ class JobCluster(object):
         atexit.register(self.shutdown)
         # self.ip_addr = self._cluster.ip_addr
 
-        if inspect.isfunction(computation):
-            func = computation
+        if isfunction(computation):
+            func = get_function(computation)
             compute = _Compute(_Compute.func_type, func.func_name)
-            lines = inspect.getsourcelines(func)[0]
-            lines[0] = lines[0].lstrip()
-            compute.code = ''.join(lines)
+            compute.code = get_function_source(computation)
         elif isinstance(computation, str):
             compute = _Compute(_Compute.prog_type, computation)
             depends.append(computation)
@@ -1886,7 +1905,7 @@ class JobCluster(object):
             raise Exception('Invalid computation type: %s' % type(compute))
         depend_ids = {}
         for dep in depends:
-            if isinstance(dep, str) or inspect.ismodule(dep):
+            if isinstance(dep, str) and not isfunction(dep) or inspect.ismodule(dep):
                 if inspect.ismodule(dep):
                     dep = dep.__file__
                     if dep.endswith('.pyc'):
@@ -1912,18 +1931,14 @@ class JobCluster(object):
                     depend_ids[dep] = dep
                 except:
                     raise Exception('File "%s" is not valid' % dep)
-            elif inspect.isfunction(dep) or inspect.isclass(dep) or hasattr(dep, '__class__'):
-                if inspect.isfunction(dep) or inspect.isclass(dep):
-                    pass
-                elif hasattr(dep, '__class__') and inspect.isclass(dep.__class__):
+            elif isfunction(dep) or inspect.isclass(dep) or hasattr(dep, '__class__'):
+                if hasattr(dep, '__class__') and inspect.isclass(dep.__class__) and dep.__class__ not in (types.FunctionType,str):
                     dep = dep.__class__
                 if id(dep) in depend_ids:
                     continue
                 if compute.type == _Compute.prog_type:
                     raise Exception('Program computations cannot depend on "%s"' % dep.__name__)
-                lines = inspect.getsourcelines(dep)[0]
-                lines[0] = lines[0].lstrip()
-                compute.code += '\n' + ''.join(lines)
+                compute.code += '\n' + get_function_source(dep)
                 depend_ids[id(dep)] = id(dep)
             else:
                 raise Exception('Invalid function: %s' % dep)
@@ -1947,12 +1962,12 @@ class JobCluster(object):
         compute.reentrant = reentrant
         compute.pulse_interval = pulse_interval
         compute.poll_interval = poll_interval
-        if inspect.isfunction(setup):
-            compute.setup = setup.func_name
+        if isfunction(setup):
+            compute.setup = get_function(setup).__name__
         else:
             compute.setup = None
-        if inspect.isfunction(cleanup):
-            compute.cleanup = cleanup.func_name
+        if isfunction(cleanup):
+            compute.cleanup = get_function(cleanup).__name__
         else:
             compute.cleanup = cleanup
 
@@ -2126,7 +2141,7 @@ class SharedJobCluster(JobCluster):
             for ext_ip_addr in self._cluster.ext_ip_addrs:
                 if not ext_ip_addr:
                     break
-                
+
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock = AsyncSocket(sock, blocking=True, keyfile=keyfile, certfile=certfile)
         sock.connect((self.scheduler_ip_addr, scheduler_port))
