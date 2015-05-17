@@ -243,8 +243,8 @@ class DispyHTTPServer(object):
     def __init__(self, cluster, host='', port=8181, poll_sec=10, DocumentRoot=None,
                  keyfile=None, certfile=None):
         self._cluster = cluster
-        if cluster.status is None:
-            cluster.status = self.cluster_status
+        if cluster.status_callback is None:
+            cluster.status_callback = self.cluster_status
         if not DocumentRoot:
             DocumentRoot = os.path.join(os.path.dirname(__file__), 'data')
         self._jobs = {}
@@ -283,7 +283,6 @@ class DispyHTTPServer(object):
 
         if node is not None:
             # even if node closed, keep it; let UI decide how to indicate status
-            node.update_epoch_ms = int(1000 * time.time())
             self._cluster_lock.acquire()
             self._cluster_status[node.ip_addr] = node
             self._cluster_updates[node.ip_addr] = node

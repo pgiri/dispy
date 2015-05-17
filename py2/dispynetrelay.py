@@ -14,14 +14,11 @@ __license__ = "MIT"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
 
-import os
 import sys
 import socket
 import struct
-import time
 import select
 import logging
-import cPickle as pickle
 import traceback
 
 from dispy import _node_ipaddr, _dispy_version
@@ -37,9 +34,11 @@ del handler
 __version__ = _dispy_version
 __all__ = []
 
+
 class DispyNetRelay(object):
     """Internal use only.
     """
+
     def __init__(self):
         pass
 
@@ -75,15 +74,13 @@ class DispyNetRelay(object):
         except:
             netaddr = netmask = None
 
-        scheduler_version = _dispy_version
-
         bc_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
         scheduler_ip_addrs = list(filter(lambda ip: bool(ip), [_node_ipaddr(scheduler_node)]))
         if scheduler_ip_addrs and scheduler_port:
-            relay_request = {'ip_addrs':scheduler_ip_addrs, 'port':scheduler_port,
-                             'version':_dispy_version, 'sign':None}
+            relay_request = {'ip_addrs': scheduler_ip_addrs, 'port': scheduler_port,
+                             'version': _dispy_version, 'sign': None}
             bc_sock.sendto('PING:' + serialize(relay_request), ('<broadcast>', node_port))
         bc_sock.close()
 
@@ -103,7 +100,8 @@ class DispyNetRelay(object):
                         logger.debug('Ignoring message "%s" from %s',
                                      msg[:min(len(msg), 5)], addr[0])
                         continue
-                    if netaddr and (struct.unpack('>L', socket.inet_aton(addr[0]))[0] & netmask) == netaddr:
+                    if netaddr and \
+                       (struct.unpack('>L', socket.inet_aton(addr[0]))[0] & netmask) == netaddr:
                         logger.debug('Ignoring ping back (from %s)', addr[0])
                         continue
                     logger.debug('Ping message from %s (%s)', addr[0], addr[1])
@@ -131,13 +129,13 @@ class DispyNetRelay(object):
                         try:
                             info = unserialize(msg[len('PING:'):])
                             if netaddr and info.get('scheduler_ip_addr', None) and \
-                                   (struct.unpack('>L', socket.inet_aton(info['scheduler_ip_addr']))[0] & netmask) == netaddr:
+                               (struct.unpack('>L', socket.inet_aton(info['scheduler_ip_addr']))[0] & netmask) == netaddr:
                                 logger.debug('Ignoring ping back (from %s)' % addr[0])
                                 continue
                             assert info['version'] == _dispy_version
                             # assert isinstance(info['cpus'], int)
-                            msg = {'ip_addrs':scheduler_ip_addrs, 'port':scheduler_port,
-                                   'version':_dispy_version}
+                            msg = {'ip_addrs': scheduler_ip_addrs, 'port': scheduler_port,
+                                   'version': _dispy_version}
                             relay_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                             relay_sock.sendto('PING:' + serialize(msg),
                                               (info['ip_addr'], info['port']))
@@ -146,6 +144,7 @@ class DispyNetRelay(object):
                             logger.debug(traceback.format_exc())
                             # raise
                             logger.debug('Ignoring ping message from %s (%s)', addr[0], addr[1])
+
 
 if __name__ == '__main__':
     import argparse

@@ -183,7 +183,7 @@ caption table tr + tr td {
 button {
     font-weight: bold;
     font-size: 1em;
-    padding: 3px;
+    padding: 3px 5px;
 
     color: #000;
     text-shadow: 1px 1px 1px #fff;

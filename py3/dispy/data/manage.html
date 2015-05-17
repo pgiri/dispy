@@ -54,7 +54,7 @@
 
         show_nodes();
 
-        $('#set-cpus').click(function() {
+        $('#update-cpus').click(function() {
           var cpus = {};
           $.each(cur_nodes, function(i, node) {
             var n = parseInt($('input[type="text"][name="cpus_' + node.ip_addr + '"]').val());
@@ -171,7 +171,7 @@
         </table>
 
         <div style="margin:20px auto;">
-          <button type="button" id="set-cpus">Set CPUs</button>
+          <button type="button" id="update-cpus">Update</button>
         </div>
 
         <hr style="margin:10px;" />

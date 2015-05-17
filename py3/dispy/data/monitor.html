@@ -67,9 +67,9 @@
           rows += '<tr><td>' + (i + 1) + '</td>' +
             '<td><a href="node.html?name_ip=' + node.ip_addr + '" ' + 'title="View jobs on ' +
             node.ip_addr + '">' + node.ip_addr + '</a></td><td>' + node.name + '</td><td>' +
-            node.cpus + '</td><td>' + node.busy + '</td><td>' + node.done + '</td><td>' +
+            node.cpus + '</td><td>' + node.busy + '</td><td>' + node.jobs_done + '</td><td>' +
             node.cpu_time.toFixed(2) + '</td><td>' +
-            (node.done > 0 ? (node.cpu_time / node.done).toFixed(2) : 0) +
+            (node.jobs_done > 0 ? (node.cpu_time / node.jobs_done).toFixed(2) : 0) +
             '</td><td>' + node.last_update.toLocaleTimeString() + '</td></tr>';
         });
         $('#nodes').html(rows);
@@ -95,7 +95,7 @@
 
             if (updates.nodes.length > 0) {
               $.each(updates.nodes, function(i, node) {
-                node.last_update = new Date(node.update_epoch_ms);
+                node.last_update = new Date(1000 * node.update_time);
                 cluster[node.ip_addr] = node;
               });
               if (sort_key == 'ip_addr') {
