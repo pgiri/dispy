@@ -132,8 +132,8 @@ class DispyHTTPServer(object):
                         node = self._dispy_ctx._cluster_status.get(ip_addr, {})
                         break
                 if node:
-                    jobs = self._dispy_ctx._cluster.running_jobs(node.ip_addr)
-                    # args and kwargs are sent as strings in Python  notation,
+                    jobs = self._dispy_ctx._cluster.node_jobs(node.ip_addr)
+                    # args and kwargs are sent as strings in Python,
                     # so an object's __str__ or __repr__ is used if provided;
                     # TODO: check job is in _dispy_ctx's jobs?
                     jobs = [{'uid':id(job), 'job_id':str(job.id),

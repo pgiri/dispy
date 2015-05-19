@@ -29,6 +29,7 @@ import traceback
 import tempfile
 import shutil
 import shelve
+import glob
 import cPickle as pickle
 
 from dispy import _Compute, DispyJob, _DispyJob_, _Node, DispyNode, _JobReply, \
@@ -85,7 +86,7 @@ class _Scheduler(object):
 
     def __init__(self, nodes=[], ip_addr=None, ext_ip_addr=None,
                  port=None, node_port=None, scheduler_port=None,
-                 pulse_interval=None, ping_interval=None, poll_interval=None,
+                 pulse_interval=None, ping_interval=None,
                  node_secret='', node_keyfile=None, node_certfile=None,
                  cluster_secret='', cluster_keyfile=None, cluster_certfile=None,
                  dest_path_prefix=None, clean=False, zombie_interval=60):
@@ -141,7 +142,8 @@ class _Scheduler(object):
                 os.makedirs(self.dest_path_prefix)
                 os.chmod(self.dest_path_prefix, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
 
-            self.shelf = shelve.open(os.path.join(self.dest_path_prefix, 'shelf'), flag='c')
+            self.shelf = shelve.open(os.path.join(self.dest_path_prefix, 'shelf'),
+                                     flag='c', writeback=True)
 
             if pulse_interval:
                 try:
@@ -160,15 +162,6 @@ class _Scheduler(object):
                     raise Exception('Invalid ping_interval; must be between 1 and 1000')
             else:
                 self.ping_interval = None
-
-            if poll_interval:
-                try:
-                    self.poll_interval = float(poll_interval)
-                    assert 5.0 <= self.poll_interval <= 1000
-                except:
-                    raise Exception('Invalid poll_interval; must be between 5 and 1000')
-            else:
-                self.poll_interval = None
 
             if zombie_interval:
                 self.zombie_interval = 60 * zombie_interval
@@ -619,12 +612,13 @@ class _Scheduler(object):
             msg = msg[len('CLOSE:'):]
             try:
                 req = unserialize(msg)
+                auth_code = req['auth_code']
             except:
                 logger.warning('Invalid compuation for deleting')
                 conn.close()
                 raise StopIteration
             cluster = self._clusters.get(req['compute_id'], None)
-            if cluster is None:
+            if cluster is None or cluster.client_auth != auth_code:
                 # this cluster is closed
                 conn.close()
                 raise StopIteration
@@ -633,17 +627,17 @@ class _Scheduler(object):
         elif msg.startswith('FILEXFER:'):
             msg = msg[len('FILEXFER:'):]
             resp = yield _xfer_file_task(self, msg)
-        elif msg.startswith('JOB_UIDS:'):
-            msg = msg[len('JOB_UIDS:'):]
+        elif msg.startswith('NODE_JOBS:'):
+            msg = msg[len('NODE_JOBS:'):]
             try:
                 req = unserialize(msg)
                 cluster = self._clusters.get(req['compute_id'], None)
-                if cluster is None:
+                if cluster is None or cluster.client_auth != req['auth_code']:
                     job_uids = []
                 else:
                     node = req['node']
                     from_node = req['from_node']
-                    job_uids = yield self.running_job_uids(cluster, node, from_node, coro=coro)
+                    job_uids = yield self.node_jobs(cluster, node, from_node, coro=coro)
             except:
                 job_uids = []
             resp = serialize(job_uids)
@@ -698,6 +692,40 @@ class _Scheduler(object):
             if resp > 0:
                 yield self.resend_job_results(cluster, coro=coro)
             raise StopIteration
+        elif msg.startswith('PENDING_JOBS:'):
+            msg = msg[len('PENDING_JOBS:'):]
+            reply = {'done': [], 'pending': 0}
+            try:
+                info = unserialize(msg)
+                compute_id = info['compute_id']
+                auth_code = info['auth_code']
+            except:
+                pass
+            else:
+                cluster = self._clusters.get(compute_id, None)
+                if cluster is None or cluster.client_auth != auth_code:
+                    cluster = self.shelf.get('%s_%s' % (auth_code, compute_id), None)
+                if cluster is not None:
+                    done = []
+                    if cluster.pending_results:
+                        for result_file in glob.glob(os.path.join(cluster.dest_path,
+                                                                  '_dispy_job_reply_*')):
+                            result_file = os.path.basename(result_file)
+                            try:
+                                uid = int(result_file[len('_dispy_job_reply_'):])
+                            except:
+                                pass
+                            else:
+                                done.append(uid)
+                                # limit so as not to take up too much time
+                                if len(done) > 50:
+                                    break
+                    reply['done'] = done
+                    reply['pending'] = cluster.pending_jobs
+            resp = serialize(reply)
+        elif msg.startswith('RETRIEVE_JOB:'):
+            msg = msg[len('RETRIEVE_JOB:'):]
+            yield self.retrieve_job_task(conn, msg)
         elif msg.startswith('ADD_NODESPEC:'):
             req = msg[len('ADD_NODESPEC:'):]
             try:
@@ -753,11 +781,10 @@ class _Scheduler(object):
     def timer_task(self, coro=None):
         coro.set_daemon()
         reset = True
-        last_ping_time = last_pulse_time = last_zombie_time = last_poll_time = time.time()
+        last_ping_time = last_pulse_time = last_zombie_time = time.time()
         while True:
             if reset:
-                timeout = num_min(self.pulse_interval, self.ping_interval, self.zombie_interval,
-                                  self.poll_interval)
+                timeout = num_min(self.pulse_interval, self.ping_interval, self.zombie_interval)
 
             reset = yield coro.suspend(timeout)
             if reset:
@@ -807,10 +834,6 @@ class _Scheduler(object):
                     logger.debug('Deleting zombie computation "%s" / %s',
                                  cluster._compute.name, cluster._compute.id)
                     Coro(self.cleanup_computation, cluster)
-            if self.poll_interval and (now - last_poll_time) >= self.poll_interval:
-                last_poll_time = now
-                for cluster in self._clusters.itervalues():
-                    Coro(self.send_poll_cluster, cluster)
 
     def file_xfer_process(self, reply, xf, sock, addr):
         _job = self._sched_jobs.get(reply.uid, None)
@@ -911,14 +934,6 @@ class _Scheduler(object):
                 port = node_spec.port
                 Coro(self.send_ping_node, ip_addr, port)
 
-    def send_poll_cluster(self, cluster, coro=None):
-        # generator
-        for ip_addr in cluster._dispy_nodes:
-            node = self._nodes.get(ip_addr, None)
-            if node:
-                req = serialize({'compute_id': cluster._compute.id, 'auth_code': self.auth_code})
-                yield node.send('RESEND_JOB_RESULTS:' + req, coro=coro)
-
     def add_cluster(self, cluster, coro=None):
         # generator
         assert coro is not None
@@ -986,24 +1001,22 @@ class _Scheduler(object):
         assert coro is not None
         for compute in computes:
             # NB: to avoid computation being sent multiple times, we
-            # add it to node's clusters before sending it; this does
-            # not affect scheduler, as the node won't be in cluster's
-            # nodes map and cluster's jobs is empty
-            if compute.id in node.clusters:
-                continue
-            node.clusters.add(compute.id)
+            # add to cluster's _dispy_nodes before sending computation
+            # to node
             cluster = self._clusters[compute.id]
+            if node.ip_addr in cluster._dispy_nodes:
+                continue
             dispy_node = DispyNode(node.ip_addr, node.name, node.cpus)
             dispy_node.avail_cpus = node.avail_cpus
             cluster._dispy_nodes[node.ip_addr] = dispy_node
             r = yield node.setup(compute, coro=coro)
             if r:
-                node.clusters.discard(compute.id)
                 cluster._dispy_nodes.pop(node.ip_addr, None)
                 logger.warning('Failed to setup %s for computation "%s"',
                                node.ip_addr, compute.name)
                 Coro(node.close, compute)
             else:
+                node.clusters.add(compute.id)
                 self._sched_event.set()
                 Coro(self.send_node_status, cluster, dispy_node, DispyNode.Initialized)
 
@@ -1335,6 +1348,63 @@ class _Scheduler(object):
             Coro(self.cleanup_computation, cluster)
         logger.debug('scheduler quit')
 
+    def retrieve_job_task(self, conn, msg):
+
+        def send_reply(reply):
+            try:
+                yield conn.send_msg(serialize(reply))
+            except:
+                raise StopIteration(-1)
+            raise StopIteration(0)
+
+        # generator
+        try:
+            req = unserialize(msg)
+            uid = req['uid']
+            compute_id = req['compute_id']
+            auth_code = req['auth_code']
+            job_hash = req['hash']
+        except:
+            yield send_reply(None)
+            raise StopIteration
+
+        shelf_key = '%s_%s' % (auth_code, compute_id)
+        cluster = self._clusters.get(compute_id, None)
+        if cluster is not None:
+            if cluster.client_auth != auth_code:
+                yield send_reply(None)
+                raise StopIteration
+        else:
+            cluster = self.shelf.get(shelf_key, None)
+
+        info_file = os.path.join(cluster.dest_path, '_dispy_job_reply_%s' % uid)
+        if not os.path.isfile(info_file):
+            yield send_reply(None)
+            raise StopIteration
+        try:
+            fd = open(info_file, 'rb')
+            job_reply = pickle.load(fd)
+            fd.close()
+            assert job_reply.hash == job_hash
+        except:
+            yield send_reply(None)
+            raise StopIteration
+
+        try:
+            yield conn.send_msg(serialize(job_reply))
+            ack = yield conn.recv_msg()
+            assert ack == 'ACK'
+            cluster.pending_results -= 1
+            self.shelf[shelf_key] = cluster
+            self.shelf.sync()
+        except:
+            pass
+        else:
+            try:
+                os.remove(info_file)
+            except:
+                pass
+
     def add_nodespec(self, cluster, node, coro=None):
         # generator
         node_specs = _parse_nodes([node])
@@ -1352,7 +1422,7 @@ class _Scheduler(object):
         Coro(self.add_cluster, cluster)
         yield 0
 
-    def running_job_uids(self, cluster, ip_addr, from_node=False, coro=None):
+    def node_jobs(self, cluster, ip_addr, from_node=False, coro=None):
         # generator
         node = self._nodes.get(ip_addr, None)
         if not node or cluster._compute.id not in node.clusters:
@@ -1465,8 +1535,6 @@ if __name__ == '__main__':
                         'whether node is alive')
     parser.add_argument('--ping_interval', dest='ping_interval', type=float, default=None,
                         help='number of seconds between ping messages to discover nodes')
-    parser.add_argument('--poll_interval', dest='poll_interval', type=float, default=None,
-                        help='number of seconds between ping messages to get job status')
     parser.add_argument('--zombie_interval', dest='zombie_interval', default=60, type=float,
                         help='interval in minutes to presume unresponsive scheduler is zombie')
     parser.add_argument('--dest_path_prefix', dest='dest_path_prefix', default=None,
