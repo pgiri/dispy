@@ -247,6 +247,7 @@ class _Compute(object):
         self.name = name
         self.id = None
         self.code = None
+        self.context = {}
         self.dest_path = None
         self.xfer_files = []
         self.reentrant = False

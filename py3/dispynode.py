@@ -167,7 +167,7 @@ def _same_file(tgt, xf):
 
 def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
                     __dispy_job_args, __dispy_job_kwargs, __dispy_reply_Q,
-                    __dispy_job_name, __dispy_job_code, __dispy_path):
+                    __dispy_job_name, __dispy_job_code, __dispy_job_context, __dispy_path):
     """Internal use only.
     """
     os.chdir(__dispy_path)
@@ -175,14 +175,13 @@ def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
     sys.stderr = io.StringIO()
     __dispy_job_reply = __dispy_job_info.job_reply
     try:
-        exec(marshal.loads(__dispy_job_code[0]))
+        exec(marshal.loads(__dispy_job_code[0])) in __dispy_job_context
         if __dispy_job_code[1]:
-            exec(__dispy_job_code[1])
-        globals().update(locals())
+            exec(__dispy_job_code[1]) in __dispy_job_context
         __dispy_job_args = unserialize(__dispy_job_args)
         __dispy_job_kwargs = unserialize(__dispy_job_kwargs)
-        __func = globals()[__dispy_job_name]
-        __dispy_job_reply.result = __func(*__dispy_job_args, **__dispy_job_kwargs)
+        __dispy_job_context.update(locals())
+        exec("__dispy_job_reply.result = %s(*__dispy_job_args, **__dispy_job_kwargs)" % __dispy_job_name) in __dispy_job_context
         __dispy_job_reply.status = DispyJob.Finished
     except:
         __dispy_job_reply.exception = traceback.format_exc()
@@ -478,7 +477,7 @@ class _DispyNode(object):
                 job_info = _DispyJobInfo(reply, reply_addr, compute, _job.xfer_files)
                 args = (job_info, self.certfile, self.keyfile,
                         _job.args, _job.kwargs, self.reply_Q,
-                        compute.name, (compute.code, _job.code), compute.dest_path)
+                        compute.name, (compute.code, _job.code), compute.context.copy(), compute.dest_path)
                 try:
                     yield conn.send_msg(b'ACK')
                 except:
@@ -701,9 +700,8 @@ class _DispyNode(object):
                 compute = self.computations[compute_id]
                 assert isinstance(compute.setup, str)
                 os.chdir(compute.dest_path)
-                exec(marshal.loads(compute.code)) in globals(), locals()
-                _dispy_setup_func = locals()[compute.setup]
-                assert _dispy_setup_func() == 0
+                exec(marshal.loads(compute.code)) in compute.context
+                exec("assert %s() == 0" % compute.setup) in compute.context
             except:
                 logger.debug('Setup "%s" failed' % compute.setup)
                 resp = traceback.format_exc().encode()
@@ -1188,9 +1186,8 @@ class _DispyNode(object):
         os.chdir(self.dest_path_prefix)
         if isinstance(compute.cleanup, str):
             try:
-                exec(marshal.loads(compute.code)) in globals(), locals()
-                _dispy_cleanup_func = locals()[compute.cleanup]
-                _dispy_cleanup_func()
+                exec(marshal.loads(compute.code)) in compute.context
+                exec("%s()" % compute.cleanup) in compute.context
             except:
                 logger.debug('cleanup "%s" failed' % compute.cleanup)
                 logger.debug(traceback.format_exc())
