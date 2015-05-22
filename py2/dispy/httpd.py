@@ -33,6 +33,7 @@ else:
 import dispy
 from dispy import DispyJob
 
+
 class DispyHTTPServer(object):
     class _HTTPRequestHandler(BaseHTTPRequestHandler):
         def __init__(self, ctx, DocumentRoot, *args):
@@ -54,9 +55,9 @@ class DispyHTTPServer(object):
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
                 self.end_headers()
-                updates = {'jobs':{'submitted':self._dispy_ctx._jobs_submitted,
-                                   'done':self._dispy_ctx._jobs_done},
-                           'nodes':[node.__dict__ for node in nodes]}
+                updates = {'jobs': {'submitted': self._dispy_ctx._jobs_submitted,
+                                    'done': self._dispy_ctx._jobs_done},
+                           'nodes': [node.__dict__ for node in nodes]}
                 self.wfile.write(json.dumps(updates).encode())
                 return
             elif self.path == '/cluster_status':
@@ -66,9 +67,9 @@ class DispyHTTPServer(object):
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
                 self.end_headers()
-                updates = {'jobs':{'submitted':self._dispy_ctx._jobs_submitted,
-                                   'done':self._dispy_ctx._jobs_done},
-                           'nodes':[node.__dict__ for node in nodes]}
+                updates = {'jobs': {'submitted': self._dispy_ctx._jobs_submitted,
+                                    'done': self._dispy_ctx._jobs_done},
+                           'nodes': [node.__dict__ for node in nodes]}
                 self.wfile.write(json.dumps(updates).encode())
                 return
             elif self.path == '/nodes':
@@ -92,7 +93,7 @@ class DispyHTTPServer(object):
                     data = f.read()
                     if path.endswith('.html'):
                         if path.endswith('monitor.html') or path.endswith('node.html'):
-                            data = data % {'TIMEOUT':str(self._dispy_ctx._poll_sec)}
+                            data = data % {'TIMEOUT': str(self._dispy_ctx._poll_sec)}
                         content_type = 'text/html'
                     elif path.endswith('.js'):
                         content_type = 'text/javascript'
@@ -120,7 +121,7 @@ class DispyHTTPServer(object):
 
         def do_POST(self):
             form = cgi.FieldStorage(fp=self.rfile, headers=self.headers,
-                                    environ={'REQUEST_METHOD':'POST'})
+                                    environ={'REQUEST_METHOD': 'POST'})
             if self.path == '/node_jobs':
                 node = {}
                 for item in form.list:
@@ -136,18 +137,18 @@ class DispyHTTPServer(object):
                     # args and kwargs are sent as strings in Python,
                     # so an object's __str__ or __repr__ is used if provided;
                     # TODO: check job is in _dispy_ctx's jobs?
-                    jobs = [{'uid':id(job), 'job_id':str(job.id),
-                             'args':', '.join(str(arg) for arg in job.args),
-                             'kwargs':', '.join('%s=%s' % (key, val) \
-                                                for key, val in job.kwargs.items()),
-                             'sched_time_ms':int(1000 * job.start_time)} for job in jobs]
+                    jobs = [{'uid': id(job), 'job_id': str(job.id),
+                             'args': ', '.join(str(arg) for arg in job.args),
+                             'kwargs': ', '.join('%s=%s' % (key, val)
+                                                 for key, val in job.kwargs.items()),
+                             'sched_time_ms': int(1000 * job.start_time)} for job in jobs]
                     node = node.__dict__
                 else:
                     jobs = []
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
                 self.end_headers()
-                self.wfile.write(json.dumps({'node':node, 'jobs':jobs}).encode())
+                self.wfile.write(json.dumps({'node': node, 'jobs': jobs}).encode())
                 return
             elif self.path == '/node_info':
                 node = {}
@@ -186,7 +187,7 @@ class DispyHTTPServer(object):
                 self.wfile.write(json.dumps(cancelled).encode())
                 return
             elif self.path == '/add_node':
-                node = {'name_ip':'', 'port':None, 'cpus':0}
+                node = {'name_ip': '', 'port': None, 'cpus': 0}
                 node_id = None
                 for item in form.list:
                     if item.name == 'name_ip':
@@ -217,7 +218,7 @@ class DispyHTTPServer(object):
                         if timeout < 1:
                             timeout = 0
                     except:
-                        dispy.logger.warning('HTTP client %s: invalid timeout "%s" ignored', 
+                        dispy.logger.warning('HTTP client %s: invalid timeout "%s" ignored',
                                              self.client_address[0], item.value)
                         timeout = 0
                     self._dispy_ctx._poll_sec = timeout
@@ -228,7 +229,8 @@ class DispyHTTPServer(object):
             elif self.path == '/set_cpus':
                 node_cpus = {}
                 for item in form.list:
-                    node_cpus[item.name] = self._dispy_ctx._cluster.set_node_cpus(item.name, item.value)
+                    node_cpus[item.name] = self._dispy_ctx._cluster.set_node_cpus(item.name,
+                                                                                  item.value)
 
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
@@ -260,7 +262,7 @@ class DispyHTTPServer(object):
             poll_sec = 1
         self._poll_sec = poll_sec
         self._http_handler = None
-        self._server = HTTPServer((host, port), lambda *args: \
+        self._server = HTTPServer((host, port), lambda *args:
                                   self.__class__._HTTPRequestHandler(self, DocumentRoot, *args))
         if certfile:
             self._server.socket = ssl.wrap_socket(self._server.socket, keyfile=keyfile,
@@ -268,8 +270,8 @@ class DispyHTTPServer(object):
         self._httpd_thread = threading.Thread(target=self._server.serve_forever)
         self._httpd_thread.daemon = True
         self._httpd_thread.start()
-        dispy.logger.info('Started HTTP%s server at %s' % \
-                           ('(S)' if certfile else '', str(self._server.socket.getsockname())))
+        dispy.logger.info('Started HTTP%s server at %s' %
+                          ('s' if certfile else '', str(self._server.socket.getsockname())))
 
     def cluster_status(self, status, node, job):
         if status == DispyJob.Created:
@@ -277,10 +279,13 @@ class DispyHTTPServer(object):
             self._jobs[id(job)] = job
             return
         if status == DispyJob.Finished or status == DispyJob.Terminated or \
-               status == DispyJob.Cancelled or status == DispyJob.Abandoned:
+           status == DispyJob.Cancelled or status == DispyJob.Abandoned:
             self._jobs_done += 1
             self._jobs.pop(id(job), None)
 
+        # TODO: if multiple clusters are used, 'busy' would be as per
+        # last cluster updated; seperate information for clusters to
+        # show correctly
         if node is not None:
             # even if node closed, keep it; let UI decide how to indicate status
             self._cluster_lock.acquire()

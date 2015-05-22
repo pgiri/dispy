@@ -25,7 +25,6 @@ import subprocess
 import signal
 import ssl
 import traceback
-import hashlib
 import logging
 import marshal
 import tempfile
@@ -35,7 +34,8 @@ import glob
 import pickle
 import io
 
-from dispy import _JobReply, DispyJob, _Compute, _XferFile, _node_ipaddr, _dispy_version, num_min
+from dispy import _JobReply, DispyJob, _Compute, _XferFile, _node_ipaddr, _dispy_version, \
+    auth_code, num_min
 
 import asyncoro
 from asyncoro import Coro, AsynCoro, AsyncSocket, serialize, unserialize
@@ -232,7 +232,7 @@ class _DispyNode(object):
         if not node_port:
             node_port = 51348
 
-        self.scheduler = {'ip_addr': None, 'port': 51347, 'auth': None}
+        self.scheduler = {'ip_addr': None, 'port': 51347, 'auth': []}
 
         self.ext_ip_addr = ext_ip_addr
         self.pulse_interval = None
@@ -273,10 +273,9 @@ class _DispyNode(object):
         self.file_uses = {}
         self.job_infos = {}
         self.terminate = False
-        self.signature = ''.join(hex(x)[2:] for x in os.urandom(20))
+        self.signature = ''.join(hex(x)[2:] for x in os.urandom(10))
         self.secret = secret
-        self.auth_code = bytes(hashlib.sha1(bytes(self.signature + self.secret,
-                                                  'ascii')).hexdigest(), 'ascii')
+        self.auth = auth_code(self.secret, self.signature)
         self.zombie_interval = 60 * zombie_interval
         if not scheduler_port:
             scheduler_port = 51347
@@ -335,8 +334,7 @@ class _DispyNode(object):
         if info.get('sign', None):
             pong_msg = {'ip_addr': self.ext_ip_addr, 'port': self.port, 'sign': self.signature,
                         'version': _dispy_version, 'name': self.name, 'cpus': self.num_cpus,
-                        'auth_code': bytes(hashlib.sha1(bytes(info['sign'] + self.secret,
-                                                              'ascii')).hexdigest(), 'ascii')}
+                        'auth': auth_code(self.secret, info['sign'])}
             for scheduler_ip_addr in scheduler_ip_addrs:
                 addr = (scheduler_ip_addr, scheduler_port)
                 pong_msg['scheduler_ip_addr'] = scheduler_ip_addr
@@ -442,7 +440,7 @@ class _DispyNode(object):
             if compute is not None:
                 if compute.scheduler_ip_addr != self.scheduler['ip_addr'] or \
                    compute.scheduler_port != self.scheduler['port'] or \
-                   compute.scheduler_auth != self.scheduler['auth']:
+                   compute.auth not in self.scheduler['auth']:
                     logger.debug('Invalid scheduler IP address: scheduler %s:%s != %s:%s' %
                                  compute.scheduler_ip_addr, compute.scheduler_port,
                                  self.scheduler['ip_addr'], self.scheduler['port'])
@@ -463,14 +461,13 @@ class _DispyNode(object):
                     pass
                 raise StopIteration
 
-            if MaxFileSize:
-                for xf in _job.xfer_files:
-                    if xf.stat_buf.st_size > MaxFileSize:
-                        try:
-                            yield conn.send_msg(b'NAK')
-                        except:
-                            pass
-                        raise StopIteration
+            for xf in _job.xfer_files:
+                if MaxFileSize and xf.stat_buf.st_size > MaxFileSize:
+                    try:
+                        yield conn.send_msg(b'NAK')
+                    except:
+                        pass
+                    raise StopIteration
 
             reply_addr = (compute.scheduler_ip_addr, compute.job_result_port)
             logger.debug('New job id %s from %s/%s', _job.uid, addr[0], compute.scheduler_ip_addr)
@@ -531,10 +528,9 @@ class _DispyNode(object):
                 except:
                     logger.warning('Failed to send reply to %s', str(addr))
                 raise StopIteration
-            if not ((self.scheduler['ip_addr'] is None and self.scheduler['auth'] is None) or
+            if not ((self.scheduler['ip_addr'] is None and self.scheduler['auth'] == []) or
                     (self.scheduler['ip_addr'] == compute.scheduler_ip_addr and
-                     self.scheduler['port'] == compute.scheduler_port and
-                     self.scheduler['auth'] == compute.scheduler_auth)):
+                     self.scheduler['port'] == compute.scheduler_port)):
                 logger.debug('Ignoring computation request from %s: %s, %s, %s',
                              compute.scheduler_ip_addr, self.scheduler['ip_addr'],
                              self.avail_cpus, self.num_cpus)
@@ -544,14 +540,13 @@ class _DispyNode(object):
                     pass
                 raise StopIteration
 
-            if MaxFileSize:
-                for xf in compute.xfer_files:
-                    if xf.stat_buf.st_size > MaxFileSize:
-                        try:
-                            yield conn.send_msg(b'NAK')
-                        except:
-                            pass
-                        raise StopIteration
+            for xf in compute.xfer_files:
+                if MaxFileSize and xf.stat_buf.st_size > MaxFileSize:
+                    try:
+                        yield conn.send_msg(b'NAK')
+                    except:
+                        pass
+                    raise StopIteration
 
             resp = b'ACK'
             dest = os.path.join(self.dest_path_prefix, compute.scheduler_ip_addr)
@@ -607,20 +602,19 @@ class _DispyNode(object):
             if resp == b'ACK' and \
                not ((self.scheduler['ip_addr'] is None) or
                     (self.scheduler['ip_addr'] == compute.scheduler_ip_addr and
-                     self.scheduler['port'] == compute.scheduler_port and
-                     self.scheduler['auth'] == compute.scheduler_auth)):
+                     self.scheduler['port'] == compute.scheduler_port)):
                 resp = b'NAK (busy)'
             if resp == b'ACK':
                 self.computations[compute.id] = compute
                 self.scheduler['ip_addr'] = compute.scheduler_ip_addr
                 self.scheduler['port'] = compute.scheduler_port
-                self.scheduler['auth'] = compute.scheduler_auth
+                self.scheduler['auth'].append(compute.auth)
                 self.pulse_interval = compute.pulse_interval
                 if not self.pulse_interval:
                     self.pulse_interval = 10 * 60
                 if self.zombie_interval:
                     self.pulse_interval = num_min(self.pulse_interval, self.zombie_interval / 5.0)
-                self.shelf['%s_%s' % (compute.scheduler_auth, compute.id)] = compute
+                self.shelf['%s_%s' % (compute.auth, compute.id)] = compute
                 self.shelf.sync()
 
                 try:
@@ -628,7 +622,8 @@ class _DispyNode(object):
                 except:
                     del self.computations[compute.id]
                     self.scheduler['ip_addr'] = None
-                    self.scheduler['auth'] = None
+                    self.scheduler['port'] = None
+                    self.scheduler['auth'].remove(compute.auth)
                     self.pulse_interval = None
                 else:
                     self.timer_coro.resume(True)
@@ -785,15 +780,15 @@ class _DispyNode(object):
                 req = unserialize(msg)
                 uid = req['uid']
                 compute_id = req['compute_id']
-                auth_code = req['auth_code']
+                auth = req['auth']
                 job_hash = req['hash']
             except:
                 yield send_reply(None)
                 raise StopIteration
 
-            shelf_key = '%s_%s' % (auth_code, compute_id)
+            shelf_key = '%s_%s' % (auth, compute_id)
             compute = self.computations.get(compute_id, None)
-            if compute is None or compute.scheduler_auth != auth_code:
+            if compute is None or compute.auth != auth:
                 compute = self.shelf.get(shelf_key, None)
                 if compute is None:
                     yield send_reply(None)
@@ -829,13 +824,13 @@ class _DispyNode(object):
 
         # tcp_serve_task starts
         try:
-            req = yield conn.recvall(len(self.auth_code))
+            req = yield conn.recvall(len(self.auth))
         except:
             logger.warning('Ignoring request; invalid client authentication?')
             conn.close()
             raise StopIteration
         msg = yield conn.recv_msg()
-        if req != self.auth_code:
+        if req != self.auth:
             if msg.startswith(b'PING:'):
                 pass
             else:
@@ -853,9 +848,6 @@ class _DispyNode(object):
             msg = msg[len(b'COMPUTE:'):]
             yield add_computation_task(msg)
             conn.close()
-        elif msg.startswith(b'POLL_JOB:'):
-            yield poll_job_task(conn)
-            conn.close()
         elif msg.startswith(b'FILEXFER:'):
             msg = msg[len(b'FILEXFER:'):]
             yield xfer_file_task(msg)
@@ -869,13 +861,13 @@ class _DispyNode(object):
             try:
                 info = unserialize(msg)
                 compute_id = info['compute_id']
-                auth_code = info['auth_code']
+                auth = info['auth']
             except:
                 logger.debug('Deleting computation failed with %s',
                              traceback.format_exc())
             else:
                 compute = self.computations.get(compute_id, None)
-                if compute is None or compute.scheduler_auth != auth_code:
+                if compute is None or compute.auth != auth:
                     logger.warning('Computation "%s" is not valid', compute_id)
                 else:
                     compute.zombie = True
@@ -890,13 +882,13 @@ class _DispyNode(object):
             try:
                 info = unserialize(msg)
                 compute_id = info['compute_id']
-                auth_code = info['auth_code']
+                auth = info['auth']
             except:
                 reply = 0
             else:
                 compute = self.computations.get(compute_id, None)
-                if compute is None or compute.scheduler_auth != auth_code:
-                    compute = self.shelf.get('%s_%s' % (auth_code, compute_id), None)
+                if compute is None or compute.auth != auth:
+                    compute = self.shelf.get('%s_%s' % (auth, compute_id), None)
                 if compute is None:
                     reply = 0
                 else:
@@ -912,8 +904,7 @@ class _DispyNode(object):
                     reply = {'ip_addr': self.ext_ip_addr, 'port': self.port,
                              'sign': self.signature, 'version': _dispy_version,
                              'name': self.name, 'cpus': self.num_cpus,
-                             'auth_code': bytes(hashlib.sha1(bytes(info['sign'] + self.secret,
-                                                                   'ascii')).hexdigest(), 'ascii')}
+                             'auth': auth_code(self.secret, info['sign'])}
                     reply['scheduler_ip_addr'] = addr[0]
                     yield conn.send_msg(serialize(reply))
                     Coro(self.send_pong_msg, info, addr)
@@ -926,13 +917,13 @@ class _DispyNode(object):
             try:
                 info = unserialize(msg)
                 compute_id = info['compute_id']
-                auth_code = info['auth_code']
+                auth = info['auth']
             except:
                 pass
             else:
                 compute = self.computations.get(compute_id, None)
-                if compute is None or compute.scheduler_auth != auth_code:
-                    compute = self.shelf.get('%s_%s' % (auth_code, compute_id), None)
+                if compute is None or compute.auth != auth:
+                    compute = self.shelf.get('%s_%s' % (auth, compute_id), None)
                 if compute is not None:
                     done = []
                     if compute.pending_results:
@@ -1168,22 +1159,25 @@ class _DispyNode(object):
             if compute.pending_jobs > 0:
                 return
 
-        shelf_key = '%s_%s' % (compute.scheduler_auth, compute.id)
+        shelf_key = '%s_%s' % (compute.auth, compute.id)
         if compute.pending_results == 0:
             self.shelf.pop(shelf_key, None)
         else:
             self.shelf[shelf_key] = compute
         self.shelf.sync()
         self.computations.pop(compute.id)
+        try:
+            self.scheduler['auth'].remove(compute.auth)
+        except ValueError:
+            pass
         if (not self.computations) and \
            compute.scheduler_ip_addr == self.scheduler['ip_addr'] and \
            compute.scheduler_port == self.scheduler['port'] and \
-           compute.scheduler_auth == self.scheduler['auth'] and \
+           self.scheduler['auth'] == [] and \
            all(c.scheduler_ip_addr != self.scheduler['ip_addr']
                for c in self.computations.values()):
             assert self.avail_cpus == self.num_cpus
             self.scheduler['ip_addr'] = None
-            self.scheduler['auth'] = None
             self.pulse_interval = None
 
         if self.scheduler['ip_addr'] is None and self.avail_cpus == self.num_cpus:

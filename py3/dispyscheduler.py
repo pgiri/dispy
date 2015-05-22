@@ -23,7 +23,6 @@ import stat
 import logging
 import re
 import ssl
-import hashlib
 import atexit
 import traceback
 import tempfile
@@ -33,7 +32,7 @@ import glob
 import pickle
 
 from dispy import _Compute, DispyJob, _DispyJob_, _Node, DispyNode, _JobReply, \
-    num_min, _parse_nodes, _node_ipaddr, _XferFile, _dispy_version
+    auth_code, num_min, _parse_nodes, _node_ipaddr, _XferFile, _dispy_version
 
 import asyncoro
 from asyncoro import Coro, AsynCoro, AsyncSocket, MetaSingleton, serialize, unserialize
@@ -57,9 +56,9 @@ del handler
 class _Cluster(object):
     """Internal use only.
     """
-    def __init__(self, compute):
+    def __init__(self, compute, node_specs):
         self._compute = compute
-        compute.node_specs = _parse_nodes(compute.node_specs)
+        self._node_specs = _parse_nodes(node_specs)
         self.pending_jobs = 0
         self.pending_results = 0
         self._jobs = []
@@ -125,7 +124,7 @@ class _Scheduler(object):
             self.port = port
             self.node_port = node_port
             self.scheduler_port = scheduler_port
-            self.node_specs = nodes
+            self._node_specs = _parse_nodes(nodes)
             self._nodes = {}
             self.node_secret = node_secret
             self.node_keyfile = node_keyfile
@@ -186,9 +185,8 @@ class _Scheduler(object):
             # (otherwise, 'id' may be duplicate)
             self.done_jobs = {}
             self.terminate = False
-            self.sign = ''.join(hex(x)[2:] for x in os.urandom(20))
-            self.auth_code = bytes(hashlib.sha1(bytes(self.sign + self.cluster_secret,
-                                                      'ascii')).hexdigest(), 'ascii')
+            self.sign = ''.join(hex(x)[2:] for x in os.urandom(10))
+            self.auth = auth_code(self.cluster_secret, self.sign)
 
             self.select_job_node = self.load_balance_schedule
             self.start_time = time.time()
@@ -216,7 +214,7 @@ class _Scheduler(object):
         coro.set_daemon()
 
         Coro(self.broadcast_ping)
-        Coro(self.send_ping_cluster, _parse_nodes(self.node_specs), set())
+        Coro(self.send_ping_cluster, self._node_specs, set())
 
         while True:
             msg, addr = yield self.udp_sock.recvfrom(1000)
@@ -262,11 +260,10 @@ class _Scheduler(object):
                     logger.debug('Ignoring node %s', addr[0])
                     logger.debug(traceback.format_exc())
                     continue
-                auth = bytes(hashlib.sha1(bytes(info['sign'] + self.node_secret,
-                                                'ascii')).hexdigest(), 'ascii')
+                auth = auth_code(self.node_secret, info['sign'])
                 node = self._nodes.get(info['ip_addr'], None)
                 if node:
-                    if node.auth_code == auth:
+                    if node.auth == auth:
                         continue
                 sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                    keyfile=self.node_keyfile, certfile=self.node_certfile)
@@ -277,6 +274,7 @@ class _Scheduler(object):
                     yield sock.connect((info['ip_addr'], info['port']))
                     yield sock.sendall(auth)
                     yield sock.send_msg(b'PING:' + serialize(msg))
+                    info = yield sock.recv_msg()
                 except:
                     logger.debug(traceback.format_exc())
                 finally:
@@ -331,7 +329,7 @@ class _Scheduler(object):
         elif msg.startswith(b'PONG:'):
             try:
                 info = unserialize(msg[len(b'PONG:'):])
-                assert info['auth_code'] == self.auth_code
+                assert info['auth'] == self.auth
                 yield self.add_node(info, coro=coro)
             except:
                 logger.debug('Ignoring node %s', addr[0])
@@ -349,11 +347,10 @@ class _Scheduler(object):
                 logger.debug(traceback.format_exc())
                 conn.close()
                 raise StopIteration
-            auth = bytes(hashlib.sha1(bytes(info['sign'] + self.node_secret,
-                                            'ascii')).hexdigest(), 'ascii')
+            auth = auth_code(self.node_secret, info['sign'])
             node = self._nodes.get(info['ip_addr'], None)
             if node:
-                if node.auth_code == auth:
+                if node.auth == auth:
                     conn.close()
                     raise StopIteration
             sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
@@ -365,6 +362,7 @@ class _Scheduler(object):
                 yield sock.connect((info['ip_addr'], info['port']))
                 yield sock.sendall(auth)
                 yield sock.send_msg(b'PING:' + serialize(msg))
+                info = yield sock.recv_msg()
             except:
                 logger.debug(traceback.format_exc())
             finally:
@@ -383,9 +381,8 @@ class _Scheduler(object):
                 node = self._nodes.get(info['ip_addr'], None)
                 if not node:
                     raise StopIteration
-                auth_code = bytes(hashlib.sha1(bytes(info['sign'] + self.node_secret,
-                                                     'ascii')).hexdigest(), 'ascii')
-                if auth_code != node.auth_code:
+                auth = auth_code(self.node_secret, info['sign'])
+                if auth != node.auth:
                     logger.warning('Invalid signature from %s', node.ip_addr)
                     raise StopIteration
                 logger.debug('Removing node %s', node.ip_addr)
@@ -430,13 +427,8 @@ class _Scheduler(object):
 
     def scheduler_task(self, conn, addr, coro=None):
         # generator
-        def _job_request_task(self, msg):
+        def _job_request_task(self, cluster, _job):
             # function
-            try:
-                _job = unserialize(msg)
-            except:
-                logger.debug('Ignoring job request from %s', addr[0])
-                return
             _job.uid = id(_job)
             setattr(_job, 'node', None)
             dest_path = os.path.join(self.dest_path_prefix, str(_job.compute_id))
@@ -445,11 +437,6 @@ class _Scheduler(object):
             job = type('DispyJob', (), {'status': DispyJob.Created,
                                         'start_time': None, 'end_time': None})
             setattr(_job, 'job', job)
-            cluster = self._clusters.get(_job.compute_id, None)
-            if cluster is None:
-                logger.debug('cluster %s is not valid anymore for job %s',
-                             _job.compute_id, _job.uid)
-                return
             cluster._jobs.append(_job)
             self.unsched_jobs += 1
             cluster.pending_jobs += 1
@@ -460,7 +447,9 @@ class _Scheduler(object):
         def _compute_task(self, msg):
             # function
             try:
-                compute = unserialize(msg)
+                req = unserialize(msg)
+                compute = req['compute']
+                node_specs = req['node_specs']
             except:
                 logger.debug('Ignoring compute request from %s', addr[0])
                 return b'NAK'
@@ -470,7 +459,7 @@ class _Scheduler(object):
                                    xf.name, xf.stat_buf.st_size)
                     return b'NAK'
             setattr(compute, 'nodes', {})
-            cluster = _Cluster(compute)
+            cluster = _Cluster(compute, node_specs)
             cluster.ip_addr = conn.getsockname()[0]
             dest = os.path.join(self.dest_path_prefix, compute.scheduler_ip_addr)
             if not os.path.isdir(dest):
@@ -499,10 +488,10 @@ class _Scheduler(object):
             cluster.client_job_result_port = compute.job_result_port
             cluster.client_ip_addr = compute.scheduler_ip_addr
             cluster.client_port = compute.scheduler_port
-            cluster.client_auth = compute.scheduler_auth
+            cluster.client_auth = compute.auth
             compute.job_result_port = self.port
             compute.scheduler_port = self.port
-            compute.scheduler_auth = self.auth_code
+            compute.auth = ''.join(hex(x)[2:] for x in os.urandom(10))
 
             self.shelf['%s_%s' % (cluster.client_auth, compute.id)] = cluster
             self.shelf.sync()
@@ -563,14 +552,14 @@ class _Scheduler(object):
         conn.settimeout(MsgTimeout)
         resp = None
         try:
-            req = yield conn.recvall(len(self.auth_code))
+            req = yield conn.recvall(len(self.auth))
         except:
             logger.warning('Failed to read message from %s: %s',
                            str(addr), traceback.format_exc())
             conn.close()
             raise StopIteration
 
-        if req != self.auth_code:
+        if req != self.auth:
             msg = yield conn.recv_msg()
             if msg.startswith(b'CLIENT:'):
                 try:
@@ -597,7 +586,15 @@ class _Scheduler(object):
 
         if msg.startswith(b'JOB:'):
             msg = msg[len(b'JOB:'):]
-            resp = _job_request_task(self, msg)
+            try:
+                req = unserialize(msg)
+                _job = req['job']
+                cluster = self._clusters[_job.compute_id]
+                assert cluster.client_auth == req['auth']
+            except:
+                resp = None
+            else:
+                resp = _job_request_task(self, cluster, _job)
         elif msg.startswith(b'COMPUTE:'):
             msg = msg[len(b'COMPUTE:'):]
             resp = _compute_task(self, msg)
@@ -606,6 +603,7 @@ class _Scheduler(object):
             try:
                 req = unserialize(msg)
                 cluster = self._clusters[req['compute_id']]
+                assert cluster.client_auth == req['auth']
                 for xf in cluster._compute.xfer_files:
                     assert os.path.isfile(xf.name)
                 resp = serialize(cluster._compute.id)
@@ -617,13 +615,13 @@ class _Scheduler(object):
             msg = msg[len(b'CLOSE:'):]
             try:
                 req = unserialize(msg)
-                auth_code = req['auth_code']
+                auth = req['auth']
             except:
                 logger.warning('Invalid compuation for deleting')
                 conn.close()
                 raise StopIteration
             cluster = self._clusters.get(req['compute_id'], None)
-            if cluster is None or cluster.client_auth != auth_code:
+            if cluster is None or cluster.client_auth != auth:
                 # this cluster is closed
                 conn.close()
                 raise StopIteration
@@ -637,7 +635,7 @@ class _Scheduler(object):
             try:
                 req = unserialize(msg)
                 cluster = self._clusters.get(req['compute_id'], None)
-                if cluster is None or cluster.client_auth != req['auth_code']:
+                if cluster is None or cluster.client_auth != req['auth']:
                     job_uids = []
                 else:
                     node = req['node']
@@ -649,21 +647,19 @@ class _Scheduler(object):
         elif msg.startswith(b'TERMINATE_JOB:'):
             msg = msg[len(b'TERMINATE_JOB:'):]
             try:
-                job = unserialize(msg)
+                req = unserialize(msg)
+                uid = req['uid']
+                cluster = self._clusters[req['compute_id']]
+                assert cluster.client_auth == req['auth']
             except:
                 logger.warning('Invalid job cancel message')
                 conn.close()
                 raise StopIteration
-            cluster = self._clusters.get(job.compute_id, None)
-            if not cluster:
-                logger.debug('Invalid job %s!', job.uid)
-                conn.close()
-                raise StopIteration
             cluster.last_pulse = time.time()
-            _job = self._sched_jobs.get(job.uid, None)
+            _job = self._sched_jobs.get(uid, None)
             if _job is None:
                 for i, _job in enumerate(cluster._jobs):
-                    if _job.uid == job.uid:
+                    if _job.uid == uid:
                         del cluster._jobs[i]
                         self.unsched_jobs -= 1
                         self.done_jobs[_job.uid] = _job
@@ -672,7 +668,7 @@ class _Scheduler(object):
                         Coro(self.send_job_result, _job.uid, cluster, reply, resending=False)
                         break
                 else:
-                    logger.debug('Invalid job %s!', job.uid)
+                    logger.debug('Invalid job %s!', uid)
             else:
                 _job.job.status = DispyJob.Cancelled
                 Coro(_job.node.send, b'TERMINATE_JOB:' + serialize(_job), reply=False)
@@ -681,14 +677,14 @@ class _Scheduler(object):
             try:
                 info = unserialize(msg)
                 compute_id = info['compute_id']
-                auth_code = info['auth_code']
+                auth = info['auth']
             except:
                 resp = serialize(0)
             else:
                 cluster = self._clusters.get(compute_id, None)
-                if cluster is None or cluster.client_auth != auth_code:
-                    cluster = self.shelf.get('%s_%s' % (auth_code, compute_id), None)
                 if cluster is None:
+                    cluster = self.shelf.get('%s_%s' % (auth, compute_id), None)
+                if cluster is None or cluster.client_auth != auth:
                     resp = serialize(0)
                 else:
                     resp = serialize(cluster.pending_results + cluster.pending_jobs)
@@ -703,14 +699,14 @@ class _Scheduler(object):
             try:
                 info = unserialize(msg)
                 compute_id = info['compute_id']
-                auth_code = info['auth_code']
+                auth = info['auth']
             except:
                 pass
             else:
                 cluster = self._clusters.get(compute_id, None)
-                if cluster is None or cluster.client_auth != auth_code:
-                    cluster = self.shelf.get('%s_%s' % (auth_code, compute_id), None)
-                if cluster is not None:
+                if cluster is None:
+                    cluster = self.shelf.get('%s_%s' % (auth, compute_id), None)
+                if cluster is not None and cluster.client_auth == auth:
                     done = []
                     if cluster.pending_results:
                         for result_file in glob.glob(os.path.join(cluster.dest_path,
@@ -734,21 +730,20 @@ class _Scheduler(object):
         elif msg.startswith(b'ADD_NODESPEC:'):
             req = msg[len(b'ADD_NODESPEC:'):]
             try:
-                info = unserialize(req)
-                cluster = self._clusters.get(info['compute_id'], None)
-                resp = yield self.add_nodespec(cluster, info['node_spec'], coro=coro)
+                req = unserialize(req)
+                cluster = self._clusters[req['compute_id']]
+                assert cluster.client_auth == req['auth']
+                resp = yield self.add_nodespec(cluster, req['node_spec'], coro=coro)
                 resp = serialize(resp)
             except:
                 resp = serialize(-1)
         elif msg.startswith(b'SET_NODE_CPUS:'):
             req = msg[len(b'SET_NODE_CPUS:'):]
             try:
-                info = unserialize(req)
-                cluster = self._clusters.get(info['compute_id'], None)
-                if cluster is not None:
-                    resp = yield self.set_node_cpus(info['node'], coro=coro)
-                else:
-                    resp = -1
+                req = unserialize(req)
+                cluster = self._clusters[req['compute_id']]
+                assert cluster.client_auth == req['auth']
+                resp = yield self.set_node_cpus(req['node'], coro=coro)
                 resp = serialize(resp)
             except:
                 resp = serialize(-1)
@@ -826,7 +821,7 @@ class _Scheduler(object):
             if self.ping_interval and (now - last_ping_time) >= self.ping_interval:
                 last_ping_time = now
                 for cluster in self._clusters.values():
-                    Coro(self.send_ping_cluster, cluster._compute.node_specs,
+                    Coro(self.send_ping_cluster, cluster._node_specs,
                          set(cluster._dispy_nodes.keys()))
             if self.zombie_interval and (now - last_zombie_time) >= self.zombie_interval:
                 last_zombie_time = now
@@ -901,8 +896,9 @@ class _Scheduler(object):
         tcp_sock.settimeout(MsgTimeout)
         try:
             yield tcp_sock.connect((ip_addr, port))
-            yield tcp_sock.sendall(b'x' * len(self.auth_code))
+            yield tcp_sock.sendall(b'x' * len(self.auth))
             yield tcp_sock.send_msg(b'PING:' + serialize(ping_msg))
+            yield tcp_sock.recv_msg()
         except:
             # logger.debug(traceback.format_exc())
             pass
@@ -946,14 +942,15 @@ class _Scheduler(object):
         compute.pulse_interval = self.pulse_interval
         # TODO: should we allow clients to add new nodes, or use only
         # the nodes initially created with command-line?
-        yield self.send_ping_cluster(cluster._compute.node_specs,
+        yield self.send_ping_cluster(cluster._node_specs,
                                      set(cluster._dispy_nodes.keys()), coro=coro)
         compute_nodes = []
         for ip_addr, node in self._nodes.items():
             if compute.id in node.clusters:
                 continue
-            for node_spec in compute.node_specs:
+            for node_spec in cluster._node_specs:
                 if re.match(node_spec.rex, ip_addr):
+                    cluster._dispy_nodes.pop(node.ip_addr, None)
                     compute_nodes.append(node)
         for node in compute_nodes:
             yield self.setup_node(node, [compute], coro=coro)
@@ -987,7 +984,7 @@ class _Scheduler(object):
             except:
                 logger.warning('Could not remove directory "%s"', cluster.dest_path)
 
-        del self._clusters[compute.id]
+        self._clusters.pop(compute.id, None)
         for ip_addr in cluster._dispy_nodes:
             node = self._nodes.get(ip_addr, None)
             if not node:
@@ -1023,6 +1020,7 @@ class _Scheduler(object):
             else:
                 node.clusters.add(compute.id)
                 self._sched_event.set()
+                dispy_node.update_time = time.time()
                 Coro(self.send_node_status, cluster, dispy_node, DispyNode.Initialized)
 
     def add_node(self, info, coro=None):
@@ -1045,19 +1043,18 @@ class _Scheduler(object):
             self._nodes[node.ip_addr] = node
         else:
             node.last_pulse = time.time()
-            h = bytes(hashlib.sha1(bytes(info['sign'] + self.node_secret,
-                                         'ascii')).hexdigest(), 'ascii')
+            auth = auth_code(self.node_secret, info['sign'])
             if info['cpus'] > 0:
                 node.avail_cpus = info['cpus']
                 node.cpus = min(node.cpus, node.avail_cpus)
             else:
                 logger.warning('invalid "cpus" %s from %s ignored',
                                (info['cpus'], info['ip_addr']))
-            if node.port == info['port'] and node.auth_code == h:
+            if node.port == info['port'] and node.auth == auth:
                 raise StopIteration
             logger.debug('node %s rediscovered' % info['ip_addr'])
             node.port = info['port']
-            if node.auth_code is not None:
+            if node.auth is not None:
                 dead_jobs = [_job for _job in self._sched_jobs.values()
                              if _job.node is not None and _job.node.ip_addr == node.ip_addr]
                 for cid in node.clusters:
@@ -1069,9 +1066,9 @@ class _Scheduler(object):
 
                 node.clusters = set()
                 node.busy = 0
-                node.auth_code = h
+                node.auth = auth
                 yield self.reschedule_jobs(dead_jobs)
-            node.auth_code = h
+            node.auth = auth
         node_computations = []
         node.name = info['name']
         node.scheduler_ip_addr = info['scheduler_ip_addr']
@@ -1079,8 +1076,9 @@ class _Scheduler(object):
             if cid in node.clusters:
                 continue
             compute = cluster._compute
-            for node_spec in compute.node_specs:
+            for node_spec in cluster._node_specs:
                 if re.match(node_spec.rex, node.ip_addr):
+                    cluster._dispy_nodes.pop(node.ip_addr, None)
                     node_computations.append(compute)
                     break
         if node_computations:
@@ -1140,7 +1138,8 @@ class _Scheduler(object):
         sock.settimeout(MsgTimeout)
         try:
             yield sock.connect((cluster.client_ip_addr, cluster.client_job_result_port))
-            status = {'uid': _job.uid, 'status': _job.job.status, 'node': _job.node.ip_addr}
+            status = {'uid': _job.uid, 'status': _job.job.status, 'node': _job.node.ip_addr,
+                      'hash': _job.hash}
             if _job.job.status == DispyJob.Running:
                 status['start_time'] = _job.job.start_time
             yield sock.send_msg(b'JOB_STATUS:' + serialize(status))
@@ -1155,7 +1154,7 @@ class _Scheduler(object):
         sock.settimeout(MsgTimeout)
         try:
             status = {'compute_id': cluster._compute.id, 'dispy_node': dispy_node,
-                      'status': status}
+                      'status': status, 'auth': cluster.client_auth}
             yield sock.connect((cluster.client_ip_addr, cluster.client_job_result_port))
             yield sock.send_msg(b'NODE_STATUS:' + serialize(status))
         except:
@@ -1228,7 +1227,7 @@ class _Scheduler(object):
             if cluster._compute.reentrant:
                 logger.debug('Rescheduling job %s from %s', _job.uid, _job.node.ip_addr)
                 _job.job.status = DispyJob.Created
-                _job.hash = ''.join(hex(x)[2:] for x in os.urandom(20))
+                _job.hash = ''.join(hex(x)[2:] for x in os.urandom(10))
                 cluster._jobs.append(_job)
                 self.unsched_jobs += 1
             else:
@@ -1368,16 +1367,16 @@ class _Scheduler(object):
             req = unserialize(msg)
             uid = req['uid']
             compute_id = req['compute_id']
-            auth_code = req['auth_code']
+            auth = req['auth']
             job_hash = req['hash']
         except:
             yield send_reply(None)
             raise StopIteration
 
-        shelf_key = '%s_%s' % (auth_code, compute_id)
+        shelf_key = '%s_%s' % (auth, compute_id)
         cluster = self._clusters.get(compute_id, None)
         if cluster is not None:
-            if cluster.client_auth != auth_code:
+            if cluster.client_auth != auth:
                 yield send_reply(None)
                 raise StopIteration
         else:
@@ -1416,14 +1415,13 @@ class _Scheduler(object):
         node_specs = _parse_nodes([node])
         if not node_specs:
             raise StopIteration(-1)
-        cluster._compute.node_specs.extend(node_specs)
-        cluster._compute.node_specs = sorted(cluster._compute.node_specs,
-                                             key=lambda node_spec: node_spec.rex)
-        cluster._compute.node_specs.reverse()
+        cluster._node_specs.extend(node_specs)
+        cluster._node_specs = sorted(cluster._node_specs, key=lambda node_spec: node_spec.rex)
+        cluster._node_specs.reverse()
         present = set()
-        cluster._compute.node_specs = [node_spec for node_spec in cluster._compute.node_specs
-                                       if node_spec.rex not in present and
-                                       not present.add(node_spec.rex)]
+        cluster._node_specs = [node_spec for node_spec in cluster._node_specs
+                               if node_spec.rex not in present and
+                               not present.add(node_spec.rex)]
         del present
         Coro(self.add_cluster, cluster)
         yield 0
@@ -1439,7 +1437,7 @@ class _Scheduler(object):
             sock.settimeout(MsgTimeout)
             try:
                 yield sock.connect((node.ip_addr, node.port))
-                yield sock.sendall(node.auth_code)
+                yield sock.sendall(node.auth)
                 yield sock.send_msg(b'JOBS:')
                 msg = yield sock.recv_msg()
                 uids = [info['uid'] for info in unserialize(msg)]
