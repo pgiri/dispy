@@ -246,7 +246,7 @@ class _Compute(object):
         self.type = compute_type
         self.name = name
         self.id = None
-        self.code = None
+        self.code = ''
         self.dest_path = None
         self.xfer_files = []
         self.reentrant = False
@@ -1908,8 +1908,6 @@ class JobCluster(object):
                     dep = dep.__class__
                 if id(dep) in depend_ids:
                     continue
-                if compute.type == _Compute.prog_type:
-                    raise Exception('Program computations cannot depend on "%s"' % dep.__name__)
                 lines = inspect.getsourcelines(dep)[0]
                 lines[0] = lines[0].lstrip()
                 compute.code += '\n' + ''.join(lines)
