@@ -372,7 +372,7 @@ class _Scheduler(object):
                 xf = unserialize(msg[len(b'FILEXFER:'):])
                 msg = yield conn.recv_msg()
                 reply = unserialize(msg)
-                yield self.file_xfer_process(reply, xf, conn, addr)
+                yield self.xfer_to_client(reply, xf, conn, addr)
             except:
                 logger.debug(traceback.format_exc())
         elif msg.startswith(b'TERMINATED:'):
@@ -492,6 +492,9 @@ class _Scheduler(object):
             compute.job_result_port = self.port
             compute.scheduler_port = self.port
             compute.auth = ''.join(hex(x)[2:] for x in os.urandom(10))
+            for xf in compute.xfer_files:
+                xf.compute_id = compute.id
+                xf.name = os.path.join(cluster.dest_path, os.path.basename(xf.name))
 
             self.shelf['%s_%s' % (cluster.client_auth, compute.id)] = cluster
             self.shelf.sync()
@@ -500,7 +503,7 @@ class _Scheduler(object):
                     'job_result_port': compute.job_result_port}
             return serialize(resp)
 
-        def _xfer_file_task(self, msg):
+        def xfer_from_client(self, msg):
             # generator
             try:
                 xf = unserialize(msg)
@@ -514,6 +517,11 @@ class _Scheduler(object):
             tgt = os.path.join(cluster.dest_path, os.path.basename(xf.name))
             if _same_file(tgt, xf):
                 raise StopIteration(b'ACK')
+            for cxf in cluster._compute.xfer_files:
+                if tgt == cxf.name:
+                    break
+            else:
+                raise StopIteration('NAK')
             logger.debug('Copying file %s to %s (%s)', xf.name, tgt, xf.stat_buf.st_size)
             try:
                 yield conn.send_msg(b'NAK')
@@ -629,7 +637,7 @@ class _Scheduler(object):
             Coro(self.cleanup_computation, cluster)
         elif msg.startswith(b'FILEXFER:'):
             msg = msg[len(b'FILEXFER:'):]
-            resp = yield _xfer_file_task(self, msg)
+            resp = yield xfer_from_client(self, msg)
         elif msg.startswith(b'NODE_JOBS:'):
             msg = msg[len(b'NODE_JOBS:'):]
             try:
@@ -835,7 +843,7 @@ class _Scheduler(object):
                                  cluster._compute.name, cluster._compute.id)
                     Coro(self.cleanup_computation, cluster)
 
-    def file_xfer_process(self, reply, xf, sock, addr):
+    def xfer_to_client(self, reply, xf, sock, addr):
         _job = self._sched_jobs.get(reply.uid, None)
         if _job is None or _job.hash != reply.hash:
             logger.warning('Ignoring invalid file transfer from job %s at %s', reply.uid, addr[0])

@@ -1627,10 +1627,12 @@ class _Cluster(object):
             # TODO: need to check all clusters are deleted?
             self.shelf.close()
             self.shelf = None
-            try:
-                os.remove(self.recover_file)
-            except:
-                pass
+            for ext in ('', '.db'):
+                try:
+                    os.remove(self.recover_file + ext)
+                    break
+                except:
+                    pass
 
 
 class JobCluster(object):
