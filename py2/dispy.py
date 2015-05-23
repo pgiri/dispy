@@ -1638,7 +1638,7 @@ class JobCluster(object):
     """Create an instance of cluster for a specific computation.
     """
 
-    def __init__(self, computation, nodes=None, depends=[], callback=None, cluster_status=None,
+    def __init__(self, computation, nodes=None, depends=[], context={}, callback=None, cluster_status=None,
                  ip_addr=None, port=None, node_port=None, ext_ip_addr=None,
                  dest_path=None, loglevel=logging.INFO, setup=None, cleanup=True,
                  ping_interval=None, pulse_interval=None, poll_interval=None,
@@ -1663,6 +1663,12 @@ class JobCluster(object):
           If the element is a python object (a function name, class name etc.),
           then the code for that object is transferred to the node executing
           a job for this cluster.
+
+        @context is a dictionary. Each key should correspond to a valid
+          variable name that will be made available in the namespace of
+          `setup`, `compute` and `cleanup`. The value associated with each
+          key should be a pickleable python object. If the class of the object
+          is not installed on the server, it should be added to `depends`.
 
        @callback is a function or class method. When a job's results
           become available, dispy will call provided callback
@@ -1921,6 +1927,7 @@ class JobCluster(object):
             # make sure code can be compiled
             code = compile(compute.code, '<string>', 'exec')
             del code
+        compute.context = context
         if dest_path:
             if not isinstance(dest_path, str):
                 raise Exception('Invalid dest_path: it must be a string')
@@ -2077,7 +2084,7 @@ class SharedJobCluster(JobCluster):
     dispyscheduler must be called with appropriate pulse_interval.
     The behaviour is same as for JobCluster.
     """
-    def __init__(self, computation, nodes=None, depends=[], callback=None, cluster_status=None,
+    def __init__(self, computation, nodes=None, depends=[], context={}, callback=None, cluster_status=None,
                  ip_addr=None, port=None, scheduler_node=None, scheduler_port=None,
                  ext_ip_addr=None, loglevel=logging.INFO, setup=None, cleanup=True, dest_path=None,
                  poll_interval=None, reentrant=False, secret='',
@@ -2100,7 +2107,7 @@ class SharedJobCluster(JobCluster):
         if not node_specs:
             raise Exception('"nodes" argument is invalid')
 
-        JobCluster.__init__(self, computation, depends=depends,
+        JobCluster.__init__(self, computation, depends=depends, context=context,
                             callback=callback, cluster_status=cluster_status,
                             ip_addr=ip_addr, port=port, ext_ip_addr=ext_ip_addr,
                             loglevel=loglevel, setup=setup, cleanup=cleanup, dest_path=dest_path,
