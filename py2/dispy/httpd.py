@@ -299,6 +299,5 @@ class DispyHTTPServer(object):
                 'HTTP server waiting for %s seconds for client updates before quitting',
                 self._poll_sec)
             time.sleep(self._poll_sec)
-        if self._server.socket:
-            self._server.socket.close()
         self._server.shutdown()
+        self._server.server_close()
