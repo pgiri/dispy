@@ -3,32 +3,38 @@
 # It works on Unix variants (Linux, OS X etc.) but not Microsoft Windows.
 def setup():
     # read data in file to global variable
-    global data
-    data = open('file.dat').read()
+    global data, algorithms, hashlib
+    import hashlib
+    data = bytes(open('node_setup.py').read(), 'ascii')
+    algorithms = list(hashlib.algorithms_guaranteed)
     return 0
 
 def cleanup():
-    del globals()['data']
+    for var in ['data', 'algorithms', 'hashlib']:
+        del globals()[var]
 
 def compute(n):
     import hashlib
-    alg = hashlib.algorithms[n % len(hashlib.algorithms)]
+    alg = algorithms[n % len(algorithms)]
     csum = getattr(hashlib, alg)()
     # 'data' global variable has file data
     csum.update(data)
     return (alg, csum.hexdigest())
 
 if __name__ == '__main__':
-    import dispy
-    cluster = dispy.JobCluster(compute, depends=['file.dat'], setup=setup, cleanup=cleanup)
+    import dispy, sys
+    cluster = dispy.JobCluster(compute, depends=[sys.argv[0]], setup=setup, cleanup=cleanup)
     jobs = []
-    for n in range(10):
+    for n in range(5):
         job = cluster.submit(n)
         job.id = n
         jobs.append(job)
 
     for job in jobs:
         job()
-        print('%s: %s : %s' % (job.id, job.result[0], job.result[1]))
+        if job.exception:
+            print('job %s failed: %s' % (job.id, job.exception))
+        else:
+            print('%s: %s' % (job.id, job.result))
     cluster.stats()
     cluster.close()
