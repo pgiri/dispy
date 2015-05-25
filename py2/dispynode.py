@@ -34,8 +34,8 @@ import glob
 import cPickle as pickle
 import cStringIO as io
 
-from dispy import _JobReply, DispyJob, _Compute, _XferFile, _node_ipaddr, _dispy_version, \
-    auth_code, num_min
+from dispy import _JobReply, DispyJob, _Function, _Compute, _XferFile, _node_ipaddr, \
+     _dispy_version, auth_code, num_min
 
 import asyncoro
 from asyncoro import Coro, AsynCoro, AsyncSocket, serialize, unserialize
@@ -696,17 +696,16 @@ class _DispyNode(object):
             raise StopIteration  # xfer_file_task
 
         def setup_computation(msg):
-            localvars = {}
             try:
                 compute_id = unserialize(msg)
                 compute = self.computations[compute_id]
-                assert isinstance(compute.setup, str)
+                assert isinstance(compute.setup, _Function)
                 os.chdir(compute.dest_path)
                 exec(marshal.loads(compute.code)) in globals(), locals()
-                _dispy_setup_func = locals()[compute.setup]
-                assert _dispy_setup_func() == 0
+                _dispy_setup_func = locals()[compute.setup.name]
+                assert _dispy_setup_func(*compute.setup.args, **compute.setup.kwargs) == 0
             except:
-                logger.debug('Setup "%s" failed' % compute.setup)
+                logger.debug('Setup "%s" failed' % compute.setup.name)
                 resp = traceback.format_exc().encode()
             else:
                 resp = 'ACK'
@@ -1187,13 +1186,13 @@ class _DispyNode(object):
         if not compute.cleanup:
             return
         os.chdir(self.dest_path_prefix)
-        if isinstance(compute.cleanup, str):
+        if isinstance(compute.cleanup, _Function):
             try:
                 exec(marshal.loads(compute.code)) in globals(), locals()
-                _dispy_cleanup_func = locals()[compute.cleanup]
-                _dispy_cleanup_func()
+                _dispy_cleanup_func = locals()[compute.cleanup.name]
+                _dispy_cleanup_func(*compute.cleanup.args, **compute.cleanup.kwargs)
             except:
-                logger.debug('cleanup "%s" failed' % compute.cleanup)
+                logger.debug('Cleanup "%s" failed' % compute.cleanup.name)
                 logger.debug(traceback.format_exc())
 
         for module in sys.modules.keys():

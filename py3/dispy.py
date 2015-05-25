@@ -33,6 +33,7 @@ import traceback
 import shelve
 import datetime
 import atexit
+import functools
 import queue
 import numbers
 import collections
@@ -161,7 +162,9 @@ ClusterStatus = collections.namedtuple('ClusterStatus', ['nodes', 'jobs_pending'
 
 
 class NodeSpec(object):
-    """
+    """An element of 'nodes' can be a string (host name or IP
+    address), a tuple (see documentation for details), or an instance
+    of NodeSpec.
     """
     def __init__(self, name_ip, port=None, cpus=0):
         self.ip_addr = _node_ipaddr(name_ip)
@@ -233,6 +236,12 @@ def _parse_nodes(nodes):
         elif isinstance(node, list):
             node_specs.append(NodeSpec(*tuple(node)))
     return node_specs
+
+
+# This tuple stores information about partial functions; for
+# now'setup' and 'cleanup' functions can be partial functions.
+# TODO: useful to have 'compute' as partial function as well?
+_Function = collections.namedtuple('_Function', ['name', 'args', 'kwargs'])
 
 
 class _Compute(object):
@@ -307,7 +316,7 @@ class _Node(object):
                 logger.error('Could not transfer file "%s"', xf.name)
                 raise StopIteration(resp)
 
-        if isinstance(compute.setup, str):
+        if isinstance(compute.setup, _Function):
             resp = yield self.send(b'SETUP:' + serialize(compute.id), coro=coro)
             if resp != 0:
                 logger.warning('Setup of computation "%s" on %s failed: %s',
@@ -1848,22 +1857,6 @@ class JobCluster(object):
             self._node_specs.reverse()
         self._dispy_nodes = {}
 
-        if setup:
-            assert inspect.isfunction(setup), "setup must be Python function"
-            depends.append(setup)
-
-        if cleanup:
-            if cleanup is not True:
-                assert inspect.isfunction(cleanup), "cleanup must be Python function"
-                depends.append(cleanup)
-
-        self._cluster = _Cluster(ip_addr=ip_addr, port=port, node_port=node_port,
-                                 ext_ip_addr=ext_ip_addr, shared=shared,
-                                 secret=secret, keyfile=keyfile, certfile=certfile,
-                                 recover_file=recover_file)
-        atexit.register(self.shutdown)
-        # self.ip_addr = self._cluster.ip_addr
-
         if inspect.isfunction(computation):
             func = computation
             compute = _Compute(_Compute.func_type, func.__name__)
@@ -1875,6 +1868,49 @@ class JobCluster(object):
             depends.append(computation)
         else:
             raise Exception('Invalid computation type: %s' % type(compute))
+
+        if setup:
+            if inspect.isfunction(setup):
+                depends.append(setup)
+                compute.setup = _Function(setup.__name__, (), {})
+            elif isinstance(setup, functools.partial):
+                depends.append(setup.func)
+                if setup.args:
+                    args = setup.args
+                else:
+                    args = ()
+                if setup.keywords:
+                    kwargs = setup.keywords
+                else:
+                    kwargs = {}
+                compute.setup = _Function(setup.func.__name__, args, kwargs)
+            else:
+                raise Exception('"setup" must be Python (partial) function')
+        if cleanup:
+            if inspect.isfunction(cleanup):
+                depends.append(cleanup)
+                compute.cleanup = _Function(cleanup.__name__, (), {})
+            elif isinstance(cleanup, functools.partial):
+                depends.append(cleanup.func)
+                if cleanup.args:
+                    args = cleanup.args
+                else:
+                    args = ()
+                if cleanup.keywords:
+                    kwargs = cleanup.keywords
+                else:
+                    kwargs = {}
+                compute.cleanup = _Function(cleanup.func.__name__, args, kwargs)
+            else:
+                raise Exception('"cleanup" must be Python (partial) function')
+
+        self._cluster = _Cluster(ip_addr=ip_addr, port=port, node_port=node_port,
+                                 ext_ip_addr=ext_ip_addr, shared=shared,
+                                 secret=secret, keyfile=keyfile, certfile=certfile,
+                                 recover_file=recover_file)
+        atexit.register(self.shutdown)
+        # self.ip_addr = self._cluster.ip_addr
+
         depend_ids = {}
         for dep in depends:
             if isinstance(dep, str) or inspect.ismodule(dep):
@@ -1935,14 +1971,6 @@ class JobCluster(object):
         compute.job_result_port = self._cluster.port
         compute.reentrant = reentrant
         compute.pulse_interval = pulse_interval
-        if inspect.isfunction(setup):
-            compute.setup = setup.__name__
-        else:
-            compute.setup = None
-        if inspect.isfunction(cleanup):
-            compute.cleanup = cleanup.__name__
-        else:
-            compute.cleanup = cleanup
 
         self._compute = compute
         self._pending_jobs = 0

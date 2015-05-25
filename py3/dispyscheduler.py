@@ -31,7 +31,7 @@ import shelve
 import glob
 import pickle
 
-from dispy import _Compute, DispyJob, _DispyJob_, _Node, DispyNode, _JobReply, \
+from dispy import _Compute, DispyJob, _DispyJob_, _Function, _Node, DispyNode, _JobReply, \
     auth_code, num_min, _parse_nodes, _node_ipaddr, _XferFile, _dispy_version
 
 import asyncoro
