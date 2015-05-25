@@ -1886,23 +1886,25 @@ class JobCluster(object):
                 compute.setup = _Function(setup.func.func_name, args, kwargs)
             else:
                 raise Exception('"setup" must be Python (partial) function')
-        if cleanup:
-            if inspect.isfunction(cleanup):
-                depends.append(cleanup)
-                compute.cleanup = _Function(cleanup.func_name, (), {})
-            elif isinstance(cleanup, functools.partial):
-                depends.append(cleanup.func)
-                if cleanup.args:
-                    args = cleanup.args
-                else:
-                    args = ()
-                if cleanup.keywords:
-                    kwargs = cleanup.keywords
-                else:
-                    kwargs = {}
-                compute.cleanup = _Function(cleanup.func.func_name, args, kwargs)
+
+        if inspect.isfunction(cleanup):
+            depends.append(cleanup)
+            compute.cleanup = _Function(cleanup.func_name, (), {})
+        elif isinstance(cleanup, functools.partial):
+            depends.append(cleanup.func)
+            if cleanup.args:
+                args = cleanup.args
             else:
-                raise Exception('"cleanup" must be Python (partial) function')
+                args = ()
+            if cleanup.keywords:
+                kwargs = cleanup.keywords
+            else:
+                kwargs = {}
+            compute.cleanup = _Function(cleanup.func.func_name, args, kwargs)
+        elif isinstance(cleanup, bool):
+            compute.cleanup = cleanup
+        else:
+            raise Exception('"cleanup" must be Python (partial) function')
 
         self._cluster = _Cluster(ip_addr=ip_addr, port=port, node_port=node_port,
                                  ext_ip_addr=ext_ip_addr, shared=shared,

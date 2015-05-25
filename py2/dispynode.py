@@ -1183,7 +1183,7 @@ class _DispyNode(object):
         if self.scheduler['ip_addr'] is None and self.avail_cpus == self.num_cpus:
             self.timer_coro.resume(None)
             Coro(self.broadcast_ping_msg)
-        if not compute.cleanup:
+        if compute.cleanup is False:
             return
         os.chdir(self.dest_path_prefix)
         if isinstance(compute.cleanup, _Function):
