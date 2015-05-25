@@ -166,7 +166,7 @@ def _same_file(tgt, xf):
 
 
 def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
-                    __dispy_job_name, __dispy_job_args, __dispy_job_kwargs, __dispy_job_globals,
+                    __dispy_job_name, __dispy_job_args, __dispy_job_kwargs,
                     __dispy_job_code, __dispy_path, __dispy_reply_Q):
     """Internal use only.
     """
@@ -175,15 +175,14 @@ def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
     sys.stderr = io.StringIO()
     __dispy_job_reply = __dispy_job_info.job_reply
     try:
-        localvars = {}
-        exec(marshal.loads(__dispy_job_code[0]), __dispy_job_globals, localvars)
+        exec(marshal.loads(__dispy_job_code[0]))
         if __dispy_job_code[1]:
-            exec(__dispy_job_code[1], __dispy_job_globals, localvars)
+            exec(__dispy_job_code[1])
+        globals().update(locals())
         __dispy_job_args = unserialize(__dispy_job_args)
         __dispy_job_kwargs = unserialize(__dispy_job_kwargs)
-        __dispy_job_globals.update(locals())
-        exec('__dispy_job_reply.result = %s(*__dispy_job_args, **__dispy_job_kwargs)' %
-             __dispy_job_name, __dispy_job_globals, localvars)
+        __func = globals()[__dispy_job_name]
+        __dispy_job_reply.result = __func(*__dispy_job_args, **__dispy_job_kwargs)
         __dispy_job_reply.status = DispyJob.Finished
     except:
         __dispy_job_reply.exception = traceback.format_exc()
@@ -478,7 +477,7 @@ class _DispyNode(object):
                 reply.start_time = time.time()
                 job_info = _DispyJobInfo(reply, reply_addr, compute, _job.xfer_files)
                 args = (job_info, self.certfile, self.keyfile,
-                        compute.name, _job.args, _job.kwargs, compute.globals,
+                        compute.name, _job.args, _job.kwargs,
                         (compute.code, _job.code), compute.dest_path, self.reply_Q)
                 try:
                     yield conn.send_msg(b'ACK')
@@ -582,7 +581,6 @@ class _DispyNode(object):
             setattr(compute, 'pending_jobs', 0)
             setattr(compute, 'pending_results', 0)
             setattr(compute, 'zombie', False)
-            setattr(compute, 'globals', {})
 
             if compute.code:
                 try:
@@ -704,8 +702,9 @@ class _DispyNode(object):
                 compute = self.computations[compute_id]
                 assert isinstance(compute.setup, str)
                 os.chdir(compute.dest_path)
-                exec(marshal.loads(compute.code), compute.globals, localvars)
-                exec('assert %s() == 0' % compute.setup, compute.globals, localvars)
+                exec(marshal.loads(compute.code)) in globals(), locals()
+                _dispy_setup_func = locals()[compute.setup]
+                assert _dispy_setup_func() == 0
             except:
                 logger.debug('Setup "%s" failed' % compute.setup)
                 resp = traceback.format_exc().encode()
@@ -1048,7 +1047,6 @@ class _DispyNode(object):
             env = {}
             env.update(os.environ)
             env['PATH'] = compute.dest_path + os.pathsep + env['PATH']
-            env.update({var: str(value) for var, value in compute.globals.items()})
             job_info.proc = subprocess.Popen(program, stdout=subprocess.PIPE,
                                              stderr=subprocess.PIPE, env=env)
 
@@ -1168,7 +1166,7 @@ class _DispyNode(object):
         else:
             self.shelf[shelf_key] = compute
         self.shelf.sync()
-        self.computations.pop(compute.id)
+        self.computations.pop(compute.id, None)
         try:
             self.scheduler['auth'].remove(compute.auth)
         except ValueError:
@@ -1191,8 +1189,9 @@ class _DispyNode(object):
         os.chdir(self.dest_path_prefix)
         if isinstance(compute.cleanup, str):
             try:
-                exec(marshal.loads(compute.code), compute.globals)
-                exec('%s()' % compute.cleanup, compute.globals)
+                exec(marshal.loads(compute.code)) in globals(), locals()
+                _dispy_cleanup_func = locals()[compute.cleanup]
+                _dispy_cleanup_func()
             except:
                 logger.debug('cleanup "%s" failed' % compute.cleanup)
                 logger.debug(traceback.format_exc())
