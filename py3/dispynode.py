@@ -75,7 +75,7 @@ def dispy_provisional_result(result):
     sock.settimeout(MsgTimeout)
     try:
         sock.connect(__dispy_job_info.reply_addr)
-        sock.send_msg(serialize(__dispy_job_reply))
+        sock.send_msg(b'JOB_REPLY:' + serialize(__dispy_job_reply))
         ack = sock.recv_msg()
         assert ack == b'ACK'
     except:
