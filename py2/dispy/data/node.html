@@ -63,7 +63,7 @@
                 }
                 rows += '<tr>' +
                   '<td><input type="checkbox" name="job" value="' + job.uid + '_' + i + '" /></td>' +
-                  '<td>' + job.job_id + '</td><td>' + args + '</td>' +
+                  '<td>' + job.cluster + '</td><td>' + job.job_id + '</td><td>' + args + '</td>' +
 	          '<td>' + (new Date(job.sched_time_ms)).toLocaleTimeString() + '</td></tr>';
               });
               if (jobs.length > 0) {
@@ -256,7 +256,8 @@
         <table class="fancy shadow" style="margin:20px auto;" id="jobs-table">
           <caption><span class="border" style="display:inline-block;">Jobs Running</span></caption>
           <thead>
-            <tr><th>Select</th><th>Job ID</th><th>Arguments</th><th>Scheduled Time</th></tr>
+            <tr><th>Select</th><th>Cluster</th><th>Job ID</th>
+              <th>Arguments</th><th>Scheduled Time</th></tr>
           </thead>
           <tbody>
           </tbody>

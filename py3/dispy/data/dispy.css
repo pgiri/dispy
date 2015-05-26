@@ -160,24 +160,17 @@ table caption {
     margin-bottom: 10px;
 }
 
-caption table {
-    font-weight: bold;
-    background: transparent;
-    border-spacing: 0px;
+.div-table {
+    display: table;
 }
-
-caption table td {
-    text-align: right;
+.table-row {
+    display: table-row;
+    clear: left;
+}
+.table-cell {
+    display: table-cell;
     padding: 2px;
-}
-
-caption table tr:last-child td {
-    padding: 0;
-    margin: 0;
-}
-
-caption table tr + tr td {
-    border-top: 1px solid #bcd;
+    text-align: right;
 }
 
 button {

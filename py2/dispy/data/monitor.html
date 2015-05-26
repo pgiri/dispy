@@ -7,63 +7,40 @@
     <link type="text/css" rel="stylesheet" href="dispy.css" />
 
     <script type="text/javascript" src="jquery.js"></script>
+    <script type="text/javascript" src="dispy.js"></script>
 
     <script type="text/javascript">
     //<![CDATA[
 
      jQuery.ajaxSettings.traditional = true;
 
-      var cluster = {};
+      var clusters = {'': {name: 'Combined', jobs: {submitted: 0, pending: 0, done: 0},
+                           nodes: {}, sorted_keys: []}};
+      var cur_cluster_name = null;
       var timer = null;
       var timeout = 1000 * %(TIMEOUT)s;
       var sort_key = 'ip_addr';
       var sorted_keys = [];
 
-      function merge_sorted_uniq(suarr1, suarr2, compare) {
-        var result = Array(suarr1.length + suarr2.length);
-        var i =  0;
-        var j = 0;
-        var k = 0;
-        compare = compare || function(a, b) { return a.toString().localeCompare(b.toString()); };
-        while (i < suarr1.length && j < suarr2.length) {
-          var test = compare(suarr1[i], suarr2[j]);
-          if (test < 0) {
-            result[k++] = suarr1[i++];
-          } else {
-            result[k++] = suarr2[j++];
-            if (test == 0) {
-              i++;
-            }
-          }
-        }
-        while (i < suarr1.length) {
-          result[k++] = suarr1[i++];
-        }
-        while (j < suarr2.length) {
-          result[k++] = suarr2[j++];
-        }
-        if (k == (suarr1.length + suarr2.length)) {
-          return result;
-        } else {
-          result.splice(k, (suarr1.length + suarr2.length - k));
-          return result;
-        }
-      }
-
       function show_cluster() {
-        if (sorted_keys.length == 0) {
+        var cluster = clusters[cur_cluster_name];
+        $('#jobs-submitted').text(cluster.jobs.submitted);
+        $('#jobs-done').text(cluster.jobs.done);
+        $('#jobs-pending').text(cluster.jobs.submitted - cluster.jobs.done);
+
+        if (cluster.sorted_keys.length == 0) {
           var key_ids = $.map(cluster, function(node) {
             return {key:node[sort_key], id:node.ip_addr};
           });
-          sorted_keys = $.map(key_ids.sort(function(a, b) {
-                                  return a.key < b.key ? 1 : (a.key > b.key ? -1 : 0); }),
-                              function(key_id) {
-                                return key_id.id;
-                              });
+          cluster.sorted_keys =
+            $.map(key_ids.sort(function(a, b) {
+              return a.key < b.key ? 1 : (a.key > b.key ? -1 : 0); }),
+                  function(key_id) { return key_id.id; }
+                 );
         }
         var rows = '';
-        $.each(sorted_keys, function(i, key) {
-          var node = cluster[key];
+        $.each(cluster.sorted_keys, function(i, key) {
+          var node = cluster.nodes[key];
           rows += '<tr><td>' + (i + 1) + '</td>' +
             '<td><a href="node.html?name_ip=' + node.ip_addr + '" ' + 'title="View jobs on ' +
             node.ip_addr + '">' + node.ip_addr + '</a></td><td>' + node.name + '</td><td>' +
@@ -75,10 +52,6 @@
         $('#nodes').html(rows);
       }
 
-      function sort_cmp(a, b) {
-        return a < b ? 1 : (a > b ? -1 : 0);
-      }
-
       function cluster_status(request) {
         $.ajax({
           url: request,
@@ -86,32 +59,69 @@
           dataType: 'json',
           timeout: Math.min(5000, timeout)
         })
-          .done(function(updates) {
-            var jobs = updates.jobs;
+          .done(function(cluster_status) {
+            $.each(cluster_status, function(i, status) {
+              var cluster;
+              if (clusters.hasOwnProperty(status.name)) {
+                cluster = clusters[status.name];
+              } else {
+                cluster = {name: status.name, jobs: {}, nodes: {}, sorted_keys: []}
+                clusters[status.name] = cluster;
+              }
+              cluster.jobs.submitted = status.jobs.submitted;
+              cluster.jobs.done = status.jobs.done;
 
-            $('#jobs-submitted').text(jobs.submitted);
-            $('#jobs-done').text(jobs.done);
-            $('#jobs-pending').text(jobs.submitted - jobs.done);
-
-            if (updates.nodes.length > 0) {
-              $.each(updates.nodes, function(i, node) {
+              $.each(status.nodes, function(i, node) {
                 node.last_update = new Date(1000 * node.update_time);
-                cluster[node.ip_addr] = node;
+                cluster.nodes[node.ip_addr] = node;
+                if ((cluster_status.length > 1) || (Object.keys(clusters).length > 1)) {
+                  var combined_node = clusters[''].nodes[node.ip_addr];
+                  if (combined_node == undefined) {
+                    clusters[''].nodes[node.ip_addr] = node;
+                  } else {
+                    combined_node.busy += node.busy;
+                    combined_node.last_update =
+                      (node.last_update.getTime() > combined_node.last_update.getTime() ?
+                       node.last_update : combined_node.last_update);
+                    clusters[''].nodes[node.ip_addr] = combined_node;
+                  }
+                }
               });
+            });
+            if (cur_cluster_name == null) {
+              cur_cluster_name = cluster_status[0].name;
+            }
+
+            var cluster_names = '<strong>Cluster : </strong>';
+            cluster_names += '<select name="cluster-names" style="margin-left:5px;">';
+              
+            clusters[''].jobs.submitted = 0;
+            clusters[''].jobs.done = 0;
+            $.each(clusters, function(name, cluster) {
+              if (cluster.name != 'Combined') {
+                clusters[''].jobs.submitted += cluster.jobs.submitted;
+                clusters[''].jobs.done += cluster.jobs.done;
+              }
               if (sort_key == 'ip_addr') {
-                var keys = $.map(updates.nodes, function(node) {
+                var keys = $.map(cluster.nodes, function(node) {
                   return node.ip_addr;
                 });
-                sorted_keys = merge_sorted_uniq(sorted_keys, keys.sort(sort_cmp), sort_cmp);
+                cluster.sorted_keys = merge_sorted_uniq(cluster.sorted_keys,
+                                                        keys.sort(desc_cmp), desc_cmp);
               } else {
-                sorted_keys = [];
+                cluster.sorted_keys = [];
               }
-              show_cluster();
-            }
-            var now = new Date();
-            now = now.toLocaleTimeString();
-            $('#messages').html('<li>Status updated at ' + now + '</li>');
+              cluster_names += '<option ' +
+                (cur_cluster_name == name ? 'selected="selected" ' : '') +
+                ' value="' + name + '">' + cluster.name + '</option>';
+            });
+            cluster_names += '</select>';
+            $('#cluster-names-container').html(cluster_names);
 
+            show_cluster();
+
+            $('#messages').html('<li>Status updated at ' +
+                                (new Date()).toLocaleTimeString() + '</li>');
             if (timeout > 1000) {
               timer = setTimeout(function() { cluster_status('cluster_updates') }, timeout);
             }
@@ -172,6 +182,11 @@
           show_cluster();
         });
 
+        $('#cluster-names-container').on('change', 'select[name="cluster-names"]', function() {
+          cur_cluster_name = $(this).val();
+          show_cluster();
+        });
+
       });
     //]]>
     </script>
@@ -190,16 +205,23 @@
 
       <h1><span class="title">dispy: Cluster Status</span></h1>
 
-      <table class="fancy shadow" style="text-align:right;margin:20px auto;">
-        <caption>
-          <span class="border" style="display:inline-block;margin-bottom:10px;">
-            <table>
-              <tr><td>Jobs Submitted : </td><td id="jobs-submitted">0</td></tr>
-              <tr><td>Jobs Done : </td><td id="jobs-done">0</td></tr>
-              <tr><td>Jobs Pending : </td><td id="jobs-pending">0</td></tr>
-            </table>
-          </span>
-        </caption>
+      <div id="cluster-names-container" class="border" style="padding:10px;display:inline-block;">
+      </div>
+
+      <table class="border"
+        style="background:transparent;margin:10px auto;font-weight:bold;text-align:right;">
+        <tr>
+           <td>Jobs Submitted : </td><td id="jobs-submitted">0</td>
+        </tr>
+        <tr><td style="border-top: 1px solid #bcd;">Jobs Done : </td>
+          <td style="border-top: 1px solid #bcd;" id="jobs-done">0</td>
+        </tr>
+        <tr>
+          <td style="border-top: 1px solid #bcd;">Jobs Pending : </td>
+          <td style="border-top: 1px solid #bcd;" id="jobs-pending">0</td>
+        </tr>
+      </table>
+      <table class="fancy shadow" style="text-align:right;margin:10px auto;">
         <thead>
           <tr>
             <th></th><th>IP Address</th><th>Name</th><th>CPUs</th><th>Busy</th><th>Done</th>
@@ -215,10 +237,12 @@
       <div id="timeout-div" style="margin:10px auto;">
         <span class="border" style="padding:10px;display:inline-block;">
           <strong>Update Interval Seconds:</strong>
-          <input style="width:3em;" maxlength="6" type="text" id="timeout-value" value="%(TIMEOUT)s" />
+          <input style="width:3em;" maxlength="6" type="text" id="timeout-value"
+            value="%(TIMEOUT)s" />
           <button type="button" id="timeout-update" style="margin-left:5px;">Update</button>
         </span>
       </div>
+
       <div style="margin:10px auto;">
         <span class="border" style="padding:10px;display:inline-block;">
           <strong>Sort Nodes by : </strong>

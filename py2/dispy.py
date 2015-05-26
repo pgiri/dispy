@@ -1607,7 +1607,9 @@ class _Cluster(object):
         else:
             _jobs = [self._sched_jobs.get(uid, None) for uid in node._jobs]
 
-        jobs = [_job.job for _job in _jobs if _job is not None]
+        jobs = [_job.job for _job in _jobs if _job is not None
+                and _job.compute_id == cluster._compute.id
+                ]
         raise StopIteration(jobs)
 
     def shutdown(self):
@@ -2381,7 +2383,9 @@ class SharedJobCluster(JobCluster):
             _jobs = []
         finally:
             sock.close()
-        jobs = [_job.job for _job in _jobs if _job is not None]
+        jobs = [_job.job for _job in _jobs if _job is not None
+                and _job.compute_id == self._compute.id
+                ]
         return jobs
 
     def set_node_cpus(self, node, cpus):
