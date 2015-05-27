@@ -151,6 +151,7 @@ class DispyHTTPServer(object):
                 ip_addr = None
                 for item in form.list:
                     if item.name == 'name_ip':
+                        # if it looks like IP address, skip resolving
                         if re.match('^\d+[\.\d]+$', item.value):
                             ip_addr = item.value
                         else:
@@ -296,10 +297,11 @@ class DispyHTTPServer(object):
                  keyfile=None, certfile=None):
         self._cluster_lock = threading.Lock()
         self._clusters = {}
-        cluster_info = self.__class__._ClusterInfo(cluster)
-        self._clusters[cluster.name] = cluster_info
-        if cluster.status_callback is None:
-            cluster.status_callback = functools.partial(self.cluster_status, cluster_info)
+        if cluster:
+            cluster_info = self.__class__._ClusterInfo(cluster)
+            self._clusters[cluster.name] = cluster_info
+            if cluster.status_callback is None:
+                cluster.status_callback = functools.partial(self.cluster_status, cluster_info)
         if not DocumentRoot:
             DocumentRoot = os.path.join(os.path.dirname(__file__), 'data')
         if poll_sec < 1:
@@ -353,3 +355,6 @@ class DispyHTTPServer(object):
         self._clusters[cluster.name] = cluster_info
         if cluster.status_callback is None:
             cluster.status_callback = functools.partial(self.cluster_status, cluster_info)
+
+    def del_cluster(self, cluster):
+        self._clusters.pop(cluster.name)

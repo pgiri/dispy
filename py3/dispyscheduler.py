@@ -37,6 +37,7 @@ from dispy import _Compute, DispyJob, _DispyJob_, _Function, _Node, DispyNode, _
 import asyncoro
 from asyncoro import Coro, AsynCoro, AsyncSocket, MetaSingleton, serialize, unserialize
 
+import httpd
 from dispynode import _same_file
 
 __version__ = _dispy_version
@@ -56,9 +57,12 @@ del handler
 class _Cluster(object):
     """Internal use only.
     """
-    def __init__(self, compute, node_specs):
+    def __init__(self, compute, node_specs, scheduler):
         self._compute = compute
+        self.name = compute.name
         self._node_specs = _parse_nodes(node_specs)
+        self.scheduler = scheduler
+        self.status_callback = None
         self.pending_jobs = 0
         self.pending_results = 0
         self._jobs = []
@@ -75,6 +79,24 @@ class _Cluster(object):
         self.ip_addr = None
         self.dest_path = None
 
+    def __getstate__(self):
+        state = dict(self.__dict__)
+        for var in ('scheduler', 'status_callback'):
+            del state[var]
+
+    def node_jobs(self, node, from_node=False, coro=None):
+        jobs = Coro(self.scheduler.node_jobs, self, node, from_node, get_uids=False).value()
+        return jobs
+
+    def cancel(self, job):
+        return self.scheduler.cancel_job(self, job.id)
+
+    def add_node(self, node):
+        Coro(self.scheduler.add_nodespec, node)
+
+    def set_node_cpus(self, node, cpus, coro=None):
+        Coro(self.scheduler.set_node_cpus, node, cpus)
+
 
 class _Scheduler(object):
     """Internal use only.
@@ -88,7 +110,7 @@ class _Scheduler(object):
                  pulse_interval=None, ping_interval=None,
                  node_secret='', node_keyfile=None, node_certfile=None,
                  cluster_secret='', cluster_keyfile=None, cluster_certfile=None,
-                 dest_path_prefix=None, clean=False, zombie_interval=60):
+                 dest_path_prefix=None, clean=False, zombie_interval=60, http_server=False):
         if not hasattr(self, 'ip_addr'):
             self.ip_addrs = set()
             if ip_addr:
@@ -192,6 +214,10 @@ class _Scheduler(object):
             self.start_time = time.time()
             self.compute_id = int(1000 * self.start_time)
 
+            if http_server:
+                self.httpd = httpd.DispyHTTPServer(None)
+            else:
+                self.httpd = None
             self.timer_coro = Coro(self.timer_task)
 
             self.tcp_coros = []
@@ -434,14 +460,19 @@ class _Scheduler(object):
             dest_path = os.path.join(self.dest_path_prefix, str(_job.compute_id))
             for xf in _job.xfer_files:
                 xf.name = os.path.join(dest_path, os.path.basename(xf.name))
-            job = type('DispyJob', (), {'status': DispyJob.Created,
-                                        'start_time': None, 'end_time': None})
+            job = DispyJob()
+            job.id = _job.uid
+            job.args = ()
+            job.kwargs = {}
+            delattr(job, 'finish')
             setattr(_job, 'job', job)
             cluster._jobs.append(_job)
             self.unsched_jobs += 1
             cluster.pending_jobs += 1
             cluster.last_pulse = time.time()
             self._sched_event.set()
+            if cluster.status_callback:
+                cluster.status_callback(DispyJob.Created, None, job)
             return serialize(_job.uid)
 
         def _compute_task(self, msg):
@@ -459,7 +490,7 @@ class _Scheduler(object):
                                    xf.name, xf.stat_buf.st_size)
                     return b'NAK'
             setattr(compute, 'nodes', {})
-            cluster = _Cluster(compute, node_specs)
+            cluster = _Cluster(compute, node_specs, self)
             cluster.ip_addr = conn.getsockname()[0]
             dest = os.path.join(self.dest_path_prefix, compute.scheduler_ip_addr)
             if not os.path.isdir(dest):
@@ -663,23 +694,7 @@ class _Scheduler(object):
                 logger.warning('Invalid job cancel message')
                 conn.close()
                 raise StopIteration
-            cluster.last_pulse = time.time()
-            _job = self._sched_jobs.get(uid, None)
-            if _job is None:
-                for i, _job in enumerate(cluster._jobs):
-                    if _job.uid == uid:
-                        del cluster._jobs[i]
-                        self.unsched_jobs -= 1
-                        self.done_jobs[_job.uid] = _job
-                        cluster.pending_jobs -= 1
-                        reply = _JobReply(_job, cluster.ip_addr, status=DispyJob.Cancelled)
-                        Coro(self.send_job_result, _job.uid, cluster, reply, resending=False)
-                        break
-                else:
-                    logger.debug('Invalid job %s!', uid)
-            else:
-                _job.job.status = DispyJob.Cancelled
-                Coro(_job.node.send, b'TERMINATE_JOB:' + serialize(_job), reply=False)
+            self.cancel_job(cluster, uid)
         elif msg.startswith(b'RESEND_JOB_RESULTS:'):
             msg = msg[len(b'RESEND_JOB_RESULTS:'):]
             try:
@@ -948,6 +963,8 @@ class _Scheduler(object):
         assert coro is not None
         compute = cluster._compute
         compute.pulse_interval = self.pulse_interval
+        if self.httpd:
+            self.httpd.add_cluster(cluster)
         # TODO: should we allow clients to add new nodes, or use only
         # the nodes initially created with command-line?
         yield self.send_ping_cluster(cluster._node_specs,
@@ -1005,6 +1022,8 @@ class _Scheduler(object):
             dispy_node = cluster._dispy_nodes[node.ip_addr]
             yield self.send_node_status(cluster, dispy_node, DispyNode.Closed)
         cluster._dispy_nodes = {}
+        if self.httpd:
+            self.httpd.del_cluster(cluster)
 
     def setup_node(self, node, computes, coro=None):
         # generator
@@ -1141,6 +1160,12 @@ class _Scheduler(object):
         raise StopIteration(status)
 
     def send_job_status(self, cluster, _job, coro=None):
+        if cluster.status_callback:
+            dispy_node = cluster._dispy_nodes.get(_job.node.ip_addr, None)
+            assert _job.job.status == DispyJob.Running
+            if dispy_node:
+                dispy_node.busy += 1
+                cluster.status_callback(_job.job.status, dispy_node, _job.job)
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock = AsyncSocket(sock, keyfile=self.cluster_keyfile, certfile=self.cluster_certfile)
         sock.settimeout(MsgTimeout)
@@ -1148,8 +1173,8 @@ class _Scheduler(object):
             yield sock.connect((cluster.client_ip_addr, cluster.client_job_result_port))
             status = {'uid': _job.uid, 'status': _job.job.status, 'node': _job.node.ip_addr,
                       'hash': _job.hash}
-            if _job.job.status == DispyJob.Running:
-                status['start_time'] = _job.job.start_time
+            # assert _job.job.status == DispyJob.Running
+            status['start_time'] = _job.job.start_time
             yield sock.send_msg(b'JOB_STATUS:' + serialize(status))
         except:
             logger.warning('Could not send job status to %s:%s',
@@ -1157,6 +1182,8 @@ class _Scheduler(object):
         sock.close()
 
     def send_node_status(self, cluster, dispy_node, status, coro=None):
+        if cluster.status_callback:
+            cluster.status_callback(status, dispy_node, None)
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock = AsyncSocket(sock, keyfile=self.cluster_keyfile, certfile=self.cluster_certfile)
         sock.settimeout(MsgTimeout)
@@ -1213,6 +1240,12 @@ class _Scheduler(object):
             del self._sched_jobs[_job.uid]
             node.busy -= 1
             node.cpu_time += reply.end_time - reply.start_time
+            if cluster.status_callback:
+                dispy_node = cluster._dispy_nodes.get(_job.node.ip_addr, None)
+                if dispy_node:
+                    dispy_node.busy -= 1
+                    dispy_node.jobs_done += 1
+                    dispy_node.cpu_time += reply.end_time - reply.start_time
             cluster.pending_jobs -= 1
             if cluster.pending_jobs == 0:
                 cluster.end_time = time.time()
@@ -1418,6 +1451,28 @@ class _Scheduler(object):
             except:
                 pass
 
+    def cancel_job(self, cluster, uid):
+        # function
+        cluster.last_pulse = time.time()
+        _job = self._sched_jobs.get(uid, None)
+        if _job is None:
+            for i, _job in enumerate(cluster._jobs):
+                if _job.uid == uid:
+                    del cluster._jobs[i]
+                    self.unsched_jobs -= 1
+                    self.done_jobs[_job.uid] = _job
+                    cluster.pending_jobs -= 1
+                    reply = _JobReply(_job, cluster.ip_addr, status=DispyJob.Cancelled)
+                    Coro(self.send_job_result, _job.uid, cluster, reply, resending=False)
+                    break
+            else:
+                logger.debug('Invalid job %s!', uid)
+                return -1
+        else:
+            _job.job.status = DispyJob.Cancelled
+            Coro(_job.node.send, b'TERMINATE_JOB:' + serialize(_job), reply=False)
+        return 0
+
     def add_nodespec(self, cluster, node, coro=None):
         # generator
         node_specs = _parse_nodes([node])
@@ -1434,7 +1489,7 @@ class _Scheduler(object):
         Coro(self.add_cluster, cluster)
         yield 0
 
-    def node_jobs(self, cluster, ip_addr, from_node=False, coro=None):
+    def node_jobs(self, cluster, ip_addr, from_node=False, get_uids=True, coro=None):
         # generator
         node = self._nodes.get(ip_addr, None)
         if not node or cluster._compute.id not in node.clusters:
@@ -1456,7 +1511,14 @@ class _Scheduler(object):
         else:
             uids = list(node._jobs)
 
-        raise StopIteration(uids)
+        if get_uids:
+            jobs = uids
+        else:
+            _jobs = [self._sched_jobs.get(uid, None) for uid in uids]
+            jobs = [_job.job for _job in _jobs if _job is not None
+                    and _job.compute_id == cluster._compute.id
+                    ]
+        raise StopIteration(jobs)
 
     def set_node_cpus(self, node, cpus, coro=None):
         # generator
@@ -1554,6 +1616,8 @@ if __name__ == '__main__':
                         help='maximum file size of any file transferred')
     parser.add_argument('--clean', action='store_true', dest='clean', default=False,
                         help='if given, files copied from or generated by clients will be removed')
+    parser.add_argument('--httpd', action='store_true', dest='http_server', default=False,
+                        help='if given, HTTP server is created so clusters can be monitored and managed')
 
     config = vars(parser.parse_args(sys.argv[1:]))
     if config['loglevel']:

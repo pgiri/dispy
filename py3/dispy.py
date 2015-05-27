@@ -151,7 +151,6 @@ class DispyNode(object):
         self.busy = 0
         self.jobs_done = 0
         self.cpu_time = 0.0
-        self.secs_per_job = 0
         self.update_time = 0
 
 
@@ -1340,7 +1339,6 @@ class _Cluster(object):
                 dispy_node.busy = node.busy
                 dispy_node.cpu_time += reply.end_time - reply.start_time
                 dispy_node.jobs_done += 1
-                dispy_node.secs_per_job = dispy_node.cpu_time / dispy_node.jobs_done
                 dispy_node.update_time = time.time()
             elif reply.status == DispyJob.Cancelled:
                 assert self.shared is True
@@ -2054,9 +2052,10 @@ class JobCluster(object):
             name = dispy_node.ip_addr
             if dispy_node.name:
                 name += ' (' + dispy_node.name + ')'
+            secs_per_job = dispy_node.cpu_time / dispy_node.jobs_done
             print(' %-30.30s | %5s | %7s | %10.3f | %13.3f' %
                   (name, dispy_node.cpus, dispy_node.jobs_done,
-                   dispy_node.secs_per_job, dispy_node.cpu_time))
+                   secs_per_job, dispy_node.cpu_time))
         print()
         if info.jobs_pending:
             print('Jobs pending: %s' % info.jobs_pending)

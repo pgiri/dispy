@@ -44,7 +44,8 @@
               $('#node_cpus').text(node.cpus);
               $('#node_done').text(node.jobs_done);
               $('#node_cpu_time').text(node.cpu_time.toFixed(2));
-              $('#node_sec_job').text(node.secs_per_job.toFixed(2));
+              $('#node_sec_job').text((node.jobs_done > 0 ?
+                                       (node.cpu_time / node.jobs_done) : 0).toFixed(2));
               $('#node_update').text((new Date(1000 * node.update_time)).toLocaleTimeString());
               if ($('#node').is(':hidden')) {
                 $('#node').show();
@@ -154,7 +155,7 @@
         $('#cancel-jobs').click(function() {
           if ($('select[name="cancel-confirm"]').val() != 'Yes') {
             $('#messages').append('<li>Terminate jobs not confirmed</li>');
-            return false;
+            // return false;
           }
           var cancel_jobs = [];
           $('input[type="checkbox"][name="job"]').each(function(i) {
