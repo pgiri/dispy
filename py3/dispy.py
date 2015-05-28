@@ -99,12 +99,12 @@ class DispyJob(object):
     Abandoned = 10
     Finished = 11
 
-    def __init__(self):
+    def __init__(self, args, kwargs):
         # id can be assigned by user as appropriate (e.g., to distinguish jobs)
         self.id = None
         # rest are read-only
-        self.args = None
-        self.kwargs = None
+        self.args = args
+        self.kwargs = kwargs
         self.result = None
         self.stdout = None
         self.stderr = None
@@ -398,7 +398,7 @@ class _DispyJob_(object):
     __slots__ = ('job', 'uid', 'compute_id', 'hash', 'node', 'xfer_files', 'args', 'kwargs', 'code')
 
     def __init__(self, compute_id, args, kwargs):
-        self.job = DispyJob()
+        self.job = DispyJob(args, kwargs)
         self.job._dispy_job_ = self
         self.uid = None
         self.compute_id = compute_id
@@ -407,8 +407,6 @@ class _DispyJob_(object):
         self.xfer_files = []
         self.code = ''
         job_deps = kwargs.pop('dispy_job_depends', [])
-        self.job.args = args
-        self.job.kwargs = kwargs
         self.args = serialize(args)
         self.kwargs = serialize(kwargs)
         depend_ids = set()
@@ -2473,7 +2471,7 @@ def recover_jobs(recover_file):
                 raise StopIteration
             yield conn.send_msg(b'ACK')
             logger.debug('received reply for job %s' % reply.uid)
-            job = DispyJob()
+            job = DispyJob((), {})
             job.result = reply.result
             job.stdout = reply.stdout
             job.stderr = reply.stderr
