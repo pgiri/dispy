@@ -35,7 +35,7 @@ import pickle
 import io
 
 from dispy import _JobReply, DispyJob, _Function, _Compute, _XferFile, _node_ipaddr, \
-     _dispy_version, auth_code, num_min
+    _dispy_version, auth_code, num_min
 
 import asyncoro
 from asyncoro import Coro, AsynCoro, AsyncSocket, serialize, unserialize
@@ -1139,7 +1139,7 @@ class _DispyNode(object):
                             os.remove(f)
                         except:
                             logger.warning('Could not remove "%s"' % f)
-                if compute.pending_results:
+                if compute.pending_results and not resending:
                     Coro(self.resend_job_results, compute)
         finally:
             sock.close()
