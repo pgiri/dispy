@@ -494,10 +494,9 @@ class _JobReply(object):
         self.end_time = 0
 
 
-class _Cluster(object):
+class _Cluster(object, metaclass=MetaSingleton):
     """Internal use only.
     """
-    __metaclass__ = MetaSingleton
 
     def __init__(self, ip_addr=None, ext_ip_addr=None, port=None, node_port=None,
                  shared=False, secret='', keyfile=None, certfile=None, recover_file=None):
