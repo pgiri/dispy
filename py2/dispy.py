@@ -14,7 +14,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "MIT"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.3"
+__version__ = "4.4"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'JobCluster', 'SharedJobCluster']
 
@@ -382,7 +382,7 @@ class _Node(object):
     def close(self, compute, coro=None):
         # generator
         logger.debug('Closing node %s for %s / %s', self.ip_addr, compute.name, compute.id)
-        req = {'compute_id': compute.id, 'auth': compute.auth}
+        req = {'compute_id': compute.id, 'auth': compute.auth, 'terminate_pending': False}
         try:
             yield self.send('CLOSE:' + serialize(req), reply=False, coro=coro)
         except:
@@ -1016,7 +1016,7 @@ class _Cluster(object):
                                keyfile=self.keyfile, certfile=self.certfile)
             sock.settimeout(MsgTimeout)
             try:
-                req = {'compute_id': cluster._compute.id, 'auth': self.auth}
+                req = {'compute_id': cluster._compute.id, 'auth': cluster._compute.auth}
                 reply = yield node.send('PENDING_JOBS:' + serialize(req))
                 reply = unserialize(reply)
             except:
@@ -1034,7 +1034,7 @@ class _Cluster(object):
                 conn.settimeout(MsgTimeout)
                 try:
                     yield conn.connect((node.ip_addr, node.port))
-                    req = {'compute_id': cluster._compute.id, 'auth': self.auth,
+                    req = {'compute_id': cluster._compute.id, 'auth': cluster._compute.auth,
                            'uid': uid, 'hash': _job.hash}
                     yield conn.sendall(node.auth)
                     yield conn.send_msg('RETRIEVE_JOB:' + serialize(req))
@@ -1133,7 +1133,8 @@ class _Cluster(object):
             sock.settimeout(MsgTimeout)
             yield sock.connect((cluster.scheduler_ip_addr, cluster.scheduler_port))
             yield sock.sendall(cluster._scheduler_auth)
-            req = {'compute_id': cluster._compute.id, 'auth': cluster._compute.auth}
+            req = {'compute_id': cluster._compute.id, 'auth': cluster._compute.auth,
+                   'terminate_pending': False}
             yield sock.send_msg('CLOSE:' + serialize(req))
             sock.close()
         else:
@@ -1592,7 +1593,7 @@ class _Cluster(object):
             try:
                 yield sock.connect((node.ip_addr, node.port))
                 yield sock.sendall(node.auth)
-                req = {'compute_id': cluster._compute.id, 'auth': self.auth}
+                req = {'compute_id': cluster._compute.id, 'auth': cluster._compute.auth}
                 yield sock.send_msg('JOBS:' + serialize(req))
                 msg = yield sock.recv_msg()
                 _jobs = [self._sched_jobs.get(info['uid'], None) for info in unserialize(msg)]
@@ -2411,7 +2412,7 @@ class SharedJobCluster(JobCluster):
             Coro(cluster.del_cluster, self).value()
 
 
-def recover_jobs(recover_file):
+def recover_jobs(recover_file, timeout=None, terminate_pending=False):
     """
     If dispy client crashes or loses connection to nodes, the nodes
     will continue to execute scheduled jobs. This 'recover_jobs'
@@ -2422,6 +2423,15 @@ def recover_jobs(recover_file):
       about cluster (see 'recover_file' in JobCluster above). If
       incorrect 'recover_file' is used, this function issues a warning
       and will block.
+
+    @timeout is time limit in seconds for recovery. This function will
+      return all jobs that finish before 'timeout'. Any jobs still
+      running or couldn't be recovered before timeout will be ignored.
+
+    @terminate_pending indicates if any jobs currently running should
+      be terminated (so that, for example, node can be used for
+      computations again right away instead of having to wait until
+      all jobs finish).
 
     Returns list of DispyJob instances that will have .result,
     .stdout, .stderr etc.; however, the nodes don't keep track of .id,
@@ -2437,6 +2447,7 @@ def recover_jobs(recover_file):
     shelf_nodes = {}
     computes = {}
     cluster = None
+    asyncoro_scheduler = asyncoro.AsynCoro.instance()
 
     shelf = shelve.open(recover_file, flag='r')
     for key, val in shelf.iteritems():
@@ -2450,10 +2461,12 @@ def recover_jobs(recover_file):
             logger.warning('invalid key "%s" ignored' % key)
     shelf.close()
     if not cluster or not computes or not shelf_nodes:
-        try:
-            os.remove(recover_file)
-        except:
-            pass
+        for ext in ('', '.db'):
+            try:
+                os.remove(recover_file + ext)
+                break
+            except:
+                pass
         return []
 
     nodes = {}
@@ -2483,12 +2496,12 @@ def recover_jobs(recover_file):
             job.exception = reply.exception
             job.start_time = reply.start_time
             job.end_time = reply.end_time
-            job.status = DispyJob.Finished
+            job.status = reply.status
             job.ip_addr = reply.ip_addr
             job.finish.set()
             pending['jobs'].append(job)
             pending['count'] -= 1
-            if pending['count'] == 0 and pending['resend_done'] is True:
+            if pending['count'] == 0 and pending['resend_req_done'] is True:
                 pending['complete'].set()
         else:
             logger.debug('Invalid TCP message from %s ignored' % addr[0])
@@ -2503,6 +2516,13 @@ def recover_jobs(recover_file):
         sock.listen(32)
 
         while True:
+            if pending['timeout']:
+                timeout = pending['timeout'] - (time.time() - pending['start_time'])
+                if timeout <= 0:
+                    pending['complete'].set()
+                    timeout = 2
+                sock.settimeout(timeout)
+
             try:
                 conn, addr = yield sock.accept()
             except ssl.SSLError as err:
@@ -2510,8 +2530,9 @@ def recover_jobs(recover_file):
                 continue
             except GeneratorExit:
                 break
+            except socket.timeout:
+                continue
             except:
-                logger.debug(traceback.format_exc())
                 continue
             else:
                 Coro(tcp_task, conn, addr, pending)
@@ -2519,6 +2540,9 @@ def recover_jobs(recover_file):
 
     def resend_requests(pending, coro=None):
         for compute_id, compute in computes.items():
+            if pending['timeout'] and \
+               ((time.time() - pending['start_time']) > pending['timeout']):
+                break
             req = serialize({'compute_id': compute_id, 'auth': compute['auth']})
             for ip_addr in compute['nodes']:
                 node = nodes.get(ip_addr, None)
@@ -2531,15 +2555,18 @@ def recover_jobs(recover_file):
                 except:
                     logger.warning('Invalid resend reply from %s' % ip_addr)
                     continue
+                logger.debug('pending jobs from %s for %s: %s' %
+                             (node.ip_addr, compute['name'], reply))
                 if reply == 0:
                     yield node.send('CLOSE:' + req, reply=False)
                 else:
-                    logger.debug('pending jobs from %s for %s: %s' %
-                                 (node.ip_addr, compute_id, reply))
                     pending['count'] += reply
-        pending['resend_done'] = True
+        pending['resend_req_done'] = True
+        if pending['count'] == 0:
+            pending['complete'].set()
 
-    pending = {'count': 0, 'resend_done': False, 'jobs': [], 'complete': threading.Event()}
+    pending = {'count': 0, 'resend_req_done': False, 'jobs': [], 'complete': threading.Event(),
+               'timeout': timeout, 'start_time': time.time()}
     for ip_addr in cluster['ip_addrs']:
         if not ip_addr:
             ip_addr = ''
@@ -2550,17 +2577,30 @@ def recover_jobs(recover_file):
     pending['complete'].wait()
 
     for compute_id, compute in computes.iteritems():
-        req = serialize({'compute_id': compute_id, 'auth': compute['auth']})
+        req = serialize({'compute_id': compute_id, 'auth': compute['auth'],
+                         'terminate_pending': terminate_pending})
         for ip_addr in compute['nodes']:
             node = nodes.get(ip_addr, None)
             if not node:
                 continue
             Coro(node.send, 'CLOSE:' + req, reply=False)
 
-    try:
-        os.remove(recover_file)
-    except:
-        logger.warning('Could not remove "%s"' % recover_file)
+    if terminate_pending:
+        # wait a bit to get cancelled job results
+        for x in range(10):
+            if pending['count'] == 0 and pending['resend_req_done'] is True:
+                break
+            time.sleep(0.2)
+
+    asyncoro_scheduler.finish()
+
+    if pending['count'] == 0 and pending['resend_req_done'] is True:
+        for ext in ('', '.db'):
+            try:
+                os.remove(recover_file + ext)
+                break
+            except:
+                pass
     return pending['jobs']
 
 
