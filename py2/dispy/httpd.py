@@ -246,7 +246,7 @@ class DispyHTTPServer(object):
                                 if name == node['cluster'] or not node['cluster']]
                     self._dispy_ctx._cluster_lock.release()
                     for cluster in clusters:
-                        cluster.add_node(node)
+                        cluster.allocate_node(node)
                     self.send_response(200)
                     self.send_header('Content-Type', 'text/html')
                     self.end_headers()

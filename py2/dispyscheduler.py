@@ -31,8 +31,8 @@ import shelve
 import glob
 import cPickle as pickle
 
-from dispy import _Compute, DispyJob, _DispyJob_, _Function, _Node, DispyNode, _JobReply, \
-    auth_code, num_min, _parse_nodes, _node_ipaddr, _XferFile, _dispy_version
+from dispy import _Compute, DispyJob, _DispyJob_, _Function, _Node, DispyNode, NodeAllocation, \
+     _JobReply, auth_code, num_min, _parse_node_allocs, _node_ipaddr, _XferFile, _dispy_version
 
 import asyncoro
 from asyncoro import Coro, AsynCoro, AsyncSocket, MetaSingleton, serialize, unserialize
@@ -57,10 +57,10 @@ del handler
 class _Cluster(object):
     """Internal use only.
     """
-    def __init__(self, compute, node_specs, scheduler):
+    def __init__(self, compute, node_allocs, scheduler):
         self._compute = compute
         self.name = compute.name
-        self._node_specs = _parse_nodes(node_specs)
+        self._node_allocs = _parse_node_allocs(node_allocs)
         self.scheduler = scheduler
         self.status_callback = None
         self.pending_jobs = 0
@@ -91,8 +91,8 @@ class _Cluster(object):
     def cancel(self, job):
         return self.scheduler.cancel_job(self, job.id)
 
-    def add_node(self, node):
-        Coro(self.scheduler.add_nodespec, node)
+    def allocate_node(self, node):
+        Coro(self.scheduler.allocate_node, node)
 
     def set_node_cpus(self, node, cpus, coro=None):
         Coro(self.scheduler.set_node_cpus, node, cpus)
@@ -146,7 +146,7 @@ class _Scheduler(object):
             self.port = port
             self.node_port = node_port
             self.scheduler_port = scheduler_port
-            self._node_specs = _parse_nodes(nodes)
+            self._node_allocs = _parse_node_allocs(nodes)
             self._nodes = {}
             self.node_secret = node_secret
             self.node_keyfile = node_keyfile
@@ -240,7 +240,7 @@ class _Scheduler(object):
         coro.set_daemon()
 
         Coro(self.broadcast_ping)
-        Coro(self.send_ping_cluster, self._node_specs, set())
+        Coro(self.send_ping_cluster, self._node_allocs, set())
 
         while True:
             msg, addr = yield self.udp_sock.recvfrom(1000)
@@ -460,7 +460,7 @@ class _Scheduler(object):
             dest_path = os.path.join(self.dest_path_prefix, str(_job.compute_id))
             for xf in _job.xfer_files:
                 xf.name = os.path.join(dest_path, os.path.basename(xf.name))
-            job = DispyJob({}, {})
+            job = DispyJob((), {})
             job.id = _job.uid
             delattr(job, 'finish')
             setattr(_job, 'job', job)
@@ -478,7 +478,7 @@ class _Scheduler(object):
             try:
                 req = unserialize(msg)
                 compute = req['compute']
-                node_specs = req['node_specs']
+                node_allocs = req['node_allocs']
             except:
                 logger.debug('Ignoring compute request from %s', addr[0])
                 return 'NAK'
@@ -488,7 +488,7 @@ class _Scheduler(object):
                                    xf.name, xf.stat_buf.st_size)
                     return 'NAK'
             setattr(compute, 'nodes', {})
-            cluster = _Cluster(compute, node_specs, self)
+            cluster = _Cluster(compute, node_allocs, self)
             cluster.ip_addr = conn.getsockname()[0]
             dest = os.path.join(self.dest_path_prefix, compute.scheduler_ip_addr)
             if not os.path.isdir(dest):
@@ -747,13 +747,13 @@ class _Scheduler(object):
         elif msg.startswith('RETRIEVE_JOB:'):
             msg = msg[len('RETRIEVE_JOB:'):]
             yield self.retrieve_job_task(conn, msg)
-        elif msg.startswith('ADD_NODESPEC:'):
-            req = msg[len('ADD_NODESPEC:'):]
+        elif msg.startswith('ALLOCATE_NODE:'):
+            req = msg[len('ALLOCATE_NODE:'):]
             try:
                 req = unserialize(req)
                 cluster = self._clusters[req['compute_id']]
                 assert cluster.client_auth == req['auth']
-                resp = yield self.add_nodespec(cluster, req['node_spec'], coro=coro)
+                resp = yield self.allocate_node(cluster, req['node_alloc'], coro=coro)
                 resp = serialize(resp)
             except:
                 resp = serialize(-1)
@@ -841,7 +841,7 @@ class _Scheduler(object):
             if self.ping_interval and (now - last_ping_time) >= self.ping_interval:
                 last_ping_time = now
                 for cluster in self._clusters.itervalues():
-                    Coro(self.send_ping_cluster, cluster._node_specs,
+                    Coro(self.send_ping_cluster, cluster._node_allocs,
                          set(cluster._dispy_nodes.iterkeys()))
             if self.zombie_interval and (now - last_zombie_time) >= self.zombie_interval:
                 last_zombie_time = now
@@ -940,19 +940,19 @@ class _Scheduler(object):
             pass
         bc_sock.close()
 
-    def send_ping_cluster(self, node_specs, present_ip_addrs, coro=None):
+    def send_ping_cluster(self, node_allocs, present_ip_addrs, coro=None):
         # generator
-        for node_spec in node_specs:
+        for node_alloc in node_allocs:
             # TODO: we assume subnets are indicated by '*', instead of
             # subnet mask; this is a limitation, but specifying with
             # subnet mask a bit cumbersome.
-            if node_spec.rex.find('*') >= 0:
-                yield self.broadcast_ping(node_spec.port)
+            if node_alloc.ip_rex.find('*') >= 0:
+                yield self.broadcast_ping(node_alloc.port)
             else:
-                ip_addr = node_spec.ip_addr
+                ip_addr = node_alloc.ip_addr
                 if ip_addr in present_ip_addrs:
                     continue
-                port = node_spec.port
+                port = node_alloc.port
                 Coro(self.send_ping_node, ip_addr, port)
 
     def add_cluster(self, cluster, coro=None):
@@ -964,14 +964,15 @@ class _Scheduler(object):
             self.httpd.add_cluster(cluster)
         # TODO: should we allow clients to add new nodes, or use only
         # the nodes initially created with command-line?
-        yield self.send_ping_cluster(cluster._node_specs,
+        yield self.send_ping_cluster(cluster._node_allocs,
                                      set(cluster._dispy_nodes.iterkeys()), coro=coro)
         compute_nodes = []
         for ip_addr, node in self._nodes.iteritems():
             if compute.id in node.clusters:
                 continue
-            for node_spec in cluster._node_specs:
-                if re.match(node_spec.rex, ip_addr):
+            for node_alloc in cluster._node_allocs:
+                cpus = node_alloc.allocate(cluster, node.ip_addr, node.name, node.avail_cpus)
+                if cpus > 0:
                     cluster._dispy_nodes.pop(node.ip_addr, None)
                     compute_nodes.append(node)
         for node in compute_nodes:
@@ -1099,8 +1100,9 @@ class _Scheduler(object):
             if cid in node.clusters:
                 continue
             compute = cluster._compute
-            for node_spec in cluster._node_specs:
-                if re.match(node_spec.rex, node.ip_addr):
+            for node_alloc in cluster._node_allocs:
+                cpus = node_alloc.allocate(cluster, node.ip_addr, node.name, node.avail_cpus)
+                if cpus > 0:
                     cluster._dispy_nodes.pop(node.ip_addr, None)
                     node_computations.append(compute)
                     break
@@ -1117,30 +1119,27 @@ class _Scheduler(object):
             yield sock.send_msg('JOB_REPLY:' + serialize(result))
             ack = yield sock.recv_msg()
             assert ack == 'ACK'
-            if result.status != DispyJob.ProvisionalResult:
-                if self.done_jobs.pop(uid, None) is None:
-                    logger.warning('job %s is not in "done"!' % uid)
         except:
             status = -1
             if not resending:
+                # store job result even if computation has not enabled
+                # fault recovery; user may be able to access node and
+                # retrieve result manually
                 f = os.path.join(cluster.dest_path, '_dispy_job_reply_%s' % uid)
-                logger.error('Could not send reply for job %s to %s:%s; saving it in "%s"',
+                logger.error('Could not send reply for job %s to %s; saving it in "%s"',
                              uid, cluster.client_ip_addr, cluster.client_job_result_port, f)
                 try:
-                    # TODO: file operations should be done asynchronously with coros
                     fd = open(f, 'wb')
                     pickle.dump(result, fd)
                     fd.close()
                 except:
-                    logger.debug('Could not save results for job %s', uid)
-                    logger.debug(traceback.format_exc())
-
-                if cluster:
+                    logger.debug('Could not save reply for job %s', uid)
+                else:
                     cluster.pending_results += 1
         else:
             status = 0
-            if cluster:
-                cluster.last_pulse = time.time()
+            cluster.last_pulse = time.time()
+            if result.status != DispyJob.ProvisionalResult:
                 if resending:
                     cluster.pending_results -= 1
                     f = os.path.join(cluster.dest_path, '_dispy_job_reply_%s' % uid)
@@ -1149,10 +1148,15 @@ class _Scheduler(object):
                             os.remove(f)
                         except:
                             logger.warning('Could not remove "%s"' % f)
-                if cluster.pending_results:
-                    Coro(self.resend_job_results, cluster)
+                else:
+                    self.done_jobs.pop(uid, None)
+                    if cluster.pending_results:
+                        Coro(self.resend_job_results, cluster)
         finally:
             sock.close()
+
+        if cluster.pending_jobs == 0 and cluster.pending_results == 0 and cluster.zombie:
+            self.cleanup_computation(cluster)
         raise StopIteration(status)
 
     def send_job_status(self, cluster, _job, coro=None):
@@ -1468,18 +1472,16 @@ class _Scheduler(object):
             Coro(_job.node.send, 'TERMINATE_JOB:' + serialize(_job), reply=False)
         return 0
 
-    def add_nodespec(self, cluster, node, coro=None):
+    def allocate_node(self, cluster, node_alloc, coro=None):
         # generator
-        node_specs = _parse_nodes([node])
-        if not node_specs:
-            raise StopIteration(-1)
-        cluster._node_specs.extend(node_specs)
-        cluster._node_specs = sorted(cluster._node_specs, key=lambda node_spec: node_spec.rex)
-        cluster._node_specs.reverse()
+        cluster._node_allocs.extend(node_allocs)
+        cluster._node_allocs = sorted(cluster._node_allocs,
+                                      key=lambda node_alloc: node_alloc.ip_rex)
+        cluster._node_allocs.reverse()
         present = set()
-        cluster._node_specs = [node_spec for node_spec in cluster._node_specs
-                               if node_spec.rex not in present and
-                               not present.add(node_spec.rex)]
+        cluster._node_allocs = [node_alloc for node_alloc in cluster._node_allocs
+                               if node_alloc.ip_rex not in present and
+                               not present.add(node_alloc.ip_rex)]
         del present
         Coro(self.add_cluster, cluster)
         yield 0

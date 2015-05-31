@@ -1167,6 +1167,8 @@ class _DispyNode(object):
                 compute.last_pulse = time.time()
                 if resending:
                     compute.pending_results -= 1
+                elif compute.pending_results:
+                    Coro(self.resend_job_results, compute)
 
             if resending:
                 f = os.path.join(job_info.compute_dest_path,

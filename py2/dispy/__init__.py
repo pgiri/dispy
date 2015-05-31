@@ -16,7 +16,7 @@ __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
 __version__ = "4.4"
 
-__all__ = ['logger', 'DispyJob', 'DispyNode', 'JobCluster', 'SharedJobCluster']
+__all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocation', 'JobCluster', 'SharedJobCluster']
 
 import os
 import sys
@@ -154,36 +154,58 @@ class DispyNode(object):
         self.update_time = 0
 
 
-# a cluster's "status" function (not "cluster_status" callback)
-# returns this structure; "nodes" is list of DispyNode objects and
-# "jobs_pending" is number of jobs that are not done yet
-ClusterStatus = collections.namedtuple('ClusterStatus', ['nodes', 'jobs_pending'])
+class NodeAllocation(object):
+    """Objects of this class describe if / how many CPUs in a node are
+    allocated to clusters.
 
+    Each element of 'nodes' passed to JobCluster or SharedJobCluster
+    is an object of this class; if the element passed is a string
+    (host name or IP address), a tuple (see documentation for
+    details), it is converted to NodeAllocation object with
+    '_parse_node_allocs' function.
 
-class NodeSpec(object):
-    """An element of 'nodes' can be a string (host name or IP
-    address), a tuple (see documentation for details), or an instance
-    of NodeSpec.
+    This class can be specialized (inherited) to override, for
+    example, 'allocate' method.
     """
-    def __init__(self, name_ip, port=None, cpus=0):
-        self.ip_addr = _node_ipaddr(name_ip)
-        self.rex = self.ip_addr.replace('.', '\\.').replace('*', '.*')
+    def __init__(self, host, port=None, cpus=0):
+        self.ip_addr = _node_ipaddr(host)
+        self.ip_rex = self.ip_addr.replace('.', '\\.').replace('*', '.*')
         if port:
             try:
                 port = int(port)
                 assert port > 0
             except:
-                logger.warning('port must be > 0')
+                logger.warning('port must be > 0 for node "%s"' % host)
                 port = None
         self.port = port
         if cpus:
             try:
                 cpus = int(cpus)
-                assert cpus != 0
             except:
-                logger.warning('cpus must be > 0 or < 0')
+                logger.warning('invalid cpus for "%s" ignored' % host)
                 cpus = 0
         self.cpus = cpus
+
+    def allocate(self, cluster, ip_addr, name, cpus):
+        """When a node is found, dispy calls this method with the
+        cluster for which the node is being allocated, IP address,
+        name and CPUs available on that node. This method should
+        return a number indicating number of CPUs to use. If return
+        value is 0, the node is not used for that cluster.
+        """
+        if re.match(self.ip_rex, ip_addr):
+            if self.cpus > 0:
+                cpus = min(cpus, self.cpus)
+            elif (cpus + self.cpus) > 0:
+                cpus = cpus + self.cpus
+            return cpus
+        return 0
+
+
+# a cluster's "status" function (not "cluster_status" callback)
+# returns this structure; "nodes" is list of DispyNode objects and
+# "jobs_pending" is number of jobs that are not done yet
+ClusterStatus = collections.namedtuple('ClusterStatus', ['nodes', 'jobs_pending'])
 
 
 def num_min(*args):
@@ -218,23 +240,23 @@ def _node_ipaddr(node):
         return None
 
 
-def _parse_nodes(nodes):
+def _parse_node_allocs(nodes):
     """Internal use only.
     """
-    node_specs = []
+    node_allocs = []
     for node in nodes:
-        if isinstance(node, NodeSpec):
-            node_specs.append(node)
+        if isinstance(node, NodeAllocation):
+            node_allocs.append(node)
         elif isinstance(node, str):
-            node_specs.append(NodeSpec(node))
+            node_allocs.append(NodeAllocation(node))
         elif isinstance(node, dict):
-            node_specs.append(NodeSpec(node.get('ip_addr', node['name_ip']), node.get('port', None),
-                                       node.get('cpus', 0)))
+            node_allocs.append(NodeAllocation(node.get('host', node.get('ip_addr', '*')),
+                                              node.get('port', None), node.get('cpus', 0)))
         elif isinstance(node, tuple):
-            node_specs.append(NodeSpec(*node))
+            node_allocs.append(NodeAllocation(*node))
         elif isinstance(node, list):
-            node_specs.append(NodeSpec(*tuple(node)))
-    return node_specs
+            node_allocs.append(NodeAllocation(*tuple(node)))
+    return node_allocs
 
 
 # This tuple stores information about partial functions; for
@@ -992,18 +1014,18 @@ class _Cluster(object):
 
     def send_ping_cluster(self, cluster, coro=None):
         # generator
-        for node_spec in cluster._node_specs:
+        for node_alloc in cluster._node_allocs:
             # TODO: we assume subnets are indicated by '*', instead of
             # subnet mask; this is a limitation, but specifying with
             # subnet mask a bit cumbersome.
-            if node_spec.rex.find('*') >= 0:
-                yield self.broadcast_ping(node_spec.port)
+            if node_alloc.ip_rex.find('*') >= 0:
+                yield self.broadcast_ping(node_alloc.port)
                 # need to do broadcast only once
             else:
-                ip_addr = node_spec.ip_addr
+                ip_addr = node_alloc.ip_addr
                 if ip_addr in cluster._dispy_nodes:
                     continue
-                port = node_spec.port
+                port = node_alloc.port
                 Coro(self.send_ping_node, ip_addr, port)
 
     def poll_job_results(self, cluster, coro=None):
@@ -1080,7 +1102,7 @@ class _Cluster(object):
                 self.timer_coro.resume(True)
             raise StopIteration
 
-        # if a node is added with 'add_nodespec', compute is already
+        # if a node is added with 'allocate_node', compute is already
         # initialized, so don't reinitialize it
         if compute.id is None:
             compute.id = self.compute_id
@@ -1106,14 +1128,13 @@ class _Cluster(object):
         for ip_addr, node in self._nodes.iteritems():
             if compute.id in node.clusters:
                 continue
-            for node_spec in cluster._node_specs:
-                if re.match(node_spec.rex, ip_addr):
-                    if node_spec.cpus > 0:
-                        node.cpus = min(node.avail_cpus, node_spec.cpus)
-                    elif (node.avail_cpus + node_spec.cpus) > 0:
-                        node.cpus = node.avail_cpus + node_spec.cpus
-                    cluster._dispy_nodes.pop(node.ip_addr, None)
-                    compute_nodes.append(node)
+            for node_alloc in cluster._node_allocs:
+                cpus = node_alloc.accept(cluster, node.ip_addr, node.name, node.avail_cpus)
+                if cpus <= 0:
+                    continue
+                node.cpus = min(node.avail_cpus, cpus)
+                cluster._dispy_nodes.pop(node.ip_addr, None)
+                compute_nodes.append(node)
         for node in compute_nodes:
             yield self.setup_node(node, [compute], coro=coro)
 
@@ -1238,15 +1259,14 @@ class _Cluster(object):
             if cid in node.clusters:
                 continue
             compute = cluster._compute
-            for node_spec in cluster._node_specs:
-                if re.match(node_spec.rex, node.ip_addr):
-                    if node_spec.cpus > 0:
-                        node.cpus = min(node.avail_cpus, node_spec.cpus)
-                    elif (node.avail_cpus + node_spec.cpus) > 0:
-                        node.cpus = node.avail_cpus + node_spec.cpus
-                    cluster._dispy_nodes.pop(node.ip_addr, None)
-                    node_computations.append(compute)
-                    break
+            for node_alloc in cluster._node_allocs:
+                cpus = node_alloc.accept(cluster, node.ip_addr, node.name, node.avail_cpus)
+                if cpus <= 0:
+                    continue
+                node.cpus = min(node.avail_cpus, cpus)
+                cluster._dispy_nodes.pop(node.ip_addr, None)
+                node_computations.append(compute)
+                break
         if node_computations:
             Coro(self.setup_node, node, node_computations)
 
@@ -1537,18 +1557,24 @@ class _Cluster(object):
             resp = -1
         raise StopIteration(resp)
 
-    def add_nodespec(self, cluster, node, coro=None):
+    def allocate_node(self, cluster, node_alloc, coro=None):
         # generator
-        node_specs = _parse_nodes([node])
-        if not node_specs:
+        if isinstance(node_alloc):
+            node_allocs = [node_alloc]
+        elif isinstance(node_alloc, str):
+            node_allocs = _parse_node_allocs([node])
+        else:
+            node_allocs = []
+        if not node_allocs:
             raise StopIteration(-1)
-        cluster._node_specs.extend(node_specs)
-        cluster._node_specs = sorted(cluster._node_specs, key=lambda node_spec: node_spec.rex)
-        cluster._node_specs.reverse()
+        cluster._node_allocs.extend(node_allocs)
+        cluster._node_allocs = sorted(cluster._node_allocs,
+                                      key=lambda node_alloc: node_alloc.ip_rex)
+        cluster._node_allocs.reverse()
         present = set()
-        cluster._node_specs = [node_spec for node_spec in cluster._node_specs
-                               if node_spec.rex not in present and
-                               not present.add(node_spec.rex)]
+        cluster._node_allocs = [node_alloc for node_alloc in cluster._node_allocs
+                               if node_alloc.ip_rex not in present and
+                               not present.add(node_alloc.ip_rex)]
         del present
         yield self.add_cluster(cluster)
         yield self._sched_event.set()
@@ -1849,11 +1875,12 @@ class JobCluster(object):
                     nodes = [nodes]
                 else:
                     raise Exception('"nodes" must be list of IP addresses or host names')
-            self._node_specs = _parse_nodes(nodes)
-            if not self._node_specs:
+            self._node_allocs = _parse_node_allocs(nodes)
+            if not self._node_allocs:
                 raise Exception('"nodes" argument is invalid')
-            self._node_specs = sorted(self._node_specs, key=lambda node_spec: node_spec.rex)
-            self._node_specs.reverse()
+            self._node_allocs = sorted(self._node_allocs,
+                                       key=lambda node_alloc: node_alloc.ip_rex)
+            self._node_allocs.reverse()
         self._dispy_nodes = {}
 
         if inspect.isfunction(computation):
@@ -2012,8 +2039,8 @@ class JobCluster(object):
     def cancel(self, job):
         return Coro(self._cluster.cancel_job, job).value()
 
-    def add_node(self, node):
-        return Coro(self._cluster.add_nodespec, self, node).value()
+    def allocate_node(self, node):
+        return Coro(self._cluster.allocate_node, self, node).value()
 
     def node_jobs(self, node, from_node=False):
         return Coro(self._cluster.node_jobs, self, node, from_node).value()
@@ -2056,7 +2083,10 @@ class JobCluster(object):
             name = dispy_node.ip_addr
             if dispy_node.name:
                 name += ' (' + dispy_node.name + ')'
-            secs_per_job = dispy_node.cpu_time / dispy_node.jobs_done
+            if dispy_node.jobs_done > 0:
+                secs_per_job = dispy_node.cpu_time / dispy_node.jobs_done
+            else:
+                secs_per_job = 0
             print(' %-30.30s | %5s | %7s | %10.3f | %13.3f' %
                   (name, dispy_node.cpus, dispy_node.jobs_done,
                    secs_per_job, dispy_node.cpu_time))
@@ -2130,8 +2160,8 @@ class SharedJobCluster(JobCluster):
                 nodes = [nodes]
             else:
                 raise Exception('"nodes" must be list of IP addresses or host names')
-        node_specs = _parse_nodes(nodes)
-        if not node_specs:
+        node_allocs = _parse_node_allocs(nodes)
+        if not node_allocs:
             raise Exception('"nodes" argument is invalid')
 
         JobCluster.__init__(self, computation, depends=depends,
@@ -2150,8 +2180,8 @@ class SharedJobCluster(JobCluster):
         # wait for scheduler to terminate
         self._cluster._scheduler.value()
         self._cluster.job_uid = None
-        node_specs = sorted(node_specs, key=lambda node_spec: node_spec.rex)
-        node_specs.reverse()
+        node_allocs = sorted(node_allocs, key=lambda node_alloc: node_alloc.ip_rex)
+        node_allocs.reverse()
 
         if not scheduler_port:
             scheduler_port = 51349
@@ -2195,7 +2225,7 @@ class SharedJobCluster(JobCluster):
         try:
             sock.connect((self.scheduler_ip_addr, self.scheduler_port))
             sock.sendall(self._scheduler_auth)
-            req = {'compute': self._compute, 'node_specs': node_specs}
+            req = {'compute': self._compute, 'node_allocs': node_allocs}
             sock.send_msg('COMPUTE:' + serialize(req))
             msg = sock.recv_msg()
             sock.close()
@@ -2342,15 +2372,22 @@ class SharedJobCluster(JobCluster):
             sock.close()
         return 0
 
-    def add_node(self, node):
+    def allocate_node(self, node_alloc):
+        if not isinstance(node_alloc):
+            node_alloc = _parse_node_allocs([node_alloc])
+            if len(node_alloc) != 1:
+                return -1
+            node_alloc = node_alloc[0]
+
         sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), blocking=True,
                            keyfile=self._cluster.keyfile, certfile=self._cluster.certfile)
         sock.settimeout(MsgTimeout)
         try:
             sock.connect((self.scheduler_ip_addr, self.scheduler_port))
             sock.sendall(self._scheduler_auth)
-            req = {'compute_id': self._compute.id, 'auth': self._compute.auth, 'node_spec': node}
-            sock.send_msg('ADD_NODESPEC:' + serialize(req))
+            req = {'compute_id': self._compute.id, 'auth': self._compute.auth,
+                   'node_alloc': node_alloc}
+            sock.send_msg('ALLOCATE_NODE:' + serialize(req))
             reply = sock.recv_msg()
             reply = unserialize(reply)
         except:
