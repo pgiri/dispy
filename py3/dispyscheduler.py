@@ -27,7 +27,6 @@ import atexit
 import traceback
 import tempfile
 import shutil
-import shelve
 import glob
 import pickle
 
@@ -81,7 +80,7 @@ class _Cluster(object):
 
     def __getstate__(self):
         state = dict(self.__dict__)
-        for var in ('scheduler', 'status_callback'):
+        for var in ('_node_allocs', 'scheduler', 'status_callback', '_jobs', '_dispy_nodes'):
             del state[var]
 
     def node_jobs(self, node, from_node=False, coro=None):
@@ -162,8 +161,13 @@ class _Scheduler(object, metaclass=MetaSingleton):
                 os.makedirs(self.dest_path_prefix)
                 os.chmod(self.dest_path_prefix, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
 
-            self.shelf = shelve.open(os.path.join(self.dest_path_prefix, 'shelf'),
-                                     flag='c', writeback=True)
+            fd = open(os.path.join(self.dest_path_prefix, 'config'), 'wb')
+            config = {
+                'ip_addr': self.ip_addr, 'ext_ip_addr': self.ext_ip_addr, 'port': self.port,
+                'sign': self.sign, 'secret': self.secret, 'auth': self.auth
+                }
+            pickle.dump(config, fd)
+            fd.close()
 
             if pulse_interval:
                 try:
@@ -264,7 +268,7 @@ class _Scheduler(object, metaclass=MetaSingleton):
 
                         def _send_pulse(self, pulse_msg, addr, coro=None):
                             sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
-                            sock.settimeout(2)
+                            sock.settimeout(MsgTimeout)
                             try:
                                 yield sock.sendto(b'PULSE:' + serialize(pulse_msg), addr)
                             except:
@@ -524,8 +528,10 @@ class _Scheduler(object, metaclass=MetaSingleton):
                 xf.compute_id = compute.id
                 xf.name = os.path.join(cluster.dest_path, os.path.basename(xf.name))
 
-            self.shelf['%s_%s' % (cluster.client_auth, compute.id)] = cluster
-            self.shelf.sync()
+            fd = open(os.path.join(self.dest_path_prefix,
+                                   '%s_%s' % (compute.id, cluster.client_auth)), 'wb')
+            pickle.dump(cluster, fd)
+            fd.close()
             logger.debug('New computation %s: %s, %s', compute.id, compute.name, cluster.dest_path)
             resp = {'compute_id': compute.id, 'pulse_interval': self.pulse_interval,
                     'job_result_port': compute.job_result_port}
@@ -703,7 +709,10 @@ class _Scheduler(object, metaclass=MetaSingleton):
             else:
                 cluster = self._clusters.get(compute_id, None)
                 if cluster is None:
-                    cluster = self.shelf.get('%s_%s' % (auth, compute_id), None)
+                    fd = open(os.path.join(self.dest_path_prefix,
+                                           '%s_%s' % (compute_id, auth)), 'wb')
+                    cluster = pickle.load(fd)
+                    fd.close()
                 if cluster is None or cluster.client_auth != auth:
                     resp = serialize(0)
                 else:
@@ -725,7 +734,10 @@ class _Scheduler(object, metaclass=MetaSingleton):
             else:
                 cluster = self._clusters.get(compute_id, None)
                 if cluster is None:
-                    cluster = self.shelf.get('%s_%s' % (auth, compute_id), None)
+                    fd = open(os.path.join(self.dest_path_prefix,
+                                           '%s_%s' % (compute_id, auth)), 'wb')
+                    cluster = pickle.load(fd)
+                    fd.close()
                 if cluster is not None and cluster.client_auth == auth:
                     done = []
                     if cluster.pending_results:
@@ -902,7 +914,7 @@ class _Scheduler(object, metaclass=MetaSingleton):
         ping_msg = {'version': _dispy_version, 'sign': self.sign, 'port': self.port}
         ping_msg['ip_addrs'] = list(filter(lambda ip: bool(ip), self.ext_ip_addrs))
         udp_sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
-        udp_sock.settimeout(2)
+        udp_sock.settimeout(MsgTimeout)
         if not port:
             port = self.node_port
         try:
@@ -933,7 +945,7 @@ class _Scheduler(object, metaclass=MetaSingleton):
         bc_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         bc_sock = AsyncSocket(bc_sock)
-        bc_sock.settimeout(2)
+        bc_sock.settimeout(MsgTimeout)
         try:
             yield bc_sock.sendto(b'PING:' + serialize(ping_msg), ('<broadcast>', port))
         except:
@@ -988,12 +1000,14 @@ class _Scheduler(object, metaclass=MetaSingleton):
             raise StopIteration
 
         compute = cluster._compute
-        shelf_key = '%s_%s' % (cluster.client_auth, compute.id)
+
+        path = os.path.join(self.dest_path_prefix, '%s_%s' % (compute.id, cluster.client_auth))
         if cluster.pending_results == 0:
-            self.shelf.pop(shelf_key, None)
+            os.remove(path)
         else:
-            self.shelf[shelf_key] = cluster
-        self.shelf.sync()
+            fd = open(path, 'wb')
+            pickle.dump(compute, fd)
+            fd.close()
         for xf in compute.xfer_files:
             try:
                 os.remove(xf.name)
@@ -1153,11 +1167,11 @@ class _Scheduler(object, metaclass=MetaSingleton):
                     self.done_jobs.pop(uid, None)
                     if cluster.pending_results:
                         Coro(self.resend_job_results, cluster)
+            if cluster.pending_jobs == 0 and cluster.pending_results == 0 and cluster.zombie:
+                Coro(self.cleanup_computation, cluster)
         finally:
             sock.close()
 
-        if cluster.pending_jobs == 0 and cluster.pending_results == 0 and cluster.zombie:
-            self.cleanup_computation(cluster)
         raise StopIteration(status)
 
     def send_job_status(self, cluster, _job, coro=None):
@@ -1395,6 +1409,7 @@ class _Scheduler(object, metaclass=MetaSingleton):
         logger.debug('scheduler quit')
 
     def retrieve_job_task(self, conn, msg):
+        # generator
 
         def send_reply(reply):
             try:
@@ -1403,7 +1418,6 @@ class _Scheduler(object, metaclass=MetaSingleton):
                 raise StopIteration(-1)
             raise StopIteration(0)
 
-        # generator
         try:
             req = unserialize(msg)
             uid = req['uid']
@@ -1414,19 +1428,18 @@ class _Scheduler(object, metaclass=MetaSingleton):
             yield send_reply(None)
             raise StopIteration
 
-        shelf_key = '%s_%s' % (auth, compute_id)
-        cluster = self._clusters.get(compute_id, None)
-        if cluster is not None:
-            if cluster.client_auth != auth:
-                yield send_reply(None)
-                raise StopIteration
-        else:
-            cluster = self.shelf.get(shelf_key, None)
+        fd = open(os.path.join(self.dest_path_prefix, '%s_%s' % (compute_id, auth)), 'rb')
+        cluster = pickle.load(fd)
+        fd.close()
+        if cluster is None:
+            yield send_reply(None)
+            raise StopIteration
 
         info_file = os.path.join(cluster.dest_path, '_dispy_job_reply_%s' % uid)
         if not os.path.isfile(info_file):
             yield send_reply(None)
             raise StopIteration
+
         try:
             fd = open(info_file, 'rb')
             job_reply = pickle.load(fd)
@@ -1441,8 +1454,10 @@ class _Scheduler(object, metaclass=MetaSingleton):
             ack = yield conn.recv_msg()
             assert ack == b'ACK'
             cluster.pending_results -= 1
-            self.shelf[shelf_key] = cluster
-            self.shelf.sync()
+            fd = open(os.path.join(self.dest_path_prefix,
+                                   '%s_%s' % (compute.id, compute.auth)), 'wb')
+            pickle.dump(cluster, fd)
+            fd.close()
         except:
             pass
         else:
@@ -1608,6 +1623,8 @@ if __name__ == '__main__':
                         help='number of seconds between ping messages to discover nodes')
     parser.add_argument('--zombie_interval', dest='zombie_interval', default=60, type=float,
                         help='interval in minutes to presume unresponsive scheduler is zombie')
+    parser.add_argument('--msg_timeout', dest='msg_timeout', default=MsgTimeout, type=float,
+                        help='timeout used for messages to/from client/nodes in seconds')
     parser.add_argument('--dest_path_prefix', dest='dest_path_prefix', default=None,
                         help='path prefix where files sent by dispy are stored')
     parser.add_argument('--max_file_size', dest='max_file_size', default=str(MaxFileSize), type=str,
@@ -1631,6 +1648,9 @@ if __name__ == '__main__':
         config['zombie_interval'] = float(config['zombie_interval'])
         if config['zombie_interval'] < 1:
             raise Exception('zombie_interval must be at least 1')
+
+    MsgTimeout = _dispy_config['msg_timeout']
+    del _dispy_config['msg_timeout']
 
     m = re.match(r'(\d+)([kKmMgGtT]?)', config['max_file_size'])
     if m:
