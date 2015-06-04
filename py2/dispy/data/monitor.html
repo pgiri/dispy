@@ -59,8 +59,8 @@
           dataType: 'json',
           timeout: Math.min(5000, timeout)
         })
-          .done(function(cluster_status) {
-            $.each(cluster_status, function(i, status) {
+          .done(function(status_data) {
+            $.each(status_data, function(i, status) {
               var cluster;
               if (clusters.hasOwnProperty(status.name)) {
                 cluster = clusters[status.name];
@@ -74,7 +74,7 @@
               $.each(status.nodes, function(i, node) {
                 node.last_update = new Date(1000 * node.update_time);
                 cluster.nodes[node.ip_addr] = node;
-                if ((cluster_status.length > 1) || (Object.keys(clusters).length > 1)) {
+                if ((status_data.length > 1) || (Object.keys(clusters).length > 1)) {
                   var combined_node = clusters[''].nodes[node.ip_addr];
                   if (combined_node == undefined) {
                     clusters[''].nodes[node.ip_addr] = node;
@@ -89,7 +89,7 @@
               });
             });
             if (cur_cluster_name == null) {
-              cur_cluster_name = cluster_status[0].name;
+              cur_cluster_name = status_data[0].name;
             }
 
             var cluster_names = '<strong>Cluster : </strong>';

@@ -30,6 +30,7 @@ import marshal
 import tempfile
 import shutil
 import glob
+import functools
 import pickle
 import io
 
