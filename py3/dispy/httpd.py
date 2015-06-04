@@ -150,7 +150,7 @@ class DispyHTTPServer(object):
             if self.path == '/node_jobs':
                 ip_addr = None
                 for item in form.list:
-                    if item.name == 'name_ip':
+                    if item.name == 'host':
                         # if it looks like IP address, skip resolving
                         if re.match('^\d+[\.\d]+$', item.value):
                             ip_addr = item.value
@@ -222,12 +222,12 @@ class DispyHTTPServer(object):
                 self.wfile.write(json.dumps(cancelled).encode())
                 return
             elif self.path == '/add_node':
-                node = {'name_ip': '', 'port': None, 'cpus': 0, 'cluster': None}
+                node = {'host': '', 'port': None, 'cpus': 0, 'cluster': None}
                 node_id = None
                 cluster = None
                 for item in form.list:
-                    if item.name == 'name_ip':
-                        node['name_ip'] = item.value
+                    if item.name == 'host':
+                        node['host'] = item.value
                     elif item.name == 'cluster':
                         node['cluster'] = item.value
                     elif item.name == 'port':
@@ -239,7 +239,7 @@ class DispyHTTPServer(object):
                             pass
                     elif item.name == 'id':
                         node_id = item.value
-                if node['name_ip']:
+                if node['host']:
                     self._dispy_ctx._cluster_lock.acquire()
                     clusters = [cluster_info.cluster for name, cluster_info in
                                 self._dispy_ctx._clusters.items()

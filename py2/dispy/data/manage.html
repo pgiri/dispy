@@ -23,7 +23,7 @@
         if (nodes.length > 0) {
           var rows = '';
           $.each(nodes, function(i, node) {
-            rows += '<tr><td>' + (i + 1) + '</td><td><a href="node.html?name_ip=' +
+            rows += '<tr><td>' + (i + 1) + '</td><td><a href="node.html?host=' +
               node.ip_addr + '" title="View jobs on ' + node.ip_addr + '">' +
               node.ip_addr + '</a></td>' + '<td>' + node.name + '</td><td>' +
               node.avail_cpus + '</td>' + '<td><input style="width:4em" maxlength="6" ' +
@@ -58,15 +58,14 @@
               cluster_nodes[cluster.name] = cluster.nodes.sort(desc_cmp_nodes);
               cluster_nodes[''] = merge_sorted_uniq(cluster_nodes[''], cluster_nodes[cluster.name],
                                                     desc_cmp_nodes);
-              $('#messages').append('<li>nodes: ' + cluster_nodes[''].length + '</li>');
               cluster_names += '<option ' +
                 (cur_cluster_name == cluster.name ? 'selected="selected" ' : '') +
                 ' value="' + cluster.name + '">' + cluster.name + '</option>';
             });
             if (clusters.length > 1) {
               cluster_names += '<option ' +
-                (cur_cluster_name == 'Combined' ? 'selected="selected" ' : '') +
-                ' value="">Combined</option>';
+                (cur_cluster_name == '* Combined' ? 'selected="selected" ' : '') +
+                ' value="">* Combined</option>';
             }
             cluster_names += '</select>';
             $('#cluster-names-container').html(cluster_names);
@@ -137,7 +136,7 @@
 
         for (var i = 1; i <= new_node_count; i++) {
           rows += '<tr><td>' + i + '</td>' +
-            '<td><input style="width:10em;" maxlength="32" type="text" name="name_ip_' + i + '" /></td>' +
+            '<td><input style="width:10em;" maxlength="32" type="text" name="host_' + i + '" /></td>' +
             '<td><input style="width:3em;" maxlength="6" type="text" name="cpus_' + i + '" /></td>' +
             '<td><input style="width:4em;" maxlength="6" type="text" name="port_' + i + '" /></td>' +
             '</tr>';
@@ -153,7 +152,7 @@
               name = name.substring(0, name.lastIndexOf('_'));
               node[name] = $(this).val().trim();
             });
-            if (node.name_ip == '') {
+            if (node.host == '') {
               continue;
             }
             node.id = i;
@@ -167,7 +166,7 @@
             })
 
               .done(function(node) {
-                $('#messages').append('<li>Node ' + node.id + ' with IP ' + node.name_ip +
+                $('#messages').append('<li>Node ' + node.id + ' with IP ' + node.host +
                                       ' requested</li>');
               })
 

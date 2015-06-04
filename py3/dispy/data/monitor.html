@@ -14,7 +14,7 @@
 
      jQuery.ajaxSettings.traditional = true;
 
-      var clusters = {'': {name: 'Combined', jobs: {submitted: 0, pending: 0, done: 0},
+      var clusters = {'': {name: '* Combined', jobs: {submitted: 0, pending: 0, done: 0},
                            nodes: {}, sorted_keys: []}};
       var cur_cluster_name = null;
       var timer = null;
@@ -42,7 +42,7 @@
         $.each(cluster.sorted_keys, function(i, key) {
           var node = cluster.nodes[key];
           rows += '<tr><td>' + (i + 1) + '</td>' +
-            '<td><a href="node.html?name_ip=' + node.ip_addr + '" ' + 'title="View jobs on ' +
+            '<td><a href="node.html?host=' + node.ip_addr + '" ' + 'title="View jobs on ' +
             node.ip_addr + '">' + node.ip_addr + '</a></td><td>' + node.name + '</td><td>' +
             node.cpus + '</td><td>' + node.busy + '</td><td>' + node.jobs_done + '</td><td>' +
             node.cpu_time.toFixed(2) + '</td><td>' +
@@ -98,7 +98,7 @@
             clusters[''].jobs.submitted = 0;
             clusters[''].jobs.done = 0;
             $.each(clusters, function(name, cluster) {
-              if (cluster.name != 'Combined') {
+              if (cluster.name != '* Combined') {
                 clusters[''].jobs.submitted += cluster.jobs.submitted;
                 clusters[''].jobs.done += cluster.jobs.done;
               }

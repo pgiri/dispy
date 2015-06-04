@@ -24,11 +24,11 @@
         return results === null ? '' : decodeURIComponent(results[1].replace(/\+/g, ' '));
       }
 
-      function show_node(name_ip) {
+      function show_node(host) {
         $.ajax({
           url: '/node_jobs',
           method: 'POST',
-          data: {'name_ip':name_ip},
+          data: {'host':host},
           dataType: 'json',
           timeout: Math.min(5000, timeout)
         })
@@ -84,7 +84,7 @@
                 timer = setTimeout(function() { show_node(node.ip_addr) }, timeout);
               }
             } else {
-              $('#messages').append('<li>Failed to get information about "' + name_ip + '"</li>');
+              $('#messages').append('<li>Failed to get information about "' + host + '"</li>');
               $('#node').hide();
               $('#timeout-div').hide();
               $('#jobs').hide();
@@ -99,25 +99,25 @@
       }
 
       $(document).ready(function() {
-        var name_ip = getLocationParam('name_ip');
-        $('#name_ip').val(name_ip);
+        var host = getLocationParam('host');
+        $('#host').val(host);
 
-        if (!name_ip) {
+        if (!host) {
           $('#node').hide();
           $('#timeout-div').hide();
           $('#jobs').hide();
         } else {
-          show_node(name_ip);
+          show_node(host);
         }
 	
         $('#node-update').click(function() {
-          name_ip = $('#name_ip').val().trim();
+          host = $('#host').val().trim();
           // $(this).prop('disabled', true);
           if (timer != null) {
             clearTimeout(timer);
             timer = null;
           }
-          show_node(name_ip);
+          show_node(host);
         });
 
         $('#timeout-update').click(function() {
@@ -155,7 +155,7 @@
         $('#cancel-jobs').click(function() {
           if ($('select[name="cancel-confirm"]').val() != 'Yes') {
             $('#messages').append('<li>Terminate jobs not confirmed</li>');
-            // return false;
+            return false;
           }
           var cancel_jobs = [];
           $('input[type="checkbox"][name="job"]').each(function(i) {
@@ -291,7 +291,7 @@
       <div style="margin:10px auto;">
         <span class="border" style="padding:10px;display:inline-block;">
           <strong>Name or IP of Node to Show : </strong>
-          <input style="width:10em;" maxlength="32" type="text" id="name_ip" value="" />
+          <input style="width:10em;" maxlength="32" type="text" id="host" value="" />
           <button type="button" id="node-update" style="margin-left:5px;">Update</button>
         </span>
       </div>

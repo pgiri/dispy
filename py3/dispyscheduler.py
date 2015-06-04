@@ -1490,7 +1490,9 @@ class _Scheduler(object, metaclass=MetaSingleton):
 
     def allocate_node(self, cluster, node_alloc, coro=None):
         # generator
-        cluster._node_allocs.append(node_alloc)
+        if not isinstance(node_alloc, list):
+            node_alloc = [node_alloc]
+        cluster._node_allocs.extend(node_alloc)
         cluster._node_allocs = sorted(cluster._node_allocs,
                                       key=lambda node_alloc: node_alloc.ip_rex)
         cluster._node_allocs.reverse()

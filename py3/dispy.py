@@ -1561,12 +1561,9 @@ class _Cluster(object, metaclass=MetaSingleton):
 
     def allocate_node(self, cluster, node_alloc, coro=None):
         # generator
-        if isinstance(node_alloc):
-            node_allocs = [node_alloc]
-        elif isinstance(node_alloc, str):
-            node_allocs = _parse_node_allocs([node])
-        else:
-            node_allocs = []
+        if not isinstance(node_alloc, list):
+            node_alloc = [node_alloc]
+        node_allocs = _parse_node_allocs(node_alloc)
         if not node_allocs:
             raise StopIteration(-1)
         cluster._node_allocs.extend(node_allocs)
@@ -2375,11 +2372,14 @@ class SharedJobCluster(JobCluster):
         return 0
 
     def allocate_node(self, node_alloc):
-        if not isinstance(node_alloc):
-            node_alloc = _parse_node_allocs([node_alloc])
-            if len(node_alloc) != 1:
-                return -1
-            node_alloc = node_alloc[0]
+        if not isinstance(node_alloc, list):
+            node_alloc = [node_alloc]
+        node_allocs = _parse_node_allocs(node_alloc)
+        if not node_allocs:
+            raise StopIteration(-1)
+        if len(node_allocs) != 1:
+            return -1
+        node_alloc = node_allocs[0]
 
         sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), blocking=True,
                            keyfile=self._cluster.keyfile, certfile=self._cluster.certfile)
