@@ -169,7 +169,11 @@ class NodeAllocation(object):
     """
     def __init__(self, host, port=None, cpus=0):
         self.ip_addr = _node_ipaddr(host)
-        self.ip_rex = self.ip_addr.replace('.', '\\.').replace('*', '.*')
+        if not self.ip_addr:
+            logger.warning('host "%s" is invalid' % host)
+            self.ip_rex = ''
+        else:
+            self.ip_rex = self.ip_addr.replace('.', '\\.').replace('*', '.*')
         if port:
             try:
                 port = int(port)
@@ -256,7 +260,7 @@ def _parse_node_allocs(nodes):
             node_allocs.append(NodeAllocation(*node))
         elif isinstance(node, list):
             node_allocs.append(NodeAllocation(*tuple(node)))
-    return node_allocs
+    return [node_alloc for node_alloc in node_allocs if node_alloc.ip_addr]
 
 
 # This tuple stores information about partial functions; for
@@ -643,7 +647,7 @@ class _Cluster(object):
 
                 def _send_pulse(self, pulse_msg, addr, coro=None):
                     sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
-                    sock.settimeout(2)
+                    sock.settimeout(MsgTimeout)
                     try:
                         yield sock.sendto('PULSE:' + serialize(pulse_msg), addr)
                     except:
@@ -869,7 +873,7 @@ class _Cluster(object):
                                    info['status'], addr[0], addr[1])
             except:
                 logger.warning('invalid node status from %s:%s ignored' % (addr[0], addr[1]))
-                logger.debug(traceback.format_exc())
+                # logger.debug(traceback.format_exc())
         else:
             logger.warning('invalid message from %s:%s ignored' % (addr[0], addr[1]))
             # logger.debug(traceback.format_exc())
@@ -898,7 +902,7 @@ class _Cluster(object):
                                'client_port': cluster._compute.scheduler_port}
                         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                         sock = AsyncSocket(sock)
-                        sock.settimeout(2)
+                        sock.settimeout(MsgTimeout)
                         yield sock.sendto('PULSE:' + serialize(msg),
                                           (cluster.scheduler_ip_addr, cluster.job_result_port))
                         sock.close()
@@ -970,7 +974,7 @@ class _Cluster(object):
         ping_msg = {'version': _dispy_version, 'sign': self.sign, 'port': self.port}
         ping_msg['ip_addrs'] = list(filter(lambda ip: bool(ip), self.ext_ip_addrs))
         udp_sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
-        udp_sock.settimeout(2)
+        udp_sock.settimeout(MsgTimeout)
         if not port:
             port = self.node_port
         try:
@@ -1005,7 +1009,7 @@ class _Cluster(object):
         bc_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         bc_sock = AsyncSocket(bc_sock)
-        bc_sock.settimeout(2)
+        bc_sock.settimeout(MsgTimeout)
         try:
             yield bc_sock.sendto('PING:' + serialize(ping_msg), ('<broadcast>', port))
         except:
@@ -1129,7 +1133,7 @@ class _Cluster(object):
             if compute.id in node.clusters:
                 continue
             for node_alloc in cluster._node_allocs:
-                cpus = node_alloc.accept(cluster, node.ip_addr, node.name, node.avail_cpus)
+                cpus = node_alloc.allocate(cluster, node.ip_addr, node.name, node.avail_cpus)
                 if cpus <= 0:
                     continue
                 node.cpus = min(node.avail_cpus, cpus)
@@ -1260,7 +1264,7 @@ class _Cluster(object):
                 continue
             compute = cluster._compute
             for node_alloc in cluster._node_allocs:
-                cpus = node_alloc.accept(cluster, node.ip_addr, node.name, node.avail_cpus)
+                cpus = node_alloc.allocate(cluster, node.ip_addr, node.name, node.avail_cpus)
                 if cpus <= 0:
                     continue
                 node.cpus = min(node.avail_cpus, cpus)
@@ -1386,7 +1390,7 @@ class _Cluster(object):
             if cluster._compute.reentrant:
                 logger.debug('Rescheduling job %s from %s', _job.uid, _job.node.ip_addr)
                 _job.job.status = DispyJob.Created
-                _job.hash = os.urandom(10).encode('hex')
+                # _job.hash = os.urandom(10).encode('hex')
                 cluster._jobs.append(_job)
                 self.unsched_jobs += 1
             else:
@@ -2486,7 +2490,12 @@ def recover_jobs(recover_file, timeout=None, terminate_pending=False):
     cluster = None
     asyncoro_scheduler = asyncoro.AsynCoro.instance()
 
-    shelf = shelve.open(recover_file, flag='r')
+    try:
+        shelf = shelve.open(recover_file, flag='r')
+    except:
+        print('Could not open recover file "%s"' % recover_file)
+        return []
+
     for key, val in shelf.iteritems():
         if key.startswith('node_'):
             shelf_nodes[key[len('node_'):]] = val

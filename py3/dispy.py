@@ -872,7 +872,7 @@ class _Cluster(object, metaclass=MetaSingleton):
                                    info['status'], addr[0], addr[1])
             except:
                 logger.warning('invalid node status from %s:%s ignored' % (addr[0], addr[1]))
-                logger.debug(traceback.format_exc())
+                # logger.debug(traceback.format_exc())
         else:
             logger.warning('invalid message from %s:%s ignored' % (addr[0], addr[1]))
             # logger.debug(traceback.format_exc())
