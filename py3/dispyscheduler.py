@@ -161,14 +161,6 @@ class _Scheduler(object, metaclass=MetaSingleton):
                 os.makedirs(self.dest_path_prefix)
                 os.chmod(self.dest_path_prefix, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
 
-            fd = open(os.path.join(self.dest_path_prefix, 'config'), 'wb')
-            config = {
-                'ip_addr': self.ip_addr, 'ext_ip_addr': self.ext_ip_addr, 'port': self.port,
-                'sign': self.sign, 'secret': self.secret, 'auth': self.auth
-                }
-            pickle.dump(config, fd)
-            fd.close()
-
             if pulse_interval:
                 try:
                     self.pulse_interval = float(pulse_interval)
@@ -228,6 +220,14 @@ class _Scheduler(object, metaclass=MetaSingleton):
             for ip_addr in list(self.ip_addrs):
                 self.tcp_coros.append(Coro(self.tcp_server, ip_addr))
                 self.scheduler_coros.append(Coro(self.scheduler_server, ip_addr))
+
+            fd = open(os.path.join(self.dest_path_prefix, 'config'), 'wb')
+            config = {
+                'port': self.port, 'sign': self.sign, 'cluster_secret': self.cluster_secret,
+                'node_secret': self.node_secret, 'auth': self.auth
+                }
+            pickle.dump(config, fd)
+            fd.close()
 
             self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -1649,8 +1649,8 @@ if __name__ == '__main__':
         if config['zombie_interval'] < 1:
             raise Exception('zombie_interval must be at least 1')
 
-    MsgTimeout = _dispy_config['msg_timeout']
-    del _dispy_config['msg_timeout']
+    MsgTimeout = config['msg_timeout']
+    del config['msg_timeout']
 
     m = re.match(r'(\d+)([kKmMgGtT]?)', config['max_file_size'])
     if m:
