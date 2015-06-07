@@ -14,7 +14,6 @@ def setup():
 def cleanup():
     del globals()['shvar']
     # unload 'random' module (doesn't undo everything import does)
-    sys.modules.pop('random')
     del globals()['random']
 
 def compute():

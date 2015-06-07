@@ -320,28 +320,37 @@ class DispyHTTPServer(object):
         dispy.logger.info('Started HTTP%s server at %s' %
                           ('s' if certfile else '', str(self._server.socket.getsockname())))
 
-    def cluster_status(self, cluster, status, node, job):
+    def cluster_status(self, cluster_info, status, node, job):
+        """This method is called by JobCluster/SharedJobCluster
+        whenever there is a change in cluster as it is set to
+        cluster's 'status' parameter (unless it is already set to
+        another method, in which case, this method should be called
+        through chaining).
+        """
         if status == DispyJob.Created:
             self._cluster_lock.acquire()
-            cluster.jobs_submitted += 1
-            cluster.jobs[id(job)] = job
+            cluster_info.jobs_submitted += 1
+            cluster_info.jobs[id(job)] = job
             self._cluster_lock.release()
             return
         if status == DispyJob.Finished or status == DispyJob.Terminated or \
            status == DispyJob.Cancelled or status == DispyJob.Abandoned:
             self._cluster_lock.acquire()
-            cluster.jobs_done += 1
-            cluster.jobs.pop(id(job), None)
+            cluster_info.jobs_done += 1
+            cluster_info.jobs.pop(id(job), None)
             self._cluster_lock.release()
 
         if node is not None:
             # even if node closed, keep it; let UI decide how to indicate status
             self._cluster_lock.acquire()
-            cluster.status[node.ip_addr] = node
-            cluster.updates[node.ip_addr] = node
+            cluster_info.status[node.ip_addr] = node
+            cluster_info.updates[node.ip_addr] = node
             self._cluster_lock.release()
 
     def shutdown(self, wait=True):
+        """This method should be called by user program to close the
+        http server.
+        """
         if wait:
             dispy.logger.debug(
                 'HTTP server waiting for %s seconds for client updates before quitting',
@@ -351,10 +360,20 @@ class DispyHTTPServer(object):
         self._server.server_close()
 
     def add_cluster(self, cluster):
+        """If more than one cluster is used in a program, they can be
+        added to http server for monitoring.
+        """
+        if cluster.name in self._clusters:
+            dispy.logger.warning('Cluster "%s" is already registered' % (cluster.name))
+            return
         cluster_info = self.__class__._ClusterInfo(cluster)
         self._clusters[cluster.name] = cluster_info
         if cluster.status_callback is None:
             cluster.status_callback = functools.partial(self.cluster_status, cluster_info)
 
     def del_cluster(self, cluster):
+        """When a cluster is no longer needed to be monitored with
+        http server, the cluster can be removed from http server with
+        this method.
+        """
         self._clusters.pop(cluster.name)

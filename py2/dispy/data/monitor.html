@@ -14,8 +14,7 @@
 
      jQuery.ajaxSettings.traditional = true;
 
-      var clusters = {'': {name: '* Combined', jobs: {submitted: 0, pending: 0, done: 0},
-                           nodes: {}, sorted_keys: []}};
+      var clusters = {};
       var cur_cluster_name = null;
       var timer = null;
       var timeout = 1000 * %(TIMEOUT)s;
@@ -29,7 +28,7 @@
         $('#jobs-pending').text(cluster.jobs.submitted - cluster.jobs.done);
 
         if (cluster.sorted_keys.length == 0) {
-          var key_ids = $.map(cluster, function(node) {
+          var key_ids = $.map(cluster.nodes, function(node) {
             return {key:node[sort_key], id:node.ip_addr};
           });
           cluster.sorted_keys =
@@ -60,69 +59,95 @@
           timeout: Math.min(5000, timeout)
         })
           .done(function(status_data) {
+            var cluster;
+            var changed = false;
             $.each(status_data, function(i, status) {
-              var cluster;
-              if (clusters.hasOwnProperty(status.name)) {
-                cluster = clusters[status.name];
-              } else {
-                cluster = {name: status.name, jobs: {}, nodes: {}, sorted_keys: []}
-                clusters[status.name] = cluster;
+              cluster = clusters[status.name];
+              if (!cluster || status.nodes.length > 0 ||
+                  cluster.jobs.submitted != status.jobs.submitted ||
+                  cluster.jobs.done != status.jobs.done ||
+                  cluster.jobs.pending != status.jobs.pending) {
+                changed = true;
+                return false;
               }
-              cluster.jobs.submitted = status.jobs.submitted;
-              cluster.jobs.done = status.jobs.done;
+            });
+            if (changed) {
+              if (status_data.length > 1) {
+                clusters[''] = {name: '* Combined'};
+              }
+              var combined = clusters[''];
+              if (combined) {
+                combined.jobs = {submitted: 0, pending: 0, done: 0};
+                combined.nodes = {};
+                combined.sorted_keys = [];
+              }
 
-              $.each(status.nodes, function(i, node) {
-                node.last_update = new Date(1000 * node.update_time);
-                cluster.nodes[node.ip_addr] = node;
-                if ((status_data.length > 1) || (Object.keys(clusters).length > 1)) {
-                  var combined_node = clusters[''].nodes[node.ip_addr];
-                  if (combined_node == undefined) {
-                    clusters[''].nodes[node.ip_addr] = node;
-                  } else {
-                    combined_node.busy += node.busy;
-                    combined_node.last_update =
-                      (node.last_update.getTime() > combined_node.last_update.getTime() ?
-                       node.last_update : combined_node.last_update);
-                    clusters[''].nodes[node.ip_addr] = combined_node;
-                  }
+              $.each(status_data, function(i, status) {
+                if (clusters.hasOwnProperty(status.name)) {
+                  cluster = clusters[status.name];
+                } else {
+                  cluster = {name: status.name, jobs: {}, nodes: {}, sorted_keys: []};
+                  clusters[status.name] = cluster;
+                }
+                cluster.jobs = status.jobs;
+                if (combined) {
+                  combined.jobs.submitted += cluster.jobs.submitted;
+                  combined.jobs.pending += cluster.jobs.pending;
+                  combined.jobs.done += cluster.jobs.done;
+                }
+
+                $.each(status.nodes, function(i, node) {
+                  node.last_update = new Date(1000 * node.update_time);
+                  cluster.nodes[node.ip_addr] = node;
+                });
+
+                if (sort_key == 'ip_addr') {
+                  var keys = $.map(cluster.nodes, function(node) {
+                    return node.ip_addr;
+                  });
+                  cluster.sorted_keys = merge_sorted_uniq(cluster.sorted_keys,
+                                                          keys.sort(desc_cmp), desc_cmp);
+                } else {
+                  cluster.sorted_keys = [];
                 }
               });
-            });
-            if (cur_cluster_name == null) {
-              cur_cluster_name = status_data[0].name;
+
+              if (cur_cluster_name == null) {
+                cur_cluster_name = status_data[0].name;
+              }
+              var cluster_names = '<strong>Cluster : </strong>';
+              cluster_names += '<select name="cluster-names" style="margin-left:5px;">';
+
+              $.each(clusters, function(name, cluster) {
+                if (combined && combined !== cluster) {
+                  $.each(cluster.nodes, function(i, node) {
+                    var combined_node = combined.nodes[node.ip_addr];
+                    if (combined_node) {
+                      combined_node.busy += node.busy;
+                      combined_node.jobs_done += node.jobs_done;
+                      combined_node.cpu_time += node.cpu_time;
+                      combined_node.last_update =
+                        (node.last_update.getTime() > combined_node.last_update.getTime() ?
+                         node.last_update : combined_node.last_update);
+                      combined.nodes[node.ip_addr] = combined_node;
+                    } else {
+                      combined.nodes[node.ip_addr] = $.extend(true, {}, node);
+                    }
+                  });
+                }
+                cluster_names += '<option ' +
+                  (cur_cluster_name == name ? 'selected="selected" ' : '') +
+                  ' value="' + name + '">' + cluster.name + '</option>';
+              });
+              cluster_names += '</select>';
+              $('#cluster-names-container').html(cluster_names);
+
+              show_cluster();
             }
-
-            var cluster_names = '<strong>Cluster : </strong>';
-            cluster_names += '<select name="cluster-names" style="margin-left:5px;">';
-              
-            clusters[''].jobs.submitted = 0;
-            clusters[''].jobs.done = 0;
-            $.each(clusters, function(name, cluster) {
-              if (cluster.name != '* Combined') {
-                clusters[''].jobs.submitted += cluster.jobs.submitted;
-                clusters[''].jobs.done += cluster.jobs.done;
-              }
-              if (sort_key == 'ip_addr') {
-                var keys = $.map(cluster.nodes, function(node) {
-                  return node.ip_addr;
-                });
-                cluster.sorted_keys = merge_sorted_uniq(cluster.sorted_keys,
-                                                        keys.sort(desc_cmp), desc_cmp);
-              } else {
-                cluster.sorted_keys = [];
-              }
-              cluster_names += '<option ' +
-                (cur_cluster_name == name ? 'selected="selected" ' : '') +
-                ' value="' + name + '">' + cluster.name + '</option>';
-            });
-            cluster_names += '</select>';
-            $('#cluster-names-container').html(cluster_names);
-
-            show_cluster();
 
             $('#messages').html('<li>Status updated at ' +
                                 (new Date()).toLocaleTimeString() + '</li>');
-            if (timeout > 1000) {
+            if (timeout >= 1000) {
               timer = setTimeout(function() { cluster_status('cluster_updates') }, timeout);
             }
           })

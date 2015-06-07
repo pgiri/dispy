@@ -80,7 +80,7 @@
 
               var now = new Date();
               $('#messages').append('<li>Status updated at ' + now.toLocaleTimeString() + '</li>');
-              if (timeout > 1000) {
+              if (timeout >= 1000) {
                 timer = setTimeout(function() { show_node(node.ip_addr) }, timeout);
               }
             } else {

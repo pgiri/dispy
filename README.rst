@@ -66,7 +66,7 @@ Features
   ``SharedJobCluster`` and *dispyscheduler* program).
 
 * Cluster can be `monitored and managed
-  <http://dispy.sourceforge.net/httpd.html`_ with web browser.
+  <http://dispy.sourceforge.net/httpd.html>`_ with web browser.
 
 Dependencies
 ------------

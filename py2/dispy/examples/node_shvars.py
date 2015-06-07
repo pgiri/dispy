@@ -14,7 +14,6 @@ def setup():
 def cleanup():
     del globals()['shvar']
     # unload 'random' module (doesn't undo everything import does)
-    sys.modules.pop('random')
     del globals()['random']
 
 def compute():
@@ -25,7 +24,7 @@ def compute():
 
 if __name__ == '__main__':
     import dispy
-    cluster = dispy.JobCluster(compute, setup=setup, cleanup=cleanup)
+    cluster = dispy.JobCluster(compute, depends=['file.dat'], setup=setup, cleanup=cleanup)
     jobs = []
     for n in range(10):
         job = cluster.submit()

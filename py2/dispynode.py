@@ -805,10 +805,13 @@ class _DispyNode(object):
                 yield send_reply(None)
                 raise StopIteration
 
-            fd = open(os.path.join(self.dest_path_prefix, '%s_%s' % (compute_id, auth)), 'rb')
-            compute = pickle.load(fd)
-            fd.close()
-            if compute is None:
+            pkl_path = os.path.join(self.dest_path_prefix, '%s_%s' % (compute_id, auth))
+            compute = self.computations.get(compute_id, None)
+            if not compute:
+                fd = open(pkl_path, 'rb')
+                compute = pickle.load(fd)
+                fd.close()
+            if not compute or compute.auth != auth:
                 yield send_reply(None)
                 raise StopIteration
 
@@ -830,8 +833,7 @@ class _DispyNode(object):
                 ack = yield conn.recv_msg()
                 assert ack == 'ACK'
                 compute.pending_results -= 1
-                fd = open(os.path.join(self.dest_path_prefix,
-                                       '%s_%s' % (compute.id, compute.auth)), 'wb')
+                fd = open(pkl_path, 'wb')
                 pickle.dump(compute, fd)
                 fd.close()
             except:
@@ -841,6 +843,8 @@ class _DispyNode(object):
                     os.remove(info_file)
                 except:
                     pass
+                if compute.pending_results == 0:
+                    self.cleanup_computation(compute)
 
         # tcp_serve_task starts
         try:
@@ -1211,29 +1215,25 @@ class _DispyNode(object):
         finally:
             sock.close()
 
-        if compute:
-            fd = open(os.path.join(self.dest_path_prefix,
-                                   '%s_%s' % (compute.id, compute.auth)), 'wb')
-            pickle.dump(compute, fd)
-            fd.close()
-            if compute.pending_jobs == 0 and compute.pending_results == 0 and compute.zombie:
-                self.cleanup_computation(compute)
+        if compute and compute.pending_jobs == 0 and compute.zombie:
+            self.cleanup_computation(compute)
         raise StopIteration(status)
 
     def cleanup_computation(self, compute):
-        if not compute.zombie:
+        if not compute.zombie or compute.pending_jobs > 0:
             return
         if compute.pending_jobs != 0:
             logger.debug('pending jobs for computation "%s"/%s: %s',
                          compute.name, compute.id, compute.pending_jobs)
-            if compute.pending_jobs > 0:
-                return
 
-        path = os.path.join(self.dest_path_prefix, '%s_%s' % (compute.id, compute.auth))
+        pkl_path = os.path.join(self.dest_path_prefix, '%s_%s' % (compute.id, compute.auth))
         if compute.pending_results == 0:
-            os.remove(path)
+            try:
+                os.remove(pkl_path)
+            except:
+                pass
         else:
-            fd = open(path, 'wb')
+            fd = open(pkl_path, 'wb')
             pickle.dump(compute, fd)
             fd.close()
         self.computations.pop(compute.id, None)
@@ -1243,12 +1243,12 @@ class _DispyNode(object):
             pass
 
         if (not self.computations) and \
-               compute.scheduler_ip_addr == self.scheduler['ip_addr'] and \
-               compute.scheduler_port == self.scheduler['port'] and \
-               self.scheduler['auth'] == [] and \
-               self.avail_cpus == self.num_cpus and \
-               all(c.scheduler_ip_addr != self.scheduler['ip_addr']
-                   for c in self.computations.itervalues()):
+           compute.scheduler_ip_addr == self.scheduler['ip_addr'] and \
+           compute.scheduler_port == self.scheduler['port'] and \
+           self.scheduler['auth'] == [] and \
+           self.avail_cpus == self.num_cpus and \
+           all(c.scheduler_ip_addr != self.scheduler['ip_addr']
+               for c in self.computations.itervalues()):
             self.scheduler['ip_addr'] = None
             self.pulse_interval = None
             self.timer_coro.resume(None)

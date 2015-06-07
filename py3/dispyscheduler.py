@@ -30,8 +30,8 @@ import shutil
 import glob
 import pickle
 
-from dispy import _Compute, DispyJob, _DispyJob_, _Function, _Node, DispyNode, NodeAllocation, \
-     _JobReply, auth_code, num_min, _parse_node_allocs, _node_ipaddr, _XferFile, _dispy_version
+from dispy import _Compute, DispyJob, _DispyJob_, _Function, _Node, DispyNode, NodeAllocate, \
+    _JobReply, auth_code, num_min, _parse_node_allocs, _node_ipaddr, _XferFile, _dispy_version
 
 import asyncoro
 from asyncoro import Coro, AsynCoro, AsyncSocket, MetaSingleton, serialize, unserialize
@@ -58,7 +58,8 @@ class _Cluster(object):
     """
     def __init__(self, compute, node_allocs, scheduler):
         self._compute = compute
-        self.name = compute.name
+        # self.name = compute.name
+        self.name = '%s @ %s' % (compute.name, compute.scheduler_ip_addr)
         self._node_allocs = _parse_node_allocs(node_allocs)
         self.scheduler = scheduler
         self.status_callback = None
@@ -81,7 +82,8 @@ class _Cluster(object):
     def __getstate__(self):
         state = dict(self.__dict__)
         for var in ('_node_allocs', 'scheduler', 'status_callback', '_jobs', '_dispy_nodes'):
-            del state[var]
+            state.pop(var, None)
+        return state
 
     def node_jobs(self, node, from_node=False, coro=None):
         jobs = Coro(self.scheduler.node_jobs, self, node, from_node, get_uids=False).value()
@@ -90,8 +92,11 @@ class _Cluster(object):
     def cancel(self, job):
         return self.scheduler.cancel_job(self, job.id)
 
-    def allocate_node(self, node):
-        Coro(self.scheduler.allocate_node, node)
+    def allocate_node(self, node_alloc):
+        if not isinstance(node_alloc, list):
+            node_alloc = [node_alloc]
+        node_allocs = _parse_node_allocs(node_alloc)
+        Coro(self.scheduler.allocate_node, self, node_allocs)
 
     def set_node_cpus(self, node, cpus, coro=None):
         Coro(self.scheduler.set_node_cpus, node, cpus)
@@ -972,7 +977,7 @@ class _Scheduler(object, metaclass=MetaSingleton):
         assert coro is not None
         compute = cluster._compute
         compute.pulse_interval = self.pulse_interval
-        if self.httpd:
+        if self.httpd and cluster.status_callback is None:
             self.httpd.add_cluster(cluster)
         # TODO: should we allow clients to add new nodes, or use only
         # the nodes initially created with command-line?
@@ -1001,11 +1006,12 @@ class _Scheduler(object, metaclass=MetaSingleton):
 
         compute = cluster._compute
 
-        path = os.path.join(self.dest_path_prefix, '%s_%s' % (compute.id, cluster.client_auth))
+        pkl_path = os.path.join(self.dest_path_prefix,
+                                '%s_%s' % (compute.id, cluster.client_auth))
         if cluster.pending_results == 0:
-            os.remove(path)
+            os.remove(pkl_path)
         else:
-            fd = open(path, 'wb')
+            fd = open(pkl_path, 'wb')
             pickle.dump(compute, fd)
             fd.close()
         for xf in compute.xfer_files:
@@ -1141,7 +1147,7 @@ class _Scheduler(object, metaclass=MetaSingleton):
                 # fault recovery; user may be able to access node and
                 # retrieve result manually
                 f = os.path.join(cluster.dest_path, '_dispy_job_reply_%s' % uid)
-                logger.error('Could not send reply for job %s to %s; saving it in "%s"',
+                logger.error('Could not send reply for job %s to %s:%s; saving it in "%s"',
                              uid, cluster.client_ip_addr, cluster.client_job_result_port, f)
                 try:
                     fd = open(f, 'wb')
@@ -1180,6 +1186,7 @@ class _Scheduler(object, metaclass=MetaSingleton):
             # assert _job.job.status == DispyJob.Running
             if dispy_node:
                 dispy_node.busy += 1
+                dispy_node.update_time = time.time()
                 cluster.status_callback(_job.job.status, dispy_node, _job.job)
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock = AsyncSocket(sock, keyfile=self.cluster_keyfile, certfile=self.cluster_certfile)
@@ -1197,6 +1204,7 @@ class _Scheduler(object, metaclass=MetaSingleton):
 
     def send_node_status(self, cluster, dispy_node, status, coro=None):
         if cluster.status_callback:
+            dispy_node.update_time = time.time()
             cluster.status_callback(status, dispy_node, None)
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock = AsyncSocket(sock, keyfile=self.cluster_keyfile, certfile=self.cluster_certfile)
@@ -1260,6 +1268,9 @@ class _Scheduler(object, metaclass=MetaSingleton):
                     dispy_node.busy -= 1
                     dispy_node.jobs_done += 1
                     dispy_node.cpu_time += reply.end_time - reply.start_time
+                    dispy_node.update_time = time.time()
+                    cluster.status_callback(reply.status, dispy_node, job)
+
             cluster.pending_jobs -= 1
             if cluster.pending_jobs == 0:
                 cluster.end_time = time.time()
@@ -1428,10 +1439,13 @@ class _Scheduler(object, metaclass=MetaSingleton):
             yield send_reply(None)
             raise StopIteration
 
-        fd = open(os.path.join(self.dest_path_prefix, '%s_%s' % (compute_id, auth)), 'rb')
-        cluster = pickle.load(fd)
-        fd.close()
-        if cluster is None:
+        pkl_path = os.path.join(self.dest_path_prefix, '%s_%s' % (compute_id, auth))
+        cluster = self._clusters.get(compute_id, None)
+        if not cluster:
+            fd = open(pkl_path, 'rb')
+            cluster = pickle.load(fd)
+            fd.close()
+        if not cluster or cluster.client_auth != auth:
             yield send_reply(None)
             raise StopIteration
 
@@ -1454,8 +1468,7 @@ class _Scheduler(object, metaclass=MetaSingleton):
             ack = yield conn.recv_msg()
             assert ack == b'ACK'
             cluster.pending_results -= 1
-            fd = open(os.path.join(self.dest_path_prefix,
-                                   '%s_%s' % (compute.id, compute.auth)), 'wb')
+            fd = open(pkl_path, 'wb')
             pickle.dump(cluster, fd)
             fd.close()
         except:
@@ -1497,9 +1510,8 @@ class _Scheduler(object, metaclass=MetaSingleton):
                                       key=lambda node_alloc: node_alloc.ip_rex)
         cluster._node_allocs.reverse()
         present = set()
-        cluster._node_allocs = [node_alloc for node_alloc in cluster._node_allocs
-                               if node_alloc.ip_rex not in present and
-                               not present.add(node_alloc.ip_rex)]
+        cluster._node_allocs = [na for na in cluster._node_allocs
+                                if na.ip_rex not in present and not present.add(na.ip_rex)]
         del present
         Coro(self.add_cluster, cluster)
         yield 0

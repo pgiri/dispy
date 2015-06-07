@@ -805,10 +805,13 @@ class _DispyNode(object):
                 yield send_reply(None)
                 raise StopIteration
 
-            fd = open(os.path.join(self.dest_path_prefix, '%s_%s' % (compute_id, auth)), 'rb')
-            compute = pickle.load(fd)
-            fd.close()
-            if compute is None:
+            pkl_path = os.path.join(self.dest_path_prefix, '%s_%s' % (compute_id, auth))
+            compute = self.computations.get(compute_id, None)
+            if not compute:
+                fd = open(pkl_path, 'rb')
+                compute = pickle.load(fd)
+                fd.close()
+            if not compute or compute.auth != auth:
                 yield send_reply(None)
                 raise StopIteration
 
@@ -828,10 +831,9 @@ class _DispyNode(object):
             try:
                 yield conn.send_msg(serialize(job_reply))
                 ack = yield conn.recv_msg()
-                assert ack == 'ACK'
+                assert ack == b'ACK'
                 compute.pending_results -= 1
-                fd = open(os.path.join(self.dest_path_prefix,
-                                       '%s_%s' % (compute.id, compute.auth)), 'wb')
+                fd = open(pkl_path, 'wb')
                 pickle.dump(compute, fd)
                 fd.close()
             except:
@@ -841,6 +843,8 @@ class _DispyNode(object):
                     os.remove(info_file)
                 except:
                     pass
+                if compute.pending_results == 0:
+                    self.cleanup_computation(compute)
 
         # tcp_serve_task starts
         try:
@@ -1124,13 +1128,19 @@ class _DispyNode(object):
             if job_info is not None:
                 if job_info.proc is not None:
                     if isinstance(job_info.proc, multiprocessing.Process):
-                        job_info.proc.join(MsgTimeout)
+                        job_info.proc.join(2)
                     else:
                         job_info.proc.wait()
                 for xf in job_info.xfer_files:
                     tgt = os.path.join(self.computations[xf.compute_id].dest_path,
                                        os.path.basename(xf.name))
                     self.file_uses[tgt] -= 1
+                    if self.file_uses[tgt] == 0:
+                        self.file_uses.pop(tgt)
+                        try:
+                            os.remove(tgt)
+                        except:
+                            logger.warning('Failed to remove "%s"' % tgt)
                 Coro(self._send_job_reply, job_info, resending=False)
 
     def _send_job_reply(self, job_info, resending=False, coro=None):
@@ -1205,29 +1215,25 @@ class _DispyNode(object):
         finally:
             sock.close()
 
-        if compute:
-            fd = open(os.path.join(self.dest_path_prefix,
-                                   '%s_%s' % (compute.id, compute.auth)), 'wb')
-            pickle.dump(compute, fd)
-            fd.close()
-            if compute.pending_jobs == 0 and compute.pending_results == 0 and compute.zombie:
-                self.cleanup_computation(compute)
+        if compute and compute.pending_jobs == 0 and compute.zombie:
+            self.cleanup_computation(compute)
         raise StopIteration(status)
 
     def cleanup_computation(self, compute):
-        if not compute.zombie:
+        if not compute.zombie or compute.pending_jobs > 0:
             return
         if compute.pending_jobs != 0:
             logger.debug('pending jobs for computation "%s"/%s: %s',
                          compute.name, compute.id, compute.pending_jobs)
-            if compute.pending_jobs > 0:
-                return
 
-        path = os.path.join(self.dest_path_prefix, '%s_%s' % (compute.id, compute.auth))
+        pkl_path = os.path.join(self.dest_path_prefix, '%s_%s' % (compute.id, compute.auth))
         if compute.pending_results == 0:
-            os.remove(path)
+            try:
+                os.remove(pkl_path)
+            except:
+                pass
         else:
-            fd = open(path, 'wb')
+            fd = open(pkl_path, 'wb')
             pickle.dump(compute, fd)
             fd.close()
         self.computations.pop(compute.id, None)
@@ -1237,12 +1243,12 @@ class _DispyNode(object):
             pass
 
         if (not self.computations) and \
-               compute.scheduler_ip_addr == self.scheduler['ip_addr'] and \
-               compute.scheduler_port == self.scheduler['port'] and \
-               self.scheduler['auth'] == [] and \
-               self.avail_cpus == self.num_cpus and \
-               all(c.scheduler_ip_addr != self.scheduler['ip_addr']
-                   for c in self.computations.values()):
+           compute.scheduler_ip_addr == self.scheduler['ip_addr'] and \
+           compute.scheduler_port == self.scheduler['port'] and \
+           self.scheduler['auth'] == [] and \
+           self.avail_cpus == self.num_cpus and \
+           all(c.scheduler_ip_addr != self.scheduler['ip_addr']
+               for c in self.computations.values()):
             self.scheduler['ip_addr'] = None
             self.pulse_interval = None
             self.timer_coro.resume(None)

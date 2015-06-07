@@ -16,7 +16,7 @@ __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
 __version__ = "4.4"
 
-__all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocation', 'JobCluster', 'SharedJobCluster']
+__all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
 import os
 import sys
@@ -154,14 +154,14 @@ class DispyNode(object):
         self.update_time = 0
 
 
-class NodeAllocation(object):
+class NodeAllocate(object):
     """Objects of this class describe if / how many CPUs in a node are
     allocated to clusters.
 
     Each element of 'nodes' passed to JobCluster or SharedJobCluster
     is an object of this class; if the element passed is a string
     (host name or IP address), a tuple (see documentation for
-    details), it is converted to NodeAllocation object with
+    details), it is converted to NodeAllocate object with
     '_parse_node_allocs' function.
 
     This class can be specialized (inherited) to override, for
@@ -249,17 +249,17 @@ def _parse_node_allocs(nodes):
     """
     node_allocs = []
     for node in nodes:
-        if isinstance(node, NodeAllocation):
+        if isinstance(node, NodeAllocate):
             node_allocs.append(node)
         elif isinstance(node, str):
-            node_allocs.append(NodeAllocation(node))
+            node_allocs.append(NodeAllocate(node))
         elif isinstance(node, dict):
-            node_allocs.append(NodeAllocation(node.get('host', node.get('ip_addr', '*')),
-                                              node.get('port', None), node.get('cpus', 0)))
+            node_allocs.append(NodeAllocate(node.get('host', '*'), node.get('port', None),
+                                            node.get('cpus', 0)))
         elif isinstance(node, tuple):
-            node_allocs.append(NodeAllocation(*node))
+            node_allocs.append(NodeAllocate(*node))
         elif isinstance(node, list):
-            node_allocs.append(NodeAllocation(*tuple(node)))
+            node_allocs.append(NodeAllocate(*tuple(node)))
     return [node_alloc for node_alloc in node_allocs if node_alloc.ip_addr]
 
 
@@ -767,10 +767,14 @@ class _Cluster(object, metaclass=MetaSingleton):
         elif msg.startswith(b'PONG:'):
             try:
                 info = unserialize(msg[len(b'PONG:'):])
+                if info['version'] != _dispy_version:
+                    logger.warning('Ignoring node %s due to version mismatch: %s != %s',
+                                   info['ip_addr'], info['version'], _dispy_version)
+                    raise StopIteration
                 assert info['auth'] == self.auth
                 yield self.add_node(info, coro=coro)
             except:
-                logger.warning('Ignoring node %s: %s' % (addr[0], traceback.format_exc()))
+                logger.warning('Ignoring node %s', addr[0])
         elif msg.startswith(b'PING:'):
             try:
                 info = unserialize(msg[len(b'PING:'):])
@@ -991,9 +995,12 @@ class _Cluster(object, metaclass=MetaSingleton):
             yield tcp_sock.send_msg(b'PING:' + serialize(ping_msg))
             info = yield tcp_sock.recv_msg()
             info = unserialize(info)
-            if self.poll_interval and info['version'] == _dispy_version and \
-               info['auth'] == self.auth:
-                Coro(self.add_node, info)
+            if self.poll_interval and info['auth'] == self.auth:
+                if info['version'] == _dispy_version:
+                    Coro(self.add_node, info)
+                else:
+                    logger.warning('Ignoring node %s due to version mismatch: %s != %s',
+                                   info['ip_addr'], info['version'], _dispy_version)
         except:
             # logger.debug(traceback.format_exc())
             pass
@@ -1561,12 +1568,9 @@ class _Cluster(object, metaclass=MetaSingleton):
 
     def allocate_node(self, cluster, node_alloc, coro=None):
         # generator
-        if isinstance(node_alloc):
-            node_allocs = [node_alloc]
-        elif isinstance(node_alloc, str):
-            node_allocs = _parse_node_allocs([node])
-        else:
-            node_allocs = []
+        if not isinstance(node_alloc, list):
+            node_alloc = [node_alloc]
+        node_allocs = _parse_node_allocs(node_alloc)
         if not node_allocs:
             raise StopIteration(-1)
         cluster._node_allocs.extend(node_allocs)
@@ -1574,9 +1578,8 @@ class _Cluster(object, metaclass=MetaSingleton):
                                       key=lambda node_alloc: node_alloc.ip_rex)
         cluster._node_allocs.reverse()
         present = set()
-        cluster._node_allocs = [node_alloc for node_alloc in cluster._node_allocs
-                               if node_alloc.ip_rex not in present and
-                               not present.add(node_alloc.ip_rex)]
+        cluster._node_allocs = [na for na in cluster._node_allocs
+                                if na.ip_rex not in present and not present.add(na.ip_rex)]
         del present
         yield self.add_cluster(cluster)
         yield self._sched_event.set()
@@ -2039,19 +2042,42 @@ class JobCluster(object):
         return _job.job
 
     def cancel(self, job):
+        """Cancel given job. If the job is not yet running on any
+        node, it is simply removed from scheduler's queue. If the job
+        is running on a node, it is terminated/killed.
+
+        Returns 0 if the job has been cancelled (i.e., removed from
+        the queue or terminated).
+        """
         return Coro(self._cluster.cancel_job, job).value()
 
     def allocate_node(self, node):
+        """Allocate given node for this cluster. 'node' may be host
+        name or IP address, or an instance of NodeAllocate.
+        """
         return Coro(self._cluster.allocate_node, self, node).value()
 
     def node_jobs(self, node, from_node=False):
+        """Returns list of jobs currently running on given node, given
+        as host name or IP address.
+        """
         return Coro(self._cluster.node_jobs, self, node, from_node).value()
 
     def set_node_cpus(self, node, cpus):
+        """Sets (alters) CPUs managed by dispy on a node, given as
+        host name or IP address, to given number of CPUs. If the
+        number of CPUs given is negative then that many CPUs are not
+        used (from the available CPUs).
+        """
         return Coro(self._cluster.set_node_cpus, node, cpus).value()
 
     @property
     def name(self):
+        """Returns name of computation. If the computation is Python
+        function, then this would be name of the function. If the
+        computation is a program, then this would be name of the
+        program (without path).
+        """
         return self._compute.name
 
     def __enter__(self):
@@ -2115,12 +2141,20 @@ class JobCluster(object):
         self.wait()
 
     def close(self):
+        """Close the cluster (jobs can no longer be submitted to
+        it). If there are any jobs pending, this method waits until
+        they all finish. Additional clusters may be created after this
+        call returns.
+        """
         if hasattr(self, '_compute'):
             self._complete.wait()
             Coro(self._cluster.del_cluster, self).value()
             del self._compute
 
     def shutdown(self):
+        """Close the cluster and shutdown the scheduler (so additional
+        clusters can't be created).
+        """
         self.close()
         if hasattr(self, '_cluster'):
             cluster = self._cluster
@@ -2349,6 +2383,8 @@ class SharedJobCluster(JobCluster):
             sock.close()
 
     def cancel(self, job):
+        """Similar to 'cancel' of JobCluster.
+        """
         _job = job._dispy_job_
         if _job is None or self._cluster._clusters.get(_job.compute_id, None) != self:
             logger.warning('Invalid job %s for cluster "%s"!', job.id, self._compute.name)
@@ -2375,11 +2411,16 @@ class SharedJobCluster(JobCluster):
         return 0
 
     def allocate_node(self, node_alloc):
-        if not isinstance(node_alloc):
-            node_alloc = _parse_node_allocs([node_alloc])
-            if len(node_alloc) != 1:
-                return -1
-            node_alloc = node_alloc[0]
+        """Similar to 'allocate_node' of JobCluster.
+        """
+        if not isinstance(node_alloc, list):
+            node_alloc = [node_alloc]
+        node_allocs = _parse_node_allocs(node_alloc)
+        if not node_allocs:
+            raise StopIteration(-1)
+        if len(node_allocs) != 1:
+            return -1
+        node_alloc = node_allocs[0]
 
         sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), blocking=True,
                            keyfile=self._cluster.keyfile, certfile=self._cluster.certfile)
@@ -2400,6 +2441,8 @@ class SharedJobCluster(JobCluster):
         return reply
 
     def node_jobs(self, node, from_node=False):
+        """Similar to 'node_jobs' of JobCluster.
+        """
         node = _node_ipaddr(node)
         if not node:
             return []
@@ -2426,6 +2469,8 @@ class SharedJobCluster(JobCluster):
         return jobs
 
     def set_node_cpus(self, node, cpus):
+        """Similar to 'set_node_cpus' of JobCluster.
+        """
         sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), blocking=True,
                            keyfile=self._cluster.keyfile, certfile=self._cluster.certfile)
         sock.settimeout(MsgTimeout)
@@ -2444,6 +2489,8 @@ class SharedJobCluster(JobCluster):
         return reply
 
     def close(self):
+        """Similar to 'close' of JobCluster.
+        """
         self._complete.wait()
         if hasattr(self, '_cluster'):
             cluster = self._cluster
