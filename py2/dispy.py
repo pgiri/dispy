@@ -226,6 +226,20 @@ def num_max(*args):
     return max(items)
 
 
+def _same_file(tgt, xf):
+    """Internal use only.
+    """
+    # TODO: compare checksum?
+    try:
+        stat_buf = os.stat(tgt)
+        if stat_buf.st_size == xf.stat_buf.st_size and \
+            abs(stat_buf.st_mtime - xf.stat_buf.st_mtime) <= 1 and \
+                stat.S_IMODE(stat_buf.st_mode) == stat.S_IMODE(xf.stat_buf.st_mode):
+            return True
+    except:
+        return False
+
+
 def auth_code(secret, sign):
     return hashlib.sha1(secret + sign).hexdigest()
 

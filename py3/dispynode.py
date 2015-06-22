@@ -168,20 +168,6 @@ class _DispyJobInfo(object):
         self.proc = None
 
 
-def _same_file(tgt, xf):
-    """Internal use only.
-    """
-    # TODO: compare checksum?
-    try:
-        stat_buf = os.stat(tgt)
-        if stat_buf.st_size == xf.stat_buf.st_size and \
-            abs(stat_buf.st_mtime - xf.stat_buf.st_mtime) <= 1 and \
-                stat.S_IMODE(stat_buf.st_mode) == stat.S_IMODE(xf.stat_buf.st_mode):
-            return True
-    except:
-        return False
-
-
 def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
                     __dispy_job_name, __dispy_job_args, __dispy_job_kwargs,
                     __dispy_job_code, __dispy_path, __dispy_reply_Q):

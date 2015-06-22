@@ -31,13 +31,11 @@ import glob
 import cPickle as pickle
 
 from dispy import _Compute, DispyJob, _DispyJob_, _Function, _Node, DispyNode, NodeAllocate, \
-    _JobReply, auth_code, num_min, _parse_node_allocs, _node_ipaddr, _XferFile, _dispy_version
-
+    _JobReply, auth_code, num_min, _parse_node_allocs, _node_ipaddr, _XferFile, _dispy_version, \
+    _same_file
+import dispy.httpd
 import asyncoro
 from asyncoro import Coro, AsynCoro, AsyncSocket, MetaSingleton, serialize, unserialize
-
-import httpd
-from dispynode import _same_file
 
 __version__ = _dispy_version
 __all__ = []
@@ -216,7 +214,7 @@ class _Scheduler(object):
             self.compute_id = int(1000 * self.start_time)
 
             if http_server:
-                self.httpd = httpd.DispyHTTPServer(None)
+                self.httpd = dispy.httpd.DispyHTTPServer(None)
             else:
                 self.httpd = None
             self.timer_coro = Coro(self.timer_task)
