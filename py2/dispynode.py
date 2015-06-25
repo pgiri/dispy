@@ -31,6 +31,7 @@ import tempfile
 import shutil
 import glob
 import functools
+import inspect
 import cPickle as pickle
 import cStringIO as io
 
@@ -71,17 +72,17 @@ def dispy_provisional_result(result, timeout=MsgTimeout):
     Returns 0 if result was delivered to client.
     """
 
-    __dispy_job_reply = __dispy_job_info.job_reply
-    __dispy_job_reply.status = DispyJob.ProvisionalResult
-    __dispy_job_reply.result = result
-    __dispy_job_reply.end_time = time.time()
+    dispy_job_reply = __dispy_job_info.job_reply
+    dispy_job_reply.status = DispyJob.ProvisionalResult
+    dispy_job_reply.result = result
+    dispy_job_reply.end_time = time.time()
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock = AsyncSocket(sock, blocking=True, keyfile=__dispy_job_keyfile,
                        certfile=__dispy_job_certfile)
     sock.settimeout(timeout)
     try:
         sock.connect(__dispy_job_info.reply_addr)
-        sock.send_msg('JOB_REPLY:' + serialize(__dispy_job_reply))
+        sock.send_msg('JOB_REPLY:' + serialize(dispy_job_reply))
         ack = sock.recv_msg()
         assert ack == 'ACK'
     except:
@@ -124,7 +125,7 @@ def dispy_send_file(path, timeout=MsgTimeout):
     xf.name = os.path.splitdrive(path)[1]
     if xf.name.startswith(os.sep):
         xf.name = xf.name[len(os.sep):]
-    __dispy_job_reply = __dispy_job_info.job_reply
+    dispy_job_reply = __dispy_job_info.job_reply
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock = AsyncSocket(sock, blocking=True,
                        keyfile=__dispy_job_keyfile, certfile=__dispy_job_certfile)
@@ -132,7 +133,7 @@ def dispy_send_file(path, timeout=MsgTimeout):
     try:
         sock.connect(__dispy_job_info.reply_addr)
         sock.send_msg('FILEXFER:' + serialize(xf))
-        sock.send_msg(serialize(__dispy_job_reply))
+        sock.send_msg(serialize(dispy_job_reply))
         ack = sock.recv_msg()
         assert ack == 'ACK'
         fd = open(path, 'rb')
@@ -170,7 +171,7 @@ class _DispyJobInfo(object):
 
 def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
                     __dispy_job_name, __dispy_job_args, __dispy_job_kwargs,
-                    __dispy_job_code, __dispy_path, __dispy_reply_Q):
+                    __dispy_job_code, __dispy_job_globals, __dispy_path, __dispy_reply_Q):
     """Internal use only.
     """
     os.chdir(__dispy_path)
@@ -179,14 +180,14 @@ def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
     __dispy_job_reply = __dispy_job_info.job_reply
 
     try:
-        exec(marshal.loads(__dispy_job_code[0]))
+        exec(marshal.loads(__dispy_job_code[0])) in __dispy_job_globals
         if __dispy_job_code[1]:
-            exec(__dispy_job_code[1])
-        globals().update(locals())
+            exec(__dispy_job_code[1]) in __dispy_job_globals
         __dispy_job_args = unserialize(__dispy_job_args)
         __dispy_job_kwargs = unserialize(__dispy_job_kwargs)
-        __func = globals()[__dispy_job_name]
-        __dispy_job_reply.result = __func(*__dispy_job_args, **__dispy_job_kwargs)
+        __dispy_job_globals.update(locals())
+        exec('__dispy_job_reply.result = %s(*__dispy_job_args, **__dispy_job_kwargs)' % \
+             __dispy_job_name) in __dispy_job_globals
         __dispy_job_reply.status = DispyJob.Finished
     except:
         __dispy_job_reply.exception = traceback.format_exc()
@@ -315,9 +316,7 @@ class _DispyNode(object):
         # self.tcp_coro = Coro(self.tcp_server)
         self.udp_coro = Coro(self.udp_server, _node_ipaddr(scheduler_node), scheduler_port)
 
-        # TODO: use checkpointing (DMTCP?) if available instead?
-        self.__init_globals = dict([(var, globals()[var]) for var in globals().keys() if var])
-        self.__init_modules = sys.modules.keys()
+        self.__init_modules = [var for var in sys.modules.keys() if globals().get(var, None)]
 
     def broadcast_ping_msg(self, coro=None):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -491,9 +490,9 @@ class _DispyNode(object):
                 reply.start_time = time.time()
                 job_info = _DispyJobInfo(reply, reply_addr, compute, _job.xfer_files)
 
-                args = (job_info, self.certfile, self.keyfile,
-                        compute.name, _job.args, _job.kwargs,
-                        (compute.code, _job.code), compute.dest_path, self.reply_Q)
+                args = (job_info, self.certfile, self.keyfile, compute.name,
+                        _job.args, _job.kwargs, (compute.code, _job.code),
+                        compute.globals, compute.dest_path, self.reply_Q)
                 try:
                     yield conn.send_msg('ACK')
                 except:
@@ -595,10 +594,14 @@ class _DispyNode(object):
             setattr(compute, 'pending_jobs', 0)
             setattr(compute, 'pending_results', 0)
             setattr(compute, 'zombie', False)
+            setattr(compute, 'globals', {})
 
             if compute.code:
                 try:
-                    code = compile(compute.code, '<string>', 'exec')
+                    code = compute.code
+                    code += ''.join(inspect.getsourcelines(dispy_provisional_result)[0])
+                    code += ''.join(inspect.getsourcelines(dispy_send_file)[0])
+                    code = compile(code, '<string>', 'exec')
                 except:
                     logger.warning('Computation "%s" could not be compiled', compute.name)
                     if os.path.isdir(compute.dest_path):
@@ -643,6 +646,13 @@ class _DispyNode(object):
                     self.pulse_interval = None
                 else:
                     self.timer_coro.resume(True)
+                    # add variables needed for 'dispy_provisional_result' and 'dispy_send_file'
+                    # to compute.globals
+                    for var in ('AsyncSocket', 'DispyJob', 'serialize', '_XferFile',
+                                'MaxFileSize', 'MsgTimeout', 'logger'):
+                        compute.globals[var] = globals()[var]
+                    for var in self.__init_modules:
+                        compute.globals[var] = globals()[var]
             else:
                 if os.path.isdir(compute.dest_path):
                     try:
@@ -717,11 +727,13 @@ class _DispyNode(object):
                 compute = self.computations[compute_id]
                 assert isinstance(compute.setup, _Function)
                 os.chdir(compute.dest_path)
-                exec(marshal.loads(compute.code)) in globals(), locals()
-                _dispy_setup_func = locals()[compute.setup.name]
-                assert _dispy_setup_func(*compute.setup.args, **compute.setup.kwargs) == 0
+                localvars = {'_dispy_setup_args': compute.setup.args,
+                             '_dispy_setup_kwargs': compute.setup.kwargs}
+                exec(marshal.loads(compute.code)) in compute.globals, localvars
+                exec('assert %s(*_dispy_setup_args, **_dispy_setup_kwargs) == 0' % \
+                     compute.setup.name) in compute.globals, localvars
             except:
-                logger.debug('Setup "%s" failed' % compute.setup.name)
+                logger.debug('Setup failed')
                 resp = traceback.format_exc().encode()
             else:
                 resp = 'ACK'
@@ -1156,9 +1168,8 @@ class _DispyNode(object):
         except:
             status = -1
             if not resending:
-                # store job result even if computation has not enabled
-                # fault recovery; user may be able to access node and
-                # retrieve result manually
+                # store job result so it can be sent when client is
+                # reachable or recovered by user
                 f = os.path.join(job_info.compute_dest_path, '_dispy_job_reply_%s' % job_reply.uid)
                 logger.error('Could not send reply for job %s to %s; saving it in "%s"',
                              job_reply.uid, str(job_info.reply_addr), f)
@@ -1241,37 +1252,21 @@ class _DispyNode(object):
             Coro(self.broadcast_ping_msg)
 
         if compute.cleanup is False:
+            compute.globals = {}
             return
         os.chdir(self.dest_path_prefix)
         if isinstance(compute.cleanup, _Function):
             try:
-                exec(marshal.loads(compute.code)) in globals(), locals()
-                _dispy_cleanup_func = locals()[compute.cleanup.name]
-                _dispy_cleanup_func(*compute.cleanup.args, **compute.cleanup.kwargs)
+                localvars = {'_dispy_cleanup_args': compute.cleanup.args,
+                             '_dispy_cleanup_kwargs': compute.cleanup.kwargs}
+                exec(marshal.loads(compute.code)) in compute.globals, localvars
+                exec('%s(*_dispy_cleanup_args, **_dispy_cleanup_kwargs)' % \
+                     compute.cleanup.name) in compute.globals, localvars
             except:
                 logger.debug('Cleanup "%s" failed' % compute.cleanup.name)
                 logger.debug(traceback.format_exc())
 
-        for module in sys.modules.keys():
-            if module not in self.__init_modules:
-                logger.debug('Module "%s" is left behind by "%s" at %s' %
-                             (module, compute.name, compute.scheduler_ip_addr))
-        for var in globals().keys():
-            if var == '_dispy_node':
-                continue
-            # if var is module, leave it alone?
-            if var not in self.__init_globals:
-                logger.warning('Variable "%s" left behind by "%s" at %s is being removed' %
-                               (var, compute.name, compute.scheduler_ip_addr))
-                globals().pop(var, None)
-
-        for var, state in self.__init_globals.iteritems():
-            if var in ('_dispy_node', '_dispy_conn', '_dispy_addr', '_dispy_config'):
-                continue
-            if state != globals().get(var, None):
-                logger.warning('Variable "%s" changed by "%s" is being reset' %
-                               (var, compute.name))
-                globals()[var] = state
+        compute.globals = {}
 
         for xf in compute.xfer_files:
             tgt = os.path.join(compute.dest_path, os.path.basename(xf.name))
