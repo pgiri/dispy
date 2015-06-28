@@ -183,6 +183,7 @@ def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
         exec(marshal.loads(__dispy_job_code[0])) in __dispy_job_globals
         if __dispy_job_code[1]:
             exec(__dispy_job_code[1]) in __dispy_job_globals
+        globals().update(__dispy_job_globals)
         __dispy_job_args = unserialize(__dispy_job_args)
         __dispy_job_kwargs = unserialize(__dispy_job_kwargs)
         __dispy_job_globals.update(locals())
