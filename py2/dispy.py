@@ -14,7 +14,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "MIT"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.4"
+__version__ = "4.5"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
@@ -365,7 +365,6 @@ class _Node(object):
 
     def send(self, msg, reply=True, coro=None):
         # generator
-        # logger.debug('Sending to %s:%s', self.ip_addr, self.port)
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock = AsyncSocket(sock, keyfile=self.keyfile, certfile=self.certfile)
         sock.settimeout(MsgTimeout)
@@ -1170,6 +1169,7 @@ class _Cluster(object):
             raise StopIteration
 
         if self.shared:
+            self._clusters.pop(cluster._compute.id, None)
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock = AsyncSocket(sock, keyfile=self.keyfile, certfile=self.certfile)
             sock.settimeout(MsgTimeout)
@@ -1311,11 +1311,10 @@ class _Cluster(object):
             try:
                 func(*args)
             except:
-                logger.debug('Running %s failed: %s', func.__name__, traceback.format_exc())
+                logger.debug('Running %s failed: %s', func.func_name, traceback.format_exc())
             self.worker_Q.task_done()
 
     def finish_job(self, cluster, _job, status):
-        # generator
         # assert status in (DispyJob.Finished, DispyJob.Terminated, DispyJob.Abandoned)
         job = _job.job
         _job.finish(status)
@@ -1330,9 +1329,9 @@ class _Cluster(object):
 
     def job_reply_process(self, reply, sock, addr):
         _job = self._sched_jobs.get(reply.uid, None)
-        if _job is None:
+        if _job is None or reply.hash != _job.hash:
             logger.warning('Ignoring invalid reply for job %s from %s', reply.uid, addr[0])
-            yield sock.send_msg('ACK')
+            yield sock.send_msg('NAK')
             raise StopIteration
         job = _job.job
         job.ip_addr = reply.ip_addr
@@ -1343,7 +1342,7 @@ class _Cluster(object):
             if node:
                 # assert node.busy > 0
                 node.busy -= 1
-            yield sock.send_msg('ACK')
+            yield sock.send_msg('NAK')
             raise StopIteration
         if node is None:
             if self.shared:
@@ -1358,29 +1357,22 @@ class _Cluster(object):
                                        (DispyNode.Initialized, dispy_node, None)))
             else:
                 logger.warning('Ignoring invalid reply for job %s from %s', reply.uid, addr[0])
-                yield sock.send_msg('ACK')
+                yield sock.send_msg('NAK')
                 raise StopIteration
         else:
             node._jobs.discard(_job.uid)
-        node.last_pulse = time.time()
-        try:
-            assert reply.hash == _job.hash
-            job.result = reply.result
-            job.stdout = reply.stdout
-            job.stderr = reply.stderr
-            job.exception = reply.exception
-            job.start_time = reply.start_time
-            job.end_time = reply.end_time
-        except:
-            logger.warning('Invalid job result for %s from %s', _job.uid, addr[0])
-            # logger.debug('%s, %s', str(reply), traceback.format_exc())
-            yield sock.send_msg('ACK')
-            raise StopIteration
 
+        node.last_pulse = time.time()
+        job.result = reply.result
+        job.stdout = reply.stdout
+        job.stderr = reply.stderr
+        job.exception = reply.exception
+        job.start_time = reply.start_time
+        job.end_time = reply.end_time
         yield sock.send_msg('ACK')
         logger.debug('Received reply for job %s / %s from %s' % (job.id, _job.uid, job.ip_addr))
         if reply.status == DispyJob.ProvisionalResult:
-            yield self.finish_job(cluster, _job, reply.status)
+            self.finish_job(cluster, _job, reply.status)
         else:
             del self._sched_jobs[_job.uid]
             dispy_node = cluster._dispy_nodes[node.ip_addr]
@@ -1399,7 +1391,7 @@ class _Cluster(object):
             if cluster.status_callback:
                 self.worker_Q.put((cluster.status_callback,
                                    (reply.status, dispy_node, _job.job)))
-            yield self.finish_job(cluster, _job, reply.status)
+            self.finish_job(cluster, _job, reply.status)
             self._sched_event.set()
 
     def reschedule_jobs(self, dead_jobs):
@@ -1426,7 +1418,7 @@ class _Cluster(object):
                 if cluster.status_callback and dispy_node:
                     self.worker_Q.put((cluster.status_callback,
                                        (DispyJob.Abandoned, dispy_node, _job.job)))
-                yield self.finish_job(cluster, _job, DispyJob.Abandoned)
+                self.finish_job(cluster, _job, DispyJob.Abandoned)
 
     def run_job(self, _job, cluster, coro=None):
         # generator
@@ -1508,7 +1500,7 @@ class _Cluster(object):
                 continue
             cluster = self._clusters[_job.compute_id]
             _job.node = node
-            assert node.busy < node.cpus
+            # assert node.busy < node.cpus
             self._sched_jobs[_job.uid] = _job
             self.unsched_jobs -= 1
             node.busy += 1
@@ -1527,7 +1519,7 @@ class _Cluster(object):
                     status = DispyJob.Terminated
                 else:
                     status = DispyJob.Cancelled
-                yield self.finish_job(cluster, _job, status)
+                self.finish_job(cluster, _job, status)
                 if cluster.status_callback:
                     dispy_node = cluster._dispy_nodes.get(_job.node.ip_addr, None)
                     if dispy_node:
@@ -1571,7 +1563,7 @@ class _Cluster(object):
             self.unsched_jobs -= 1
             if cluster.status_callback:
                 self.worker_Q.put((cluster.status_callback, (DispyJob.Cancelled, None, _job.job)))
-            yield self.finish_job(cluster, _job, DispyJob.Cancelled)
+            self.finish_job(cluster, _job, DispyJob.Cancelled)
             logger.debug('Cancelled (removed) job %s', _job.uid)
             raise StopIteration(0)
         elif not (_job.job.status == DispyJob.Running or
@@ -2747,7 +2739,6 @@ if __name__ == '__main__':
                         'jobs are submitted')
 
     config = vars(parser.parse_args(sys.argv[1:]))
-    # print(config)
 
     if config['loglevel']:
         logger.setLevel(logging.DEBUG)
