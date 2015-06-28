@@ -1163,12 +1163,8 @@ class _Cluster(object, metaclass=MetaSingleton):
 
     def del_cluster(self, cluster, coro=None):
         # generator
-        if self._clusters.pop(cluster._compute.id, None) != cluster:
+        if self._clusters.get(cluster._compute.id, None) != cluster:
             logger.warning('cluster %s already closed?', cluster._compute.name)
-            raise StopIteration
-
-        if cluster._jobs or cluster._pending_jobs:
-            logger.warning('cluster %s has pending jobs', cluster._compute.name)
             raise StopIteration
 
         if self.shared:
@@ -1182,11 +1178,19 @@ class _Cluster(object, metaclass=MetaSingleton):
             yield sock.send_msg(b'CLOSE:' + serialize(req))
             sock.close()
         else:
-            for ip_addr, dispy_node in list(cluster._dispy_nodes.items()):
-                node = self._nodes.get(ip_addr, None)
+            # remove cluster from all nodes before closing (which uses
+            # yield); otherwise, scheduler may access removed cluster
+            # through node.clusters
+            for dispy_node in cluster._dispy_nodes.values():
+                node = self._nodes.get(dispy_node.ip_addr, None)
                 if not node:
                     continue
                 node.clusters.discard(cluster._compute.id)
+            self._clusters.pop(cluster._compute.id, None)
+            for dispy_node in list(cluster._dispy_nodes.values()):
+                node = self._nodes.get(dispy_node.ip_addr, None)
+                if not node:
+                    continue
                 yield node.close(cluster._compute, coro=coro)
                 dispy_node.busy = 0
                 dispy_node.update_time = time.time()

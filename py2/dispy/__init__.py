@@ -226,6 +226,20 @@ def num_max(*args):
     return max(items)
 
 
+def _same_file(tgt, xf):
+    """Internal use only.
+    """
+    # TODO: compare checksum?
+    try:
+        stat_buf = os.stat(tgt)
+        if stat_buf.st_size == xf.stat_buf.st_size and \
+            abs(stat_buf.st_mtime - xf.stat_buf.st_mtime) <= 1 and \
+                stat.S_IMODE(stat_buf.st_mode) == stat.S_IMODE(xf.stat_buf.st_mode):
+            return True
+    except:
+        return False
+
+
 def auth_code(secret, sign):
     return hashlib.sha1(secret + sign).hexdigest()
 
@@ -1151,12 +1165,8 @@ class _Cluster(object):
 
     def del_cluster(self, cluster, coro=None):
         # generator
-        if self._clusters.pop(cluster._compute.id, None) != cluster:
+        if self._clusters.get(cluster._compute.id, None) != cluster:
             logger.warning('cluster %s already closed?', cluster._compute.name)
-            raise StopIteration
-
-        if cluster._jobs or cluster._pending_jobs:
-            logger.warning('cluster %s has pending jobs', cluster._compute.name)
             raise StopIteration
 
         if self.shared:
@@ -1170,8 +1180,17 @@ class _Cluster(object):
             yield sock.send_msg('CLOSE:' + serialize(req))
             sock.close()
         else:
-            for ip_addr, dispy_node in cluster._dispy_nodes.iteritems():
-                node = self._nodes.get(ip_addr, None)
+            # remove cluster from all nodes before closing (which uses
+            # yield); otherwise, scheduler may access removed cluster
+            # through node.clusters
+            for dispy_node in cluster._dispy_nodes.itervalues():
+                node = self._nodes.get(dispy_node.ip_addr, None)
+                if not node:
+                    continue
+                node.clusters.discard(cluster._compute.id)
+            self._clusters.pop(cluster._compute.id, None)
+            for dispy_node in cluster._dispy_nodes.itervalues():
+                node = self._nodes.get(dispy_node.ip_addr, None)
                 if not node:
                     continue
                 node.clusters.discard(cluster._compute.id)
