@@ -317,6 +317,8 @@ class _DispyNode(object):
         self.udp_coro = Coro(self.udp_server, _node_ipaddr(scheduler_node), scheduler_port)
 
         self.__init_modules = [var for var in sys.modules.keys() if globals().get(var, None)]
+        self.__init_code =  ''.join(inspect.getsource(dispy_provisional_result))
+        self.__init_code += ''.join(inspect.getsource(dispy_send_file))
 
     def broadcast_ping_msg(self, coro=None):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -599,8 +601,7 @@ class _DispyNode(object):
             if compute.code:
                 try:
                     code = compute.code
-                    code += ''.join(inspect.getsourcelines(dispy_provisional_result)[0])
-                    code += ''.join(inspect.getsourcelines(dispy_send_file)[0])
+                    code += self.__init_code
                     code = compile(code, '<string>', 'exec')
                 except:
                     logger.warning('Computation "%s" could not be compiled', compute.name)
