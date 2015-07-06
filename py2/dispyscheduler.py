@@ -30,10 +30,22 @@ import shutil
 import glob
 import cPickle as pickle
 
+# 'httpd' module may not be available at sys.path[0] as 'dispy.py' is
+# installed in same directory as this script is; prepend directory
+# where httpd.py module is installed to sys.path.
+sys_path = list(sys.path)
+for path in sys_path:
+    if os.path.isfile(os.path.join(path, 'dispy', 'httpd.py')):
+        sys.path.insert(0, path)
+        break
+
 from dispy import _Compute, DispyJob, _DispyJob_, _Function, _Node, DispyNode, NodeAllocate, \
     _JobReply, auth_code, num_min, _parse_node_allocs, _node_ipaddr, _XferFile, _dispy_version, \
     _same_file
 import dispy.httpd
+sys.path = sys_path
+del path, sys_path
+
 import asyncoro
 from asyncoro import Coro, AsynCoro, AsyncSocket, MetaSingleton, serialize, unserialize
 
