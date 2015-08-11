@@ -170,7 +170,7 @@ class _Scheduler(object):
             self.cluster_certfile = cluster_certfile
             if not dest_path_prefix:
                 dest_path_prefix = os.path.join(tempfile.gettempdir(), 'dispy', 'scheduler')
-            self.dest_path_prefix = dest_path_prefix
+            self.dest_path_prefix = os.path.abspath(dest_path_prefix.strip()).rstrip(os.sep)
             if clean:
                 shutil.rmtree(self.dest_path_prefix, ignore_errors=True)
             if not os.path.isdir(self.dest_path_prefix):

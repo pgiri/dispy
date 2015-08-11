@@ -27,7 +27,6 @@ import ssl
 import traceback
 import logging
 import marshal
-import platform
 import tempfile
 import shutil
 import glob
@@ -267,10 +266,9 @@ class _DispyNode(object):
         self.port = self.address[1]
         self.tcp_sock.listen(30)
 
-        if dest_path_prefix:
-            self.dest_path_prefix = dest_path_prefix.strip().rstrip(os.sep)
-        else:
-            self.dest_path_prefix = os.path.join(tempfile.gettempdir(), 'dispy', 'node')
+        if not dest_path_prefix:
+            dest_path_prefix = os.path.join(tempfile.gettempdir(), 'dispy', 'node')
+        self.dest_path_prefix = os.path.abspath(dest_path_prefix.strip()).rstrip(os.sep)
         if clean:
             shutil.rmtree(self.dest_path_prefix, ignore_errors=True)
         if not os.path.isdir(self.dest_path_prefix):
@@ -656,14 +654,12 @@ class _DispyNode(object):
                     self.pulse_interval = None
                 else:
                     self.timer_coro.resume(True)
-                    # add variables needed for 'dispy_provisional_result' and 'dispy_send_file'
-                    # to compute.globals
                     # add variables needed for
                     # 'dispy_provisional_result' and 'dispy_send_file'
                     # to compute.globals; but in Windows
                     # compute.globals can't be passed via
                     # multiprocessing.Process
-                    if platform.system() == 'Windows':
+                    if os.name == 'nt':
                         compute.globals = {}
                     else:
                         for var in ('AsyncSocket', 'DispyJob', 'serialize', '_XferFile',
