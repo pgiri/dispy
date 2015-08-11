@@ -1037,17 +1037,23 @@ class _Scheduler(object, metaclass=MetaSingleton):
             except:
                 logger.warning('Could not remove directory "%s"', cluster.dest_path)
 
-        self._clusters.pop(compute.id, None)
+        # remove cluster from all nodes before closing (which uses
+        # yield); otherwise, scheduler may access removed cluster
+        # through node.clusters
         for ip_addr in cluster._dispy_nodes:
             node = self._nodes.get(ip_addr, None)
             if not node:
                 continue
             node.clusters.discard(compute.id)
+        self._clusters.pop(compute.id, None)
+        for ip_addr, dispy_node in cluster._dispy_nodes.items():
+            node = self._nodes.get(ip_addr, None)
+            if not node:
+                continue
             try:
                 yield node.close(compute)
             except:
                 logger.warning('Closing node %s failed', node.ip_addr)
-            dispy_node = cluster._dispy_nodes[node.ip_addr]
             yield self.send_node_status(cluster, dispy_node, DispyNode.Closed)
         cluster._dispy_nodes = {}
         if self.httpd:
