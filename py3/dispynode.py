@@ -27,6 +27,7 @@ import ssl
 import traceback
 import logging
 import marshal
+import platform
 import tempfile
 import shutil
 import glob
@@ -174,6 +175,9 @@ def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
                     __dispy_job_code, __dispy_job_globals, __dispy_path, __dispy_reply_Q):
     """Internal use only.
     """
+
+    if not __dispy_job_globals:  # Windows
+        __dispy_job_globals = globals()
     os.chdir(__dispy_path)
     sys.stdout = io.StringIO()
     sys.stderr = io.StringIO()
@@ -183,6 +187,8 @@ def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
         if __dispy_job_code[1]:
             exec(__dispy_job_code[1], __dispy_job_globals)
         globals().update(__dispy_job_globals)
+        if __name__ == '__mp_main__':  # Windows multiprocessing process
+            sys.modules['__mp_main__'].__dict__.update(__dispy_job_globals)
         __dispy_job_args = unserialize(__dispy_job_args)
         __dispy_job_kwargs = unserialize(__dispy_job_kwargs)
         __dispy_job_globals.update(locals())
@@ -652,11 +658,19 @@ class _DispyNode(object):
                     self.timer_coro.resume(True)
                     # add variables needed for 'dispy_provisional_result' and 'dispy_send_file'
                     # to compute.globals
-                    for var in ('AsyncSocket', 'DispyJob', 'serialize', '_XferFile',
-                                'MaxFileSize', 'MsgTimeout', 'logger'):
-                        compute.globals[var] = globals()[var]
-                    for var in self.__init_modules:
-                        compute.globals[var] = globals()[var]
+                    # add variables needed for
+                    # 'dispy_provisional_result' and 'dispy_send_file'
+                    # to compute.globals; but in Windows
+                    # compute.globals can't be passed via
+                    # multiprocessing.Process
+                    if platform.system() == 'Windows':
+                        compute.globals = {}
+                    else:
+                        for var in ('AsyncSocket', 'DispyJob', 'serialize', '_XferFile',
+                                    'MaxFileSize', 'MsgTimeout', 'logger'):
+                            compute.globals[var] = globals()[var]
+                        for var in self.__init_modules:
+                            compute.globals[var] = globals()[var]
             else:
                 if os.path.isdir(compute.dest_path):
                     try:
