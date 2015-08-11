@@ -740,9 +740,13 @@ class _DispyNode(object):
                 os.chdir(compute.dest_path)
                 localvars = {'_dispy_setup_args': compute.setup.args,
                              '_dispy_setup_kwargs': compute.setup.kwargs}
-                exec(marshal.loads(compute.code)) in compute.globals, localvars
+                if os.name == 'nt':
+                    globalvars = globals()
+                else:
+                    globalvars = compute.globals
+                exec(marshal.loads(compute.code)) in globalvars, localvars
                 exec('assert %s(*_dispy_setup_args, **_dispy_setup_kwargs) == 0' % \
-                     compute.setup.name) in compute.globals, localvars
+                     compute.setup.name) in globalvars, localvars
             except:
                 logger.debug('Setup failed')
                 resp = traceback.format_exc().encode()
@@ -1270,9 +1274,13 @@ class _DispyNode(object):
             try:
                 localvars = {'_dispy_cleanup_args': compute.cleanup.args,
                              '_dispy_cleanup_kwargs': compute.cleanup.kwargs}
-                exec(marshal.loads(compute.code)) in compute.globals, localvars
+                if os.name == 'nt':
+                    globalvars = globals()
+                else:
+                    globalvars = compute.globals
+                exec(marshal.loads(compute.code)) in globalvars, localvars
                 exec('%s(*_dispy_cleanup_args, **_dispy_cleanup_kwargs)' % \
-                     compute.cleanup.name) in compute.globals, localvars
+                     compute.cleanup.name) in globalvars, localvars
             except:
                 logger.debug('Cleanup "%s" failed' % compute.cleanup.name)
                 logger.debug(traceback.format_exc())
