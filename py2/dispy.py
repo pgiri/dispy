@@ -1124,11 +1124,9 @@ class _Cluster(object):
                 self.poll_interval = num_min(self.poll_interval, cluster.poll_interval)
             if self.poll_interval:
                 self.timer_coro.resume(True)
-            raise StopIteration
-
         # if a node is added with 'allocate_node', compute is already
         # initialized, so don't reinitialize it
-        if compute.id is None:
+        elif compute.id is None:
             compute.id = self.compute_id
             self.compute_id += 1
             self._clusters[compute.id] = cluster
@@ -1146,21 +1144,21 @@ class _Cluster(object):
                 self.poll_interval = num_min(self.poll_interval, cluster.poll_interval)
             if self.pulse_interval or self.ping_interval or self.poll_interval:
                 self.timer_coro.resume(True)
-
-        yield self.send_ping_cluster(cluster, coro=coro)
-        compute_nodes = []
-        for ip_addr, node in self._nodes.iteritems():
-            if compute.id in node.clusters:
-                continue
-            for node_alloc in cluster._node_allocs:
-                cpus = node_alloc.allocate(cluster, node.ip_addr, node.name, node.avail_cpus)
-                if cpus <= 0:
+        else:
+            yield self.send_ping_cluster(cluster, coro=coro)
+            compute_nodes = []
+            for ip_addr, node in self._nodes.iteritems():
+                if compute.id in node.clusters:
                     continue
-                node.cpus = min(node.avail_cpus, cpus)
-                cluster._dispy_nodes.pop(node.ip_addr, None)
-                compute_nodes.append(node)
-        for node in compute_nodes:
-            yield self.setup_node(node, [compute], coro=coro)
+                for node_alloc in cluster._node_allocs:
+                    cpus = node_alloc.allocate(cluster, node.ip_addr, node.name, node.avail_cpus)
+                    if cpus <= 0:
+                        continue
+                    node.cpus = min(node.avail_cpus, cpus)
+                    cluster._dispy_nodes.pop(node.ip_addr, None)
+                    compute_nodes.append(node)
+            for node in compute_nodes:
+                yield self.setup_node(node, [compute], coro=coro)
 
     def del_cluster(self, cluster, coro=None):
         # generator
@@ -1679,12 +1677,12 @@ class _Cluster(object):
             # TODO: need to check all clusters are deleted?
             self.shelf.close()
             self.shelf = None
-            for ext in ('', '.db'):
-                try:
-                    os.remove(self.recover_file + ext)
-                    break
-                except:
-                    pass
+            for ext in ('', '.db', '.bak', '.dat', '.dir'):
+                if os.path.isfile(self.recover_file + ext):
+                    try:
+                        os.remove(self.recover_file + ext)
+                    except:
+                        pass
 
 
 class JobCluster(object):
@@ -2565,12 +2563,12 @@ def recover_jobs(recover_file, timeout=None, terminate_pending=False):
             logger.warning('invalid key "%s" ignored' % key)
     shelf.close()
     if not cluster or not computes or not shelf_nodes:
-        for ext in ('', '.db'):
-            try:
-                os.remove(recover_file + ext)
-                break
-            except:
-                pass
+        for ext in ('', '.db', '.bak', '.dat', '.dir'):
+            if os.path.isfile(recover_file + ext):
+                try:
+                    os.remove(recover_file + ext)
+                except:
+                    pass
         return []
 
     nodes = {}
@@ -2699,12 +2697,12 @@ def recover_jobs(recover_file, timeout=None, terminate_pending=False):
     asyncoro_scheduler.finish()
 
     if pending['count'] == 0 and pending['resend_req_done'] is True:
-        for ext in ('', '.db'):
-            try:
-                os.remove(recover_file + ext)
-                break
-            except:
-                pass
+        for ext in ('', '.db', '.bak', '.dat', '.dir'):
+            if os.path.isfile(recover_file + ext):
+                try:
+                    os.remove(recover_file + ext)
+                except:
+                    pass
     return pending['jobs']
 
 
