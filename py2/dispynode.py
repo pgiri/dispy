@@ -36,7 +36,7 @@ import cPickle as pickle
 import cStringIO as io
 
 from dispy import _JobReply, DispyJob, _Function, _Compute, _XferFile, _node_ipaddr, \
-    _dispy_version, auth_code, num_min
+    _dispy_version, auth_code, num_min, _same_file
 
 import asyncoro
 from asyncoro import Coro, AsynCoro, AsyncSocket, serialize, unserialize
@@ -191,7 +191,7 @@ def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
         __dispy_job_args = unserialize(__dispy_job_args)
         __dispy_job_kwargs = unserialize(__dispy_job_kwargs)
         __dispy_job_globals.update(locals())
-        exec('__dispy_job_reply.result = %s(*__dispy_job_args, **__dispy_job_kwargs)' % \
+        exec('__dispy_job_reply.result = %s(*__dispy_job_args, **__dispy_job_kwargs)' %
              __dispy_job_name) in __dispy_job_globals
         __dispy_job_reply.status = DispyJob.Finished
     except:
@@ -320,9 +320,11 @@ class _DispyNode(object):
         # self.tcp_coro = Coro(self.tcp_server)
         self.udp_coro = Coro(self.udp_server, _node_ipaddr(scheduler_node), scheduler_port)
 
-        self.__init_modules = [var for var in sys.modules.keys() if globals().get(var, None)]
-        self.__init_code =  ''.join(inspect.getsource(dispy_provisional_result))
+        self.__init_code = ''.join(inspect.getsource(dispy_provisional_result))
         self.__init_code += ''.join(inspect.getsource(dispy_send_file))
+        self.__init_modules = dict(sys.modules)
+        if os.name == 'nt':
+            self.__init_globals = dict(globals())
 
     def broadcast_ping_msg(self, coro=None):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -662,8 +664,7 @@ class _DispyNode(object):
                         for var in ('AsyncSocket', 'DispyJob', 'serialize', '_XferFile',
                                     'MaxFileSize', 'MsgTimeout', 'logger'):
                             compute.globals[var] = globals()[var]
-                        for var in self.__init_modules:
-                            compute.globals[var] = globals()[var]
+                        compute.globals.update(self.__init_modules)
             else:
                 if os.path.isdir(compute.dest_path):
                     try:
@@ -745,7 +746,7 @@ class _DispyNode(object):
                 else:
                     globalvars = compute.globals
                 exec(marshal.loads(compute.code)) in globalvars, localvars
-                exec('assert %s(*_dispy_setup_args, **_dispy_setup_kwargs) == 0' % \
+                exec('assert %s(*_dispy_setup_args, **_dispy_setup_kwargs) == 0' %
                      compute.setup.name) in globalvars, localvars
             except:
                 logger.debug('Setup failed')
@@ -1279,12 +1280,26 @@ class _DispyNode(object):
                 else:
                     globalvars = compute.globals
                 exec(marshal.loads(compute.code)) in globalvars, localvars
-                exec('%s(*_dispy_cleanup_args, **_dispy_cleanup_kwargs)' % \
+                exec('%s(*_dispy_cleanup_args, **_dispy_cleanup_kwargs)' %
                      compute.cleanup.name) in globalvars, localvars
             except:
                 logger.debug('Cleanup "%s" failed' % compute.cleanup.name)
                 logger.debug(traceback.format_exc())
 
+        if os.name == 'nt':
+            for var in globals().keys():
+                if var not in self.__init_globals:
+                    logger.warning('Variable "%s" left behind by "%s" at %s is being removed' %
+                                   (var, compute.name, compute.scheduler_ip_addr))
+                    globals().pop(var, None)
+
+            for var, value in self.__init_globals.iteritems():
+                if var in ('_dispy_node', '_dispy_conn', '_dispy_addr', '_dispy_config'):
+                    continue
+                if value != globals().get(var, None):
+                    logger.warning('Variable "%s" changed by "%s" at %s is being reset' %
+                                   (var, compute.name, compute.scheduler_ip_addr))
+                    globals()[var] = value
         compute.globals = {}
 
         for xf in compute.xfer_files:
@@ -1436,7 +1451,7 @@ if __name__ == '__main__':
     del m
     del _dispy_config['max_file_size']
 
-    _dispy_conn = _dispy_addr = None
+    _dispy_conn = _dispy_addr = _dispy_node = None
     _dispy_node = _DispyNode(**_dispy_config)
     del _dispy_config
 
