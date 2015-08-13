@@ -1,22 +1,29 @@
-# example program that uses 'setup' and 'cleanup' functions to initialize/de-initialize
-# global variables so computations (jobs) on a node can share variables
-# (for read or read/write). These variables are not visible to computations on other nodes.
-# It works on Unix variants (Linux, OS X etc.) but not Microsoft Windows.
+# Example program that uses 'setup' and 'cleanup' functions to
+# initialize/de-initialize global variables on each node before
+# computations are executed. Computations (jobs) on a node update
+# shared variable 'shvar' using multiprocessing's locks (so no two
+# jobs update the variable simultaneously).
+
+# Under Windows global variables must be serializable, so modules
+# can't be global variables: See
+# https://docs.python.org/2/library/multiprocessing.html#windows for
+# details. This example is implemented to load 'random' module in
+# computation (for each job). When executing in posix (Linux, OS X and
+# other Unix variants), 'random' can be declared global variable and
+# module loaded in 'setup' (and deleted in 'cleanup').
+
 def setup():
     import multiprocessing, multiprocessing.sharedctypes
-    # import 'random' into global scope, create global shared variable
-    global random, shvar
-    import random
+    global shvar
     lock = multiprocessing.Lock()
     shvar = multiprocessing.sharedctypes.Value('i', 1, lock=lock)
     return 0
 
 def cleanup():
     del globals()['shvar']
-    # unload 'random' module (doesn't undo everything import does)
-    del globals()['random']
 
 def compute():
+    import random
     r = random.randint(1, 10)
     global shvar
     shvar.value += r
@@ -24,7 +31,7 @@ def compute():
 
 if __name__ == '__main__':
     import dispy
-    cluster = dispy.JobCluster(compute, setup=setup, cleanup=cleanup)
+    cluster = dispy.JobCluster(compute, depends=['file.dat'], setup=setup, cleanup=cleanup)
     jobs = []
     for n in range(10):
         job = cluster.submit()
