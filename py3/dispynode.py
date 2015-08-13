@@ -514,7 +514,14 @@ class _DispyNode(object):
                 self.thread_lock.acquire()
                 self.job_infos[_job.uid] = job_info
                 self.thread_lock.release()
-                job_info.proc.start()
+                try:
+                    job_info.proc.start()
+                except:
+                    job_info.job_reply.status = DispyJob.Terminated
+                    job_info.job_reply.exception = traceback.format_exc()
+                    job_info.job_reply.end_time = time.time()
+                    job_info.proc = None
+                    self.reply_Q.put(job_info.job_reply)
                 raise StopIteration
             elif compute.type == _Compute.prog_type:
                 try:
