@@ -176,8 +176,8 @@ def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
     """Internal use only.
     """
 
-    if not __dispy_job_globals:  # Windows
-        __dispy_job_globals = globals()
+    if os.name == 'nt':
+        __dispy_job_globals.update(globals())
     os.chdir(__dispy_path)
     sys.stdout = io.StringIO()
     sys.stderr = io.StringIO()
@@ -748,6 +748,9 @@ class _DispyNode(object):
                 exec(marshal.loads(compute.code)) in globalvars, localvars
                 exec('assert %s(*_dispy_setup_args, **_dispy_setup_kwargs) == 0' %
                      compute.setup.name) in globalvars, localvars
+                if os.name == 'nt':
+                    compute.globals.update({var: globals()[var] for var in globals()
+                                            if var not in self.__init_globals})
             except:
                 logger.debug('Setup failed')
                 resp = traceback.format_exc().encode()
