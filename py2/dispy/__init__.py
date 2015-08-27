@@ -889,7 +889,7 @@ class _Cluster(object):
                     logger.warning('Invalid node status %s from %s:%s ignored',
                                    info['status'], addr[0], addr[1])
             except:
-                logger.warning('invalid node status from %s:%s ignored' % (addr[0], addr[1]))
+                logger.debug('invalid node status from %s:%s ignored' % (addr[0], addr[1]))
                 # logger.debug(traceback.format_exc())
         else:
             logger.warning('invalid message from %s:%s ignored' % (addr[0], addr[1]))
