@@ -352,7 +352,7 @@ class DispyHTTPServer(object):
         http server.
         """
         if wait:
-            dispy.logger.debug(
+            dispy.logger.info(
                 'HTTP server waiting for %s seconds for client updates before quitting',
                 self._poll_sec)
             time.sleep(self._poll_sec)
