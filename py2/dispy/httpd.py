@@ -60,8 +60,8 @@ class DispyHTTPServer(object):
             BaseHTTPRequestHandler.__init__(self, *args)
 
         def log_message(self, fmt, *args):
-            # return # uncomment 'return' statement to disable messages from HTTP server
-            dispy.logger.debug('HTTP client %s: %s' % (self.client_address[0], fmt % args))
+            # dispy.logger.debug('HTTP client %s: %s' % (self.client_address[0], fmt % args))
+            return
 
         def do_GET(self):
             if self.path == '/cluster_updates':

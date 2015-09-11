@@ -1015,11 +1015,17 @@ class _Scheduler(object):
             raise StopIteration
 
         compute = cluster._compute
+        if self._clusters.pop(compute.id, None) is None:
+            logger.warning('Invalid computation "%s" to cleanup ignored' % compute.id)
+            raise StopIteration
 
         pkl_path = os.path.join(self.dest_path_prefix,
                                 '%s_%s' % (compute.id, cluster.client_auth))
         if cluster.pending_results == 0:
-            os.remove(pkl_path)
+            try:
+                os.remove(pkl_path)
+            except:
+                logger.warning('Could not remove "%s"' % pkl_path)
         else:
             fd = open(pkl_path, 'wb')
             pickle.dump(compute, fd)
@@ -1045,7 +1051,6 @@ class _Scheduler(object):
             if not node:
                 continue
             node.clusters.discard(compute.id)
-        self._clusters.pop(compute.id, None)
         for ip_addr, dispy_node in cluster._dispy_nodes.iteritems():
             node = self._nodes.get(ip_addr, None)
             if not node:

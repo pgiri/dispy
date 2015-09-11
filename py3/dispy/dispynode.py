@@ -1252,6 +1252,10 @@ class _DispyNode(object):
             logger.debug('pending jobs for computation "%s"/%s: %s',
                          compute.name, compute.id, compute.pending_jobs)
 
+        if self.computations.pop(compute.id, None) is None:
+            logger.warning('Invalid computation "%s" to cleanup ignored' % compute.id)
+            return
+
         pkl_path = os.path.join(self.dest_path_prefix, '%s_%s' % (compute.id, compute.auth))
         if compute.pending_results == 0:
             try:
@@ -1262,7 +1266,6 @@ class _DispyNode(object):
             fd = open(pkl_path, 'wb')
             pickle.dump(compute, fd)
             fd.close()
-        self.computations.pop(compute.id, None)
         try:
             self.scheduler['auth'].remove(compute.auth)
         except ValueError:
