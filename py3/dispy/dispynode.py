@@ -211,7 +211,7 @@ class _DispyNode(object):
     def __init__(self, cpus, ip_addr=None, ext_ip_addr=None, node_port=None,
                  name='', scheduler_node=None, scheduler_port=None,
                  dest_path_prefix='', clean=False, secret='', keyfile=None, certfile=None,
-                 zombie_interval=60):
+                 zombie_interval=60, service_start=None, service_end=None):
         assert 0 < cpus <= multiprocessing.cpu_count()
         self.num_cpus = cpus
         if name:
@@ -242,8 +242,6 @@ class _DispyNode(object):
 
         if not node_port:
             node_port = 51348
-
-        self.scheduler = {'ip_addr': None, 'port': 51347, 'auth': []}
 
         self.ext_ip_addr = ext_ip_addr
         self.pulse_interval = None
@@ -287,6 +285,8 @@ class _DispyNode(object):
         if not scheduler_port:
             scheduler_port = 51347
 
+        self.scheduler = {'ip_addr': None, 'port': scheduler_port, 'auth': []}
+
         fd = open(os.path.join(self.dest_path_prefix, 'config'), 'wb')
         config = {
             'ext_ip_addr': self.ext_ip_addr, 'port': self.port, 'avail_cpus': self.avail_cpus,
@@ -317,6 +317,12 @@ class _DispyNode(object):
         self.reply_Q_thread.start()
 
         self.timer_coro = Coro(self.timer_task)
+        if isinstance(service_start, time.struct_time) and isinstance(service_end, time.struct_time):
+            self.service_start = (service_start.tm_hour, service_start.tm_min)
+            self.service_end = (service_end.tm_hour, service_end.tm_min)
+            Coro(self.service_schedule)
+        else:
+            self.service_start = self.service_end = None
         # self.tcp_coro = Coro(self.tcp_server)
         self.udp_coro = Coro(self.udp_server, _node_ipaddr(scheduler_node), scheduler_port)
 
@@ -327,6 +333,8 @@ class _DispyNode(object):
             self.__init_globals = dict(globals())
 
     def broadcast_ping_msg(self, coro=None):
+        if not self.service_available():
+            raise StopIteration
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         sock = AsyncSocket(sock)
@@ -342,7 +350,8 @@ class _DispyNode(object):
         sock.close()
 
     def send_pong_msg(self, info, addr, coro=None):
-        if self.num_cpus != self.avail_cpus or self.scheduler['ip_addr'] is not None:
+        if self.num_cpus != self.avail_cpus or self.scheduler['ip_addr'] is not None or \
+           not self.service_available():
             logger.debug('Busy (%s/%s); ignoring ping message from %s:%s',
                          self.num_cpus, self.avail_cpus, addr[0], addr[1])
             raise StopIteration
@@ -1114,6 +1123,33 @@ class _DispyNode(object):
                     self.pulse_interval = None
                     yield self.broadcast_ping_msg(coro=coro)
 
+    def service_available(self):
+        if not self.service_start or not self.service_end:
+            return True
+        now = time.localtime()
+        logger.debug('serve from %s to %s' % (str(self.service_start), str(self.service_end)))
+        if self.service_start < self.service_end:
+            if self.service_start <= (now.tm_hour, now.tm_min) < self.service_end:
+                return True
+        else:
+            if (now.tm_hour, now.tm_min) >= self.service_start or \
+               (now.tm_hour, now.tm_min) < self.service_end:
+                return True
+        return False
+
+    def service_schedule(self, coro=None):
+        coro.set_daemon()
+        while True:
+            yield coro.sleep(60)
+            if self.service_available():
+                if not self.scheduler['ip_addr']:
+                    yield self.broadcast_ping_msg(coro=coro)
+            else:
+                logger.debug('service not available')
+                if self.scheduler['ip_addr']:
+                    logger.debug('shutting down ...')
+                    self.shutdown(quit=False)
+
     def __job_program(self, _job, job_info):
         compute = self.computations[_job.compute_id]
         if compute.name.endswith('.py'):
@@ -1261,7 +1297,7 @@ class _DispyNode(object):
             try:
                 os.remove(pkl_path)
             except:
-                pass
+                logger.warning('Could not remove "%s"' % pkl_path)
         else:
             fd = open(pkl_path, 'wb')
             pickle.dump(compute, fd)
@@ -1342,13 +1378,17 @@ class _DispyNode(object):
             except:
                 logger.warning('Could not remove directory "%s"', compute.dest_path)
 
-    def shutdown(self):
-        def _shutdown(self, coro=None):
+    def shutdown(self, quit=True):
+        def _shutdown(self, quit, coro=None):
             self.thread_lock.acquire()
             job_infos, self.job_infos = self.job_infos, {}
-            computations, self.computations = self.computations.items(), {}
-            if self.reply_Q:
+            if quit and self.reply_Q:
                 self.reply_Q.put(None)
+            self.scheduler['ip_addr'] = None
+            self.scheduler['auth'] = []
+            self.avail_cpus += len(job_infos)
+            if self.avail_cpus != self.num_cpus:
+                logger.warning('invalid cpus: %s / %s' % (self.avail_cpus, self.num_cpus))
             self.thread_lock.release()
             for uid, job_info in job_infos.items():
                 job_info.proc.terminate()
@@ -1369,11 +1409,17 @@ class _DispyNode(object):
                 except:
                     pass
                 sock.close()
+                compute.pending_jobs = 0
+                compute.zombie = True
+                self.cleanup_computation(compute)
 
         if hasattr(self, 'job_infos'):
-            Coro(_shutdown, self).value()
             # self.asyncoro.join()
-            self.asyncoro.finish()
+            if quit:
+                Coro(_shutdown, self, quit).value()
+                self.asyncoro.finish()
+            else:
+                Coro(_shutdown, self, quit)
 
 
 if __name__ == '__main__':
@@ -1406,6 +1452,11 @@ if __name__ == '__main__':
                         help='maximum file size of any file transferred (use 0 for unlimited size)')
     parser.add_argument('--zombie_interval', dest='zombie_interval', default=60, type=float,
                         help='interval in minutes to presume unresponsive scheduler is zombie')
+    parser.add_argument('--service_start', dest='service_start', default=None,
+                        help='time of day in HH:MM format when to start service')
+    parser.add_argument('--service_end', dest='service_end', default=None,
+                        help='time of day in HH:MM format when to end service '
+                        '(terminate running jobs)')
     parser.add_argument('--msg_timeout', dest='msg_timeout', default=MsgTimeout, type=float,
                         help='timeout used for messages to/from client in seconds')
     parser.add_argument('-s', '--secret', dest='secret', default='',
@@ -1467,6 +1518,11 @@ if __name__ == '__main__':
         raise Exception('max_file_size must be >= 0')
     del m
     del _dispy_config['max_file_size']
+
+    if _dispy_config['service_start']:
+        _dispy_config['service_start'] = time.strptime(_dispy_config['service_start'], '%H:%M')
+    if _dispy_config['service_end']:
+        _dispy_config['service_end'] = time.strptime(_dispy_config['service_end'], '%H:%M')
 
     _dispy_conn = _dispy_addr = _dispy_node = None
     _dispy_node = _DispyNode(**_dispy_config)
