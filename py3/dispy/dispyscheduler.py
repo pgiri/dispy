@@ -433,13 +433,18 @@ class _Scheduler(object, metaclass=MetaSingleton):
                 if node.clusters:
                     dead_jobs = [_job for _job in self._sched_jobs.values()
                                  if _job.node is not None and _job.node.ip_addr == node.ip_addr]
-                    yield self.reschedule_jobs(dead_jobs)
-                    for cid in node.clusters:
+                    cids = list(node.clusters)
+                    node.clusters = set()
+                    for cid in cids:
                         cluster = self._clusters[cid]
+                        cluster._dispy_nodes.pop(node.ip_addr, None)
+                    for cid in cids:
+                        cluster = self._clusters.get(cid, None)
+                        if cluster is None:
+                            continue
                         dispy_node = cluster._dispy_nodes[node.ip_addr]
                         yield self.send_node_status(cluster, dispy_node, DispyNode.Closed)
-                        cluster._dispy_nodes.pop(node.ip_addr, None)
-                    node.clusters = set()
+                    yield self.reschedule_jobs(dead_jobs)
             except:
                 # logger.debug(traceback.format_exc())
                 pass
@@ -1123,7 +1128,9 @@ class _Scheduler(object, metaclass=MetaSingleton):
                 dead_jobs = [_job for _job in self._sched_jobs.values()
                              if _job.node is not None and _job.node.ip_addr == node.ip_addr]
                 for cid in node.clusters:
-                    cluster = self._clusters[cid]
+                    cluster = self._clusters.get(cid, None)
+                    if cluster is None:
+                        continue
                     dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
                     if dispy_node:
                         dispy_node.busy = 0
