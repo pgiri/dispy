@@ -1491,6 +1491,7 @@ if __name__ == '__main__':
         exit(0)
 
     _dispy_config.pop('config', None)
+    _dispy_config.pop('save_config', None)
 
     if _dispy_config['loglevel']:
         logger.setLevel(logging.DEBUG)
