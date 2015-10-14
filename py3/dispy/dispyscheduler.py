@@ -794,7 +794,7 @@ class _Scheduler(object, metaclass=MetaSingleton):
                 req = unserialize(req)
                 cluster = self._clusters[req['compute_id']]
                 assert cluster.client_auth == req['auth']
-                resp = yield self.set_node_cpus(req['node'], coro=coro)
+                resp = yield self.set_node_cpus(req['node'], req['cpus'], coro=coro)
                 resp = serialize(resp)
             except:
                 resp = serialize(-1)

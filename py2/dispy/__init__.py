@@ -2491,7 +2491,8 @@ class SharedJobCluster(JobCluster):
         try:
             sock.connect((self.scheduler_ip_addr, self.scheduler_port))
             sock.sendall(self._scheduler_auth)
-            req = {'compute_id': self._compute.id, 'auth': self._compute.auth, 'node': node}
+            req = {'compute_id': self._compute.id, 'auth': self._compute.auth, 'node': node,
+                   'cpus': cpus}
             sock.send_msg('SET_NODE_CPUS:' + serialize(req))
             reply = sock.recv_msg()
             reply = unserialize(reply)
