@@ -1915,7 +1915,7 @@ class JobCluster(object):
             compute = _Compute(_Compute.prog_type, computation)
             depends.append(computation)
         else:
-            raise Exception('Invalid computation type: %s' % type(compute))
+            raise Exception('Invalid computation type: %s' % type(computation))
 
         if setup:
             if inspect.isfunction(setup):
