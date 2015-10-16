@@ -123,12 +123,12 @@
                                               (node1.ip_addr > node2.ip_addr ? -1 : 0);
                                           });
                 cluster_nodes[cur_cluster_name][loc].cpus = n;
-                $('#messages').append('<li>CPUs for ' + ip_addr + ' changed to ' + n + '</li>');
+                $('#messages').html('<li>CPUs for ' + ip_addr + ' changed to ' + n + '</li>');
               });
             })
 
             .fail(function() {
-              $('#messages').append('<li>Changing CPUs failed</li>');
+              $('#messages').html('<li>Changing CPUs failed</li>');
             });
         });
 

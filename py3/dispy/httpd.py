@@ -36,7 +36,6 @@ else:
 import dispy
 from dispy import DispyJob
 
-
 class DispyHTTPServer(object):
 
     class _ClusterInfo(object):
@@ -276,7 +275,7 @@ class DispyHTTPServer(object):
                     self._dispy_ctx._cluster_lock.acquire()
                     for cluster_info in self._dispy_ctx._clusters.values():
                         node = cluster_info.status.get(item.name, None)
-                        if node and node.cpus > 0:
+                        if node:
                             node_cpus[item.name] = cluster_info.cluster.set_node_cpus(
                                 item.name, item.value)
                             if node_cpus[item.name] >= 0:
