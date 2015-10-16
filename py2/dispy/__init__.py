@@ -1146,9 +1146,8 @@ class _Cluster(object):
                 self.poll_interval = num_min(self.poll_interval, cluster.poll_interval)
             if self.pulse_interval or self.ping_interval or self.poll_interval:
                 self.timer_coro.resume(True)
-        else:
-            yield self.send_ping_cluster(cluster, coro=coro)
 
+        yield self.send_ping_cluster(cluster, coro=coro)
         compute_nodes = []
         for ip_addr, node in self._nodes.iteritems():
             if compute.id in node.clusters:
