@@ -211,7 +211,7 @@ class _DispyNode(object):
     def __init__(self, cpus, ip_addr=None, ext_ip_addr=None, node_port=None,
                  name='', scheduler_node=None, scheduler_port=None,
                  dest_path_prefix='', clean=False, secret='', keyfile=None, certfile=None,
-                 zombie_interval=60, service_start=None, service_end=None):
+                 zombie_interval=60, service_start=None, service_stop=None, service_end=None):
         assert 0 < cpus <= multiprocessing.cpu_count()
         self.num_cpus = cpus
         if name:
@@ -317,12 +317,16 @@ class _DispyNode(object):
         self.reply_Q_thread.start()
 
         self.timer_coro = Coro(self.timer_task)
-        if isinstance(service_start, time.struct_time) and isinstance(service_end, time.struct_time):
+        self.service_start = self.service_stop = self.service_end = None
+        if isinstance(service_start, time.struct_time) and \
+           (isinstance(service_stop, time.struct_time) or
+           isinstance(service_end, time.struct_time)):
             self.service_start = (service_start.tm_hour, service_start.tm_min)
-            self.service_end = (service_end.tm_hour, service_end.tm_min)
+            if isinstance(service_stop, time.struct_time):
+                self.service_stop = (service_stop.tm_hour, service_stop.tm_min)
+            if isinstance(service_end, time.struct_time):
+                self.service_end = (service_end.tm_hour, service_end.tm_min)
             Coro(self.service_schedule)
-        else:
-            self.service_start = self.service_end = None
         # self.tcp_coro = Coro(self.tcp_server)
         self.udp_coro = Coro(self.udp_server, _node_ipaddr(scheduler_node), scheduler_port)
 
@@ -1128,12 +1132,16 @@ class _DispyNode(object):
             return True
         now = time.localtime()
         logger.debug('serve from %s to %s' % (str(self.service_start), str(self.service_end)))
-        if self.service_start < self.service_end:
-            if self.service_start <= (now.tm_hour, now.tm_min) < self.service_end:
+        if self.service_stop:
+            end = self.service_stop
+        else:
+            end = self.service_end
+        if self.service_start < end:
+            if self.service_start <= (now.tm_hour, now.tm_min) < end:
                 return True
         else:
             if (now.tm_hour, now.tm_min) >= self.service_start or \
-               (now.tm_hour, now.tm_min) < self.service_end:
+               (now.tm_hour, now.tm_min) < end:
                 return True
         return False
 
@@ -1145,10 +1153,22 @@ class _DispyNode(object):
                 if not self.scheduler['ip_addr']:
                     yield self.broadcast_ping_msg(coro=coro)
             else:
-                logger.debug('service not available')
                 if self.scheduler['ip_addr']:
-                    logger.debug('shutting down ...')
-                    self.shutdown(quit=False)
+                    now = time.localtime()
+                    if self.service_end and (now.tm_hour, now.tm_min) > self.service_end:
+                        self.shutdown(quit=False)
+                    else:
+                        sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                                           keyfile=self.keyfile, certfile=self.certfile)
+                        sock.settimeout(MsgTimeout)
+                        try:
+                            yield sock.connect((self.scheduler['ip_addr'], self.scheduler['port']))
+                            info = {'ip_addr': self.ext_ip_addr, 'sign': self.sign, 'cpus': 0}
+                            yield sock.send_msg(b'NODE_CPUS:' + serialize(info))
+                        except:
+                            pass
+                        finally:
+                            sock.close()
 
     def __job_program(self, _job, job_info):
         compute = self.computations[_job.compute_id]
@@ -1397,7 +1417,7 @@ class _DispyNode(object):
                     job_info.proc.join(2)
                 else:
                     job_info.proc.wait()
-            for cid, compute in computations:
+            for cid, compute in list(self.computations.items()):
                 sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                    keyfile=self.keyfile, certfile=self.certfile)
                 sock.settimeout(MsgTimeout)
@@ -1458,6 +1478,9 @@ if __name__ == '__main__':
                         help='interval in minutes to presume unresponsive scheduler is zombie')
     parser.add_argument('--service_start', dest='service_start', default=None,
                         help='time of day in HH:MM format when to start service')
+    parser.add_argument('--service_stop', dest='service_stop', default=None,
+                        help='time of day in HH:MM format when to stop service '
+                        '(continue to execute running jobs, but no new jobs scheduled)')
     parser.add_argument('--service_end', dest='service_end', default=None,
                         help='time of day in HH:MM format when to end service '
                         '(terminate running jobs)')
@@ -1548,6 +1571,8 @@ if __name__ == '__main__':
 
     if _dispy_config['service_start']:
         _dispy_config['service_start'] = time.strptime(_dispy_config['service_start'], '%H:%M')
+    if _dispy_config['service_stop']:
+        _dispy_config['service_stop'] = time.strptime(_dispy_config['service_stop'], '%H:%M')
     if _dispy_config['service_end']:
         _dispy_config['service_end'] = time.strptime(_dispy_config['service_end'], '%H:%M')
 

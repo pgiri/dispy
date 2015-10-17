@@ -831,6 +831,38 @@ class _Cluster(object):
                 yield self.file_xfer_process(reply, xf, conn, addr)
             except:
                 logger.debug(traceback.format_exc())
+        elif msg.startswith('NODE_CPUS:'):
+            try:
+                info = unserialize(msg[len('NODE_CPUS:'):])
+                node = self._nodes.get(info['ip_addr'], None)
+                if not node:
+                    raise StopIteration
+                auth = auth_code(self.secret, info['sign'])
+                if auth != node.auth:
+                    logger.warning('Invalid signature from %s', node.ip_addr)
+                    raise StopIteration
+                cpus = info['cpus']
+            except:
+                logger.debug(traceback.format_exc())
+                pass
+            else:
+                if cpus > node.avail_cpus:
+                    logger.warning('Node requested using %s CPUs, but has %s CPUs' %
+                                   (node.ip_addr, cpus, node.avail_cpus))
+                    cpus = node.avail_cpus
+                elif cpus < 0:
+                    logger.warning('Node requested using %s CPUs, disabling it' %
+                                   (node.ip_addr, cpus))
+                    cpus = 0
+                logger.debug('Setting cpus for %s to %s' % (node.ip_addr, cpus))
+                if cpus > node.cpus:
+                    self._sched_event.set()
+                node.cpus = cpus
+                for cid in node.clusters:
+                    cluster = self._clusters[cid]
+                    dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
+                    if dispy_node:
+                        dispy_node.cpus = cpus
         elif msg.startswith('TERMINATED:'):
             try:
                 info = unserialize(msg[len('TERMINATED:'):])
