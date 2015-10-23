@@ -703,13 +703,12 @@ class _DispyNode(object):
                 logger.debug('Ignoring file trasnfer request from %s', addr[0])
                 raise StopIteration
 
-            if xf.compute_id not in self.computations or \
-               (MaxFileSize and xf.stat_buf.st_size > MaxFileSize):
+            computation = self.computations.get(xf.compute_id, None)
+            if not computation or (MaxFileSize and xf.stat_buf.st_size > MaxFileSize):
                 logger.error('Invalid file transfer for "%s"' % xf.name)
                 yield conn.send_msg(b'NAK')
                 raise StopIteration
-            tgt = os.path.join(self.computations[xf.compute_id].dest_path,
-                               os.path.basename(xf.name))
+            tgt = os.path.join(computation.dest_path, os.path.basename(xf.name))
             if os.path.isfile(tgt) and _same_file(tgt, xf):
                 if tgt in self.file_uses:
                     self.file_uses[tgt] += 1
@@ -740,6 +739,7 @@ class _DispyNode(object):
                     else:
                         resp = b'ACK'
                         logger.debug('Copied file %s, %s', tgt, resp)
+                        computation.xfer_files.add(xf)
                         os.utime(tgt, (xf.stat_buf.st_atime, xf.stat_buf.st_mtime))
                         os.chmod(tgt, stat.S_IMODE(xf.stat_buf.st_mode))
                         if tgt in self.file_uses:
@@ -1156,8 +1156,10 @@ class _DispyNode(object):
                 if self.scheduler['ip_addr']:
                     now = time.localtime()
                     if self.service_end and (now.tm_hour, now.tm_min) > self.service_end:
+                        logger.debug('Shutting down service')
                         self.shutdown(quit=False)
                     else:
+                        logger.debug('Stopping service')
                         sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                            keyfile=self.keyfile, certfile=self.certfile)
                         sock.settimeout(MsgTimeout)
