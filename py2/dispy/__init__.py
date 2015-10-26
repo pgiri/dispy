@@ -2340,8 +2340,8 @@ class SharedJobCluster(JobCluster):
     def __init__(self, computation, nodes=None, depends=[], callback=None, cluster_status=None,
                  ip_addr=None, port=None, scheduler_node=None, scheduler_port=None,
                  ext_ip_addr=None, loglevel=logging.INFO, setup=None, cleanup=True, dest_path=None,
-                 poll_interval=None, reentrant=False, secret='',
-                 keyfile=None, certfile=None, recover_file=None):
+                 poll_interval=None, reentrant=False, exclusive=False,
+                 secret='', keyfile=None, certfile=None, recover_file=None):
 
         if scheduler_node:
             self.scheduler_ip_addr = _node_ipaddr(scheduler_node)
@@ -2412,6 +2412,30 @@ class SharedJobCluster(JobCluster):
         self.scheduler_port = reply['port']
         self._scheduler_auth = auth_code(secret, reply['sign'])
 
+        def await_schedule(self, srv_sock, coro=None):
+            while True:
+                conn, addr = yield srv_sock.accept()
+                msg = yield conn.recv_msg()
+                try:
+                    reply = unserialize(msg)
+                    assert reply['auth'] == self._scheduler_auth
+                    self.job_result_port = reply['job_result_port']
+                    assert isinstance(reply['compute_id'], int)
+                    self._compute.id = reply['compute_id']
+                    yield conn.send_msg('ACK')
+                except:
+                    logger.debug(traceback.format_exc())
+                    continue
+                else:
+                    break
+                finally:
+                    conn.close()
+
+        srv_sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                               keyfile=keyfile, certfile=certfile)
+        srv_sock.bind((ext_ip_addr, 0))
+        srv_sock.listen(1)
+
         sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), blocking=True,
                            keyfile=keyfile, certfile=certfile)
         sock.settimeout(MsgTimeout)
@@ -2421,18 +2445,22 @@ class SharedJobCluster(JobCluster):
         try:
             sock.connect((self.scheduler_ip_addr, self.scheduler_port))
             sock.sendall(self._scheduler_auth)
-            req = {'compute': self._compute, 'node_allocs': node_allocs}
+            req = {'compute': self._compute, 'node_allocs': node_allocs, 'exclusive': bool(exclusive),
+                   'reply_addr': (ext_ip_addr, srv_sock.getsockname()[1])}
             sock.send_msg('COMPUTE:' + serialize(req))
-            msg = sock.recv_msg()
-            sock.close()
-            resp = unserialize(msg)
-            self._compute.id = resp['compute_id']
-            assert self._compute.id is not None
+            resp = sock.recv_msg()
+            assert resp == 'ACK'
         except:
             logger.debug(traceback.format_exc())
             raise Exception('Could not connect to scheduler at %s:%s' %
                             (self.scheduler_ip_addr, self.scheduler_port))
-        self.job_result_port = resp['job_result_port']
+        finally:
+            sock.close()
+
+        logger.debug('Waiting for computation to be scheduled')
+        Coro(await_schedule, self, srv_sock).value()
+        srv_sock.close()
+
         self._cluster.timer_coro.resume(True)
 
         for xf in self._compute.xfer_files:

@@ -207,6 +207,7 @@ class _Scheduler(object):
 
             self._clusters = {}
             self.unsched_jobs = 0
+            self.unsched_clusters = []
             self._sched_jobs = {}
             self._sched_event = asyncoro.Event()
             # once a _job is done (i.e., final result for it is
@@ -453,6 +454,37 @@ class _Scheduler(object):
             logger.debug(traceback.format_exc())
         conn.close()
 
+    def schedule_cluster(self, coro=None):
+        while self.unsched_clusters:
+            cluster = self.unsched_clusters[0]
+            if self._clusters:
+                if cluster.exclusive:
+                    raise StopIteration
+                for cur_cluster in self._clusters.itervalues():
+                    if cur_cluster.exclusive:
+                        raise StopIteration
+                    break
+            self.unsched_clusters.pop(0)
+            reply_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            reply_sock = AsyncSocket(reply_sock, keyfile=self.cluster_keyfile,
+                                     certfile=self.cluster_certfile)
+            reply_sock.settimeout(MsgTimeout)
+            reply = {'compute_id': cluster._compute.id, 'pulse_interval': self.pulse_interval,
+                     'job_result_port': cluster._compute.job_result_port, 'auth': self.auth}
+            self._clusters[cluster._compute.id] = cluster
+            try:
+                yield reply_sock.connect(cluster.reply_addr)
+                yield reply_sock.send_msg(serialize(reply))
+                msg = yield reply_sock.recv_msg()
+                assert msg == 'ACK'
+            except:
+                self._clusters.pop(cluster._compute.id, None)
+                logger.debug('Ignoring computation %s / %s' %
+                             (cluster._compute.name, cluster._compute.id))
+                raise StopIteration
+            finally:
+                reply_sock.close()
+
     def scheduler_server(self, ip_addr, coro=None):
         coro.set_daemon()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -508,6 +540,9 @@ class _Scheduler(object):
                 req = unserialize(msg)
                 compute = req['compute']
                 node_allocs = req['node_allocs']
+                exclusive = req['exclusive']
+                reply_addr = req['reply_addr']
+                assert isinstance(reply_addr, tuple)
             except:
                 logger.debug('Ignoring compute request from %s', addr[0])
                 return 'NAK'
@@ -516,9 +551,10 @@ class _Scheduler(object):
                     logger.warning('transfer file "%s" is too big (%s)',
                                    xf.name, xf.stat_buf.st_size)
                     return 'NAK'
-            setattr(compute, 'nodes', {})
             cluster = _Cluster(compute, node_allocs, self)
             cluster.ip_addr = conn.getsockname()[0]
+            cluster.exclusive = exclusive
+            cluster.reply_addr = reply_addr
             dest = os.path.join(self.dest_path_prefix, compute.scheduler_ip_addr)
             if not os.path.isdir(dest):
                 try:
@@ -541,7 +577,6 @@ class _Scheduler(object):
 
             compute.id = self.compute_id
             self.compute_id += 1
-            self._clusters[compute.id] = cluster
             cluster.client_job_result_port = compute.job_result_port
             cluster.client_ip_addr = compute.scheduler_ip_addr
             cluster.client_port = compute.scheduler_port
@@ -558,9 +593,9 @@ class _Scheduler(object):
             pickle.dump(cluster, fd)
             fd.close()
             logger.debug('New computation %s: %s, %s', compute.id, compute.name, cluster.dest_path)
-            resp = {'compute_id': compute.id, 'pulse_interval': self.pulse_interval,
-                    'job_result_port': compute.job_result_port}
-            return serialize(resp)
+            self.unsched_clusters.append(cluster)
+            Coro(self.schedule_cluster)
+            return 'ACK'
 
         def xfer_from_client(self, msg):
             # generator
@@ -1087,6 +1122,8 @@ class _Scheduler(object):
         if self._clusters.pop(compute.id, None) is None:
             logger.warning('Invalid computation "%s" to cleanup ignored' % compute.id)
             raise StopIteration
+
+        Coro(self.schedule_cluster)
 
         pkl_path = os.path.join(self.dest_path_prefix,
                                 '%s_%s' % (compute.id, cluster.client_auth))
