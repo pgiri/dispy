@@ -223,7 +223,6 @@ class _Scheduler(object, metaclass=MetaSingleton):
 
             self.select_job_node = self.load_balance_schedule
             self.start_time = time.time()
-            self.compute_id = int(1000 * self.start_time)
 
             if http_server:
                 self.httpd = dispy.httpd.DispyHTTPServer(None)
@@ -573,9 +572,7 @@ class _Scheduler(object, metaclass=MetaSingleton):
             else:
                 cluster.dest_path = tempfile.mkdtemp(prefix=compute.name + '_', dir=dest)
 
-            compute.id = self.compute_id
-            self.compute_id += 1
-
+            compute.id = id(compute)
             cluster.client_job_result_port = compute.job_result_port
             cluster.client_ip_addr = compute.scheduler_ip_addr
             cluster.client_port = compute.scheduler_port
