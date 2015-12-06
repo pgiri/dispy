@@ -275,7 +275,6 @@ class _DispyNode(object):
 
         self.avail_cpus = self.num_cpus
         self.computations = {}
-        self.file_uses = {}
         self.job_infos = {}
         self.terminate = False
         self.sign = ''.join(hex(x)[2:] for x in os.urandom(10))
@@ -590,7 +589,7 @@ class _DispyNode(object):
                     except:
                         pass
                     raise StopIteration
-
+            compute.xfer_files = set()
             resp = b'ACK'
             dest = os.path.join(self.dest_path_prefix, compute.scheduler_ip_addr)
             if not os.path.isdir(dest):
@@ -625,6 +624,7 @@ class _DispyNode(object):
             setattr(compute, 'pending_results', 0)
             setattr(compute, 'zombie', False)
             setattr(compute, 'globals', {})
+            setattr(compute, 'file_uses', {})
 
             if compute.code:
                 try:
@@ -703,23 +703,22 @@ class _DispyNode(object):
                 logger.debug('Ignoring file trasnfer request from %s', addr[0])
                 raise StopIteration
 
-            computation = self.computations.get(xf.compute_id, None)
-            if not computation or (MaxFileSize and xf.stat_buf.st_size > MaxFileSize):
+            compute = self.computations.get(xf.compute_id, None)
+            if not compute or (MaxFileSize and xf.stat_buf.st_size > MaxFileSize):
                 logger.error('Invalid file transfer for "%s"' % xf.name)
                 yield conn.send_msg(b'NAK')
                 raise StopIteration
-            tgt = os.path.join(computation.dest_path, os.path.basename(xf.name))
+            tgt = os.path.join(compute.dest_path, os.path.basename(xf.name))
             if os.path.isfile(tgt) and _same_file(tgt, xf):
-                if tgt in self.file_uses:
-                    self.file_uses[tgt] += 1
+                if tgt in compute.file_uses:
+                    compute.file_uses[tgt] += 1
                 else:
-                    self.file_uses[tgt] = 1
+                    compute.file_uses[tgt] = 2
                 resp = b'ACK'
+                yield conn.send_msg(resp)
             else:
                 resp = b'NAK'
-
-            yield conn.send_msg(resp)
-            if resp != b'ACK':
+                yield conn.send_msg(resp)
                 logger.debug('Copying file %s to %s (%s)', xf.name, tgt, xf.stat_buf.st_size)
                 try:
                     fd = open(tgt, 'wb')
@@ -739,13 +738,12 @@ class _DispyNode(object):
                     else:
                         resp = b'ACK'
                         logger.debug('Copied file %s, %s', tgt, resp)
-                        computation.xfer_files.add(xf)
                         os.utime(tgt, (xf.stat_buf.st_atime, xf.stat_buf.st_mtime))
                         os.chmod(tgt, stat.S_IMODE(xf.stat_buf.st_mode))
-                        if tgt in self.file_uses:
-                            self.file_uses[tgt] += 1
+                        if tgt in compute.file_uses:
+                            compute.file_uses[tgt] += 1
                         else:
-                            self.file_uses[tgt] = 1
+                            compute.file_uses[tgt] = 1
                 except:
                     logger.warning('Copying file "%s" failed with "%s"',
                                    xf.name, traceback.format_exc())
@@ -1216,17 +1214,20 @@ class _DispyNode(object):
                         job_info.proc.join(2)
                     else:
                         job_info.proc.wait()
-                for xf in job_info.xfer_files:
-                    tgt = os.path.join(self.computations[xf.compute_id].dest_path,
-                                       os.path.basename(xf.name))
-                    self.file_uses[tgt] -= 1
-                    if self.file_uses[tgt] == 0:
-                        self.file_uses.pop(tgt)
-                        try:
-                            os.remove(tgt)
-                        except:
-                            logger.warning('Failed to remove "%s"' % tgt)
                 Coro(self._send_job_reply, job_info, resending=False)
+                compute = self.computations.get(job_info.compute_id, None)
+                if not compute:
+                    continue
+                for xf in job_info.xfer_files:
+                    path = os.path.join(compute.dest_path, os.path.basename(xf.name))
+                    try:
+                        compute.file_uses[path] -= 1
+                        if compute.file_uses[path] == 0:
+                            compute.file_uses.pop(path)
+                            os.remove(path)
+                    except:
+                        logger.warning('invalid file "%s" ignored' % path)
+                        continue
 
     def _send_job_reply(self, job_info, resending=False, coro=None):
         """Internal use only.
@@ -1376,20 +1377,15 @@ class _DispyNode(object):
                     globals()[var] = value
         compute.globals = {}
 
-        for xf in compute.xfer_files:
-            tgt = os.path.join(compute.dest_path, os.path.basename(xf.name))
-            if tgt not in self.file_uses:
-                logger.debug('File "%s" is unknown', tgt)
-                continue
-            self.file_uses[tgt] -= 1
-            if self.file_uses[tgt] == 0:
-                self.file_uses.pop(tgt)
+        for path, use in compute.file_uses.items():
+            if use == 1:
                 try:
-                    os.remove(tgt)
-                    if os.path.splitext(tgt)[1] == '.py' and os.path.isfile(tgt + 'c'):
-                        os.remove(tgt + 'c')
+                    os.remove(path)
+                    if os.path.splitext(path)[1] == '.py' and os.path.isfile(path + 'c'):
+                        os.remove(path + 'c')
                 except:
-                    logger.warning('Could not remove file "%s"', tgt)
+                    logger.warning('Could not remove file "%s"', path)
+        compute.file_uses = {}
 
         if os.path.isdir(compute.dest_path) and \
            compute.dest_path.startswith(self.dest_path_prefix) and \
