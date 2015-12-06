@@ -208,6 +208,7 @@ class _Scheduler(object, metaclass=MetaSingleton):
             self._clusters = {}
             self.unsched_jobs = 0
             self.unsched_clusters = []
+            self.pending_clusters = {}
             self._sched_jobs = {}
             self._sched_event = asyncoro.Event()
             # once a _job is done (i.e., final result for it is
@@ -469,14 +470,14 @@ class _Scheduler(object, metaclass=MetaSingleton):
             reply_sock = AsyncSocket(reply_sock, keyfile=self.cluster_keyfile,
                                      certfile=self.cluster_certfile)
             reply_sock.settimeout(MsgTimeout)
-            reply = {'compute_id': cluster._compute.id, 'pulse_interval': self.pulse_interval,
-                     'job_result_port': cluster._compute.job_result_port, 'auth': self.auth}
+            reply = {'compute_id': cluster._compute.id, 'pulse_interval': self.pulse_interval}
             self._clusters[cluster._compute.id] = cluster
             try:
-                yield reply_sock.connect(cluster.reply_addr)
-                yield reply_sock.send_msg(serialize(reply))
+                yield reply_sock.connect((cluster.client_ip_addr, cluster.client_job_result_port))
+                yield reply_sock.send_msg(b'SCHEDULED:' + serialize(reply))
                 msg = yield reply_sock.recv_msg()
                 assert msg == b'ACK'
+                Coro(self.add_cluster, cluster)
             except:
                 self._clusters.pop(cluster._compute.id, None)
                 logger.debug('Ignoring computation %s / %s' %
@@ -541,8 +542,6 @@ class _Scheduler(object, metaclass=MetaSingleton):
                 compute = req['compute']
                 node_allocs = req['node_allocs']
                 exclusive = req['exclusive']
-                reply_addr = req['reply_addr']
-                assert isinstance(reply_addr, tuple)
             except:
                 logger.debug('Ignoring compute request from %s', addr[0])
                 return b'NAK'
@@ -554,7 +553,6 @@ class _Scheduler(object, metaclass=MetaSingleton):
             cluster = _Cluster(compute, node_allocs, self)
             cluster.ip_addr = conn.getsockname()[0]
             cluster.exclusive = exclusive
-            cluster.reply_addr = reply_addr
             dest = os.path.join(self.dest_path_prefix, compute.scheduler_ip_addr)
             if not os.path.isdir(dest):
                 try:
@@ -585,6 +583,7 @@ class _Scheduler(object, metaclass=MetaSingleton):
             compute.job_result_port = self.port
             compute.scheduler_port = self.port
             compute.auth = ''.join(hex(x)[2:] for x in os.urandom(10))
+            cluster.last_pulse = time.time()
             for xf in compute.xfer_files:
                 xf.compute_id = compute.id
                 xf.name = os.path.join(cluster.dest_path, os.path.basename(xf.name))
@@ -593,10 +592,9 @@ class _Scheduler(object, metaclass=MetaSingleton):
                                    '%s_%s' % (compute.id, cluster.client_auth)), 'wb')
             pickle.dump(cluster, fd)
             fd.close()
+            self.pending_clusters[cluster._compute.id] = cluster
             logger.debug('New computation %s: %s, %s', compute.id, compute.name, cluster.dest_path)
-            self.unsched_clusters.append(cluster)
-            Coro(self.schedule_cluster)
-            return b'ACK'
+            return serialize({'compute_id': cluster._compute.id, 'auth': cluster.client_auth})
 
         def xfer_from_client(self, msg):
             # generator
@@ -605,7 +603,7 @@ class _Scheduler(object, metaclass=MetaSingleton):
             except:
                 logger.debug('Ignoring file trasnfer request from %s', addr[0])
                 raise StopIteration(b'NAK')
-            cluster = self._clusters.get(xf.compute_id, None)
+            cluster = self.pending_clusters.get(xf.compute_id, None)
             if not cluster:
                 logger.error('Computation "%s" is invalid' % xf.compute_id)
                 raise StopIteration(b'NAK')
@@ -751,19 +749,22 @@ class _Scheduler(object, metaclass=MetaSingleton):
         elif msg.startswith(b'COMPUTE:'):
             msg = msg[len(b'COMPUTE:'):]
             resp = _compute_task(self, msg)
-        elif msg.startswith(b'ADD_CLUSTER:'):
-            msg = msg[len(b'ADD_CLUSTER:'):]
+        elif msg.startswith(b'SCHEDULE:'):
+            msg = msg[len(b'SCHEDULE:'):]
             try:
                 req = unserialize(msg)
-                cluster = self._clusters[req['compute_id']]
+                cluster = self.pending_clusters[req['compute_id']]
                 assert cluster.client_auth == req['auth']
                 for xf in cluster._compute.xfer_files:
                     assert os.path.isfile(xf.name)
-                resp = serialize(cluster._compute.id)
+                self.unsched_clusters.append(cluster)
+                self.pending_clusters.pop(cluster._compute.id)
             except:
-                logger.debug('Ignoring compute request from %s', addr[0])
+                logger.debug('Ignoring schedule request from %s', addr[0])
+                resp = b'NAK'
             else:
-                Coro(self.add_cluster, cluster)
+                resp = b'ACK'
+                Coro(self.schedule_cluster)
         elif msg.startswith(b'CLOSE:'):
             msg = msg[len(b'CLOSE:'):]
             try:
@@ -986,6 +987,20 @@ class _Scheduler(object, metaclass=MetaSingleton):
                     logger.debug('Deleting zombie computation "%s" / %s',
                                  cluster._compute.name, cluster._compute.id)
                     Coro(self.cleanup_computation, cluster)
+                zombies = [cluster for cluster in self.pending_clusters.values()
+                           if (now - cluster.last_pulse) > self.zombie_interval]
+                for cluster in zombies:
+                    logger.debug('Deleting zombie computation "%s" / %s',
+                                 cluster._compute.name, cluster._compute.id)
+                    path = os.path.join(self.dest_path_prefix,
+                                        '%s_%s' % (cluster._compute.id, cluster.client_auth))
+                    if os.path.isfile(path):
+                        os.remove(path)
+                    try:
+                        shutil.rmtree(cluster.dest_path)
+                    except:
+                        logger.debug(traceback.format_exc())
+                    self.pending_clusters.pop(cluster._compute.id, None)
 
     def xfer_to_client(self, reply, xf, sock, addr):
         _job = self._sched_jobs.get(reply.uid, None)

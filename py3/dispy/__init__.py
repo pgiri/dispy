@@ -931,6 +931,18 @@ class _Cluster(object, metaclass=MetaSingleton):
             except:
                 logger.debug('invalid node status from %s:%s ignored' % (addr[0], addr[1]))
                 # logger.debug(traceback.format_exc())
+        elif msg.startswith(b'SCHEDULED:'):
+            try:
+                info = unserialize(msg[len(b'SCHEDULED:'):])
+                assert self.shared
+                cluster = self._clusters.get(info['compute_id'], None)
+                assert info['pulse_interval'] is None or info['pulse_interval'] >= 1
+                self.pulse_interval = info['pulse_interval']
+                self.timer_coro.resume(True)
+                yield conn.send_msg(b'ACK')
+                cluster._scheduled_event.set()
+            except:
+                yield conn.send_msg(b'NAK')
         else:
             logger.warning('invalid message from %s:%s ignored' % (addr[0], addr[1]))
             # logger.debug(traceback.format_exc())
@@ -2412,59 +2424,32 @@ class SharedJobCluster(JobCluster):
             raise Exception('dispyscheduler version "%s" is different from dispy version "%s"' %
                             reply['version'], _dispy_version)
         ext_ip_addr = reply['ip_addr']
+
         self.scheduler_port = reply['port']
         self._scheduler_auth = auth_code(secret, reply['sign'])
-
-        def await_schedule(self, srv_sock, coro=None):
-            while True:
-                conn, addr = yield srv_sock.accept()
-                msg = yield conn.recv_msg()
-                try:
-                    reply = unserialize(msg)
-                    assert reply['auth'] == self._scheduler_auth
-                    self.job_result_port = reply['job_result_port']
-                    assert isinstance(reply['compute_id'], int)
-                    self._compute.id = reply['compute_id']
-                    yield conn.send_msg(b'ACK')
-                except:
-                    logger.debug(traceback.format_exc())
-                    continue
-                else:
-                    break
-                finally:
-                    conn.close()
-
-        srv_sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
-                               keyfile=keyfile, certfile=certfile)
-        srv_sock.bind((ext_ip_addr, 0))
-        srv_sock.listen(1)
+        self._compute.scheduler_ip_addr = ext_ip_addr
+        self._compute.scheduler_port = self._cluster.port
+        self._compute.job_result_port = self._cluster.port
 
         sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), blocking=True,
                            keyfile=keyfile, certfile=certfile)
         sock.settimeout(MsgTimeout)
-        self._compute.scheduler_ip_addr = ext_ip_addr
-        self._compute.scheduler_port = self._cluster.port
-        self._compute.job_result_port = self._cluster.port
         try:
             sock.connect((self.scheduler_ip_addr, self.scheduler_port))
             sock.sendall(self._scheduler_auth)
-            req = {'compute': self._compute, 'node_allocs': node_allocs, 'exclusive': bool(exclusive),
-                   'reply_addr': (ext_ip_addr, srv_sock.getsockname()[1])}
+            req = {'compute': self._compute, 'node_allocs': node_allocs,
+                   'exclusive': bool(exclusive)}
             sock.send_msg(b'COMPUTE:' + serialize(req))
-            resp = sock.recv_msg()
-            assert resp == b'ACK'
+            reply = sock.recv_msg()
+            reply = unserialize(reply)
+            self._compute.id = reply['compute_id']
+            self._compute.auth = reply['auth']
         except:
             logger.debug(traceback.format_exc())
             raise Exception('Could not connect to scheduler at %s:%s' %
                             (self.scheduler_ip_addr, self.scheduler_port))
         finally:
             sock.close()
-
-        logger.debug('Waiting for computation to be scheduled')
-        Coro(await_schedule, self, srv_sock).value()
-        srv_sock.close()
-
-        self._cluster.timer_coro.resume(True)
 
         for xf in self._compute.xfer_files:
             xf.compute_id = self._compute.id
@@ -2492,19 +2477,20 @@ class SharedJobCluster(JobCluster):
                 # TODO: delete computation?
             sock.close()
 
+        Coro(self._cluster.add_cluster, self).value()
+        self._scheduled_event = threading.Event()
         sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), blocking=True,
                            keyfile=keyfile, certfile=certfile)
         sock.settimeout(MsgTimeout)
         sock.connect((self.scheduler_ip_addr, self.scheduler_port))
         sock.sendall(self._scheduler_auth)
         req = {'compute_id': self._compute.id, 'auth': self._compute.auth}
-        sock.send_msg(b'ADD_CLUSTER:' + serialize(req))
-        msg = sock.recv_msg()
+        sock.send_msg(b'SCHEDULE:' + serialize(req))
+        resp = sock.recv_msg()
         sock.close()
-        resp = unserialize(msg)
-        if resp == self._compute.id:
+        if resp == b'ACK':
+            self._scheduled_event.wait()
             logger.debug('Computation %s created with %s', self._compute.name, self._compute.id)
-            Coro(self._cluster.add_cluster, self).value()
         else:
             self._cluster._clusters.pop(self._compute.id, None)
             raise Exception('Computation "%s" could not be sent to scheduler' % self._compute.name)
@@ -2515,7 +2501,7 @@ class SharedJobCluster(JobCluster):
         Arguments should be serializable and should correspond to
         arguments for computation used when cluster is created.
         """
-        return self.submit_node(None, args, kwargs)
+        return self.submit_node(None, *args, **kwargs)
 
     def submit_node(self, node, *args, **kwargs):
         """Submit a job for execution at 'node' with the given
