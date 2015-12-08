@@ -473,9 +473,9 @@ class _Scheduler(object, metaclass=MetaSingleton):
             self._clusters[cluster._compute.id] = cluster
             try:
                 yield reply_sock.connect((cluster.client_ip_addr, cluster.client_job_result_port))
-                yield reply_sock.send_msg(b'SCHEDULED:' + serialize(reply))
+                yield reply_sock.send_msg('SCHEDULED:'.encode() + serialize(reply))
                 msg = yield reply_sock.recv_msg()
-                assert msg == b'ACK'
+                assert msg == 'ACK'.encode()
                 Coro(self.add_cluster, cluster)
             except:
                 self._clusters.pop(cluster._compute.id, None)
@@ -510,9 +510,8 @@ class _Scheduler(object, metaclass=MetaSingleton):
         def _job_request_task(self, cluster, node, _job):
             # function
             _job.uid = id(_job)
-            dest_path = os.path.join(self.dest_path_prefix, str(_job.compute_id))
             for xf in _job.xfer_files:
-                xf.name = os.path.join(dest_path, os.path.basename(xf.name))
+                xf.name = os.path.join(cluster.dest_path, os.path.basename(xf.name))
             job = DispyJob((), {})
             job.id = _job.uid
             if node:
@@ -543,12 +542,12 @@ class _Scheduler(object, metaclass=MetaSingleton):
                 exclusive = req['exclusive']
             except:
                 logger.debug('Ignoring compute request from %s', addr[0])
-                return b'NAK'
+                return 'NAK'.encode()
             for xf in compute.xfer_files:
                 if MaxFileSize and xf.stat_buf.st_size > MaxFileSize:
                     logger.warning('transfer file "%s" is too big (%s)',
                                    xf.name, xf.stat_buf.st_size)
-                    return b'NAK'
+                    return 'NAK'.encode()
             cluster = _Cluster(compute, node_allocs, self)
             cluster.ip_addr = conn.getsockname()[0]
             cluster.exclusive = exclusive
@@ -557,7 +556,7 @@ class _Scheduler(object, metaclass=MetaSingleton):
                 try:
                     os.mkdir(dest)
                 except:
-                    return b'NAK'
+                    return 'NAK'.encode()
             if compute.dest_path and isinstance(compute.dest_path, str):
                 # TODO: get os.sep from client and convert (in case of mixed environments)?
                 if compute.dest_path.startswith(os.sep):
@@ -568,7 +567,7 @@ class _Scheduler(object, metaclass=MetaSingleton):
                     try:
                         os.makedirs(cluster.dest_path)
                     except:
-                        return b'NAK'
+                        return 'NAK'.encode()
             else:
                 cluster.dest_path = tempfile.mkdtemp(prefix=compute.name + '_', dir=dest)
 
@@ -599,22 +598,20 @@ class _Scheduler(object, metaclass=MetaSingleton):
                 xf = unserialize(msg)
             except:
                 logger.debug('Ignoring file trasnfer request from %s', addr[0])
-                raise StopIteration(b'NAK')
+                raise StopIteration('NAK'.encode())
             cluster = self.pending_clusters.get(xf.compute_id, None)
             if not cluster:
-                logger.error('Computation "%s" is invalid' % xf.compute_id)
-                raise StopIteration(b'NAK')
+                # if file is transfered for 'dispy_job_depends', cluster would be active
+                cluster = self._clusters.get(xf.compute_id, None)
+                if not cluster:
+                    logger.error('Computation "%s" is invalid' % xf.compute_id)
+                    raise StopIteration('NAK'.encode())
             tgt = os.path.join(cluster.dest_path, os.path.basename(xf.name))
             if _same_file(tgt, xf):
-                raise StopIteration(b'ACK')
-            for cxf in cluster._compute.xfer_files:
-                if tgt == cxf.name:
-                    break
-            else:
-                raise StopIteration(b'NAK')
+                raise StopIteration('ACK'.encode())
             logger.debug('Copying file %s to %s (%s)', xf.name, tgt, xf.stat_buf.st_size)
             try:
-                yield conn.send_msg(b'NAK')
+                yield conn.send_msg('NAK'.encode())
                 fd = open(tgt, 'wb')
                 n = 0
                 while n < xf.stat_buf.st_size:
@@ -628,16 +625,16 @@ class _Scheduler(object, metaclass=MetaSingleton):
                         break
                 fd.close()
                 if n < xf.stat_buf.st_size:
-                    resp = bytes('NAK (read only %s bytes)' % n, 'ascii')
+                    resp = ('NAK (read only %s bytes)' % n).encode()
                 else:
                     os.utime(tgt, (xf.stat_buf.st_atime, xf.stat_buf.st_mtime))
                     os.chmod(tgt, stat.S_IMODE(xf.stat_buf.st_mode))
                     logger.debug('Copied file %s', tgt)
-                    resp = b'ACK'
+                    resp = 'ACK'.encode()
             except:
                 logger.warning('Copying file "%s" failed with "%s"',
                                xf.name, traceback.format_exc())
-                resp = b'NAK'
+                resp = 'NAK'.encode()
                 try:
                     os.remove(tgt)
                     if len(os.listdir(cluster.dest_path)) == 0:
@@ -654,27 +651,27 @@ class _Scheduler(object, metaclass=MetaSingleton):
                 xf = msg['xf']
             except:
                 logger.debug('Ignoring file trasnfer request from %s', addr[0])
-                raise StopIteration(b'NAK')
+                raise StopIteration('NAK'.encode())
             cluster = self._clusters.get(xf.compute_id, None)
             if not cluster or not node or node.ip_addr not in cluster._dispy_nodes:
                 logger.error('send_file "%s" is invalid' % xf.name)
-                raise StopIteration(b'NAK')
+                raise StopIteration('NAK'.encode())
             if _same_file(xf.name, xf):
                 resp = yield node.xfer_file(xf)
                 if resp == 0:
-                    raise StopIteration(b'ACK')
+                    raise StopIteration('ACK'.encode())
                 else:
-                    raise StopIteration(b'NAK')
-            yield conn.send_msg(b'XFER')
+                    raise StopIteration('NAK'.encode())
+            yield conn.send_msg('XFER'.encode())
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock = AsyncSocket(sock, keyfile=self.node_keyfile, certfile=self.node_certfile)
             sock.settimeout(MsgTimeout)
             try:
                 yield sock.connect((node.ip_addr, node.port))
                 yield sock.sendall(node.auth)
-                yield sock.send_msg(b'FILEXFER:' + serialize(xf))
+                yield sock.send_msg('FILEXFER:'.encode() + serialize(xf))
                 resp = yield sock.recv_msg()
-                if resp != b'ACK':
+                if resp != 'ACK'.encode():
                     n = 0
                     while n < xf.stat_buf.st_size:
                         data = yield conn.recvall(min(xf.stat_buf.st_size-n, 1024000))
@@ -685,11 +682,11 @@ class _Scheduler(object, metaclass=MetaSingleton):
                     if n == xf.stat_buf.st_size:
                         resp = yield sock.recv_msg()
                     else:
-                        resp = b'NAK'
+                        resp = 'NAK'.encode()
             except:
                 logger.error('Could not transfer %s to %s: %s', xf.name, node.ip_addr, resp)
                 # TODO: mark this node down, reschedule on different node?
-                resp = b'NAK'
+                resp = 'NAK'.encode()
             finally:
                 sock.close()
             raise StopIteration(resp)
@@ -758,9 +755,9 @@ class _Scheduler(object, metaclass=MetaSingleton):
                 self.pending_clusters.pop(cluster._compute.id)
             except:
                 logger.debug('Ignoring schedule request from %s', addr[0])
-                resp = b'NAK'
+                resp = 'NAK'.encode()
             else:
-                resp = b'ACK'
+                resp = 'ACK'.encode()
                 Coro(self.schedule_cluster)
         elif msg.startswith(b'CLOSE:'):
             msg = msg[len(b'CLOSE:'):]
@@ -1003,15 +1000,15 @@ class _Scheduler(object, metaclass=MetaSingleton):
         _job = self._sched_jobs.get(reply.uid, None)
         if _job is None or _job.hash != reply.hash:
             logger.warning('Ignoring invalid file transfer from job %s at %s', reply.uid, addr[0])
-            yield sock.send_msg(b'NAK')
+            yield sock.send_msg('NAK'.encode())
             raise StopIteration
         node = self._nodes.get(reply.ip_addr, None)
         cluster = self._clusters.get(_job.compute_id, None)
         if not node or not cluster:
             logger.warning('Ignoring invalid file transfer from job %s at %s', reply.uid, addr[0])
-            yield sock.send_msg(b'NAK')
+            yield sock.send_msg('NAK'.encode())
             raise StopIteration
-        yield sock.send_msg(b'ACK')
+        yield sock.send_msg('ACK'.encode())
         node.last_pulse = time.time()
         client_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         client_sock = AsyncSocket(client_sock,
@@ -1019,12 +1016,12 @@ class _Scheduler(object, metaclass=MetaSingleton):
         client_sock.settimeout(MsgTimeout)
         try:
             yield client_sock.connect((cluster.client_ip_addr, cluster.client_job_result_port))
-            yield client_sock.send_msg(b'FILEXFER:' + serialize(xf))
+            yield client_sock.send_msg('FILEXFER:'.encode() + serialize(xf))
             yield client_sock.send_msg(serialize(reply))
             ack = yield client_sock.recv_msg()
-            assert ack == b'ACK'
+            assert ack == 'ACK'.encode()
 
-            yield sock.send_msg(b'ACK')
+            yield sock.send_msg('ACK'.encode())
             n = 0
             while n < xf.stat_buf.st_size:
                 data = yield sock.recvall(min(xf.stat_buf.st_size-n, 1024000))
@@ -1033,11 +1030,11 @@ class _Scheduler(object, metaclass=MetaSingleton):
                 yield client_sock.sendall(data)
                 n += len(data)
             ack = yield client_sock.recv_msg()
-            assert ack == b'ACK'
+            assert ack == 'ACK'.encode()
         except:
-            yield sock.send_msg(b'NAK')
+            yield sock.send_msg('NAK'.encode())
         else:
-            yield sock.send_msg(b'ACK')
+            yield sock.send_msg('ACK'.encode())
         finally:
             client_sock.close()
             sock.close()
@@ -1632,7 +1629,7 @@ class _Scheduler(object, metaclass=MetaSingleton):
         try:
             yield conn.send_msg(serialize(job_reply))
             ack = yield conn.recv_msg()
-            assert ack == b'ACK'
+            assert ack == 'ACK'.encode()
             cluster.pending_results -= 1
             fd = open(pkl_path, 'wb')
             pickle.dump(cluster, fd)
@@ -1878,8 +1875,11 @@ if __name__ == '__main__':
     scheduler = _Scheduler(**config)
     while True:
         try:
-            # sys.stdin.readline()
-            time.sleep(300)
+            cmd = sys.stdin.readline().strip().lower()
+            if cmd == 'quit' or cmd == 'exit':
+                break
+            scheduler.print_status()
+            print('Enter "quit" or "exit" to terminate scheduler')
         except KeyboardInterrupt:
             # TODO: terminate even if jobs are scheduled?
             logger.info('Interrupted; terminating')
