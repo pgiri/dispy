@@ -219,7 +219,8 @@ class _Scheduler(object):
             self.done_jobs = {}
             self.terminate = False
             self.sign = os.urandom(10).encode('hex')
-            self.auth = auth_code(self.cluster_secret, self.sign)
+            self.cluster_auth = auth_code(self.cluster_secret, self.sign)
+            self.node_auth = auth_code(self.node_secret, self.sign)
 
             self.select_job_node = self.load_balance_schedule
             self.start_time = time.time()
@@ -228,8 +229,8 @@ class _Scheduler(object):
                 self.httpd = dispy.httpd.DispyHTTPServer(None)
             else:
                 self.httpd = None
-            self.timer_coro = Coro(self.timer_task)
 
+            self.timer_coro = Coro(self.timer_task)
             self.tcp_coros = []
             self.scheduler_coros = []
             for ip_addr in list(self.ip_addrs):
@@ -238,8 +239,9 @@ class _Scheduler(object):
 
             fd = open(os.path.join(self.dest_path_prefix, 'config'), 'wb')
             config = {
-                'port': self.port, 'sign': self.sign, 'cluster_secret': self.cluster_secret,
-                'node_secret': self.node_secret, 'auth': self.auth
+                'port': self.port, 'sign': self.sign,
+                'cluster_secret': self.cluster_secret, 'cluster_auth': self.cluster_auth,
+                'node_secret': self.node_secret, 'node_auth': self.node_auth
                 }
             pickle.dump(config, fd)
             fd.close()
@@ -373,16 +375,16 @@ class _Scheduler(object):
         elif msg.startswith('PONG:'):
             try:
                 info = unserialize(msg[len('PONG:'):])
-                assert info['auth'] == self.auth
+                assert info['auth'] == self.node_auth
                 yield self.add_node(info, coro=coro)
             except:
-                logger.debug('Ignoring node %s', addr[0])
-                logger.debug(traceback.format_exc())
+                logger.debug('Ignoring node %s due to "secret" mismatch', addr[0])
+                # logger.debug(traceback.format_exc())
         elif msg.startswith('PING:'):
             try:
                 info = unserialize(msg[len('PING:'):])
                 if info['version'] != _dispy_version:
-                    logger.warning('Ignoring %s due to version mismatch', addr[0])
+                    logger.warning('Ignoring node %s due to version mismatch', addr[0])
                     raise Exception('')
                 assert info['port'] > 0
                 assert info['ip_addr']
@@ -695,14 +697,14 @@ class _Scheduler(object):
         conn.settimeout(MsgTimeout)
         resp = None
         try:
-            req = yield conn.recvall(len(self.auth))
+            req = yield conn.recvall(len(self.cluster_auth))
         except:
             logger.warning('Failed to read message from %s: %s',
                            str(addr), traceback.format_exc())
             conn.close()
             raise StopIteration
 
-        if req != self.auth:
+        if req != self.cluster_auth:
             msg = yield conn.recv_msg()
             if msg.startswith('CLIENT:'):
                 try:
@@ -1057,7 +1059,7 @@ class _Scheduler(object):
         tcp_sock.settimeout(MsgTimeout)
         try:
             yield tcp_sock.connect((ip_addr, port))
-            yield tcp_sock.sendall('x' * len(self.auth))
+            yield tcp_sock.sendall('x' * len(self.node_auth))
             yield tcp_sock.send_msg('PING:' + serialize(ping_msg))
             yield tcp_sock.recv_msg()
         except:
