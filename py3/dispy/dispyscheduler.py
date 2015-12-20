@@ -87,6 +87,7 @@ class _Cluster(object):
         self.client_auth = None
         self.ip_addr = None
         self.dest_path = None
+        self.file_uses = {}
 
     def __getstate__(self):
         state = dict(self.__dict__)
@@ -518,13 +519,12 @@ class _Scheduler(object, metaclass=MetaSingleton):
             job.id = _job.uid
             if node:
                 node = self._nodes.get(node, None)
-                if not node or node.ip_addr not in cluster._dispy_nodes:
-                    return Nonde
+                if not node or cluster._compute.id not in node.clusters:
+                    return None
                 node.pending_jobs.append(_job)
             else:
                 cluster._jobs.append(_job)
             setattr(_job, 'pinned', node)
-            delattr(job, 'finish')
             setattr(_job, 'job', job)
             setattr(_job, 'node', None)
             self.unsched_jobs += 1
@@ -609,7 +609,11 @@ class _Scheduler(object, metaclass=MetaSingleton):
                     logger.error('Computation "%s" is invalid' % xf.compute_id)
                     raise StopIteration('NAK'.encode())
             tgt = os.path.join(cluster.dest_path, os.path.basename(xf.name))
-            if _same_file(tgt, xf):
+            if os.path.isfile(tgt) and _same_file(tgt, xf):
+                if tgt in cluster.file_uses:
+                    cluster.file_uses[tgt] += 1
+                else:
+                    cluster.file_uses[tgt] = 2
                 raise StopIteration('ACK'.encode())
             logger.debug('Copying file %s to %s (%s)', xf.name, tgt, xf.stat_buf.st_size)
             try:
@@ -631,6 +635,10 @@ class _Scheduler(object, metaclass=MetaSingleton):
                 else:
                     os.utime(tgt, (xf.stat_buf.st_atime, xf.stat_buf.st_mtime))
                     os.chmod(tgt, stat.S_IMODE(xf.stat_buf.st_mode))
+                    if tgt in cluster.file_uses:
+                        cluster.file_uses[tgt] += 1
+                    else:
+                        cluster.file_uses[tgt] = 1
                     logger.debug('Copied file %s', tgt)
                     resp = 'ACK'.encode()
             except:
@@ -1135,8 +1143,6 @@ class _Scheduler(object, metaclass=MetaSingleton):
             logger.warning('Invalid computation "%s" to cleanup ignored' % compute.id)
             raise StopIteration
 
-        Coro(self.schedule_cluster)
-
         pkl_path = os.path.join(self.dest_path_prefix,
                                 '%s_%s' % (compute.id, cluster.client_auth))
         if cluster.pending_results == 0:
@@ -1148,11 +1154,14 @@ class _Scheduler(object, metaclass=MetaSingleton):
             fd = open(pkl_path, 'wb')
             pickle.dump(compute, fd)
             fd.close()
-        for xf in compute.xfer_files:
-            try:
-                os.remove(xf.name)
-            except:
-                logger.warning('Could not remove file "%s"', xf.name)
+
+        for path, use in cluster.file_uses.items():
+            if use == 1:
+                try:
+                    os.remove(path)
+                except:
+                    logger.warning('Could not remove file "%s"', path)
+        cluster.file_uses = {}
 
         if os.path.isdir(cluster.dest_path) and len(os.listdir(cluster.dest_path)) == 0:
             logger.debug('Removing "%s"', cluster.dest_path)
@@ -1169,6 +1178,9 @@ class _Scheduler(object, metaclass=MetaSingleton):
             if not node:
                 continue
             node.clusters.discard(compute.id)
+
+        Coro(self.schedule_cluster)
+
         for ip_addr, dispy_node in cluster._dispy_nodes.items():
             node = self._nodes.get(ip_addr, None)
             if not node:
@@ -1196,7 +1208,7 @@ class _Scheduler(object, metaclass=MetaSingleton):
             dispy_node.avail_cpus = node.avail_cpus
             cluster._dispy_nodes[node.ip_addr] = dispy_node
             r = yield node.setup(compute, coro=coro)
-            if r:
+            if r or compute.id not in self._clusters:
                 cluster._dispy_nodes.pop(node.ip_addr, None)
                 logger.warning('Failed to setup %s for computation "%s"',
                                node.ip_addr, compute.name)
@@ -1420,7 +1432,10 @@ class _Scheduler(object, metaclass=MetaSingleton):
             self._sched_event.set()
             for xf in _job.xfer_files:
                 try:
-                    os.remove(xf.name)
+                    cluster.file_uses[xf.name] -= 1
+                    if cluster.file_uses[xf.name] == 0:
+                        cluster.file_uses.pop(xf.name)
+                        os.remove(xf.name)
                 except:
                     logger.warning('Could not remove "%s"' % xf.name)
         Coro(self.send_job_result, _job.uid, cluster, reply, resending=False)
