@@ -14,7 +14,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "MIT"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.6.1"
+__version__ = "4.6.3"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
@@ -1211,12 +1211,11 @@ class _Cluster(object):
 
     def del_cluster(self, cluster, coro=None):
         # generator
-        if self._clusters.get(cluster._compute.id, None) != cluster:
+        if self._clusters.pop(cluster._compute.id, None) != cluster:
             logger.warning('cluster %s already closed?', cluster._compute.name)
             raise StopIteration
 
         if self.shared:
-            self._clusters.pop(cluster._compute.id, None)
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock = AsyncSocket(sock, keyfile=self.keyfile, certfile=self.certfile)
             sock.settimeout(MsgTimeout)
@@ -1235,12 +1234,10 @@ class _Cluster(object):
                 if not node:
                     continue
                 node.clusters.discard(cluster._compute.id)
-            self._clusters.pop(cluster._compute.id, None)
             for dispy_node in cluster._dispy_nodes.itervalues():
                 node = self._nodes.get(dispy_node.ip_addr, None)
                 if not node:
                     continue
-                node.clusters.discard(cluster._compute.id)
                 yield node.close(cluster._compute, coro=coro)
                 dispy_node.busy = 0
                 dispy_node.update_time = time.time()
@@ -1270,7 +1267,7 @@ class _Cluster(object):
             self.shelf['compute_%s' % compute.id] = shelf_compute
             self.shelf.sync()
             r = yield node.setup(compute, coro=coro)
-            if r != 0:
+            if r or compute.id not in self._clusters:
                 cluster._dispy_nodes.pop(node.ip_addr, None)
                 logger.warning('Failed to setup %s for compute "%s": %s',
                                node.ip_addr, compute.name, r)
@@ -1626,6 +1623,8 @@ class _Cluster(object):
         cluster = self._clusters[_job.compute_id]
         if node:
             node = self._nodes.get(node.ip_addr, None)
+            if not node or _job.compute_id not in node.clusters:
+                raise StopIteration(-1)
             node.pending_jobs.append(_job)
             _job.pinned = node
         else:
@@ -1635,11 +1634,11 @@ class _Cluster(object):
         cluster._complete.clear()
         if cluster.status_callback:
             self.worker_Q.put((cluster.status_callback, (DispyJob.Created, None, _job.job)))
-        yield self._sched_event.set()
+        self._sched_event.set()
+        yield 0
 
     def cancel_job(self, job, coro=None):
         # generator
-        assert self.shared is False
         _job = job._dispy_job_
         if _job is None:
             logger.warning('Job %s is invalid for cancellation!', job.id)
@@ -2152,8 +2151,10 @@ class JobCluster(object):
             logger.warning('Creating job for "%s", "%s" failed with "%s"',
                            str(args), str(kwargs), traceback.format_exc())
             return None
-        Coro(self._cluster.submit_job, _job).value()
-        return _job.job
+        if Coro(self._cluster.submit_job, _job).value() == 0:
+            return _job.job
+        else:
+            return None
 
     def submit_node(self, node, *args, **kwargs):
         """Submit a job for execution at 'node' with the given
@@ -2189,8 +2190,10 @@ class JobCluster(object):
             logger.warning('Creating job for "%s", "%s" failed with "%s"',
                            str(args), str(kwargs), traceback.format_exc())
             return None
-        Coro(self._cluster.submit_job, _job, node).value()
-        return _job.job
+        if Coro(self._cluster.submit_job, _job, node).value() == 0:
+            return _job.job
+        else:
+            return None
 
     def cancel(self, job):
         """Cancel given job. If the job is not yet running on any
@@ -2567,13 +2570,18 @@ class SharedJobCluster(JobCluster):
             sock.send_msg('JOB:' + serialize(req))
             msg = sock.recv_msg()
             _job.uid = unserialize(msg)
-            self._cluster._sched_jobs[_job.uid] = _job
-            self._pending_jobs += 1
-            self._complete.clear()
-            if self.status_callback:
-                self._cluster.worker_Q.put((self.status_callback,
-                                            (DispyJob.Created, None, _job.job)))
-            return _job.job
+            if _job.uid:
+                self._cluster._sched_jobs[_job.uid] = _job
+                self._pending_jobs += 1
+                self._complete.clear()
+                if self.status_callback:
+                    self._cluster.worker_Q.put((self.status_callback,
+                                                (DispyJob.Created, None, _job.job)))
+                return _job.job
+            else:
+                _job.job._dispy_job_ = None
+                del _job.job
+                return None
         except:
             logger.warning('Creating job for "%s", "%s" failed with "%s"',
                            str(args), str(kwargs), traceback.format_exc())
