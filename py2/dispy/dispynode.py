@@ -1126,7 +1126,7 @@ class _DispyNode(object):
                     info = {'ip_addr': self.ext_ip_addr, 'port': self.port, 'sign': self.sign}
                     try:
                         yield sock.connect((compute.scheduler_ip_addr, compute.scheduler_port))
-                        yield sock.send_msg('TERMINATED:' + serialize(info))
+                        yield sock.send_msg('TERMINATED:'.encode() + serialize(info))
                     except:
                         pass
                     finally:
@@ -1442,7 +1442,7 @@ class _DispyNode(object):
                 info = {'ip_addr': self.ext_ip_addr, 'port': self.port, 'sign': self.sign}
                 try:
                     yield sock.connect((compute.scheduler_ip_addr, compute.scheduler_port))
-                    yield sock.send_msg('TERMINATED:' + serialize(info))
+                    yield sock.send_msg('TERMINATED:'.encode() + serialize(info))
                 except:
                     pass
                 sock.close()
@@ -1450,12 +1450,10 @@ class _DispyNode(object):
                 compute.zombie = True
                 self.cleanup_computation(compute)
             if quit:
-                logger.debug('terminating asyncoro')
                 self.tcp_coro.terminate()
                 self.num_cpus = 0
 
         if self.num_cpus:
-            # self.asyncoro.join()
             Coro(_shutdown, self, quit)
 
     def read_stdin(self, coro=None):

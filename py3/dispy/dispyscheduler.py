@@ -1181,7 +1181,7 @@ class _Scheduler(object, metaclass=MetaSingleton):
 
         Coro(self.schedule_cluster)
 
-        for ip_addr, dispy_node in cluster._dispy_nodes.items():
+        for ip_addr, dispy_node in list(cluster._dispy_nodes.items()):
             node = self._nodes.get(ip_addr, None)
             if not node:
                 continue
@@ -1892,7 +1892,8 @@ if __name__ == '__main__':
     scheduler = _Scheduler(**config)
     while True:
         try:
-            cmd = sys.stdin.readline().strip().lower()
+            cmd = input()
+            cmd = cmd.strip().lower()
             if cmd == 'quit' or cmd == 'exit':
                 break
             scheduler.print_status()

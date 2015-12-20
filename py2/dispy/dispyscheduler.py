@@ -1895,7 +1895,8 @@ if __name__ == '__main__':
     scheduler = _Scheduler(**config)
     while True:
         try:
-            cmd = sys.stdin.readline().strip().lower()
+            cmd = sys.stdin.readline()
+            cmd = cmd.strip().lower()
             if cmd == 'quit' or cmd == 'exit':
                 break
             scheduler.print_status()

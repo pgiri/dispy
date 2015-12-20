@@ -685,7 +685,6 @@ class _DispyNode(object):
                 except:
                     del self.computations[compute.id]
                     self.scheduler['ip_addr'] = None
-                    self.scheduler['port'] = None
                     self.scheduler['auth'].remove(compute.auth)
                     self.pulse_interval = None
                 else:
@@ -1130,7 +1129,7 @@ class _DispyNode(object):
                     info = {'ip_addr': self.ext_ip_addr, 'port': self.port, 'sign': self.sign}
                     try:
                         yield sock.connect((compute.scheduler_ip_addr, compute.scheduler_port))
-                        yield sock.send_msg(b'TERMINATED:' + serialize(info))
+                        yield sock.send_msg('TERMINATED:'.encode() + serialize(info))
                     except:
                         pass
                     finally:
@@ -1446,7 +1445,7 @@ class _DispyNode(object):
                 info = {'ip_addr': self.ext_ip_addr, 'port': self.port, 'sign': self.sign}
                 try:
                     yield sock.connect((compute.scheduler_ip_addr, compute.scheduler_port))
-                    yield sock.send_msg(b'TERMINATED:' + serialize(info))
+                    yield sock.send_msg('TERMINATED:'.encode() + serialize(info))
                 except:
                     pass
                 sock.close()
@@ -1454,12 +1453,10 @@ class _DispyNode(object):
                 compute.zombie = True
                 self.cleanup_computation(compute)
             if quit:
-                logger.debug('terminating asyncoro')
                 self.tcp_coro.terminate()
                 self.num_cpus = 0
 
         if self.num_cpus:
-            # self.asyncoro.join()
             Coro(_shutdown, self, quit)
 
     def read_stdin(self, coro=None):
@@ -1469,7 +1466,7 @@ class _DispyNode(object):
             print('Enter "end", "quit" or "exit" to terminate dispynode,\n'
                   '  "stop" to stop service, "start" to restart service')
             try:
-                cmd = yield thread_pool.async_task(sys.stdin.readline)
+                cmd = yield thread_pool.async_task(input)
                 cmd = cmd.strip().lower()
                 if cmd in ('end', 'quit', 'exit'):
                     break
@@ -1491,10 +1488,10 @@ class _DispyNode(object):
                     finally:
                         sock.close()
                 elif self.computations:
-                    for i, compute in enumerate(self.computations.itervalues(), start=1):
+                    for i, compute in enumerate(self.computations.values(), start=1):
                         print('Client %s: %s @ %s running %s jobs' %
                               (i, compute.name, compute.scheduler_ip_addr, compute.pending_jobs))
-                    print
+                    print()
                 else:
                     print('No clients currently using the server\n')
             except:
