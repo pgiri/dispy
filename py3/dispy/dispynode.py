@@ -211,7 +211,8 @@ class _DispyNode(object):
     def __init__(self, cpus, ip_addr=None, ext_ip_addr=None, node_port=None,
                  name='', scheduler_node=None, scheduler_port=None,
                  dest_path_prefix='', clean=False, secret='', keyfile=None, certfile=None,
-                 zombie_interval=60, service_start=None, service_stop=None, service_end=None):
+                 zombie_interval=60, service_start=None, service_stop=None, service_end=None,
+                 serve=0):
         assert 0 < cpus <= multiprocessing.cpu_count()
         self.num_cpus = cpus
         if name:
@@ -254,10 +255,8 @@ class _DispyNode(object):
 
         self.asyncoro = AsynCoro()
 
-        self.tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        if self.certfile:
-            self.tcp_sock = ssl.wrap_socket(self.tcp_sock, keyfile=self.keyfile,
-                                            certfile=self.certfile)
+        self.tcp_sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                                    keyfile=keyfile, certfile=certfile)
         self.tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.tcp_sock.bind((ip_addr, node_port))
         self.address = self.tcp_sock.getsockname()
@@ -315,6 +314,9 @@ class _DispyNode(object):
         self.reply_Q_thread = threading.Thread(target=self.__reply_Q)
         self.reply_Q_thread.start()
 
+        if serve < 0:
+            serve = 0
+        self.serve = serve
         self.timer_coro = Coro(self.timer_task)
         self.service_start = self.service_stop = self.service_end = None
         if isinstance(service_start, time.struct_time) and \
@@ -326,14 +328,15 @@ class _DispyNode(object):
             if isinstance(service_end, time.struct_time):
                 self.service_end = (service_end.tm_hour, service_end.tm_min)
             Coro(self.service_schedule)
-        # self.tcp_coro = Coro(self.tcp_server)
-        self.udp_coro = Coro(self.udp_server, _node_ipaddr(scheduler_node), scheduler_port)
 
         self.__init_code = ''.join(inspect.getsource(dispy_provisional_result))
         self.__init_code += ''.join(inspect.getsource(dispy_send_file))
         self.__init_modules = dict(sys.modules)
         if os.name == 'nt':
             self.__init_globals = dict(globals())
+        self.tcp_coro = Coro(self.tcp_server)
+        self.udp_coro = Coro(self.udp_server, _node_ipaddr(scheduler_node), scheduler_port)
+        Coro(self.read_stdin)
 
     def broadcast_ping_msg(self, coro=None):
         if not self.service_available():
@@ -460,6 +463,17 @@ class _DispyNode(object):
                             compute.last_pulse = now
             else:
                 logger.warning('Ignoring ping message from %s', addr[0])
+
+    def tcp_server(self):
+        while 1:
+            try:
+                conn, addr = yield self.tcp_sock.accept()
+            except GeneratorExit:
+                break
+            except:
+                logger.debug(traceback.format_exc())
+                continue
+            Coro(self.tcp_serve_task, conn, addr)
 
     def tcp_serve_task(self, conn, addr, coro=None):
         def job_request_task(msg):
@@ -1344,6 +1358,10 @@ class _DispyNode(object):
 
         if compute.cleanup is False:
             compute.globals = {}
+            if self.serve:
+                self.serve -= 1
+                if self.serve == 0:
+                    self.shutdown(quit=True)
             return
         os.chdir(self.dest_path_prefix)
         if isinstance(compute.cleanup, _Function):
@@ -1396,6 +1414,11 @@ class _DispyNode(object):
             except:
                 logger.warning('Could not remove directory "%s"', compute.dest_path)
 
+        if self.serve:
+            self.serve -= 1
+            if self.serve == 0:
+                self.shutdown(quit=True)
+
     def shutdown(self, quit=True):
         def _shutdown(self, quit, coro=None):
             self.thread_lock.acquire()
@@ -1430,14 +1453,53 @@ class _DispyNode(object):
                 compute.pending_jobs = 0
                 compute.zombie = True
                 self.cleanup_computation(compute)
-
-        if hasattr(self, 'job_infos'):
-            # self.asyncoro.join()
             if quit:
-                Coro(_shutdown, self, quit).value()
-                self.asyncoro.finish()
-            else:
-                Coro(_shutdown, self, quit)
+                logger.debug('terminating asyncoro')
+                self.tcp_coro.terminate()
+                self.num_cpus = 0
+
+        if self.num_cpus:
+            # self.asyncoro.join()
+            Coro(_shutdown, self, quit)
+
+    def read_stdin(self, coro=None):
+        coro.set_daemon()
+        thread_pool = asyncoro.AsyncThreadPool(1)
+        while True:
+            print('Enter "end", "quit" or "exit" to terminate dispynode,\n'
+                  '  "stop" to stop service, "start" to restart service')
+            try:
+                cmd = yield thread_pool.async_task(sys.stdin.readline)
+                cmd = cmd.strip().lower()
+                if cmd in ('end', 'quit', 'exit'):
+                    break
+                elif cmd in ('stop', 'start') and self.scheduler['ip_addr']:
+                    if cmd == 'stop':
+                        cpus = 0
+                    else:
+                        # cmd == 'start'
+                        cpus = self.num_cpus
+                    sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                                       keyfile=self.keyfile, certfile=self.certfile)
+                    sock.settimeout(MsgTimeout)
+                    try:
+                        yield sock.connect((self.scheduler['ip_addr'], self.scheduler['port']))
+                        info = {'ip_addr': self.ext_ip_addr, 'sign': self.sign, 'cpus': cpus}
+                        yield sock.send_msg('NODE_CPUS:'.encode() + serialize(info))
+                    except:
+                        pass
+                    finally:
+                        sock.close()
+                elif self.computations:
+                    for i, compute in enumerate(self.computations.itervalues(), start=1):
+                        print('Client %s: %s @ %s running %s jobs' %
+                              (i, compute.name, compute.scheduler_ip_addr, compute.pending_jobs))
+                    print
+                else:
+                    print('No clients currently using the server\n')
+            except:
+                pass
+        self.shutdown(quit=True)
 
 
 if __name__ == '__main__':
@@ -1482,6 +1544,8 @@ if __name__ == '__main__':
     parser.add_argument('--service_end', dest='service_end', default=None,
                         help='time of day in HH:MM format when to end service '
                         '(terminate running jobs)')
+    parser.add_argument('--serve', dest='serve', default=0, type=int,
+                        help='number of clients to service before exiting (default 0)')
     parser.add_argument('--msg_timeout', dest='msg_timeout', default=MsgTimeout, type=float,
                         help='timeout used for messages to/from client in seconds')
     parser.add_argument('-s', '--secret', dest='secret', default='',
@@ -1574,21 +1638,8 @@ if __name__ == '__main__':
     if _dispy_config['service_end']:
         _dispy_config['service_end'] = time.strptime(_dispy_config['service_end'], '%H:%M')
 
-    _dispy_conn = _dispy_addr = _dispy_node = None
+    _dispy_node = None
     _dispy_node = _DispyNode(**_dispy_config)
     del _dispy_config
 
-    while True:
-        try:
-            _dispy_conn, _dispy_addr = _dispy_node.tcp_sock.accept()
-        except KeyboardInterrupt:
-            # TODO: terminate even if jobs are scheduled?
-            logger.info('Interrupted; terminating')
-            _dispy_node.shutdown()
-            break
-        except:
-            logger.debug(traceback.format_exc())
-            continue
-        _dispy_conn = AsyncSocket(_dispy_conn, keyfile=_dispy_node.keyfile,
-                                  certfile=_dispy_node.certfile)
-        Coro(_dispy_node.tcp_serve_task, _dispy_conn, _dispy_addr)
+    _dispy_node.asyncoro.finish()
