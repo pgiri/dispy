@@ -482,9 +482,10 @@ class _Scheduler(object):
                 Coro(self.add_cluster, cluster)
             except:
                 self._clusters.pop(cluster._compute.id, None)
-                logger.debug('Ignoring computation %s / %s' %
-                             (cluster._compute.name, cluster._compute.id))
-                raise StopIteration
+                logger.debug('Ignoring computation %s / %s from %s:%s' %
+                             (cluster._compute.name, cluster._compute.id,
+                              cluster.client_ip_addr, cluster.client_job_result_port))
+                continue
             finally:
                 reply_sock.close()
 
@@ -1765,7 +1766,6 @@ class _Scheduler(object):
             yield self._sched_event.set()
         raise StopIteration(cpus)
 
-
     def shutdown(self):
         def _shutdown(self, coro=None):
             # generator
@@ -1895,12 +1895,12 @@ if __name__ == '__main__':
     scheduler = _Scheduler(**config)
     while True:
         try:
-            cmd = sys.stdin.readline()
+            cmd = raw_input('Enter "quit" or "exit" to terminate scheduler, '
+                            'anything else to get status: ')
             cmd = cmd.strip().lower()
             if cmd == 'quit' or cmd == 'exit':
                 break
             scheduler.print_status()
-            print('Enter "quit" or "exit" to terminate scheduler')
         except KeyboardInterrupt:
             # TODO: terminate even if jobs are scheduled?
             logger.info('Interrupted; terminating')
