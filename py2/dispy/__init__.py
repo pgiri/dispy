@@ -579,7 +579,7 @@ class _Cluster(object):
             else:
                 node_port = 51348
 
-            self.port = port
+            self.port = None
             self.node_port = node_port
             self._nodes = {}
             self.secret = secret
@@ -606,6 +606,25 @@ class _Cluster(object):
                 self.recover_file = '_dispy_%.4i%.2i%.2i%.2i%.2i%.2i' % \
                                     (now.year, now.month, now.day,
                                      now.hour, now.minute, now.second)
+            atexit.register(self.shutdown)
+            self.timer_coro = Coro(self.timer_task)
+
+            port_bound_event = asyncoro.Event()
+            if self.shared:
+                self.udp_coro = None
+                self.port = port
+                port_bound_event.set()
+            else:
+                self.udp_coro = Coro(self.udp_server, port, port_bound_event)
+
+                def port_bound(self, coro=None):
+                    yield port_bound_event.wait()
+                Coro(port_bound, self).value()
+
+            self.tcp_coros = []
+            for ip_addr in list(self.ip_addrs):
+                self.tcp_coros.append(Coro(self.tcp_server, ip_addr, port_bound_event))
+
             try:
                 self.shelf = shelve.open(self.recover_file, flag='c', writeback=True)
                 self.shelf['_cluster'] = {'ip_addrs': self.ip_addrs, 'port': self.port,
@@ -617,17 +636,6 @@ class _Cluster(object):
                 raise Exception('Could not create fault recover file "%s"' %
                                 self.recover_file)
             logger.info('Storing fault recovery information in "%s"', self.recover_file)
-            atexit.register(self.shutdown)
-            self.timer_coro = Coro(self.timer_task)
-
-            self.tcp_coros = []
-            for ip_addr in list(self.ip_addrs):
-                self.tcp_coros.append(Coro(self.tcp_server, ip_addr))
-
-            if self.shared:
-                self.udp_coro = None
-            else:
-                self.udp_coro = Coro(self.udp_server)
 
             self.select_job_node = self.load_balance_schedule
             self._scheduler = Coro(self._schedule_jobs)
@@ -639,13 +647,23 @@ class _Cluster(object):
             self.worker_thread.daemon = True
             self.worker_thread.start()
 
-    def udp_server(self, coro=None):
+    def udp_server(self, port, port_bound_event, coro=None):
         # generator
         coro.set_daemon()
-        Coro(self.broadcast_ping)
         udp_sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
-        udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        udp_sock.bind(('', self.port))
+        # udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        while True:
+            try:
+                udp_sock.bind(('', port))
+            except:
+                logger.warning('Port %s seems to be used by another program' % port)
+                yield coro.sleep(5)
+            else:
+                break
+        self.port = port
+        port_bound_event.set()
+        del port_bound_event
+        Coro(self.broadcast_ping)
         while True:
             msg, addr = yield udp_sock.recvfrom(1000)
             if msg.startswith('PULSE:'):
@@ -686,9 +704,8 @@ class _Cluster(object):
                     continue
                 auth = auth_code(self.secret, info['sign'])
                 node = self._nodes.get(info['ip_addr'], None)
-                if node:
-                    if node.auth == auth:
-                        continue
+                if node and node.auth == auth:
+                    continue
                 sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                    keyfile=self.keyfile, certfile=self.certfile)
                 sock.settimeout(MsgTimeout)
@@ -699,6 +716,8 @@ class _Cluster(object):
                     yield sock.sendall(auth)
                     yield sock.send_msg('PING:' + serialize(msg))
                     info = yield sock.recv_msg()
+                    info = unserialize(info)
+                    Coro(self.add_node, info)
                 except:
                     logger.debug(traceback.format_exc())
                 finally:
@@ -707,9 +726,11 @@ class _Cluster(object):
                 # logger.debug('Ignoring UDP message %s from: %s', msg[:min(5, len(msg))], addr[0])
                 pass
 
-    def tcp_server(self, ip_addr, coro=None):
+    def tcp_server(self, ip_addr, port_bound_event, coro=None):
         # generator
         coro.set_daemon()
+        yield port_bound_event.wait()
+        del port_bound_event
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock = AsyncSocket(sock, keyfile=self.keyfile, certfile=self.certfile)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -722,7 +743,7 @@ class _Cluster(object):
                 ip_addr = None
             self.ip_addrs.discard(ip_addr)
             raise StopIteration
-        if self.shared and self.port == 0:
+        if self.shared:
             self.port = sock.getsockname()[1]
         logger.debug('dispy client at %s:%s' % (ip_addr, self.port))
         sock.listen(128)
@@ -849,18 +870,34 @@ class _Cluster(object):
                 logger.debug(traceback.format_exc())
                 pass
             else:
-                if cpus > node.avail_cpus:
-                    logger.warning('Node requested using %s CPUs, but has %s CPUs' %
-                                   (node.ip_addr, cpus, node.avail_cpus))
-                    cpus = node.avail_cpus
-                elif cpus < 0:
+                if cpus < 0:
                     logger.warning('Node requested using %s CPUs, disabling it' %
                                    (node.ip_addr, cpus))
                     cpus = 0
                 logger.debug('Setting cpus for %s to %s' % (node.ip_addr, cpus))
-                if cpus > node.cpus:
-                    self._sched_event.set()
+                # TODO: set node.cpus to min(cpus, node.cpus)?
                 node.cpus = cpus
+                if cpus > node.avail_cpus:
+                    node.avail_cpus = cpus
+                    node_computations = []
+                    for cid, cluster in self._clusters.iteritems():
+                        if cid in node.clusters:
+                            continue
+                        compute = cluster._compute
+                        for node_alloc in cluster._node_allocs:
+                            cpus = node_alloc.allocate(cluster, node.ip_addr, node.name,
+                                                       node.avail_cpus)
+                            if cpus <= 0:
+                                continue
+                            node.cpus = min(node.avail_cpus, cpus)
+                            cluster._dispy_nodes.pop(node.ip_addr, None)
+                            node_computations.append(compute)
+                            break
+                    if node_computations:
+                        Coro(self.setup_node, node, node_computations)
+                    yield self._sched_event.set()
+                else:
+                    node.avail_cpus = cpus
                 for cid in node.clusters:
                     cluster = self._clusters[cid]
                     dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
@@ -1254,8 +1291,8 @@ class _Cluster(object):
             # NB: to avoid computation being sent multiple times, we
             # add to cluster's _dispy_nodes before sending computation
             # to node
-            cluster = self._clusters[compute.id]
-            if node.ip_addr in cluster._dispy_nodes:
+            cluster = self._clusters.get(compute.id, None)
+            if not cluster or node.ip_addr in cluster._dispy_nodes:
                 continue
             dispy_node = DispyNode(node.ip_addr, node.name, node.cpus)
             dispy_node.avail_cpus = node.avail_cpus
@@ -1770,11 +1807,6 @@ class _Cluster(object):
             Coro(_shutdown, self).value()
             self._scheduler.value()
             self.worker_Q.join()
-        if self.asyncoro:
-            # self.asyncoro.join(show_running=True)
-            self.asyncoro.finish()
-            self.asyncoro = None
-            logger.debug('shutdown complete')
         if self.shelf:
             # TODO: need to check all clusters are deleted?
             self.shelf.close()
@@ -2321,19 +2353,18 @@ class JobCluster(object):
         they all finish. Additional clusters may be created after this
         call returns.
         """
-        if hasattr(self, '_compute'):
+        if self._compute:
             self._complete.wait()
             Coro(self._cluster.del_cluster, self).value()
-            del self._compute
+            self._compute = None
 
     def shutdown(self):
         """Close the cluster and shutdown the scheduler (so additional
         clusters can't be created).
         """
         self.close()
-        if hasattr(self, '_cluster'):
-            cluster = self._cluster
-            del self._cluster
+        if self._cluster:
+            cluster, self._cluster = self._cluster, None
             cluster.shutdown()
 
 
@@ -2346,14 +2377,18 @@ class SharedJobCluster(JobCluster):
     @scheduler_node is name or IP address where dispyscheduler is
       running to which jobs are submitted.
 
-    @port is port where dispyscheduler is running at @scheduler_node.
+    @scheduler_port is port where dispyscheduler is running at
+    @scheduler_node.
+
+    @port is port where this client will get job results from
+    dispyscheduler.
 
     @pulse_interval for SharedJobCluster is not used; instead,
     dispyscheduler must be called with appropriate pulse_interval.
     The behaviour is same as for JobCluster.
     """
     def __init__(self, computation, nodes=None, depends=[], callback=None, cluster_status=None,
-                 ip_addr=None, port=None, scheduler_node=None, scheduler_port=None,
+                 ip_addr=None, port=51347, scheduler_node=None, scheduler_port=None,
                  ext_ip_addr=None, loglevel=logging.INFO, setup=None, cleanup=True, dest_path=None,
                  poll_interval=None, reentrant=False, exclusive=False,
                  secret='', keyfile=None, certfile=None, recover_file=None):
@@ -2383,12 +2418,9 @@ class SharedJobCluster(JobCluster):
                             secret=secret, keyfile=keyfile, certfile=certfile,
                             recover_file=recover_file)
 
-        def _terminate_scheduler(self, coro=None):
-            self._cluster.terminate = True
-            yield self._cluster._sched_event.set()
-
-        Coro(_terminate_scheduler, self)
         # wait for scheduler to terminate
+        self._cluster.terminate = True
+        self._cluster._sched_event.set()
         self._cluster._scheduler.value()
         self._cluster.job_uid = None
         node_allocs = sorted(node_allocs, key=lambda node_alloc: node_alloc.ip_rex)
@@ -2747,9 +2779,8 @@ class SharedJobCluster(JobCluster):
         """Similar to 'close' of JobCluster.
         """
         self._complete.wait()
-        if hasattr(self, '_cluster'):
-            cluster = self._cluster
-            del self._cluster
+        if self._cluster:
+            cluster, self._cluster = self._cluster, None
             Coro(cluster.del_cluster, self).value()
 
 

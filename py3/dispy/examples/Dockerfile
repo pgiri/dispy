@@ -1,3 +1,9 @@
+# File to build docker (https://www.docker.com) images to run
+# dispynode containers.
+
+# This file builds dispy (http://dispy.sourceforge.net) with Python 3
+# using latest Ubuntu Linux.
+
 FROM ubuntu:latest
 
 RUN apt-get update && \
