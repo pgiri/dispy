@@ -551,6 +551,8 @@ class _Scheduler(object, metaclass=MetaSingleton):
                     logger.warning('transfer file "%s" is too big (%s)',
                                    xf.name, xf.stat_buf.st_size)
                     return 'NAK'.encode()
+            if self.terminate:
+                return 'NAK'.encode()
             cluster = _Cluster(compute, node_allocs, self)
             cluster.ip_addr = conn.getsockname()[0]
             cluster.exclusive = exclusive
@@ -725,7 +727,7 @@ class _Scheduler(object, metaclass=MetaSingleton):
                         req['ip_addr'] = addr[0]
                     reply = {'ip_addr': req['ip_addr'], 'port': self.scheduler_port,
                              'sign': self.sign, 'version': _dispy_version}
-                    yield conn.send_msg(serialize(reply))
+                        yield conn.send_msg(serialize(reply))
                 except:
                     pass
             else:
@@ -1497,10 +1499,10 @@ class _Scheduler(object, metaclass=MetaSingleton):
                 for njob in node.pending_jobs:
                     if njob.compute_id == cluster._compute.id:
                         self.finish_job(cluster, njob, DispyJob.Cancelled)
+                        dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
                         if cluster.status_callback and dispy_node:
                             dispy_node.update_time = time.time()
-                            self.worker_Q.put((cluster.status_callback,
-                                               (DispyJob.Cancelled, dispy_node, njob.job)))
+                            cluster.status_callback(DispyJob.Cancelled, dispy_node, njob.job)
                 node.pending_jobs = [njob for njob in node.pending_jobs
                                      if njob.compute_id != cluster._compute.id]
             if self._sched_jobs.pop(_job.uid, None) == _job:
@@ -1510,23 +1512,18 @@ class _Scheduler(object, metaclass=MetaSingleton):
                 node.busy -= 1
             self._sched_event.set()
         except:
-            logger.warning('Failed to run job %s on %s for computation %s; rescheduling it',
+            logger.warning('Failed to run job %s on %s for computation %s',
                            _job.uid, node.ip_addr, cluster._compute.name)
             # logger.debug(traceback.format_exc())
             # TODO: delay executing again for some time?
             # this job might have been deleted already due to timeout
             node._jobs.discard(_job.uid)
             if self._sched_jobs.pop(_job.uid, None) == _job:
-                if _job.pinned:
-                    self.finish_job(cluster, _job, DispyJob.Cancelled)
-                    if cluster.status_callback:
-                        if dispy_node:
-                            dispy_node.update_time = time.time()
-                            self.worker_Q.put((cluster.status_callback,
-                                               (DispyJob.Cancelled, dispy_node, _job.job)))
-                else:
-                    cluster._jobs.append(_job)
-                    self.unsched_jobs += 1
+                self.finish_job(cluster, _job, DispyJob.Cancelled)
+                if cluster.status_callback:
+                    if dispy_node:
+                        dispy_node.update_time = time.time()
+                        cluster.status_callback(DispyJob.Cancelled, dispy_node, _job.job)
                 node.busy -= 1
             self._sched_event.set()
         else:
@@ -1701,8 +1698,7 @@ class _Scheduler(object, metaclass=MetaSingleton):
             node_alloc = [node_alloc]
         cluster._node_allocs.extend(node_alloc)
         cluster._node_allocs = sorted(cluster._node_allocs,
-                                      key=lambda node_alloc: node_alloc.ip_rex)
-        cluster._node_allocs.reverse()
+                                      key=lambda node_alloc: node_alloc.ip_rex, reverse=True)
         present = set()
         cluster._node_allocs = [na for na in cluster._node_allocs
                                 if na.ip_rex not in present and not present.add(na.ip_rex)]
@@ -1766,21 +1762,20 @@ class _Scheduler(object, metaclass=MetaSingleton):
         raise StopIteration(cpus)
 
     def shutdown(self):
-        def _shutdown(self, coro=None):
-            # generator
-            assert coro is not None
-            # TODO: send shutdown notification to clients? Or wait for all
-            # pending tasks to complete?
-            if self.terminate is False:
-                logger.debug('shutting down scheduler ...')
-                self.terminate = True
-                yield self._sched_event.set()
+        if self.terminate:
+            return
+        logger.debug('shutting down scheduler ...')
+        self.terminate = True
+        while (self.pending_clusters or
+               any(cluster.pending_jobs for cluster in self._clusters.values())):
+            logger.warning('Waiting for %s clusters to finish' %
+                           (len(self.pending_clusters) + len(self._clusters)))
+            time.sleep(5)
+        def _terminate_scheduler(self, coro=None):
+            yield self._sched_event.set()
 
-        if self.terminate is False:
-            Coro(_shutdown, self).value()
-            self.scheduler_coro.value()
-            # self.asyncoro.join(True)
-            self.asyncoro.finish()
+        Coro(_terminate_scheduler, self).value()
+        self.scheduler_coro.value()
 
     def print_status(self):
         print()
@@ -1903,10 +1898,10 @@ if __name__ == '__main__':
         except KeyboardInterrupt:
             # TODO: terminate even if jobs are scheduled?
             logger.info('Interrupted; terminating')
-            scheduler.shutdown()
             break
         except:
             logger.debug(traceback.format_exc())
             continue
+    scheduler.shutdown()
     scheduler.print_status()
     exit(0)

@@ -452,6 +452,54 @@ class _Scheduler(object):
             except:
                 # logger.debug(traceback.format_exc())
                 pass
+        elif msg.startswith('NODE_CPUS:'):
+            try:
+                info = unserialize(msg[len('NODE_CPUS:'):])
+                node = self._nodes.get(info['ip_addr'], None)
+                if not node:
+                    raise StopIteration
+                auth = auth_code(self.node_secret, info['sign'])
+                if auth != node.auth:
+                    logger.warning('Invalid signature from %s', node.ip_addr)
+                    raise StopIteration
+                cpus = info['cpus']
+            except:
+                logger.debug(traceback.format_exc())
+                conn.close()
+                raise StopIteration
+            if cpus < 0:
+                logger.warning('Node requested using %s CPUs, disabling it' %
+                               (node.ip_addr, cpus))
+                cpus = 0
+            logger.debug('Setting cpus for %s to %s' % (node.ip_addr, cpus))
+            # TODO: set node.cpus to min(cpus, node.cpus)?
+            node.cpus = cpus
+            if cpus > node.avail_cpus:
+                node.avail_cpus = cpus
+                node_computations = []
+                for cid, cluster in self._clusters.iteritems():
+                    if cid in node.clusters:
+                        continue
+                    compute = cluster._compute
+                    for node_alloc in cluster._node_allocs:
+                        cpus = node_alloc.allocate(cluster, node.ip_addr, node.name,
+                                                   node.avail_cpus)
+                        if cpus <= 0:
+                            continue
+                        node.cpus = min(node.avail_cpus, cpus)
+                        cluster._dispy_nodes.pop(node.ip_addr, None)
+                        node_computations.append(compute)
+                        break
+                if node_computations:
+                    Coro(self.setup_node, node, node_computations)
+                yield self._sched_event.set()
+            else:
+                node.avail_cpus = cpus
+            for cid in node.clusters:
+                cluster = self._clusters[cid]
+                dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
+                if dispy_node:
+                    dispy_node.cpus = cpus
         else:
             logger.warning('invalid message from %s:%s ignored' % addr)
             logger.debug(traceback.format_exc())
@@ -545,12 +593,14 @@ class _Scheduler(object):
                 exclusive = req['exclusive']
             except:
                 logger.debug('Ignoring compute request from %s', addr[0])
-                return 'NAK'.encode()
+                return serialize(-1)
             for xf in compute.xfer_files:
                 if MaxFileSize and xf.stat_buf.st_size > MaxFileSize:
                     logger.warning('transfer file "%s" is too big (%s)',
                                    xf.name, xf.stat_buf.st_size)
-                    return 'NAK'.encode()
+                    return serialize(-1)
+            if self.terminate:
+                return serialize(-1)
             cluster = _Cluster(compute, node_allocs, self)
             cluster.ip_addr = conn.getsockname()[0]
             cluster.exclusive = exclusive
@@ -559,7 +609,7 @@ class _Scheduler(object):
                 try:
                     os.mkdir(dest)
                 except:
-                    return 'NAK'.encode()
+                    return serialize(-1)
             if compute.dest_path and isinstance(compute.dest_path, str):
                 # TODO: get os.sep from client and convert (in case of mixed environments)?
                 if compute.dest_path.startswith(os.sep):
@@ -570,7 +620,7 @@ class _Scheduler(object):
                     try:
                         os.makedirs(cluster.dest_path)
                     except:
-                        return 'NAK'.encode()
+                        return serialize(-1)
             else:
                 cluster.dest_path = tempfile.mkdtemp(prefix=compute.name + '_', dir=dest)
 
@@ -599,6 +649,7 @@ class _Scheduler(object):
             # generator
             try:
                 xf = unserialize(msg)
+                logger.debug('xf: %s' % xf)
             except:
                 logger.debug('Ignoring file trasnfer request from %s', addr[0])
                 raise StopIteration('NAK'.encode())
@@ -1498,10 +1549,10 @@ class _Scheduler(object):
                 for njob in node.pending_jobs:
                     if njob.compute_id == cluster._compute.id:
                         self.finish_job(cluster, njob, DispyJob.Cancelled)
+                        dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
                         if cluster.status_callback and dispy_node:
                             dispy_node.update_time = time.time()
-                            self.worker_Q.put((cluster.status_callback,
-                                               (DispyJob.Cancelled, dispy_node, njob.job)))
+                            cluster.status_callback(DispyJob.Cancelled, dispy_node, njob.job)
                 node.pending_jobs = [njob for njob in node.pending_jobs
                                      if njob.compute_id != cluster._compute.id]
             if self._sched_jobs.pop(_job.uid, None) == _job:
@@ -1511,23 +1562,18 @@ class _Scheduler(object):
                 node.busy -= 1
             self._sched_event.set()
         except:
-            logger.warning('Failed to run job %s on %s for computation %s; rescheduling it',
+            logger.warning('Failed to run job %s on %s for computation %s',
                            _job.uid, node.ip_addr, cluster._compute.name)
             # logger.debug(traceback.format_exc())
             # TODO: delay executing again for some time?
             # this job might have been deleted already due to timeout
             node._jobs.discard(_job.uid)
             if self._sched_jobs.pop(_job.uid, None) == _job:
-                if _job.pinned:
-                    self.finish_job(cluster, _job, DispyJob.Cancelled)
-                    if cluster.status_callback:
-                        if dispy_node:
-                            dispy_node.update_time = time.time()
-                            self.worker_Q.put((cluster.status_callback,
-                                               (DispyJob.Cancelled, dispy_node, _job.job)))
-                else:
-                    cluster._jobs.append(_job)
-                    self.unsched_jobs += 1
+                self.finish_job(cluster, _job, DispyJob.Cancelled)
+                if cluster.status_callback:
+                    if dispy_node:
+                        dispy_node.update_time = time.time()
+                        cluster.status_callback(DispyJob.Cancelled, dispy_node, _job.job)
                 node.busy -= 1
             self._sched_event.set()
         else:
@@ -1702,8 +1748,7 @@ class _Scheduler(object):
             node_alloc = [node_alloc]
         cluster._node_allocs.extend(node_alloc)
         cluster._node_allocs = sorted(cluster._node_allocs,
-                                      key=lambda node_alloc: node_alloc.ip_rex)
-        cluster._node_allocs.reverse()
+                                      key=lambda node_alloc: node_alloc.ip_rex, reverse=True)
         present = set()
         cluster._node_allocs = [na for na in cluster._node_allocs
                                 if na.ip_rex not in present and not present.add(na.ip_rex)]
@@ -1767,21 +1812,21 @@ class _Scheduler(object):
         raise StopIteration(cpus)
 
     def shutdown(self):
-        def _shutdown(self, coro=None):
-            # generator
-            assert coro is not None
-            # TODO: send shutdown notification to clients? Or wait for all
-            # pending tasks to complete?
-            if self.terminate is False:
-                logger.debug('shutting down scheduler ...')
-                self.terminate = True
-                yield self._sched_event.set()
+        if self.terminate:
+            return
+        logger.debug('shutting down scheduler ...')
+        self.terminate = True
+        while (self.pending_clusters or
+               any(cluster.pending_jobs for cluster in self._clusters.itervalues())):
+            logger.warning('Waiting for %s clusters to finish' %
+                           (len(self.pending_clusters) + len(self._clusters)))
+            time.sleep(5)
 
-        if self.terminate is False:
-            Coro(_shutdown, self).value()
-            self.scheduler_coro.value()
-            # self.asyncoro.join(True)
-            self.asyncoro.finish()
+        def _terminate_scheduler(self, coro=None):
+            yield self._sched_event.set()
+
+        Coro(_terminate_scheduler, self).value()
+        self.scheduler_coro.value()
 
     def print_status(self):
         print
@@ -1904,10 +1949,10 @@ if __name__ == '__main__':
         except KeyboardInterrupt:
             # TODO: terminate even if jobs are scheduled?
             logger.info('Interrupted; terminating')
-            scheduler.shutdown()
             break
         except:
             logger.debug(traceback.format_exc())
             continue
+    scheduler.shutdown()
     scheduler.print_status()
     exit(0)

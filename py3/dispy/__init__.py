@@ -345,11 +345,16 @@ class _Node(object):
     def setup(self, compute, coro=None):
         # generator
         compute.scheduler_ip_addr = self.scheduler_ip_addr
-        resp = yield self.send(b'COMPUTE:' + serialize(compute), coro=coro)
-        if resp != 0:
+        cpus = yield self.send(b'COMPUTE:' + serialize(compute), coro=coro)
+        try:
+            cpus = unserialize(cpus)
+        except:
+            cpus = -1
+        if cpus < 0:
             logger.warning('Transfer of computation "%s" to %s failed: %s',
-                           compute.name, self.ip_addr, resp)
-            raise StopIteration(resp)
+                           compute.name, self.ip_addr, cpus)
+            raise StopIteration(cpus)
+        self.cpus = cpus
         for xf in compute.xfer_files:
             resp = yield self.xfer_file(xf, coro=coro)
             if resp != 0:
@@ -784,6 +789,9 @@ class _Cluster(object, metaclass=MetaSingleton):
                 info = unserialize(msg[len(b'JOB_STATUS:'):])
                 _job = self._sched_jobs[info['uid']]
                 assert _job.hash == info['hash']
+            except:
+                logger.warning('invalid job status from %s:%s ignored' % (addr[0], addr[1]))
+            else:
                 job = _job.job
                 job.status = info['status']
                 job.ip_addr = info['node']
@@ -805,8 +813,6 @@ class _Cluster(object, metaclass=MetaSingleton):
                             if cluster.status_callback:
                                 self.worker_Q.put((cluster.status_callback,
                                                    (job.status, dispy_node, job)))
-            except:
-                logger.warning('invalid job status from %s:%s ignored' % (addr[0], addr[1]))
         elif msg.startswith(b'PONG:'):
             try:
                 info = unserialize(msg[len(b'PONG:'):])
@@ -815,9 +821,10 @@ class _Cluster(object, metaclass=MetaSingleton):
                                    info['ip_addr'], info['version'], _dispy_version)
                     raise StopIteration
                 assert info['auth'] == self.auth
-                yield self.add_node(info, coro=coro)
             except:
                 logger.warning('Ignoring node %s', addr[0])
+            else:
+                yield self.add_node(info, coro=coro)
         elif msg.startswith(b'PING:'):
             try:
                 info = unserialize(msg[len(b'PING:'):])
@@ -857,9 +864,10 @@ class _Cluster(object, metaclass=MetaSingleton):
                 xf = unserialize(msg[len(b'FILEXFER:'):])
                 msg = yield conn.recv_msg()
                 reply = unserialize(msg)
-                yield self.file_xfer_process(reply, xf, conn, addr)
             except:
                 logger.debug(traceback.format_exc())
+            else:
+                yield self.file_xfer_process(reply, xf, conn, addr)
         elif msg.startswith(b'NODE_CPUS:'):
             try:
                 info = unserialize(msg[len(b'NODE_CPUS:'):])
@@ -872,45 +880,48 @@ class _Cluster(object, metaclass=MetaSingleton):
                     raise StopIteration
                 cpus = info['cpus']
             except:
-                logger.debug(traceback.format_exc())
-                pass
-            else:
-                if cpus < 0:
-                    logger.warning('Node requested using %s CPUs, disabling it' %
-                                   (node.ip_addr, cpus))
-                    cpus = 0
-                logger.debug('Setting cpus for %s to %s' % (node.ip_addr, cpus))
-                # TODO: set node.cpus to min(cpus, node.cpus)?
-                node.cpus = cpus
-                if cpus > node.avail_cpus:
-                    node.avail_cpus = cpus
-                    node_computations = []
-                    for cid, cluster in self._clusters.items():
-                        if cid in node.clusters:
+                conn.close()
+                raise StopIteration
+            if cpus < 0:
+                logger.warning('Node requested using %s CPUs, disabling it' %
+                               (node.ip_addr, cpus))
+                cpus = 0
+            logger.debug('Setting cpus for %s to %s' % (node.ip_addr, cpus))
+            # TODO: set node.cpus to min(cpus, node.cpus)?
+            node.cpus = cpus
+            if cpus > node.avail_cpus:
+                node.avail_cpus = cpus
+                node_computations = []
+                for cid, cluster in self._clusters.items():
+                    if cid in node.clusters:
+                        continue
+                    compute = cluster._compute
+                    for node_alloc in cluster._node_allocs:
+                        cpus = node_alloc.allocate(cluster, node.ip_addr, node.name,
+                                                   node.avail_cpus)
+                        if cpus <= 0:
                             continue
-                        compute = cluster._compute
-                        for node_alloc in cluster._node_allocs:
-                            cpus = node_alloc.allocate(cluster, node.ip_addr, node.name,
-                                                       node.avail_cpus)
-                            if cpus <= 0:
-                                continue
-                            node.cpus = min(node.avail_cpus, cpus)
-                            cluster._dispy_nodes.pop(node.ip_addr, None)
-                            node_computations.append(compute)
-                            break
-                    if node_computations:
-                        Coro(self.setup_node, node, node_computations)
-                    yield self._sched_event.set()
-                else:
-                    node.avail_cpus = cpus
-                for cid in node.clusters:
-                    cluster = self._clusters[cid]
-                    dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
-                    if dispy_node:
-                        dispy_node.cpus = cpus
+                        node.cpus = min(node.avail_cpus, cpus)
+                        cluster._dispy_nodes.pop(node.ip_addr, None)
+                        node_computations.append(compute)
+                        break
+                if node_computations:
+                    Coro(self.setup_node, node, node_computations)
+                yield self._sched_event.set()
+            else:
+                node.avail_cpus = cpus
+            for cid in node.clusters:
+                cluster = self._clusters[cid]
+                dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
+                if dispy_node:
+                    dispy_node.cpus = cpus
         elif msg.startswith(b'TERMINATED:'):
             try:
                 info = unserialize(msg[len(b'TERMINATED:'):])
+            except:
+                # logger.debug(traceback.format_exc())
+                pass
+            else:
                 node = self._nodes.pop(info['ip_addr'], None)
                 if not node:
                     raise StopIteration
@@ -931,15 +942,16 @@ class _Cluster(object, metaclass=MetaSingleton):
                             self.worker_Q.put((cluster.status_callback,
                                                (DispyNode.Closed, dispy_node, None)))
                     node.clusters = set()
-            except:
-                # logger.debug(traceback.format_exc())
-                pass
         elif msg.startswith(b'NODE_STATUS:'):
             # this message is from dispyscheduler for SharedJobCluster
             try:
                 info = unserialize(msg[len(b'NODE_STATUS:'):])
                 cluster = self._clusters[info['compute_id']]
                 assert info['auth'] == cluster._compute.auth
+            except:
+                logger.debug('invalid node status from %s:%s ignored' % (addr[0], addr[1]))
+                # logger.debug(traceback.format_exc())
+            else:
                 dispy_node = info['dispy_node']
                 dispy_node.update_time = time.time()
                 if info['status'] == DispyNode.Initialized:
@@ -965,9 +977,6 @@ class _Cluster(object, metaclass=MetaSingleton):
                 else:
                     logger.warning('Invalid node status %s from %s:%s ignored',
                                    info['status'], addr[0], addr[1])
-            except:
-                logger.debug('invalid node status from %s:%s ignored' % (addr[0], addr[1]))
-                # logger.debug(traceback.format_exc())
         elif msg.startswith(b'SCHEDULED:'):
             try:
                 info = unserialize(msg[len(b'SCHEDULED:'):])
@@ -1538,23 +1547,18 @@ class _Cluster(object, metaclass=MetaSingleton):
                 node.busy -= 1
             self._sched_event.set()
         except:
-            logger.warning('Failed to run job %s on %s for computation %s; rescheduling it',
+            logger.warning('Failed to run job %s on %s for computation %s',
                            _job.uid, node.ip_addr, cluster._compute.name)
             logger.debug(traceback.format_exc())
             # TODO: delay executing again for some time?
             # this job might have been deleted already due to timeout
             node._jobs.discard(_job.uid)
             if self._sched_jobs.pop(_job.uid, None) == _job:
-                if _job.pinned:
-                    self.finish_job(cluster, _job, DispyJob.Cancelled)
-                    if cluster.status_callback:
-                        if dispy_node:
-                            dispy_node.update_time = time.time()
-                            self.worker_Q.put((cluster.status_callback,
-                                               (DispyJob.Cancelled, dispy_node, _job.job)))
-                else:
-                    cluster._jobs.append(_job)
-                    self.unsched_jobs += 1
+                self.finish_job(cluster, _job, DispyJob.Cancelled)
+                if cluster.status_callback and dispy_node:
+                    dispy_node.update_time = time.time()
+                    self.worker_Q.put((cluster.status_callback,
+                                       (DispyJob.Cancelled, dispy_node, _job.job)))
                 node.busy -= 1
             self._sched_event.set()
         else:
@@ -1724,8 +1728,7 @@ class _Cluster(object, metaclass=MetaSingleton):
             raise StopIteration(-1)
         cluster._node_allocs.extend(node_allocs)
         cluster._node_allocs = sorted(cluster._node_allocs,
-                                      key=lambda node_alloc: node_alloc.ip_rex)
-        cluster._node_allocs.reverse()
+                                      key=lambda node_alloc: node_alloc.ip_rex, reverse=True)
         present = set()
         cluster._node_allocs = [na for na in cluster._node_allocs
                                 if na.ip_rex not in present and not present.add(na.ip_rex)]
@@ -1797,21 +1800,20 @@ class _Cluster(object, metaclass=MetaSingleton):
 
     def shutdown(self):
         # non-generator
-        def _shutdown(self, coro=None):
-            # generator
-            # TODO: make sure JobCluster instances are done
-            if not hasattr(self, '_scheduler'):
-                raise StopIteration
-            if self.terminate is False:
-                logger.debug('shutting down scheduler ...')
-                self.terminate = True
-                yield self._sched_event.set()
-                self.worker_Q.put(None)
+        if self.terminate:
+            return
+        if any(cluster._pending_jobs for cluster in self._clusters.values()):
+            return
+        logger.debug('shutting down scheduler ...')
+        self.terminate = True
 
-        if self.terminate is False:
-            Coro(_shutdown, self).value()
-            self._scheduler.value()
-            self.worker_Q.join()
+        def _terminate_scheduler(self, coro=None):
+            yield self._sched_event.set()
+
+        Coro(_terminate_scheduler, self).value()
+        self.worker_Q.put(None)
+        self._scheduler.value()
+        self.worker_Q.join()
         if self.shelf:
             # TODO: need to check all clusters are deleted?
             self.shelf.close()
@@ -2034,8 +2036,7 @@ class JobCluster(object):
             if not self._node_allocs:
                 raise Exception('"nodes" argument is invalid')
             self._node_allocs = sorted(self._node_allocs,
-                                       key=lambda node_alloc: node_alloc.ip_rex)
-            self._node_allocs.reverse()
+                                       key=lambda node_alloc: node_alloc.ip_rex, reverse=True)
         self._dispy_nodes = {}
 
         if inspect.isfunction(computation):
@@ -2423,13 +2424,15 @@ class SharedJobCluster(JobCluster):
                             secret=secret, keyfile=keyfile, certfile=certfile,
                             recover_file=recover_file)
 
+        def _terminate_scheduler(self, coro=None):
+            yield self._cluster._sched_event.set()
+
         # wait for scheduler to terminate
         self._cluster.terminate = True
-        self._cluster._sched_event.set()
+        Coro(_terminate_scheduler, self).value()
         self._cluster._scheduler.value()
         self._cluster.job_uid = None
-        node_allocs = sorted(node_allocs, key=lambda node_alloc: node_alloc.ip_rex)
-        node_allocs.reverse()
+        node_allocs = sorted(node_allocs, key=lambda node_alloc: node_alloc.ip_rex, reverse=True)
 
         if not scheduler_port:
             scheduler_port = 51349
