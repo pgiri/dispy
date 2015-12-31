@@ -367,6 +367,7 @@ class _Node(object):
                 logger.warning('Setup of computation "%s" on %s failed: %s',
                                compute.name, self.ip_addr, resp)
                 raise StopIteration(resp)
+        self.last_pulse = time.time()
         raise StopIteration(0)
 
     def send(self, msg, reply=True, coro=None):
@@ -1014,12 +1015,12 @@ class _Cluster(object, metaclass=MetaSingleton):
                     clusters = list(self._clusters.values())
                     for cluster in clusters:
                         msg = {'client_ip_addr': cluster._compute.scheduler_ip_addr,
-                               'client_port': cluster._compute.scheduler_port}
+                               'client_port': cluster._compute.job_result_port}
                         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                         sock = AsyncSocket(sock)
                         sock.settimeout(MsgTimeout)
                         yield sock.sendto(b'PULSE:' + serialize(msg),
-                                          (cluster.scheduler_ip_addr, cluster.job_result_port))
+                                          (cluster.scheduler_ip_addr, cluster.scheduler_port))
                         sock.close()
                 else:
                     dead_nodes = {}
