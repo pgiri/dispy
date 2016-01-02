@@ -1901,6 +1901,8 @@ if __name__ == '__main__':
     parser.add_argument('--httpd', action='store_true', dest='http_server', default=False,
                         help='if given, HTTP server is created so clusters can be '
                         'monitored and managed')
+    parser.add_argument('--daemon', action='store_true', dest='daemon', default=False,
+                        help='if given, input is not read from terminal')
 
     config = vars(parser.parse_args(sys.argv[1:]))
     if config['loglevel']:
@@ -1937,22 +1939,32 @@ if __name__ == '__main__':
         raise Exception('max_file_size must be >= 0')
     del config['max_file_size']
 
-    scheduler = _Scheduler(**config)
-    while True:
+    daemon = config.pop('daemon', False)
+    if not daemon:
         try:
-            cmd = raw_input('Enter "quit" or "exit" to terminate scheduler, '
-                            'anything else to get status: ')
-            cmd = cmd.strip().lower()
-            if cmd == 'quit' or cmd == 'exit':
+            if os.getpgrp() != os.tcgetpgrp(sys.stdin.fileno()):
+                daemon = True
+            except:
+                pass
+
+    scheduler = _Scheduler(**config)
+    if daemon:
+        scheduler.scheduler_coro.value()
+    else:
+        while True:
+            try:
+                cmd = raw_input('Enter "quit" or "exit" to terminate scheduler, '
+                                'anything else to get status: ')
+                cmd = cmd.strip().lower()
+                if cmd == 'quit' or cmd == 'exit':
+                    break
+            except KeyboardInterrupt:
+                # TODO: terminate even if jobs are scheduled?
+                logger.info('Interrupted; terminating')
                 break
+            except:
+                logger.debug(traceback.format_exc())
             scheduler.print_status()
-        except KeyboardInterrupt:
-            # TODO: terminate even if jobs are scheduled?
-            logger.info('Interrupted; terminating')
-            break
-        except:
-            logger.debug(traceback.format_exc())
-            continue
-    scheduler.shutdown()
+        scheduler.shutdown()
     scheduler.print_status()
     exit(0)
