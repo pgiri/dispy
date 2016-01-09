@@ -321,7 +321,6 @@ class _Scheduler(object):
                     yield sock.connect((info['ip_addr'], info['port']))
                     yield sock.sendall(auth)
                     yield sock.send_msg('PING:' + serialize(msg))
-                    info = yield sock.recv_msg()
                 except:
                     logger.debug(traceback.format_exc())
                 finally:
@@ -377,10 +376,10 @@ class _Scheduler(object):
             try:
                 info = unserialize(msg[len('PONG:'):])
                 assert info['auth'] == self.node_auth
-                yield self.add_node(info, coro=coro)
             except:
-                logger.debug('Ignoring node %s due to "secret" mismatch', addr[0])
-                # logger.debug(traceback.format_exc())
+                logger.warning('Ignoring node %s ("secret" mismatch?)', addr[0])
+            else:
+                yield self.add_node(info, coro=coro)
         elif msg.startswith('PING:'):
             try:
                 info = unserialize(msg[len('PING:'):])
@@ -409,7 +408,6 @@ class _Scheduler(object):
                 yield sock.connect((info['ip_addr'], info['port']))
                 yield sock.sendall(auth)
                 yield sock.send_msg('PING:' + serialize(msg))
-                info = yield sock.recv_msg()
             except:
                 logger.debug(traceback.format_exc())
             finally:
@@ -649,7 +647,6 @@ class _Scheduler(object):
             # generator
             try:
                 xf = unserialize(msg)
-                logger.debug('xf: %s' % xf)
             except:
                 logger.debug('Ignoring file trasnfer request from %s', addr[0])
                 raise StopIteration('NAK'.encode())
@@ -1104,16 +1101,16 @@ class _Scheduler(object):
     def send_ping_node(self, ip_addr, port=None, coro=None):
         ping_msg = {'version': _dispy_version, 'sign': self.sign, 'port': self.port}
         ping_msg['ip_addrs'] = list(filter(lambda ip: bool(ip), self.ext_ip_addrs))
-        udp_sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
-        udp_sock.settimeout(MsgTimeout)
-        if not port:
-            port = self.node_port
-        try:
-            yield udp_sock.sendto('PING:' + serialize(ping_msg), (ip_addr, port))
-        except:
-            # logger.debug(traceback.format_exc())
-            pass
-        udp_sock.close()
+        # udp_sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
+        # udp_sock.settimeout(MsgTimeout)
+        # if not port:
+        #     port = self.node_port
+        # try:
+        #     yield udp_sock.sendto('PING:' + serialize(ping_msg), (ip_addr, port))
+        # except:
+        #     # logger.debug(traceback.format_exc())
+        #     pass
+        # udp_sock.close()
         tcp_sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                keyfile=self.node_keyfile, certfile=self.node_certfile)
         tcp_sock.settimeout(MsgTimeout)
@@ -1121,7 +1118,6 @@ class _Scheduler(object):
             yield tcp_sock.connect((ip_addr, port))
             yield tcp_sock.sendall('x' * len(self.node_auth))
             yield tcp_sock.send_msg('PING:' + serialize(ping_msg))
-            yield tcp_sock.recv_msg()
         except:
             # logger.debug(traceback.format_exc())
             pass
@@ -1213,7 +1209,6 @@ class _Scheduler(object):
                     os.remove(path)
                 except:
                     logger.warning('Could not remove file "%s"', path)
-                    logger.debug(traceback.format_exc())
         cluster.file_uses = {}
 
         if os.path.isdir(cluster.dest_path) and len(os.listdir(cluster.dest_path)) == 0:
@@ -1944,8 +1939,8 @@ if __name__ == '__main__':
         try:
             if os.getpgrp() != os.tcgetpgrp(sys.stdin.fileno()):
                 daemon = True
-            except:
-                pass
+        except:
+            pass
 
     scheduler = _Scheduler(**config)
     if daemon:

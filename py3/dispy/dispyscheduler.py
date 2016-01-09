@@ -321,7 +321,6 @@ class _Scheduler(object, metaclass=MetaSingleton):
                     yield sock.connect((info['ip_addr'], info['port']))
                     yield sock.sendall(auth)
                     yield sock.send_msg(b'PING:' + serialize(msg))
-                    info = yield sock.recv_msg()
                 except:
                     logger.debug(traceback.format_exc())
                 finally:
@@ -377,10 +376,10 @@ class _Scheduler(object, metaclass=MetaSingleton):
             try:
                 info = unserialize(msg[len(b'PONG:'):])
                 assert info['auth'] == self.node_auth
-                yield self.add_node(info, coro=coro)
             except:
                 logger.debug('Ignoring node %s due to "secret" mismatch', addr[0])
-                # logger.debug(traceback.format_exc())
+            else:
+                yield self.add_node(info, coro=coro)
         elif msg.startswith(b'PING:'):
             try:
                 info = unserialize(msg[len(b'PING:'):])
@@ -409,7 +408,6 @@ class _Scheduler(object, metaclass=MetaSingleton):
                 yield sock.connect((info['ip_addr'], info['port']))
                 yield sock.sendall(auth)
                 yield sock.send_msg(b'PING:' + serialize(msg))
-                info = yield sock.recv_msg()
             except:
                 logger.debug(traceback.format_exc())
             finally:
@@ -452,6 +450,54 @@ class _Scheduler(object, metaclass=MetaSingleton):
             except:
                 # logger.debug(traceback.format_exc())
                 pass
+        elif msg.startswith(b'NODE_CPUS:'):
+            try:
+                info = unserialize(msg[len(b'NODE_CPUS:'):])
+                node = self._nodes.get(info['ip_addr'], None)
+                if not node:
+                    raise StopIteration
+                auth = auth_code(self.node_secret, info['sign'])
+                if auth != node.auth:
+                    logger.warning('Invalid signature from %s', node.ip_addr)
+                    raise StopIteration
+                cpus = info['cpus']
+            except:
+                logger.debug(traceback.format_exc())
+                conn.close()
+                raise StopIteration
+            if cpus < 0:
+                logger.warning('Node requested using %s CPUs, disabling it' %
+                               (node.ip_addr, cpus))
+                cpus = 0
+            logger.debug('Setting cpus for %s to %s' % (node.ip_addr, cpus))
+            # TODO: set node.cpus to min(cpus, node.cpus)?
+            node.cpus = cpus
+            if cpus > node.avail_cpus:
+                node.avail_cpus = cpus
+                node_computations = []
+                for cid, cluster in self._clusters.iteritems():
+                    if cid in node.clusters:
+                        continue
+                    compute = cluster._compute
+                    for node_alloc in cluster._node_allocs:
+                        cpus = node_alloc.allocate(cluster, node.ip_addr, node.name,
+                                                   node.avail_cpus)
+                        if cpus <= 0:
+                            continue
+                        node.cpus = min(node.avail_cpus, cpus)
+                        cluster._dispy_nodes.pop(node.ip_addr, None)
+                        node_computations.append(compute)
+                        break
+                if node_computations:
+                    Coro(self.setup_node, node, node_computations)
+                yield self._sched_event.set()
+            else:
+                node.avail_cpus = cpus
+            for cid in node.clusters:
+                cluster = self._clusters[cid]
+                dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
+                if dispy_node:
+                    dispy_node.cpus = cpus
         else:
             logger.warning('invalid message from %s:%s ignored' % addr)
             logger.debug(traceback.format_exc())
@@ -545,14 +591,14 @@ class _Scheduler(object, metaclass=MetaSingleton):
                 exclusive = req['exclusive']
             except:
                 logger.debug('Ignoring compute request from %s', addr[0])
-                return 'NAK'.encode()
+                return serialize(-1)
             for xf in compute.xfer_files:
                 if MaxFileSize and xf.stat_buf.st_size > MaxFileSize:
                     logger.warning('transfer file "%s" is too big (%s)',
                                    xf.name, xf.stat_buf.st_size)
-                    return 'NAK'.encode()
+                    return serialize(-1)
             if self.terminate:
-                return 'NAK'.encode()
+                return serialize(-1)
             cluster = _Cluster(compute, node_allocs, self)
             cluster.ip_addr = conn.getsockname()[0]
             cluster.exclusive = exclusive
@@ -561,7 +607,7 @@ class _Scheduler(object, metaclass=MetaSingleton):
                 try:
                     os.mkdir(dest)
                 except:
-                    return 'NAK'.encode()
+                    return serialize(-1)
             if compute.dest_path and isinstance(compute.dest_path, str):
                 # TODO: get os.sep from client and convert (in case of mixed environments)?
                 if compute.dest_path.startswith(os.sep):
@@ -572,7 +618,7 @@ class _Scheduler(object, metaclass=MetaSingleton):
                     try:
                         os.makedirs(cluster.dest_path)
                     except:
-                        return 'NAK'.encode()
+                        return serialize(-1)
             else:
                 cluster.dest_path = tempfile.mkdtemp(prefix=compute.name + '_', dir=dest)
 
@@ -1055,16 +1101,16 @@ class _Scheduler(object, metaclass=MetaSingleton):
     def send_ping_node(self, ip_addr, port=None, coro=None):
         ping_msg = {'version': _dispy_version, 'sign': self.sign, 'port': self.port}
         ping_msg['ip_addrs'] = list(filter(lambda ip: bool(ip), self.ext_ip_addrs))
-        udp_sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
-        udp_sock.settimeout(MsgTimeout)
-        if not port:
-            port = self.node_port
-        try:
-            yield udp_sock.sendto(b'PING:' + serialize(ping_msg), (ip_addr, port))
-        except:
-            # logger.debug(traceback.format_exc())
-            pass
-        udp_sock.close()
+        # udp_sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
+        # udp_sock.settimeout(MsgTimeout)
+        # if not port:
+        #     port = self.node_port
+        # try:
+        #     yield udp_sock.sendto(b'PING:' + serialize(ping_msg), (ip_addr, port))
+        # except:
+        #     # logger.debug(traceback.format_exc())
+        #     pass
+        # udp_sock.close()
         tcp_sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                keyfile=self.node_keyfile, certfile=self.node_certfile)
         tcp_sock.settimeout(MsgTimeout)
@@ -1072,7 +1118,6 @@ class _Scheduler(object, metaclass=MetaSingleton):
             yield tcp_sock.connect((ip_addr, port))
             yield tcp_sock.sendall(b'x' * len(self.node_auth))
             yield tcp_sock.send_msg(b'PING:' + serialize(ping_msg))
-            yield tcp_sock.recv_msg()
         except:
             # logger.debug(traceback.format_exc())
             pass
@@ -1889,15 +1934,14 @@ if __name__ == '__main__':
     del config['max_file_size']
 
     daemon = config.pop('daemon', False)
-    scheduler = _Scheduler(**config)
-
     if not daemon:
         try:
             if os.getpgrp() != os.tcgetpgrp(sys.stdin.fileno()):
                 daemon = True
-            except:
-                pass
+        except:
+            pass
 
+    scheduler = _Scheduler(**config)
     if daemon:
         scheduler.scheduler_coro.value()
     else:

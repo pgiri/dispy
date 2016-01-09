@@ -721,9 +721,6 @@ class _Cluster(object):
                     yield sock.connect((info['ip_addr'], info['port']))
                     yield sock.sendall(auth)
                     yield sock.send_msg('PING:' + serialize(msg))
-                    info = yield sock.recv_msg()
-                    info = unserialize(info)
-                    Coro(self.add_node, info)
                 except:
                     logger.debug(traceback.format_exc())
                 finally:
@@ -818,7 +815,7 @@ class _Cluster(object):
                     raise StopIteration
                 assert info['auth'] == self.auth
             except:
-                logger.warning('Ignoring node %s', addr[0])
+                logger.warning('Ignoring node %s ("secret" mismatch?)', addr[0])
             else:
                 yield self.add_node(info, coro=coro)
         elif msg.startswith('PING:'):
@@ -850,7 +847,6 @@ class _Cluster(object):
                 yield sock.connect((info['ip_addr'], info['port']))
                 yield sock.sendall(auth)
                 yield sock.send_msg('PING:' + serialize(msg))
-                yield sock.recv_msg()
             except:
                 logger.debug(traceback.format_exc())
             finally:
@@ -1084,33 +1080,24 @@ class _Cluster(object):
     def send_ping_node(self, ip_addr, port=None, coro=None):
         ping_msg = {'version': _dispy_version, 'sign': self.sign, 'port': self.port}
         ping_msg['ip_addrs'] = list(filter(lambda ip: bool(ip), self.ext_ip_addrs))
-        udp_sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
-        udp_sock.settimeout(MsgTimeout)
-        if not port:
-            port = self.node_port
-        try:
-            yield udp_sock.sendto('PING:' + serialize(ping_msg), (ip_addr, port))
-        except:
-            # logger.debug(traceback.format_exc())
-            pass
-        udp_sock.close()
+        # udp_sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
+        # udp_sock.settimeout(MsgTimeout)
+        # if not port:
+        #     port = self.node_port
+        # try:
+        #     yield udp_sock.sendto('PING:' + serialize(ping_msg), (ip_addr, port))
+        # except:
+        #     # logger.debug(traceback.format_exc())
+        #     pass
+        # udp_sock.close()
         tcp_sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                keyfile=self.keyfile, certfile=self.certfile)
         tcp_sock.settimeout(MsgTimeout)
         try:
-            yield tcp_sock.connect((ip_addr, port))
+            yield tcp_sock.connect((ip_addr, int(port)))
             yield tcp_sock.sendall('x' * len(self.auth))
             yield tcp_sock.send_msg('PING:' + serialize(ping_msg))
-            info = yield tcp_sock.recv_msg()
-            info = unserialize(info)
-            if self.poll_interval and info['auth'] == self.auth:
-                if info['version'] == _dispy_version:
-                    Coro(self.add_node, info)
-                else:
-                    logger.warning('Ignoring node %s due to version mismatch: %s != %s',
-                                   info['ip_addr'], info['version'], _dispy_version)
         except:
-            # logger.debug(traceback.format_exc())
             pass
         tcp_sock.close()
 

@@ -364,7 +364,9 @@ class _DispyNode(object):
                          self.avail_cpus, self.num_cpus, addr[0])
             raise StopIteration
         try:
-            scheduler_ip_addrs = info['ip_addrs'] + [addr[0]]
+            scheduler_ip_addrs = info['ip_addrs']
+            if not info.get('relay', None):
+                scheduler_ip_addrs.append(addr[0])
             scheduler_port = info['port']
         except:
             logger.debug(traceback.format_exc())
@@ -1001,12 +1003,6 @@ class _DispyNode(object):
                 info = unserialize(msg[len(b'PING:'):])
                 if (info['version'] == _dispy_version and
                    not self.scheduler['ip_addr'] and not self.job_infos):
-                    reply = {'ip_addr': self.ext_ip_addr, 'port': self.port,
-                             'sign': self.sign, 'version': _dispy_version,
-                             'name': self.name, 'cpus': self.avail_cpus,
-                             'auth': auth_code(self.secret, info['sign'])}
-                    reply['scheduler_ip_addr'] = addr[0]
-                    yield conn.send_msg(serialize(reply))
                     Coro(self.send_pong_msg, info, addr)
             except:
                 logger.debug(traceback.format_exc())

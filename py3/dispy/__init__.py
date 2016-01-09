@@ -241,7 +241,7 @@ def _same_file(tgt, xf):
 
 
 def auth_code(secret, sign):
-    return bytes(hashlib.sha1(bytes(secret + sign, 'ascii')).hexdigest(), 'ascii')
+    return hashlib.sha1((secret + sign).encode()).hexdigest().encode()
 
 
 def _node_ipaddr(node):
@@ -449,7 +449,7 @@ class _DispyJob_(object):
         self.job._dispy_job_ = self
         self.uid = None
         self.compute_id = compute_id
-        self.hash = ''.join(hex(x)[2:] for x in os.urandom(10))
+        self.hash = ''.join(hex(_)[2:] for _ in os.urandom(10))
         self.node = None
         self.pinned = None
         self.xfer_files = []
@@ -601,7 +601,7 @@ class _Cluster(object, metaclass=MetaSingleton):
             self._sched_jobs = {}
             self._sched_event = asyncoro.Event()
             self.terminate = False
-            self.sign = ''.join(hex(x)[2:] for x in os.urandom(10))
+            self.sign = ''.join(hex(_)[2:] for _ in os.urandom(10))
             self.auth = auth_code(self.secret, self.sign)
 
             if isinstance(recover_file, str):
@@ -726,9 +726,6 @@ class _Cluster(object, metaclass=MetaSingleton):
                     yield sock.connect((info['ip_addr'], info['port']))
                     yield sock.sendall(auth)
                     yield sock.send_msg(b'PING:' + serialize(msg))
-                    info = yield sock.recv_msg()
-                    info = unserialize(info)
-                    Coro(self.add_node, info)
                 except:
                     logger.debug(traceback.format_exc())
                 finally:
@@ -823,7 +820,7 @@ class _Cluster(object, metaclass=MetaSingleton):
                     raise StopIteration
                 assert info['auth'] == self.auth
             except:
-                logger.warning('Ignoring node %s', addr[0])
+                logger.warning('Ignoring node %s ("secret" mismatch?)', addr[0])
             else:
                 yield self.add_node(info, coro=coro)
         elif msg.startswith(b'PING:'):
@@ -855,7 +852,6 @@ class _Cluster(object, metaclass=MetaSingleton):
                 yield sock.connect((info['ip_addr'], info['port']))
                 yield sock.sendall(auth)
                 yield sock.send_msg(b'PING:' + serialize(msg))
-                yield sock.recv_msg()
             except:
                 logger.debug(traceback.format_exc())
             finally:
@@ -1089,16 +1085,16 @@ class _Cluster(object, metaclass=MetaSingleton):
     def send_ping_node(self, ip_addr, port=None, coro=None):
         ping_msg = {'version': _dispy_version, 'sign': self.sign, 'port': self.port}
         ping_msg['ip_addrs'] = list(filter(lambda ip: bool(ip), self.ext_ip_addrs))
-        udp_sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
-        udp_sock.settimeout(MsgTimeout)
-        if not port:
-            port = self.node_port
-        try:
-            yield udp_sock.sendto(b'PING:' + serialize(ping_msg), (ip_addr, port))
-        except:
-            # logger.debug(traceback.format_exc())
-            pass
-        udp_sock.close()
+        # udp_sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
+        # udp_sock.settimeout(MsgTimeout)
+        # if not port:
+        #     port = self.node_port
+        # try:
+        #     yield udp_sock.sendto(b'PING:' + serialize(ping_msg), (ip_addr, port))
+        # except:
+        #     # logger.debug(traceback.format_exc())
+        #     pass
+        # udp_sock.close()
         tcp_sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                keyfile=self.keyfile, certfile=self.certfile)
         tcp_sock.settimeout(MsgTimeout)
@@ -1106,16 +1102,7 @@ class _Cluster(object, metaclass=MetaSingleton):
             yield tcp_sock.connect((ip_addr, port))
             yield tcp_sock.sendall(b'x' * len(self.auth))
             yield tcp_sock.send_msg(b'PING:' + serialize(ping_msg))
-            info = yield tcp_sock.recv_msg()
-            info = unserialize(info)
-            if self.poll_interval and info['auth'] == self.auth:
-                if info['version'] == _dispy_version:
-                    Coro(self.add_node, info)
-                else:
-                    logger.warning('Ignoring node %s due to version mismatch: %s != %s',
-                                   info['ip_addr'], info['version'], _dispy_version)
         except:
-            # logger.debug(traceback.format_exc())
             pass
         tcp_sock.close()
 
@@ -2157,7 +2144,7 @@ class JobCluster(object):
             compute.dest_path = dest_path
 
         compute.scheduler_port = self._cluster.port
-        compute.auth = ''.join(hex(x)[2:] for x in os.urandom(10))
+        compute.auth = ''.join(hex(_)[2:] for _ in os.urandom(10))
         compute.job_result_port = self._cluster.port
         compute.reentrant = reentrant
         compute.pulse_interval = pulse_interval
