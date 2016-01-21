@@ -36,6 +36,7 @@ else:
 import dispy
 from dispy import DispyJob
 
+
 class DispyHTTPServer(object):
 
     class _ClusterInfo(object):

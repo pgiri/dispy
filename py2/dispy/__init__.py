@@ -14,7 +14,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "MIT"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.6.3"
+__version__ = "4.6.5"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
@@ -407,11 +407,19 @@ class _Node(object):
             resp = yield sock.recv_msg()
             if resp != 'ACK':
                 fd = open(xf.name, 'rb')
+                sent = 0
                 while True:
                     data = fd.read(1024000)
                     if not data:
                         break
                     yield sock.sendall(data)
+                    sent += len(data)
+                    while True:
+                        resp = yield sock.recv_msg()
+                        resp = unserialize(resp)
+                        if resp == sent:
+                            break
+                        assert resp < sent
                 fd.close()
                 resp = yield sock.recv_msg()
         except:
@@ -1062,34 +1070,27 @@ class _Cluster(object):
         if not os.path.isdir(os.path.dirname(tgt)):
             os.makedirs(os.path.dirname(tgt))
         fd = open(tgt, 'wb')
-        n = 0
-        while n < xf.stat_buf.st_size:
-            data = yield sock.recvall(min(xf.stat_buf.st_size-n, 1024000))
+        recvd = 0
+        while recvd < xf.stat_buf.st_size:
+            data = yield sock.recvall(min(xf.stat_buf.st_size-recvd, 1024000))
             if not data:
                 break
             fd.write(data)
-            n += len(data)
+            recvd += len(data)
+            yield sock.send_msg(serialize(recvd))
         fd.close()
-        if n != xf.stat_buf.st_size:
-            yield sock.send_msg('NAK (read only %s bytes)' % n)
+        if recvd != xf.stat_buf.st_size:
+            yield sock.send_msg(('NAK (read only %s bytes)' % recvd).encode())
         else:
-            yield sock.send_msg('ACK')
+            yield sock.send_msg('ACK'.encode())
         os.utime(tgt, (xf.stat_buf.st_atime, xf.stat_buf.st_mtime))
         os.chmod(tgt, stat.S_IMODE(xf.stat_buf.st_mode))
 
     def send_ping_node(self, ip_addr, port=None, coro=None):
         ping_msg = {'version': _dispy_version, 'sign': self.sign, 'port': self.port}
         ping_msg['ip_addrs'] = list(filter(lambda ip: bool(ip), self.ext_ip_addrs))
-        # udp_sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
-        # udp_sock.settimeout(MsgTimeout)
-        # if not port:
-        #     port = self.node_port
-        # try:
-        #     yield udp_sock.sendto('PING:' + serialize(ping_msg), (ip_addr, port))
-        # except:
-        #     # logger.debug(traceback.format_exc())
-        #     pass
-        # udp_sock.close()
+        if not port:
+            port = self.node_port
         tcp_sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                keyfile=self.keyfile, certfile=self.certfile)
         tcp_sock.settimeout(MsgTimeout)
@@ -2487,11 +2488,19 @@ class SharedJobCluster(JobCluster):
                 resp = sock.recv_msg()
                 if resp != 'ACK':
                     fd = open(xf.name, 'rb')
+                    sent = 0
                     while True:
                         data = fd.read(1024000)
                         if not data:
                             break
                         sock.sendall(data)
+                        sent += len(data)
+                        while True:
+                            resp = sock.recv_msg()
+                            resp = unserialize(resp)
+                            if resp == sent:
+                                break
+                            assert resp < sent
                     fd.close()
                     resp = sock.recv_msg()
                     assert resp == 'ACK'
@@ -2574,11 +2583,19 @@ class SharedJobCluster(JobCluster):
                 resp = sock.recv_msg()
                 if resp != 'ACK':
                     fd = open(xf.name, 'rb')
+                    sent = 0
                     while True:
                         data = fd.read(1024000)
                         if not data:
                             break
                         sock.sendall(data)
+                        sent += len(data)
+                        while True:
+                            resp = sock.recv_msg()
+                            resp = unserialize(resp)
+                            if resp == sent:
+                                break
+                            assert resp < sent
                     fd.close()
                     resp = sock.recv_msg()
                     assert resp == 'ACK'

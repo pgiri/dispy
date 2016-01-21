@@ -133,20 +133,26 @@ def dispy_send_file(path, timeout=MsgTimeout):
         sock.connect(__dispy_job_info.reply_addr)
         sock.send_msg(b'FILEXFER:' + serialize(xf))
         sock.send_msg(serialize(dispy_job_reply))
-        ack = sock.recv_msg()
-        assert ack == b'ACK'
+        resp = sock.recv_msg()
+        assert resp == b'ACK'
         fd = open(path, 'rb')
-        n = 0
-        while n < xf.stat_buf.st_size:
+        sent = 0
+        while sent < xf.stat_buf.st_size:
             data = fd.read(1024000)
             if not data:
                 break
             sock.sendall(data)
-            n += len(data)
+            sent += len(data)
+            while True:
+                resp = sock.recv_msg()
+                resp = unserialize(resp)
+                if resp == sent:
+                    break
+                assert resp < sent
         fd.close()
-        assert n == xf.stat_buf.st_size
-        ack = sock.recv_msg()
-        assert ack == b'ACK'
+        assert sent == xf.stat_buf.st_size
+        resp = sock.recv_msg()
+        assert resp == b'ACK'
     except:
         return -1
     else:
@@ -690,7 +696,7 @@ class _DispyNode(object):
             if os.name == 'nt':
                 compute.globals = {}
             else:
-                for var in ('AsyncSocket', 'DispyJob', 'serialize', '_XferFile',
+                for var in ('AsyncSocket', 'DispyJob', 'serialize', 'unserialize', '_XferFile',
                             'MaxFileSize', 'MsgTimeout', 'logger'):
                     compute.globals[var] = globals()[var]
                 compute.globals.update(self.__init_modules)
@@ -735,19 +741,20 @@ class _DispyNode(object):
                 logger.debug('Copying file %s to %s (%s)', xf.name, tgt, xf.stat_buf.st_size)
                 try:
                     fd = open(tgt, 'wb')
-                    n = 0
-                    while n < xf.stat_buf.st_size:
-                        data = yield conn.recvall(min(xf.stat_buf.st_size-n, 1024000))
+                    recvd = 0
+                    while recvd < xf.stat_buf.st_size:
+                        data = yield conn.recvall(min(xf.stat_buf.st_size-recvd, 1024000))
                         if not data:
                             break
                         fd.write(data)
-                        n += len(data)
-                        if MaxFileSize and n > MaxFileSize:
-                            logger.warning('File "%s" is too big (%s); it is truncated', tgt, n)
+                        recvd += len(data)
+                        if MaxFileSize and recvd > MaxFileSize:
+                            logger.warning('File "%s" is too big (%s); it is truncated', tgt, recvd)
                             break
+                        yield conn.send_msg(serialize(recvd))
                     fd.close()
-                    if n < xf.stat_buf.st_size:
-                        resp = ('NAK (read only %s bytes)' % n).encode()
+                    if recvd < xf.stat_buf.st_size:
+                        resp = ('NAK (read only %s bytes)' % recvd).encode()
                     else:
                         resp = 'ACK'.encode()
                         logger.debug('Copied file %s, %s', tgt, resp)
@@ -1374,8 +1381,8 @@ class _DispyNode(object):
         if os.name == 'nt':
             for var in list(globals().keys()):
                 if var not in self.__init_globals:
-                    logger.warning('Variable "%s" left behind by "%s" at %s is being removed' %
-                                   (var, compute.name, compute.scheduler_ip_addr))
+                    logger.debug('Variable "%s" left behind by "%s" at %s is being removed' %
+                                 (var, compute.name, compute.scheduler_ip_addr))
                     globals().pop(var, None)
 
             for var, value in self.__init_globals.items():

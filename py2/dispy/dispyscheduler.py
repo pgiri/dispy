@@ -668,19 +668,20 @@ class _Scheduler(object):
             try:
                 yield conn.send_msg('NAK'.encode())
                 fd = open(tgt, 'wb')
-                n = 0
-                while n < xf.stat_buf.st_size:
-                    data = yield conn.recvall(min(xf.stat_buf.st_size-n, 1024000))
+                recvd = 0
+                while recvd < xf.stat_buf.st_size:
+                    data = yield conn.recvall(min(xf.stat_buf.st_size-recvd, 1024000))
                     if not data:
                         break
                     fd.write(data)
-                    n += len(data)
-                    if MaxFileSize and n > MaxFileSize:
-                        logger.warning('File "%s" is too big (%s); it is truncated', tgt, n)
+                    recvd += len(data)
+                    if MaxFileSize and recvd > MaxFileSize:
+                        logger.warning('File "%s" is too big (%s); it is truncated', tgt, recvd)
                         break
+                    yield conn.send_msg(serialize(recvd))
                 fd.close()
-                if n < xf.stat_buf.st_size:
-                    resp = ('NAK (read only %s bytes)' % n).encode()
+                if recvd < xf.stat_buf.st_size:
+                    resp = ('NAK (read only %s bytes)' % recvd).encode()
                 else:
                     os.utime(tgt, (xf.stat_buf.st_atime, xf.stat_buf.st_mtime))
                     os.chmod(tgt, stat.S_IMODE(xf.stat_buf.st_mode))
@@ -731,14 +732,21 @@ class _Scheduler(object):
                 yield sock.send_msg('FILEXFER:'.encode() + serialize(xf))
                 resp = yield sock.recv_msg()
                 if resp != 'ACK'.encode():
-                    n = 0
-                    while n < xf.stat_buf.st_size:
-                        data = yield conn.recvall(min(xf.stat_buf.st_size-n, 1024000))
+                    recvd = 0
+                    while recvd < xf.stat_buf.st_size:
+                        data = yield conn.recvall(min(xf.stat_buf.st_size-recvd, 1024000))
                         if not data:
                             break
+                        recvd += len(data)
+                        yield conn.send_msg(serialize(recvd))
                         yield sock.sendall(data)
-                        n += len(data)
-                    if n == xf.stat_buf.st_size:
+                        while True:
+                            resp = yield conn.recv_msg()
+                            resp = unserialize(resp)
+                            if resp == recvd:
+                                break
+                            assert resp < recvd
+                    if recvd == xf.stat_buf.st_size:
                         resp = yield sock.recv_msg()
                     else:
                         resp = 'NAK'.encode()
@@ -1067,7 +1075,6 @@ class _Scheduler(object):
             logger.warning('Ignoring invalid file transfer from job %s at %s', reply.uid, addr[0])
             yield sock.send_msg('NAK'.encode())
             raise StopIteration
-        yield sock.send_msg('ACK'.encode())
         node.last_pulse = time.time()
         client_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         client_sock = AsyncSocket(client_sock,
@@ -1077,19 +1084,26 @@ class _Scheduler(object):
             yield client_sock.connect((cluster.client_ip_addr, cluster.client_job_result_port))
             yield client_sock.send_msg('FILEXFER:'.encode() + serialize(xf))
             yield client_sock.send_msg(serialize(reply))
-            ack = yield client_sock.recv_msg()
-            assert ack == 'ACK'.encode()
+            resp = yield client_sock.recv_msg()
+            assert resp == 'ACK'.encode()
 
             yield sock.send_msg('ACK'.encode())
-            n = 0
-            while n < xf.stat_buf.st_size:
-                data = yield sock.recvall(min(xf.stat_buf.st_size-n, 1024000))
+            recvd = 0
+            while recvd < xf.stat_buf.st_size:
+                data = yield sock.recvall(min(xf.stat_buf.st_size-recvd, 1024000))
                 if not data:
                     break
+                recvd += len(data)
+                yield sock.send_msg(serialize(recvd))
                 yield client_sock.sendall(data)
-                n += len(data)
-            ack = yield client_sock.recv_msg()
-            assert ack == 'ACK'.encode()
+                while True:
+                    resp = yield client_sock.recv_msg()
+                    resp = unserialize(resp)
+                    if resp == recvd:
+                        break
+                    assert resp < recvd
+            resp = yield client_sock.recv_msg()
+            assert resp == 'ACK'.encode()
         except:
             yield sock.send_msg('NAK'.encode())
         else:
