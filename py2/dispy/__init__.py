@@ -404,33 +404,29 @@ class _Node(object):
             yield sock.connect((self.ip_addr, self.port))
             yield sock.sendall(self.auth)
             yield sock.send_msg('FILEXFER:' + serialize(xf))
-            resp = yield sock.recv_msg()
-            if resp != 'ACK':
-                fd = open(xf.name, 'rb')
-                sent = 0
-                while True:
-                    data = fd.read(1024000)
-                    if not data:
-                        break
-                    yield sock.sendall(data)
-                    sent += len(data)
-                    while True:
-                        resp = yield sock.recv_msg()
-                        resp = unserialize(resp)
-                        if resp == sent:
-                            break
-                        assert resp < sent
-                fd.close()
-                resp = yield sock.recv_msg()
+            recvd = yield sock.recv_msg()
+            recvd = unserialize(recvd)
+            fd = open(xf.name, 'rb')
+            sent = 0
+            while sent == recvd:
+                data = fd.read(1024000)
+                if not data:
+                    break
+                yield sock.sendall(data)
+                sent += len(data)
+                recvd = yield sock.recv_msg()
+                recvd = unserialize(recvd)
+            fd.close()
+            if recvd == xf.stat_buf.st_size:
+                resp = 0
+            else:
+                resp = -1
         except:
             logger.error('Could not transfer %s to %s: %s', xf.name, self.ip_addr, resp)
             # TODO: mark this node down, reschedule on different node?
-            resp = traceback.format_exc()
+            resp = -1
         finally:
             sock.close()
-
-        if resp == 'ACK':
-            resp = 0
         raise StopIteration(resp)
 
     def close(self, compute, coro=None):
@@ -863,11 +859,11 @@ class _Cluster(object):
             try:
                 xf = unserialize(msg[len('FILEXFER:'):])
                 msg = yield conn.recv_msg()
-                reply = unserialize(msg)
+                job_reply = unserialize(msg)
             except:
                 logger.debug(traceback.format_exc())
             else:
-                yield self.file_xfer_process(reply, xf, conn, addr)
+                yield self.file_xfer_process(job_reply, xf, conn, addr)
         elif msg.startswith('NODE_CPUS:'):
             try:
                 info = unserialize(msg[len('NODE_CPUS:'):])
@@ -1053,16 +1049,15 @@ class _Cluster(object):
                 for cluster in self._clusters.itervalues():
                     Coro(self.poll_job_results, cluster)
 
-    def file_xfer_process(self, reply, xf, sock, addr):
-        _job = self._sched_jobs.get(reply.uid, None)
-        if _job is None or _job.hash != reply.hash:
-            logger.warning('Ignoring invalid file transfer from job %s at %s', reply.uid, addr[0])
-            yield sock.send_msg('NAK')
+    def file_xfer_process(self, job_reply, xf, sock, addr):
+        _job = self._sched_jobs.get(job_reply.uid, None)
+        if _job is None or _job.hash != job_reply.hash:
+            logger.warning('Ignoring invalid file transfer from job %s at %s', job_reply.uid, addr[0])
+            yield sock.send_msg(serialize(-1))
             raise StopIteration
-        node = self._nodes.get(reply.ip_addr, None)
+        node = self._nodes.get(job_reply.ip_addr, None)
         if node:
             node.last_pulse = time.time()
-        yield sock.send_msg('ACK')
         xf.name = xf.name.replace(xf.sep, os.sep)
         if xf.name.startswith(os.sep):
             xf.name = xf.name[len(os.sep):]
@@ -1072,17 +1067,17 @@ class _Cluster(object):
         fd = open(tgt, 'wb')
         recvd = 0
         while recvd < xf.stat_buf.st_size:
+            yield sock.send_msg(serialize(recvd))
             data = yield sock.recvall(min(xf.stat_buf.st_size-recvd, 1024000))
             if not data:
                 break
             fd.write(data)
             recvd += len(data)
-            yield sock.send_msg(serialize(recvd))
+        yield sock.send_msg(serialize(recvd))
         fd.close()
         if recvd != xf.stat_buf.st_size:
-            yield sock.send_msg(('NAK (read only %s bytes)' % recvd).encode())
-        else:
-            yield sock.send_msg('ACK'.encode())
+            logger.warning('Transfer of file "%s" failed' % (tgt))
+            # TODO: remove file?
         os.utime(tgt, (xf.stat_buf.st_atime, xf.stat_buf.st_mtime))
         os.chmod(tgt, stat.S_IMODE(xf.stat_buf.st_mode))
 
@@ -2485,25 +2480,20 @@ class SharedJobCluster(JobCluster):
                 sock.connect((self.scheduler_ip_addr, self.scheduler_port))
                 sock.sendall(self._scheduler_auth)
                 sock.send_msg('FILEXFER:' + serialize(xf))
-                resp = sock.recv_msg()
-                if resp != 'ACK':
-                    fd = open(xf.name, 'rb')
-                    sent = 0
-                    while True:
-                        data = fd.read(1024000)
-                        if not data:
-                            break
-                        sock.sendall(data)
-                        sent += len(data)
-                        while True:
-                            resp = sock.recv_msg()
-                            resp = unserialize(resp)
-                            if resp == sent:
-                                break
-                            assert resp < sent
-                    fd.close()
-                    resp = sock.recv_msg()
-                    assert resp == 'ACK'
+                recvd = sock.recv_msg()
+                recvd = unserialize(recvd)
+                sent = 0
+                fd = open(xf.name, 'rb')
+                while sent == recvd:
+                    data = fd.read(1024000)
+                    if not data:
+                        break
+                    sock.sendall(data)
+                    sent += len(data)
+                    recvd = sock.recv_msg()
+                    recvd = unserialize(recvd)
+                fd.close()
+                assert recvd == xf.stat_buf.st_size
             except:
                 logger.error('Could not transfer %s to %s', xf.name, self.scheduler_ip_addr)
                 # TODO: delete computation?
@@ -2545,20 +2535,16 @@ class SharedJobCluster(JobCluster):
         Arguments should be serializable and should correspond to
         arguments for computation used when cluster is created.
         """
+
         if node:
             if isinstance(node, DispyNode):
-                node = self._dispy_nodes.get(node.ip_addr, None)
+                node = node.ip_addr
             elif isinstance(node, str):
-                if node[0].isdigit():
-                    node = self._dispy_nodes.get(node, None)
-                else:
-                    node = _node_ipaddr(node)
-                    node = self._dispy_nodes.get(node, None)
+                node = _node_ipaddr(node)
             else:
                 node = None
             if not node:
                 return None
-            node = node.ip_addr
 
         if self._compute.type == _Compute.prog_type:
             if kwargs:
@@ -2580,25 +2566,20 @@ class SharedJobCluster(JobCluster):
                 sock.connect((self.scheduler_ip_addr, self.scheduler_port))
                 sock.sendall(self._scheduler_auth)
                 sock.send_msg('FILEXFER:' + serialize(xf))
-                resp = sock.recv_msg()
-                if resp != 'ACK':
-                    fd = open(xf.name, 'rb')
-                    sent = 0
-                    while True:
-                        data = fd.read(1024000)
-                        if not data:
-                            break
-                        sock.sendall(data)
-                        sent += len(data)
-                        while True:
-                            resp = sock.recv_msg()
-                            resp = unserialize(resp)
-                            if resp == sent:
-                                break
-                            assert resp < sent
-                    fd.close()
-                    resp = sock.recv_msg()
-                    assert resp == 'ACK'
+                recvd = sock.recv_msg()
+                recvd = unserialize(recvd)
+                sent = 0
+                fd = open(xf.name, 'rb')
+                while sent == recvd:
+                    data = fd.read(1024000)
+                    if not data:
+                        break
+                    sock.sendall(data)
+                    sent += len(data)
+                    recvd = sock.recv_msg()
+                    recvd = unserialize(recvd)
+                fd.close()
+                assert recvd == xf.stat_buf.st_size
                 sock.close()
 
             sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), blocking=True,
@@ -2743,20 +2724,17 @@ class SharedJobCluster(JobCluster):
         instance of DispyNode (e.g., as received in cluster status
         callback) or IP address or host name.
         """
-        if isinstance(node, DispyNode):
-            node = self._dispy_nodes.get(node.ip_addr, None)
-        elif isinstance(node, str):
-            if node[0].isdigit():
-                node = self._dispy_nodes.get(node, None)
-            else:
-                node = _node_ipaddr(node)
-                node = self._dispy_nodes.get(node, None)
-        else:
-            node = None
 
+        if node:
+            if isinstance(node, DispyNode):
+                node = node.ip_addr
+            elif isinstance(node, str):
+                node = _node_ipaddr(node)
+            else:
+                node = None
         if not node:
             return -1
-        node = node.ip_addr
+
         xf = _XferFile(path, os.stat(path), self._compute.id)
         sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), blocking=True,
                            keyfile=self._cluster.keyfile, certfile=self._cluster.certfile)
@@ -2765,23 +2743,24 @@ class SharedJobCluster(JobCluster):
             sock.connect((self.scheduler_ip_addr, self.scheduler_port))
             sock.sendall(self._scheduler_auth)
             sock.send_msg('SENDFILE:' + serialize({'node': node, 'xf': xf}))
-            resp = sock.recv_msg()
-            if resp == 'XFER':
-                fd = open(xf.name, 'rb')
-                while True:
-                    data = fd.read(1024000)
-                    if not data:
-                        break
-                    sock.sendall(data)
-                fd.close()
-                resp = sock.recv_msg()
-            sock.close()
-            if resp == 'ACK':
-                return 0
-            else:
-                return -1
+            recvd = sock.recv_msg()
+            recvd = unserialize(recvd)
+            sent = 0
+            fd = open(xf.name, 'rb')
+            while sent == recvd:
+                data = fd.read(1024000)
+                if not data:
+                    break
+                sock.sendall(data)
+                sent += len(data)
+                recvd = sock.recv_msg()
+                recvd = unserialize(recvd)
+            fd.close()
+            assert recvd == xf.stat_buf.st_size
         except:
             return -1
+        else:
+            return 0
 
     def close(self):
         """Similar to 'close' of JobCluster.

@@ -117,6 +117,7 @@ def dispy_send_file(path, timeout=MsgTimeout):
 
     Return value of 0 indicates successfull transfer.
     """
+
     path = os.path.expanduser(path)
     xf = _XferFile(path, os.stat(path))
     if MaxFileSize and xf.stat_buf.st_size > MaxFileSize:
@@ -131,28 +132,22 @@ def dispy_send_file(path, timeout=MsgTimeout):
     sock.settimeout(timeout)
     try:
         sock.connect(__dispy_job_info.reply_addr)
-        sock.send_msg(b'FILEXFER:' + serialize(xf))
+        sock.send_msg('FILEXFER:'.encode() + serialize(xf))
         sock.send_msg(serialize(dispy_job_reply))
-        resp = sock.recv_msg()
-        assert resp == b'ACK'
+        recvd = sock.recv_msg()
+        recvd = unserialize(recvd)
         fd = open(path, 'rb')
         sent = 0
-        while sent < xf.stat_buf.st_size:
+        while sent == recvd:
             data = fd.read(1024000)
             if not data:
                 break
             sock.sendall(data)
             sent += len(data)
-            while True:
-                resp = sock.recv_msg()
-                resp = unserialize(resp)
-                if resp == sent:
-                    break
-                assert resp < sent
+            recvd = sock.recv_msg()
+            recvd = unserialize(recvd)
         fd.close()
-        assert sent == xf.stat_buf.st_size
-        resp = sock.recv_msg()
-        assert resp == b'ACK'
+        assert recvd == xf.stat_buf.st_size
     except:
         return -1
     else:
@@ -601,13 +596,12 @@ class _DispyNode(object):
                     pass
                 raise StopIteration
 
-            for xf in compute.xfer_files:
-                if MaxFileSize and xf.stat_buf.st_size > MaxFileSize:
-                    try:
-                        yield conn.send_msg(serialize(-1))
-                    except:
-                        pass
-                    raise StopIteration
+            if MaxFileSize and any(xf.stat_buf.st_size > MaxFileSize for xf in compute.xfer_files):
+                try:
+                    yield conn.send_msg(serialize(-1))
+                except:
+                    pass
+                raise StopIteration
             compute.xfer_files = set()
             dest = os.path.join(self.dest_path_prefix, compute.scheduler_ip_addr)
             if not os.path.isdir(dest):
@@ -727,7 +721,7 @@ class _DispyNode(object):
             compute = self.computations.get(xf.compute_id, None)
             if not compute or (MaxFileSize and xf.stat_buf.st_size > MaxFileSize):
                 logger.error('Invalid file transfer for "%s"' % xf.name)
-                yield conn.send_msg('NAK'.encode())
+                yield conn.send_msg(serialize(-1))
                 raise StopIteration
             tgt = os.path.join(compute.dest_path, os.path.basename(xf.name))
             if os.path.isfile(tgt) and _same_file(tgt, xf):
@@ -735,43 +729,34 @@ class _DispyNode(object):
                     compute.file_uses[tgt] += 1
                 else:
                     compute.file_uses[tgt] = 2
-                yield conn.send_msg('ACK'.encode())
+                yield conn.send_msg(serialize(xf.stat_buf.st_size))
             else:
-                yield conn.send_msg('NAK'.encode())
-                logger.debug('Copying file %s to %s (%s)', xf.name, tgt, xf.stat_buf.st_size)
                 try:
                     fd = open(tgt, 'wb')
                     recvd = 0
+                    logger.debug('Copying file %s to %s (%s)', xf.name, tgt, xf.stat_buf.st_size)
                     while recvd < xf.stat_buf.st_size:
+                        yield conn.send_msg(serialize(recvd))
                         data = yield conn.recvall(min(xf.stat_buf.st_size-recvd, 1024000))
                         if not data:
                             break
                         fd.write(data)
                         recvd += len(data)
-                        if MaxFileSize and recvd > MaxFileSize:
-                            logger.warning('File "%s" is too big (%s); it is truncated', tgt, recvd)
-                            break
-                        yield conn.send_msg(serialize(recvd))
+                    yield conn.send_msg(serialize(recvd))
                     fd.close()
-                    if recvd < xf.stat_buf.st_size:
-                        resp = ('NAK (read only %s bytes)' % recvd).encode()
-                    else:
-                        resp = 'ACK'.encode()
-                        logger.debug('Copied file %s, %s', tgt, resp)
-                        os.utime(tgt, (xf.stat_buf.st_atime, xf.stat_buf.st_mtime))
-                        os.chmod(tgt, stat.S_IMODE(xf.stat_buf.st_mode))
-                        if tgt in compute.file_uses:
-                            compute.file_uses[tgt] += 1
-                        else:
-                            compute.file_uses[tgt] = 1
+                    logger.debug('Copied file %s, %s / %s', tgt, recvd, xf.stat_buf.st_size)
+                    assert recvd == xf.stat_buf.st_size
+                    os.utime(tgt, (xf.stat_buf.st_atime, xf.stat_buf.st_mtime))
+                    os.chmod(tgt, stat.S_IMODE(xf.stat_buf.st_mode))
                 except:
                     logger.warning('Copying file "%s" failed with "%s"',
                                    xf.name, traceback.format_exc())
-                    resp = 'NAK'.encode()
-                try:
-                    yield conn.send_msg(resp)
-                except:
-                    logger.debug('Could not send reply for "%s"', xf.name)
+                    os.remove(tgt)
+                else:
+                    if tgt in compute.file_uses:
+                        compute.file_uses[tgt] += 1
+                    else:
+                        compute.file_uses[tgt] = 1
             raise StopIteration  # xfer_file_task
 
         def setup_computation(msg):

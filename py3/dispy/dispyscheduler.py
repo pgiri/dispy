@@ -416,8 +416,8 @@ class _Scheduler(object, metaclass=MetaSingleton):
             try:
                 xf = unserialize(msg[len(b'FILEXFER:'):])
                 msg = yield conn.recv_msg()
-                reply = unserialize(msg)
-                yield self.xfer_to_client(reply, xf, conn, addr)
+                job_reply = unserialize(msg)
+                yield self.xfer_to_client(job_reply, xf, conn, addr)
             except:
                 logger.debug(traceback.format_exc())
         elif msg.startswith(b'TERMINATED:'):
@@ -649,59 +649,52 @@ class _Scheduler(object, metaclass=MetaSingleton):
                 xf = unserialize(msg)
             except:
                 logger.debug('Ignoring file trasnfer request from %s', addr[0])
-                raise StopIteration('NAK'.encode())
+                raise StopIteration(serialize(-1))
             cluster = self.pending_clusters.get(xf.compute_id, None)
             if not cluster:
                 # if file is transfered for 'dispy_job_depends', cluster would be active
                 cluster = self._clusters.get(xf.compute_id, None)
                 if not cluster:
                     logger.error('Computation "%s" is invalid' % xf.compute_id)
-                    raise StopIteration('NAK'.encode())
+                    raise StopIteration(serialize(-1))
             tgt = os.path.join(cluster.dest_path, os.path.basename(xf.name))
             if os.path.isfile(tgt) and _same_file(tgt, xf):
                 if tgt in cluster.file_uses:
                     cluster.file_uses[tgt] += 1
                 else:
                     cluster.file_uses[tgt] = 2
-                raise StopIteration('ACK'.encode())
+                raise StopIteration(serialize(xf.stat_buf.st_size))
             logger.debug('Copying file %s to %s (%s)', xf.name, tgt, xf.stat_buf.st_size)
             try:
-                yield conn.send_msg('NAK'.encode())
                 fd = open(tgt, 'wb')
                 recvd = 0
                 while recvd < xf.stat_buf.st_size:
+                    yield conn.send_msg(serialize(recvd))
                     data = yield conn.recvall(min(xf.stat_buf.st_size-recvd, 1024000))
                     if not data:
                         break
                     fd.write(data)
                     recvd += len(data)
-                    if MaxFileSize and recvd > MaxFileSize:
-                        logger.warning('File "%s" is too big (%s); it is truncated', tgt, recvd)
-                        break
-                    yield conn.send_msg(serialize(recvd))
                 fd.close()
-                if recvd < xf.stat_buf.st_size:
-                    resp = ('NAK (read only %s bytes)' % recvd).encode()
+                assert recvd == xf.stat_buf.st_size
+                os.utime(tgt, (xf.stat_buf.st_atime, xf.stat_buf.st_mtime))
+                os.chmod(tgt, stat.S_IMODE(xf.stat_buf.st_mode))
+                if tgt in cluster.file_uses:
+                    cluster.file_uses[tgt] += 1
                 else:
-                    os.utime(tgt, (xf.stat_buf.st_atime, xf.stat_buf.st_mtime))
-                    os.chmod(tgt, stat.S_IMODE(xf.stat_buf.st_mode))
-                    if tgt in cluster.file_uses:
-                        cluster.file_uses[tgt] += 1
-                    else:
-                        cluster.file_uses[tgt] = 1
-                    logger.debug('Copied file %s', tgt)
-                    resp = 'ACK'.encode()
+                    cluster.file_uses[tgt] = 1
+                logger.debug('Copied file %s', tgt)
             except:
                 logger.warning('Copying file "%s" failed with "%s"',
                                xf.name, traceback.format_exc())
-                resp = 'NAK'.encode()
+                recvd = -1
                 try:
                     os.remove(tgt)
                     if len(os.listdir(cluster.dest_path)) == 0:
                         os.rmdir(cluster.dest_path)
                 except:
                     pass
-            raise StopIteration(resp)
+            raise StopIteration(serialize(recvd))
 
         def send_file(self, msg):
             # generator
@@ -711,53 +704,43 @@ class _Scheduler(object, metaclass=MetaSingleton):
                 xf = msg['xf']
             except:
                 logger.debug('Ignoring file trasnfer request from %s', addr[0])
-                raise StopIteration('NAK'.encode())
+                raise StopIteration(serialize(-1))
             cluster = self._clusters.get(xf.compute_id, None)
             if not cluster or not node or node.ip_addr not in cluster._dispy_nodes:
                 logger.error('send_file "%s" is invalid' % xf.name)
-                raise StopIteration('NAK'.encode())
+                raise StopIteration(serialize(-1))
             if _same_file(xf.name, xf):
                 resp = yield node.xfer_file(xf)
                 if resp == 0:
-                    raise StopIteration('ACK'.encode())
+                    raise StopIteration(serialize(xf.stat_buf.st_size))
                 else:
-                    raise StopIteration('NAK'.encode())
-            yield conn.send_msg('XFER'.encode())
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock = AsyncSocket(sock, keyfile=self.node_keyfile, certfile=self.node_certfile)
-            sock.settimeout(MsgTimeout)
+                    raise StopIteration(serialize(-1))
+
+            node_sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                                    keyfile=self.node_keyfile, certfile=self.node_certfile)
+            node_sock.settimeout(MsgTimeout)
             try:
-                yield sock.connect((node.ip_addr, node.port))
-                yield sock.sendall(node.auth)
-                yield sock.send_msg('FILEXFER:'.encode() + serialize(xf))
-                resp = yield sock.recv_msg()
-                if resp != 'ACK'.encode():
-                    recvd = 0
-                    while recvd < xf.stat_buf.st_size:
-                        data = yield conn.recvall(min(xf.stat_buf.st_size-recvd, 1024000))
-                        if not data:
-                            break
-                        yield sock.sendall(data)
-                        recvd += len(data)
-                        yield conn.send_msg(serialize(recvd))
-                        yield sock.sendall(data)
-                        while True:
-                            resp = yield conn.recv_msg()
-                            resp = unserialize(resp)
-                            if resp == recvd:
-                                break
-                            assert resp < recvd
-                    if recvd == xf.stat_buf.st_size:
-                        resp = yield sock.recv_msg()
-                    else:
-                        resp = 'NAK'.encode()
+                yield node_sock.connect((node.ip_addr, node.port))
+                yield node_sock.sendall(node.auth)
+                yield node_sock.send_msg('FILEXFER:'.encode() + serialize(xf))
+                recvd = yield node_sock.recv_msg()
+                recvd = unserialize(recvd)
+                while recvd < xf.stat_buf.st_size:
+                    yield conn.send_msg(serialize(recvd))
+                    data = yield conn.recvall(min(xf.stat_buf.st_size-recvd, 1024000))
+                    if not data:
+                        break
+                    yield node_sock.sendall(data)
+                    recvd = yield node_sock.recv_msg()
+                    recvd = unserialize(recvd)
             except:
-                logger.error('Could not transfer %s to %s: %s', xf.name, node.ip_addr, resp)
+                logger.error('Could not transfer %s to %s: %s', xf.name, node.ip_addr, recvd)
+                logger.debug(traceback.format_exc())
                 # TODO: mark this node down, reschedule on different node?
-                resp = 'NAK'.encode()
+                recvd = -1
             finally:
-                sock.close()
-            raise StopIteration(resp)
+                node_sock.close()
+            raise StopIteration(serialize(recvd))
 
         # scheduler_task begins here
         conn.settimeout(MsgTimeout)
@@ -1064,55 +1047,43 @@ class _Scheduler(object, metaclass=MetaSingleton):
                         logger.debug(traceback.format_exc())
                     self.pending_clusters.pop(cluster._compute.id, None)
 
-    def xfer_to_client(self, reply, xf, sock, addr):
-        _job = self._sched_jobs.get(reply.uid, None)
-        if _job is None or _job.hash != reply.hash:
-            logger.warning('Ignoring invalid file transfer from job %s at %s', reply.uid, addr[0])
-            yield sock.send_msg('NAK'.encode())
+    def xfer_to_client(self, job_reply, xf, conn, addr):
+        _job = self._sched_jobs.get(job_reply.uid, None)
+        if _job is None or _job.hash != job_reply.hash:
+            logger.warning('Ignoring invalid file transfer from job %s at %s', job_reply.uid, addr[0])
+            yield conn.send_msg(serialize(-1))
             raise StopIteration
-        node = self._nodes.get(reply.ip_addr, None)
+        node = self._nodes.get(job_reply.ip_addr, None)
         cluster = self._clusters.get(_job.compute_id, None)
         if not node or not cluster:
-            logger.warning('Ignoring invalid file transfer from job %s at %s', reply.uid, addr[0])
-            yield sock.send_msg('NAK'.encode())
+            logger.warning('Ignoring invalid file transfer from job %s at %s', job_reply.uid, addr[0])
+            yield conn.send_msg(serialize(-1))
             raise StopIteration
         node.last_pulse = time.time()
-        client_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        client_sock = AsyncSocket(client_sock,
+        client_sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                   keyfile=self.cluster_keyfile, certfile=self.cluster_certfile)
         client_sock.settimeout(MsgTimeout)
         try:
             yield client_sock.connect((cluster.client_ip_addr, cluster.client_job_result_port))
             yield client_sock.send_msg('FILEXFER:'.encode() + serialize(xf))
-            yield client_sock.send_msg(serialize(reply))
-            resp = yield client_sock.recv_msg()
-            assert resp == 'ACK'.encode()
+            yield client_sock.send_msg(serialize(job_reply))
 
-            yield sock.send_msg('ACK'.encode())
-            recvd = 0
+            recvd = yield client_sock.recv_msg()
+            recvd = unserialize(recvd)
             while recvd < xf.stat_buf.st_size:
-                data = yield sock.recvall(min(xf.stat_buf.st_size-recvd, 1024000))
+                yield conn.send_msg(serialize(recvd))
+                data = yield conn.recvall(min(xf.stat_buf.st_size-recvd, 1024000))
                 if not data:
                     break
                 yield client_sock.sendall(data)
-                recvd += len(data)
-                yield sock.send_msg(serialize(recvd))
-                yield client_sock.sendall(data)
-                while True:
-                    resp = yield client_sock.recv_msg()
-                    resp = unserialize(resp)
-                    if resp == recvd:
-                        break
-                    assert resp < recvd
-            resp = yield client_sock.recv_msg()
-            assert resp == 'ACK'.encode()
+                recvd = yield client_sock.recv_msg()
+                recvd = unserialize(recvd)
+            yield conn.send_msg(serialize(recvd))
         except:
-            yield sock.send_msg('NAK'.encode())
-        else:
-            yield sock.send_msg('ACK'.encode())
+            yield conn.send_msg(serialize(-1))
         finally:
             client_sock.close()
-            sock.close()
+            conn.close()
 
     def send_ping_node(self, ip_addr, port=None, coro=None):
         ping_msg = {'version': _dispy_version, 'sign': self.sign, 'port': self.port}
