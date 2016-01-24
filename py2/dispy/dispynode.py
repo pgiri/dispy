@@ -149,6 +149,7 @@ def dispy_send_file(path, timeout=MsgTimeout):
         fd.close()
         assert recvd == xf.stat_buf.st_size
     except:
+        logger.debug('Could not transfer file "%s": %s' % (path, traceback.format_exc()))
         return -1
     else:
         return 0
@@ -575,11 +576,10 @@ class _DispyNode(object):
             try:
                 compute = unserialize(msg)
             except:
-                logger.debug('Ignoring computation request from %s', addr[0])
                 try:
-                    yield conn.send_msg(serialize(-1))
+                    yield conn.send_msg(('Invalid computation request ignored').encode())
                 except:
-                    logger.warning('Failed to send reply to %s', str(addr))
+                    pass
                 raise StopIteration
             if not ((self.scheduler['ip_addr'] is None and self.scheduler['auth'] == []) or
                     (self.scheduler['ip_addr'] == compute.scheduler_ip_addr and
@@ -589,24 +589,27 @@ class _DispyNode(object):
                              compute.scheduler_ip_addr, self.scheduler['ip_addr'],
                              self.avail_cpus, self.num_cpus)
                 try:
-                    yield conn.send_msg(serialize(-1))
+                    yield conn.send_msg(('Node busy').encode())
                 except:
                     pass
                 raise StopIteration
 
-            if MaxFileSize and any(xf.stat_buf.st_size > MaxFileSize for xf in compute.xfer_files):
-                try:
-                    yield conn.send_msg(serialize(-1))
-                except:
-                    pass
-                raise StopIteration
+            if MaxFileSize:
+                for xf in compute.xfer_files:
+                    if xf.stat_buf.st_size > MaxFileSize:
+                        try:
+                            yield conn.send_msg(('File "%s" is too big; limit is %s' %
+                                                 (xf.name, MaxFileSize)).encode())
+                        except:
+                            pass
+                        raise StopIteration
             compute.xfer_files = set()
             dest = os.path.join(self.dest_path_prefix, compute.scheduler_ip_addr)
             if not os.path.isdir(dest):
                 try:
                     os.mkdir(dest)
                 except:
-                    yield conn.send_msg(serialize(-1))
+                    yield conn.send_msg(('Could not create destination path').encode())
                     raise StopIteration
             if compute.dest_path and isinstance(compute.dest_path, str):
                 # TODO: get os.sep from client and convert (in case of mixed environments)?
@@ -617,13 +620,12 @@ class _DispyNode(object):
                         os.makedirs(compute.dest_path)
                     except:
                         try:
-                            yield conn.send_msg(serialize(-1))
+                            yield conn.send_msg(('Could not create destination path').encode())
                         except:
-                            logger.warning('Failed to send reply to %s', str(addr))
-                            raise StopIteration
+                            pass
+                        raise StopIteration
             else:
                 compute.dest_path = tempfile.mkdtemp(prefix=compute.name + '_', dir=dest)
-            logger.debug('dest_path for "%s"/%s: %s', compute.name, compute.id, compute.dest_path)
             os.chmod(compute.dest_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
 
             if compute.id in self.computations:
@@ -642,13 +644,13 @@ class _DispyNode(object):
                     code += self.__init_code
                     code = compile(code, '<string>', 'exec')
                 except:
-                    logger.warning('Computation "%s" could not be compiled', compute.name)
                     if os.path.isdir(compute.dest_path):
                         os.rmdir(compute.dest_path)
                     try:
-                        yield conn.send_msg(serialize(-1))
+                        yield conn.send_msg(('%s: Computation "%s" could not be compiled' %
+                                             (self.ext_ip_addr, compute.name)).encode())
                     except:
-                        logger.warning('Failed to send reply to %s', str(addr))
+                        pass
                     raise StopIteration
                 compute.code = marshal.dumps(code)
 

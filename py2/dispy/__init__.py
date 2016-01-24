@@ -42,7 +42,7 @@ import asyncoro
 from asyncoro import Coro, AsynCoro, AsyncSocket, MetaSingleton, serialize, unserialize
 
 _dispy_version = __version__
-MsgTimeout = 5
+MsgTimeout = 10
 
 logger = logging.getLogger('dispy')
 logger.setLevel(logging.INFO)
@@ -349,11 +349,11 @@ class _Node(object):
         try:
             cpus = unserialize(cpus)
         except:
-            cpus = -1
-        if cpus < 0:
+            pass
+        if not isinstance(cpus, int) or cpus < 0:
             logger.warning('Transfer of computation "%s" to %s failed: %s',
                            compute.name, self.ip_addr, cpus)
-            raise StopIteration(cpus)
+            raise StopIteration(-1)
         self.cpus = cpus
         for xf in compute.xfer_files:
             resp = yield self.xfer_file(xf, coro=coro)
@@ -362,6 +362,7 @@ class _Node(object):
                 raise StopIteration(resp)
 
         if isinstance(compute.setup, _Function):
+            # set bigger timeout in case setup needs to load large files etc.
             resp = yield self.send('SETUP:' + serialize(compute.id), coro=coro)
             if resp != 0:
                 logger.warning('Setup of computation "%s" on %s failed: %s',
