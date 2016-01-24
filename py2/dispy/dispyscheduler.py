@@ -1162,7 +1162,7 @@ class _Scheduler(object):
                     cluster._dispy_nodes.pop(node.ip_addr, None)
                     compute_nodes.append(node)
         for node in compute_nodes:
-            yield self.setup_node(node, [compute], coro=coro)
+            Coro(self.setup_node, node, [compute])
 
     def cleanup_computation(self, cluster, coro=None):
         # generator
@@ -1231,7 +1231,7 @@ class _Scheduler(object):
 
     def setup_node(self, node, computes, coro=None):
         # generator
-        assert coro is not None
+        coro.set_daemon()
         for compute in computes:
             # NB: to avoid computation being sent multiple times, we
             # add to cluster's _dispy_nodes before sending computation

@@ -1238,7 +1238,7 @@ class _Cluster(object):
                 cluster._dispy_nodes.pop(node.ip_addr, None)
                 compute_nodes.append(node)
         for node in compute_nodes:
-            yield self.setup_node(node, [compute], coro=coro)
+            Coro(self.setup_node, node, [compute])
 
     def del_cluster(self, cluster, coro=None):
         # generator
@@ -1281,6 +1281,7 @@ class _Cluster(object):
 
     def setup_node(self, node, computations, coro=None):
         # generator
+        coro.set_daemon()
         for compute in computations:
             # NB: to avoid computation being sent multiple times, we
             # add to cluster's _dispy_nodes before sending computation
