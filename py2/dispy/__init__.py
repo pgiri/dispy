@@ -363,7 +363,7 @@ class _Node(object):
 
         if isinstance(compute.setup, _Function):
             # set bigger timeout in case setup needs to load large files etc.
-            resp = yield self.send('SETUP:' + serialize(compute.id), coro=coro)
+            resp = yield self.send('SETUP:' + serialize(compute.id), timeout=0, coro=coro)
             if resp != 0:
                 logger.warning('Setup of computation "%s" on %s failed: %s',
                                compute.name, self.ip_addr, resp)
@@ -371,11 +371,11 @@ class _Node(object):
         self.last_pulse = time.time()
         raise StopIteration(0)
 
-    def send(self, msg, reply=True, coro=None):
+    def send(self, msg, reply=True, timeout=MsgTimeout, coro=None):
         # generator
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock = AsyncSocket(sock, keyfile=self.keyfile, certfile=self.certfile)
-        sock.settimeout(MsgTimeout)
+        sock.settimeout(timeout)
         try:
             yield sock.connect((self.ip_addr, self.port))
             yield sock.sendall(self.auth)
