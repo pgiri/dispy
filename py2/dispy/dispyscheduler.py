@@ -261,7 +261,7 @@ class _Scheduler(object):
         coro.set_daemon()
 
         Coro(self.broadcast_ping)
-        Coro(self.send_ping_cluster, self._node_allocs, set())
+        self.send_ping_cluster(self._node_allocs, set())
 
         while True:
             msg, addr = yield self.udp_sock.recvfrom(1000)
@@ -377,7 +377,7 @@ class _Scheduler(object):
                 info = unserialize(msg[len('PONG:'):])
                 assert info['auth'] == self.node_auth
             except:
-                logger.warning('Ignoring node %s ("secret" mismatch?)', addr[0])
+                logger.warning('Ignoring node %s due to "secret" mismatch', addr[0])
             else:
                 yield self.add_node(info, coro=coro)
         elif msg.startswith('PING:'):
@@ -500,7 +500,6 @@ class _Scheduler(object):
                     dispy_node.cpus = cpus
         else:
             logger.warning('invalid message from %s:%s ignored' % addr)
-            logger.debug(traceback.format_exc())
         conn.close()
 
     def schedule_cluster(self, coro=None):
@@ -525,7 +524,7 @@ class _Scheduler(object):
                 yield reply_sock.send_msg('SCHEDULED:'.encode() + serialize(reply))
                 msg = yield reply_sock.recv_msg()
                 assert msg == 'ACK'.encode()
-                Coro(self.add_cluster, cluster)
+                self.add_cluster(cluster)
             except:
                 self._clusters.pop(cluster._compute.id, None)
                 logger.debug('Ignoring computation %s / %s from %s:%s' %
@@ -590,15 +589,13 @@ class _Scheduler(object):
                 node_allocs = req['node_allocs']
                 exclusive = req['exclusive']
             except:
-                logger.debug('Ignoring compute request from %s', addr[0])
-                return serialize(-1)
+                return serialize(('Invalid computation').encode())
             for xf in compute.xfer_files:
                 if MaxFileSize and xf.stat_buf.st_size > MaxFileSize:
-                    logger.warning('transfer file "%s" is too big (%s)',
-                                   xf.name, xf.stat_buf.st_size)
-                    return serialize(-1)
+                    return serialize(('File "%s" is too big; limit is %s' %
+                                      (xf.name, MaxFileSize)).encode())
             if self.terminate:
-                return serialize(-1)
+                return serialize(('Scheduler is closing').encode())
             cluster = _Cluster(compute, node_allocs, self)
             cluster.ip_addr = conn.getsockname()[0]
             cluster.exclusive = exclusive
@@ -607,7 +604,7 @@ class _Scheduler(object):
                 try:
                     os.mkdir(dest)
                 except:
-                    return serialize(-1)
+                    return serialize(('Could not create destination directory').encode())
             if compute.dest_path and isinstance(compute.dest_path, str):
                 # TODO: get os.sep from client and convert (in case of mixed environments)?
                 if compute.dest_path.startswith(os.sep):
@@ -618,7 +615,7 @@ class _Scheduler(object):
                     try:
                         os.makedirs(cluster.dest_path)
                     except:
-                        return serialize(-1)
+                        return serialize(('Could not create destination directory').encode())
             else:
                 cluster.dest_path = tempfile.mkdtemp(prefix=compute.name + '_', dir=dest)
 
@@ -1019,8 +1016,7 @@ class _Scheduler(object):
             if self.ping_interval and (now - last_ping_time) >= self.ping_interval:
                 last_ping_time = now
                 for cluster in self._clusters.itervalues():
-                    Coro(self.send_ping_cluster, cluster._node_allocs,
-                         set(cluster._dispy_nodes.iterkeys()))
+                    self.send_ping_cluster(cluster._node_allocs, set(cluster._dispy_nodes.iterkeys()))
             if self.zombie_interval and (now - last_zombie_time) >= self.zombie_interval:
                 last_zombie_time = now
                 for cluster in self._clusters.itervalues():
@@ -1088,16 +1084,8 @@ class _Scheduler(object):
     def send_ping_node(self, ip_addr, port=None, coro=None):
         ping_msg = {'version': _dispy_version, 'sign': self.sign, 'port': self.port}
         ping_msg['ip_addrs'] = list(filter(lambda ip: bool(ip), self.ext_ip_addrs))
-        # udp_sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
-        # udp_sock.settimeout(MsgTimeout)
-        # if not port:
-        #     port = self.node_port
-        # try:
-        #     yield udp_sock.sendto('PING:' + serialize(ping_msg), (ip_addr, port))
-        # except:
-        #     # logger.debug(traceback.format_exc())
-        #     pass
-        # udp_sock.close()
+        if not port:
+            port = self.node_port
         tcp_sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                keyfile=self.node_keyfile, certfile=self.node_certfile)
         tcp_sock.settimeout(MsgTimeout)
@@ -1106,7 +1094,6 @@ class _Scheduler(object):
             yield tcp_sock.sendall('x' * len(self.node_auth))
             yield tcp_sock.send_msg('PING:' + serialize(ping_msg))
         except:
-            # logger.debug(traceback.format_exc())
             pass
         tcp_sock.close()
 
@@ -1133,7 +1120,7 @@ class _Scheduler(object):
             # subnet mask; this is a limitation, but specifying with
             # subnet mask a bit cumbersome.
             if node_alloc.ip_rex.find('*') >= 0:
-                yield self.broadcast_ping(node_alloc.port)
+                Coro(self.broadcast_ping, node_alloc.port)
             else:
                 ip_addr = node_alloc.ip_addr
                 if ip_addr in present_ip_addrs:
@@ -1143,15 +1130,13 @@ class _Scheduler(object):
 
     def add_cluster(self, cluster, coro=None):
         # generator
-        assert coro is not None
         compute = cluster._compute
         compute.pulse_interval = self.pulse_interval
         if self.httpd and cluster.status_callback is None:
             self.httpd.add_cluster(cluster)
         # TODO: should we allow clients to add new nodes, or use only
         # the nodes initially created with command-line?
-        yield self.send_ping_cluster(cluster._node_allocs,
-                                     set(cluster._dispy_nodes.iterkeys()), coro=coro)
+        self.send_ping_cluster(cluster._node_allocs, set(cluster._dispy_nodes.iterkeys()))
         compute_nodes = []
         for ip_addr, node in self._nodes.iteritems():
             if compute.id in node.clusters:
@@ -1735,7 +1720,7 @@ class _Scheduler(object):
         cluster._node_allocs = [na for na in cluster._node_allocs
                                 if na.ip_rex not in present and not present.add(na.ip_rex)]
         del present
-        Coro(self.add_cluster, cluster)
+        self.add_cluster(cluster)
         yield 0
 
     def node_jobs(self, cluster, ip_addr, from_node=False, get_uids=True, coro=None):
