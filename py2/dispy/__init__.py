@@ -674,7 +674,6 @@ class _Cluster(object):
         self.port = port
         port_bound_event.set()
         del port_bound_event
-        Coro(self.broadcast_ping)
         while True:
             msg, addr = yield udp_sock.recvfrom(1000)
             if msg.startswith('PULSE:'):
@@ -739,9 +738,8 @@ class _Cluster(object):
         coro.set_daemon()
         yield port_bound_event.wait()
         del port_bound_event
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock = AsyncSocket(sock, keyfile=self.keyfile, certfile=self.certfile)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                           keyfile=self.keyfile, certfile=self.certfile)
         if not ip_addr:
             ip_addr = ''
         try:
@@ -756,6 +754,7 @@ class _Cluster(object):
         logger.debug('dispy client at %s:%s' % (ip_addr, self.port))
         sock.listen(128)
 
+        Coro(self.broadcast_ping)
         while True:
             try:
                 conn, addr = yield sock.accept()
@@ -1043,7 +1042,7 @@ class _Cluster(object):
             if self.ping_interval and (now - last_ping_time) >= self.ping_interval:
                 last_ping_time = now
                 for cluster in self._clusters.itervalues():
-                    Coro(self.send_ping_cluster, cluster)
+                    self.send_ping_cluster(cluster)
 
             if self.poll_interval and (now - last_poll_time) >= self.poll_interval:
                 last_poll_time = now
@@ -1115,13 +1114,12 @@ class _Cluster(object):
         bc_sock.close()
 
     def send_ping_cluster(self, cluster, coro=None):
-        # generator
         for node_alloc in cluster._node_allocs:
             # TODO: we assume subnets are indicated by '*', instead of
             # subnet mask; this is a limitation, but specifying with
             # subnet mask a bit cumbersome.
             if node_alloc.ip_rex.find('*') >= 0:
-                yield self.broadcast_ping(node_alloc.port)
+                Coro(self.broadcast_ping, node_alloc.port)
                 # need to do broadcast only once
             else:
                 ip_addr = node_alloc.ip_addr
@@ -1175,8 +1173,7 @@ class _Cluster(object):
                 finally:
                     conn.close()
 
-    def add_cluster(self, cluster, coro=None):
-        # generator
+    def add_cluster(self, cluster):
         compute = cluster._compute
         if self.shared:
             self._clusters[compute.id] = cluster
@@ -1225,7 +1222,7 @@ class _Cluster(object):
             if self.pulse_interval or self.ping_interval or self.poll_interval:
                 self.timer_coro.resume(True)
 
-        yield self.send_ping_cluster(cluster, coro=coro)
+        self.send_ping_cluster(cluster)
         compute_nodes = []
         for ip_addr, node in self._nodes.iteritems():
             if compute.id in node.clusters:
@@ -1714,7 +1711,7 @@ class _Cluster(object):
         cluster._node_allocs = [na for na in cluster._node_allocs
                                 if na.ip_rex not in present and not present.add(na.ip_rex)]
         del present
-        yield self.add_cluster(cluster)
+        self.add_cluster(cluster)
         yield self._sched_event.set()
         raise StopIteration(0)
 
@@ -2151,7 +2148,7 @@ class JobCluster(object):
         self.start_time = time.time()
         self.end_time = None
         if not shared:
-            Coro(self._cluster.add_cluster, self).value()
+            self._cluster.add_cluster(self)
 
     def submit(self, *args, **kwargs):
         """Submit a job for execution with the given arguments.
@@ -2463,12 +2460,13 @@ class SharedJobCluster(JobCluster):
             sock.send_msg('COMPUTE:' + serialize(req))
             reply = sock.recv_msg()
             reply = unserialize(reply)
-            self._compute.id = reply['compute_id']
-            self._compute.auth = reply['auth']
+            if isinstance(reply, dict):
+                self._compute.id = reply['compute_id']
+                self._compute.auth = reply['auth']
+            else:
+                raise Exception('Scheduler refused computation: %s' % reply)
         except:
-            logger.debug(traceback.format_exc())
-            raise Exception('Could not connect to scheduler at %s:%s' %
-                            (self.scheduler_ip_addr, self.scheduler_port))
+            raise
         finally:
             sock.close()
 
@@ -2501,7 +2499,7 @@ class SharedJobCluster(JobCluster):
                 # TODO: delete computation?
             sock.close()
 
-        Coro(self._cluster.add_cluster, self).value()
+        self._cluster.add_cluster(self)
         self._scheduled_event = threading.Event()
         sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), blocking=True,
                            keyfile=keyfile, certfile=certfile)
