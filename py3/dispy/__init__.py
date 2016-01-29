@@ -14,7 +14,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "MIT"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.6.5"
+__version__ = "4.6.7"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
@@ -622,7 +622,6 @@ class _Cluster(object, metaclass=MetaSingleton):
             port_bound_event = asyncoro.Event()
             if self.shared:
                 self.udp_coro = None
-                self.port = port
                 port_bound_event.set()
             else:
                 self.udp_coro = Coro(self.udp_server, port, port_bound_event)
@@ -633,7 +632,7 @@ class _Cluster(object, metaclass=MetaSingleton):
 
             self.tcp_coros = []
             for ip_addr in list(self.ip_addrs):
-                self.tcp_coros.append(Coro(self.tcp_server, ip_addr, port_bound_event))
+                self.tcp_coros.append(Coro(self.tcp_server, ip_addr, port, port_bound_event))
 
             try:
                 self.shelf = shelve.open(self.recover_file, flag='c', writeback=True)
@@ -738,24 +737,25 @@ class _Cluster(object, metaclass=MetaSingleton):
                 # logger.debug('Ignoring UDP message %s from: %s', msg[:min(5, len(msg))], addr[0])
                 pass
 
-    def tcp_server(self, ip_addr, port_bound_event, coro=None):
+    def tcp_server(self, ip_addr, port, port_bound_event, coro=None):
         # generator
         coro.set_daemon()
-        yield port_bound_event.wait()
+        if not self.shared:
+            yield port_bound_event.wait()
         del port_bound_event
         sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                            keyfile=self.keyfile, certfile=self.certfile)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         if not ip_addr:
             ip_addr = ''
         try:
-            sock.bind((ip_addr, self.port))
+            sock.bind((ip_addr, port))
         except:
             if ip_addr == '':
                 ip_addr = None
             self.ip_addrs.discard(ip_addr)
             raise StopIteration
-        if self.shared:
-            self.port = sock.getsockname()[1]
+        self.port = sock.getsockname()[1]
         logger.debug('dispy client at %s:%s' % (ip_addr, self.port))
         sock.listen(128)
 
@@ -1204,7 +1204,7 @@ class _Cluster(object, metaclass=MetaSingleton):
                 self.poll_interval = num_min(self.poll_interval, cluster.poll_interval)
             if self.poll_interval:
                 self.timer_coro.resume(True)
-            raise StopIteration
+            return
 
         # if a node is added with 'allocate_node', compute is already
         # initialized, so don't reinitialize it
@@ -2398,6 +2398,8 @@ class SharedJobCluster(JobCluster):
         node_allocs = _parse_node_allocs(nodes)
         if not node_allocs:
             raise Exception('"nodes" argument is invalid')
+        if ext_ip_addr:
+            ext_ip_addr = _node_ipaddr(ext_ip_addr)
 
         JobCluster.__init__(self, computation, depends=depends,
                             callback=callback, cluster_status=cluster_status,
@@ -2421,17 +2423,8 @@ class SharedJobCluster(JobCluster):
             scheduler_port = 51349
 
         # wait until tcp server has started
-        while self._cluster.port == 0:
+        while not self._cluster.port:
             time.sleep(0.1)
-
-        ext_ip_addr = None
-        for ext_ip_addr in (self._cluster.ext_ip_addrs - self._cluster.ip_addrs):
-            if not ext_ip_addr:
-                break
-        if not ext_ip_addr:
-            for ext_ip_addr in self._cluster.ext_ip_addrs:
-                if not ext_ip_addr:
-                    break
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock = AsyncSocket(sock, blocking=True, keyfile=keyfile, certfile=certfile)
