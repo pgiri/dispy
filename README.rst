@@ -1,7 +1,7 @@
 dispy
 ######
 
-`dispy <http://dispy.sourceforge.net>`_ is a rather comprehensive, yet
+`dispy <http://dispy.sourceforge.net>`_ is a comprehensive, yet
 easy to use framework for creating and using compute clusters to
 execute computations in parallel across multiple processors in a
 single machine (SMP), among many machines in a cluster, grid or cloud.
@@ -10,16 +10,15 @@ computation is evaluated with different (large) datasets independently
 with no communication among computation tasks (except for computation
 tasks sending intermediate results to the client). If
 communication/cooperation among tasks is needed, `asyncoro
-<http://pypi.python.org/pypi/asyncoro>`_ framework could be used.
+<http://asyncoro.sourceforge.net>`_ framework could be used.
 
 dispy works with Python versions 2.7+ and 3.1+. It has been tested
 with Linux, OS X and Windows; it may work on other platforms too.
 
 Features
 --------
-* dispy is implemented with `asyncoro
-  <http://pypi.python.org/pypi/asyncoro>`_, an independent framework
-  for asynchronous, concurrent, distributed, network programming with
+* dispy is implemented with asyncoro_, an independent framework for
+  asynchronous, concurrent, distributed, network programming with
   coroutines (without threads). asyncoro uses non-blocking sockets
   with I/O notification mechanisms epoll, kqueue and poll, and Windows
   I/O Completion Ports (IOCP) for high performance and scalability, so
@@ -27,7 +26,11 @@ Features
   nodes. asyncoro itself has support for distributed/parallel
   computing, including transferring computations, files etc., and
   message passing (for communicating with client and other computation
-  tasks), although it doesn't include job scheduling.
+  tasks).  While dispy can be used to schedule jobs of a computation
+  to get the results, asyncoro can be used to create `distributed
+  communicating processes
+  <http://asyncoro.sourceforge.net/discoro.html>`_, for broad range
+  of use cases.
 
 * Computations (Python functions or standalone programs) and their
   dependencies (files, Python functions, classes, modules) are
@@ -70,18 +73,11 @@ Features
 
 Dependencies
 ------------
-dispy requires `asyncoro <http://pypi.python.org/pypi/asyncoro>`_ for
-concurrent, asynchronous network programming with coroutines. asyncoro
-can be installed for Python 2.7+ with::
 
-   pip install asyncoro
-
-or for Python 3.1+ with::
-
-   pip3 install asyncoro
-
-Under Windows efficient polling notifier I/O Completion Ports (IOCP)
-is supported only if `pywin32
+dispy requires asyncoro_ for concurrent, asynchronous network
+programming with coroutines. asyncoro is automatically installed if
+dispy is installed with pip. Under Windows efficient polling notifier
+I/O Completion Ports (IOCP) is supported only if `pywin32
 <http://sourceforge.net/projects/pywin32/files/pywin32/>`_ is
 installed; otherwise, inefficient *select* notifier is used.
 
@@ -104,3 +100,4 @@ Links
 * `Project page <http://dispy.sourceforge.net>`_.
 * `Examples <http://dispy.sourceforge.net/examples.html>`_.
 * `Changes <https://sourceforge.net/p/dispy/news/>`_.
+* `Source <https://github.com/pgiri/dispy>`_.
