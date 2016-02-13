@@ -22,7 +22,6 @@ import socket
 import multiprocessing
 import threading
 import subprocess
-import signal
 import traceback
 import logging
 import marshal
@@ -200,7 +199,6 @@ def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
     __dispy_job_reply.stderr = sys.stderr.getvalue()
     __dispy_job_reply.end_time = time.time()
     __dispy_job_info.proc = None
-    signal.signal(signal.SIGTERM, signal.SIG_IGN)
     __dispy_reply_Q.put(__dispy_job_reply)
 
 
@@ -386,7 +384,7 @@ class _DispyNode(object):
                     yield sock.connect(addr)
                     yield sock.send_msg('PONG:'.encode() + serialize(pong_msg))
                 except:
-                    pass
+                    logger.debug('Could not connect to %s:%s' % (addr[0], addr[1]))
                 finally:
                     sock.close()
         else:

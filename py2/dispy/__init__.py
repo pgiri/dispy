@@ -14,7 +14,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "MIT"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.6.7"
+__version__ = "4.6.8"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
@@ -354,7 +354,8 @@ class _Node(object):
             logger.warning('Transfer of computation "%s" to %s failed: %s',
                            compute.name, self.ip_addr, cpus)
             raise StopIteration(-1)
-        self.cpus = cpus
+        if not self.cpus:
+            self.cpus = cpus
         for xf in compute.xfer_files:
             resp = yield self.xfer_file(xf, coro=coro)
             if resp != 0:
@@ -439,7 +440,6 @@ class _Node(object):
         except:
             logger.debug('Deleting computation %s/%s from %s failed',
                          compute.id, compute.name, self.ip_addr)
-        self.busy = 0
 
 
 class _DispyJob_(object):
@@ -754,7 +754,8 @@ class _Cluster(object):
         logger.debug('dispy client at %s:%s' % (ip_addr, self.port))
         sock.listen(128)
 
-        Coro(self.broadcast_ping)
+        if not self.shared:
+            Coro(self.broadcast_ping)
         while True:
             try:
                 conn, addr = yield sock.accept()
@@ -1267,7 +1268,6 @@ class _Cluster(object):
                 if not node:
                     continue
                 yield node.close(cluster._compute, coro=coro)
-                dispy_node.busy = 0
                 dispy_node.update_time = time.time()
                 if cluster.status_callback:
                     self.worker_Q.put((cluster.status_callback,
@@ -2001,6 +2001,7 @@ class JobCluster(object):
 
         if hasattr(self, 'scheduler_ip_addr'):
             shared = True
+            self._node_allocs = []
         else:
             shared = False
             if not nodes:
