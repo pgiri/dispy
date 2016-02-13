@@ -79,6 +79,7 @@ class _Cluster(object):
         self.cpu_time = 0
         self.start_time = time.time()
         self.end_time = None
+        self.job_sched_time = 0
         self.zombie = False
         self.last_pulse = time.time()
         self.client_ip_addr = None
@@ -119,7 +120,7 @@ class _Scheduler(object, metaclass=MetaSingleton):
     """
 
     def __init__(self, nodes=[], ip_addr=None, ext_ip_addr=None,
-                 port=None, node_port=None, scheduler_port=None,
+                 port=None, node_port=None, scheduler_port=None, scheduler_alg=None,
                  pulse_interval=None, ping_interval=None,
                  node_secret='', node_keyfile=None, node_certfile=None,
                  cluster_secret='', cluster_keyfile=None, cluster_certfile=None,
@@ -223,7 +224,10 @@ class _Scheduler(object, metaclass=MetaSingleton):
             self.cluster_auth = auth_code(self.cluster_secret, self.sign)
             self.node_auth = auth_code(self.node_secret, self.sign)
 
-            self.select_job_node = self.load_balance_schedule
+            if scheduler_alg == 'load_balance_fair_cluster':
+                self.select_job_node_cluster = self.load_balance_fair_cluster_schedule
+            else:
+                self.select_job_node_cluster = self.load_balance_schedule
             self.start_time = time.time()
 
             if http_server:
@@ -1114,7 +1118,6 @@ class _Scheduler(object, metaclass=MetaSingleton):
         bc_sock.close()
 
     def send_ping_cluster(self, node_allocs, present_ip_addrs, coro=None):
-        # generator
         for node_alloc in node_allocs:
             # TODO: we assume subnets are indicated by '*', instead of
             # subnet mask; this is a limitation, but specifying with
@@ -1483,20 +1486,65 @@ class _Scheduler(object, metaclass=MetaSingleton):
 
     def load_balance_schedule(self):
         # TODO: maintain "available" sequence of nodes for better performance
-        host = None
+        node = None
         load = 1.0
-        for node in self._nodes.values():
-            if node.busy >= node.cpus:
+        for host in self._nodes.values():
+            if host.busy >= host.cpus:
                 continue
-            if node.pending_jobs:
-                host = node
-                break
-            if not any(self._clusters[cid].pending_jobs for cid in node.clusters):
+            if host.pending_jobs:
+                node = host
+                _job = node.pending_jobs.pop(0)
+                cluster = self._clusters[_job.compute_id]
+                return (_job, node, cluster)
+            if not any(self._clusters[cid].pending_jobs for cid in host.clusters):
                 continue
-            if (float(node.busy) / node.cpus) < load:
-                host = node
-                load = float(node.busy) / node.cpus
-        return host
+            if (float(host.busy) / host.cpus) < load:
+                node = host
+                load = float(host.busy) / host.cpus
+        _job = None
+        if node:
+            for cid in node.clusters:
+                cluster = self._clusters[cid]
+                if cluster._jobs:
+                    _job = cluster._jobs.pop(0)
+        if _job:
+            return (_job, node, cluster)
+        else:
+            return (None, None, None)
+
+    def load_balance_fair_cluster_schedule(self):
+        # TODO: maintain "available" sequence of nodes for better performance
+        node = None
+        load = 1.0
+        for host in self._nodes.values():
+            if host.busy >= host.cpus:
+                continue
+            if host.pending_jobs:
+                node = host
+                _job = node.pending_jobs.pop(0)
+                cluster = self._clusters[_job.compute_id]
+                cluster.job_sched_time = time.time()
+                return (_job, node, cluster)
+            if not any(self._clusters[cid].pending_jobs for cid in host.clusters):
+                continue
+            if (float(host.busy) / host.cpus) < load:
+                node = host
+                load = float(host.busy) / host.cpus
+        _job = None
+        if node:
+            lrs = None
+            for cid in node.clusters:
+                cluster = self._clusters[cid]
+                if cluster._jobs and (not lrs or cluster.job_sched_time < lrs.job_sched_time):
+                    lrs = cluster
+            if lrs:
+                cluster = lrs
+                _job = cluster._jobs.pop(0)
+                cluster.job_sched_time = time.time()
+        if _job:
+            return (_job, node, cluster)
+        else:
+            return (None, None, None)
 
     def run_job(self, _job, cluster, coro=None):
         # generator
@@ -1564,25 +1612,11 @@ class _Scheduler(object, metaclass=MetaSingleton):
             # n = sum(len(cluster._jobs) for cluster in self._clusters.values())
             # assert self.unsched_jobs == n, '%s != %s' % (self.unsched_jobs, n)
             logger.debug('Pending jobs: %s', self.unsched_jobs)
-            node = self.select_job_node()
+            _job, node, cluster = self.select_job_node_cluster()
             if not node:
                 self._sched_event.clear()
                 yield self._sched_event.wait()
                 continue
-            if node.pending_jobs:
-                _job = node.pending_jobs.pop(0)
-            else:
-                # TODO: strategy to pick a cluster?
-                _job = None
-                for cid in node.clusters:
-                    if self._clusters[cid]._jobs:
-                        _job = self._clusters[cid]._jobs.pop(0)
-                        break
-                if _job is None:
-                    self._sched_event.clear()
-                    yield self._sched_event.wait()
-                    continue
-            cluster = self._clusters[_job.compute_id]
             _job.node = node
             assert node.busy < node.cpus
             self._sched_jobs[_job.uid] = _job
@@ -1868,6 +1902,9 @@ if __name__ == '__main__':
     parser.add_argument('--httpd', action='store_true', dest='http_server', default=False,
                         help='if given, HTTP server is created so clusters can be '
                         'monitored and managed')
+    parser.add_argument('--fair_cluster_scheduler', dest='scheduler_alg', action='store_const',
+                        const='load_balance_fair_cluster',
+                        help='Choose cluster with fair scheduling')
     parser.add_argument('--daemon', action='store_true', dest='daemon', default=False,
                         help='if given, input is not read from terminal')
 
