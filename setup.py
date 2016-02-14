@@ -25,7 +25,8 @@ setup(
     },
     install_requires=['asyncoro >= 3.6.10'],
     scripts=[os.path.join(base_dir, 'dispy', script) for script in \
-             ['dispy.py', 'dispynode.py', 'dispynetrelay.py', 'dispyscheduler.py']],
+             ['dispynode.py', 'dispynetrelay.py', 'dispyscheduler.py']] + \
+            [os.path.join(base_dir, script) for script in ['dispy.py']],
     license='MIT',
     platforms='any',
     classifiers=[
