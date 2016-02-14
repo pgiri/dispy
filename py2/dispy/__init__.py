@@ -84,7 +84,8 @@ class DispyJob(object):
     """
 
     __slots__ = ('id', 'args', 'kwargs', 'result', 'stdout', 'stderr', 'exception',
-                 'start_time', 'end_time', 'status', 'ip_addr', 'finish', '_dispy_job_')
+                 'submit_time', 'start_time', 'end_time', 'status',
+                 'ip_addr', 'finish', '_dispy_job_')
 
     Created = 5
     Running = 6
@@ -109,6 +110,7 @@ class DispyJob(object):
         self.stdout = None
         self.stderr = None
         self.exception = None
+        self.submit_time = time.time()
         self.start_time = None
         self.end_time = None
         self.status = DispyJob.Created
