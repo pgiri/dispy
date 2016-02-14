@@ -224,12 +224,14 @@ class _Scheduler(object):
             self.cluster_auth = auth_code(self.cluster_secret, self.sign)
             self.node_auth = auth_code(self.node_secret, self.sign)
 
-            if scheduler_alg == 'load_balance_fair_cluster':
-                self.select_job_node_cluster = self.load_balance_fair_cluster_schedule
+            if scheduler_alg == 'fair_cluster':
+                self.select_job_node_cluster = self.fair_cluster_schedule
+            elif scheduler_alg == 'fcfs_cluster':
+                self.select_job_node_cluster = self.fcfs_cluster_schedule
             else:
-                self.select_job_node_cluster = self.load_balance_schedule
-            self.start_time = time.time()
+                self.select_job_node_cluster = self.fsfs_job_schedule
 
+            self.start_time = time.time()
             if http_server:
                 self.httpd = dispy.httpd.DispyHTTPServer(None)
             else:
@@ -577,9 +579,10 @@ class _Scheduler(object):
             setattr(_job, 'pinned', node)
             setattr(_job, 'job', job)
             setattr(_job, 'node', None)
+            logger.debug('submitted job %s / %s' % (_job.uid, job.submit_time))
             self.unsched_jobs += 1
             cluster.pending_jobs += 1
-            cluster.last_pulse = time.time()
+            cluster.last_pulse = job.submit_time
             self._sched_event.set()
             if cluster.status_callback:
                 cluster.status_callback(DispyJob.Created, None, job)
@@ -1484,7 +1487,9 @@ class _Scheduler(object):
                 self.done_jobs[_job.uid] = _job
                 Coro(self.send_job_result, _job.uid, cluster, reply, resending=False)
 
-    def load_balance_schedule(self):
+    def load_balance_node(self):
+        """Return node with least load
+        """
         # TODO: maintain "available" sequence of nodes for better performance
         node = None
         load = 1.0
@@ -1492,59 +1497,101 @@ class _Scheduler(object):
             if host.busy >= host.cpus:
                 continue
             if host.pending_jobs:
-                node = host
-                _job = node.pending_jobs.pop(0)
-                cluster = self._clusters[_job.compute_id]
-                return (_job, node, cluster)
+                return host
             if not any(self._clusters[cid].pending_jobs for cid in host.clusters):
                 continue
             if (float(host.busy) / host.cpus) < load:
                 node = host
                 load = float(host.busy) / host.cpus
-        _job = None
-        if node:
-            for cid in node.clusters:
-                cluster = self._clusters[cid]
-                if cluster._jobs:
-                    _job = cluster._jobs.pop(0)
-        if _job:
-            return (_job, node, cluster)
-        else:
-            return (None, None, None)
+        return node
 
-    def load_balance_fair_cluster_schedule(self):
-        # TODO: maintain "available" sequence of nodes for better performance
-        node = None
-        load = 1.0
-        for host in self._nodes.itervalues():
-            if host.busy >= host.cpus:
-                continue
-            if host.pending_jobs:
-                node = host
-                _job = node.pending_jobs.pop(0)
-                cluster = self._clusters[_job.compute_id]
-                cluster.job_sched_time = time.time()
-                return (_job, node, cluster)
-            if not any(self._clusters[cid].pending_jobs for cid in host.clusters):
-                continue
-            if (float(host.busy) / host.cpus) < load:
-                node = host
-                load = float(host.busy) / host.cpus
-        _job = None
-        if node:
-            lrs = None
-            for cid in node.clusters:
-                cluster = self._clusters[cid]
-                if cluster._jobs and (not lrs or cluster.job_sched_time < lrs.job_sched_time):
-                    lrs = cluster
-            if lrs:
+    def fsfs_job_schedule(self):
+        """Return tuple (_job, node, cluster) such that _job is earliest
+        submitted in all clusters.
+        """
+        node = self.load_balance_node()
+        if not node:
+            return (None, None, None)
+        lrs = None
+        for cid in node.clusters:
+            cluster = self._clusters[cid]
+            if cluster._jobs and (not lrs or
+                                  cluster._jobs[0].job.submit_time < lrs._jobs[0].job.submit_time):
+                lrs = cluster
+        if lrs:
+            if node.pending_jobs:
+                if node.pending_jobs[0].job.submit_time < lrs._jobs[0].job.submit_time:
+                    _job = node.pending_jobs.pop(0)
+                    cluster = self._clusters[_job.compute_id]
+            else:
                 cluster = lrs
                 _job = cluster._jobs.pop(0)
-                cluster.job_sched_time = time.time()
-        if _job:
             return (_job, node, cluster)
-        else:
+        elif node.pending_jobs:
+            _job = node.pending_jobs.pop(0)
+            cluster = self._clusters[_job.compute_id]
+            return (_job, node, cluster)
+        return (None, None, None)
+
+    def fair_cluster_schedule(self):
+        """Return tuple (_job, node, cluster) such that cluster is earliest
+        scheduled last time.
+        """
+        node = self.load_balance_node()
+        if not node:
             return (None, None, None)
+        lrs = None
+        for cid in node.clusters:
+            cluster = self._clusters[cid]
+            if cluster._jobs and (not lrs or cluster.job_sched_time < lrs.job_sched_time):
+                lrs = cluster
+        if lrs:
+            if node.pending_jobs:
+                _job = node.pending_jobs[0]
+                cluster = self._clusters[_job.compute_id]
+                if cluster.job_sched_time > lrs.job_sched_time:
+                    cluster = lrs
+                    _job = cluster._jobs.pop(0)
+            else:
+                cluster = lrs
+                _job = cluster._jobs.pop(0)
+            cluster.job_sched_time = time.time()
+            return (_job, node, cluster)
+        elif node.pending_jobs:
+            _job = node.pending_jobs.pop(0)
+            cluster = self._clusters[_job.compute_id]
+            cluster.job_sched_time = time.time()
+            return (_job, node, cluster)
+        return (None, None, None)
+
+    def fcfs_cluster_schedule(self):
+        """Return tuple (_job, node, cluster) such that cluster is created
+        earliest.
+        """
+        node = self.load_balance_node()
+        if not node:
+            return (None, None, None)
+        lrs = None
+        for cid in node.clusters:
+            cluster = self._clusters[cid]
+            if cluster._jobs and (not lrs or cluster.start_time < lrs.start_time):
+                lrs = cluster
+        if lrs:
+            if node.pending_jobs:
+                _job = node.pending_jobs[0]
+                cluster = self._clusters[_job.compute_id]
+                if cluster.start_time > lrs.start_time:
+                    cluster = lrs
+                    _job = cluster._jobs.pop(0)
+            else:
+                cluster = lrs
+                _job = cluster._jobs.pop(0)
+            return (_job, node, cluster)
+        elif node.pending_jobs:
+            _job = node.pending_jobs.pop(0)
+            cluster = self._clusters[_job.compute_id]
+            return (_job, node, cluster)
+        return (None, None, None)
 
     def run_job(self, _job, cluster, coro=None):
         # generator
@@ -1903,8 +1950,9 @@ if __name__ == '__main__':
                         help='if given, HTTP server is created so clusters can be '
                         'monitored and managed')
     parser.add_argument('--fair_cluster_scheduler', dest='scheduler_alg', action='store_const',
-                        const='load_balance_fair_cluster',
-                        help='Choose cluster with fair scheduling')
+                        const='fair_cluster', help='Choose cluster with fair scheduling')
+    parser.add_argument('--early_cluster_scheduler', dest='scheduler_alg', action='store_const',
+                        const='fcfs_cluster', help='Choose earliest cluster scheduling')
     parser.add_argument('--daemon', action='store_true', dest='daemon', default=False,
                         help='if given, input is not read from terminal')
 
