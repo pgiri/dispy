@@ -49,5 +49,5 @@ if __name__ == '__main__':
             print('%s: %s : %s' % (job.id, job.result[0], job.result[1]))
         else:
             print(job.exception)
-    cluster.stats()
+    cluster.print_status()
     cluster.close()

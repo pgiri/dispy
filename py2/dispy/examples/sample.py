@@ -21,4 +21,4 @@ if __name__ == '__main__':
         print('%s executed job %s at %s with %s' % (host, job.id, job.start_time, n))
         # other fields of 'job' that may be useful:
         # print(job.stdout, job.stderr, job.exception, job.ip_addr, job.start_time, job.end_time)
-    cluster.stats()
+    cluster.print_status()

@@ -44,5 +44,5 @@ if __name__ == '__main__':
             print('job %s failed: %s' % (job.id, job.exception))
         else:
             print('%s: %s' % (job.id, job.result))
-    cluster.stats()
+    cluster.print_status()
     cluster.close()

@@ -53,4 +53,4 @@ if __name__ == '__main__':
             break
 
     cluster.wait()
-    cluster.stats()
+    cluster.print_status()

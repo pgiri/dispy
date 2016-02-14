@@ -44,5 +44,5 @@ if __name__ == '__main__':
         job.id = n
         jobs.append(job)
     cluster.wait()
-    cluster.stats()
+    cluster.print_status()
     cluster.close()
