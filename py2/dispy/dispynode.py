@@ -238,7 +238,7 @@ class _DispyNode(object):
             except:
                 self.name = ''
 
-        if not node_port:
+        if node_port is None:
             node_port = 51348
 
         self.ext_ip_addr = ext_ip_addr
@@ -305,8 +305,8 @@ class _DispyNode(object):
         self.thread_lock = threading.Lock()
         self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.udp_sock.bind(('', node_port))
-        logger.info('serving %s cpus at %s:%s', self.num_cpus, self.ext_ip_addr, node_port)
+        self.udp_sock.bind(('', self.port))
+        logger.info('serving %s cpus at %s:%s', self.num_cpus, self.ext_ip_addr, self.)
         logger.debug('tcp server at %s:%s', self.address[0], self.address[1])
         self.udp_sock = AsyncSocket(self.udp_sock)
 
