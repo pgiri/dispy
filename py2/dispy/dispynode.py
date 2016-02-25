@@ -306,7 +306,7 @@ class _DispyNode(object):
         self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.udp_sock.bind(('', self.port))
-        logger.info('serving %s cpus at %s:%s', self.num_cpus, self.ext_ip_addr, self.)
+        logger.info('serving %s cpus at %s:%s', self.num_cpus, self.ext_ip_addr, self.port)
         logger.debug('tcp server at %s:%s', self.address[0], self.address[1])
         self.udp_sock = AsyncSocket(self.udp_sock)
 
