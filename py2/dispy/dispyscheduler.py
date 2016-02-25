@@ -69,6 +69,8 @@ class _Cluster(object):
         # self.name = compute.name
         self.name = '%s @ %s' % (compute.name, compute.scheduler_ip_addr)
         self._node_allocs = _parse_node_allocs(node_allocs)
+        self._node_allocs = sorted(self._node_allocs,
+                                   key=lambda node_alloc: node_alloc.ip_rex, reverse=True)
         self.scheduler = scheduler
         self.status_callback = None
         self.pending_jobs = 0
@@ -80,6 +82,7 @@ class _Cluster(object):
         self.end_time = None
         self.job_sched_time = 0
         self.zombie = False
+        self.exclusive = False
         self.last_pulse = time.time()
         self.client_ip_addr = None
         self.client_port = None
@@ -121,7 +124,7 @@ class _Scheduler(object):
 
     def __init__(self, nodes=[], ip_addr=None, ext_ip_addr=None,
                  port=None, node_port=None, scheduler_port=None, scheduler_alg=None,
-                 pulse_interval=None, ping_interval=None,
+                 pulse_interval=None, ping_interval=None, cooperative=False,
                  node_secret='', node_keyfile=None, node_certfile=None,
                  cluster_secret='', cluster_keyfile=None, cluster_certfile=None,
                  dest_path_prefix=None, clean=False, zombie_interval=60, http_server=False):
@@ -177,6 +180,7 @@ class _Scheduler(object):
                 os.makedirs(self.dest_path_prefix)
                 os.chmod(self.dest_path_prefix, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
 
+            self.cooperative = bool(cooperative)
             if pulse_interval:
                 try:
                     self.pulse_interval = float(pulse_interval)
@@ -872,7 +876,7 @@ class _Scheduler(object):
                 resp = serialize(0)
             else:
                 cluster = self._clusters.get(compute_id, None)
-                if cluster is None:
+                if cluster is None or cluster.client_auth != auth:
                     fd = open(os.path.join(self.dest_path_prefix,
                                            '%s_%s' % (compute_id, auth)), 'wb')
                     cluster = pickle.load(fd)
@@ -897,7 +901,7 @@ class _Scheduler(object):
                 pass
             else:
                 cluster = self._clusters.get(compute_id, None)
-                if cluster is None:
+                if cluster is None or cluster.client_auth != auth:
                     fd = open(os.path.join(self.dest_path_prefix,
                                            '%s_%s' % (compute_id, auth)), 'wb')
                     cluster = pickle.load(fd)
@@ -1149,9 +1153,12 @@ class _Scheduler(object):
                 continue
             for node_alloc in cluster._node_allocs:
                 cpus = node_alloc.allocate(cluster, node.ip_addr, node.name, node.avail_cpus)
-                if cpus > 0:
-                    cluster._dispy_nodes.pop(node.ip_addr, None)
-                    compute_nodes.append(node)
+                if cpus <= 0:
+                    continue
+                if cluster.exclusive or self.cooperative:
+                    node.cpus = min(node.avail_cpus, cpus)
+                cluster._dispy_nodes.pop(node.ip_addr, None)
+                compute_nodes.append(node)
         for node in compute_nodes:
             Coro(self.setup_node, node, [compute])
 
@@ -1204,6 +1211,8 @@ class _Scheduler(object):
             if not node:
                 continue
             node.clusters.discard(compute.id)
+            if cluster.exclusive:
+                node.cpus = node.avail_cpus
 
         Coro(self.schedule_cluster)
 
@@ -1500,9 +1509,9 @@ class _Scheduler(object):
                 return host
             if not any(self._clusters[cid].pending_jobs for cid in host.clusters):
                 continue
-            if (float(host.busy) / host.cpus) < load:
+            if (host.busy / host.cpus) < load:
                 node = host
-                load = float(host.busy) / host.cpus
+                load = host.busy / host.cpus
         return node
 
     def fsfs_job_schedule(self):
@@ -1639,7 +1648,7 @@ class _Scheduler(object):
                 node.busy -= 1
             self._sched_event.set()
         else:
-            logger.debug('Running job %s on %s (busy: %s / %s)',
+            logger.debug('Running job %s on %s (busy: %d / %d)',
                          _job.uid, node.ip_addr, node.busy, node.cpus)
             _job.job.status = DispyJob.Running
             _job.job.start_time = time.time()
@@ -1717,7 +1726,7 @@ class _Scheduler(object):
 
         pkl_path = os.path.join(self.dest_path_prefix, '%s_%s' % (compute_id, auth))
         cluster = self._clusters.get(compute_id, None)
-        if not cluster:
+        if not cluster or cluster.client_auth != auth:
             fd = open(pkl_path, 'rb')
             cluster = pickle.load(fd)
             fd.close()
@@ -1950,9 +1959,13 @@ if __name__ == '__main__':
                         help='if given, HTTP server is created so clusters can be '
                         'monitored and managed')
     parser.add_argument('--fair_cluster_scheduler', dest='scheduler_alg', action='store_const',
-                        const='fair_cluster', help='Choose cluster with fair scheduling')
+                        const='fair_cluster',
+                        help='Choose job from cluster that was least recently scheduled')
     parser.add_argument('--early_cluster_scheduler', dest='scheduler_alg', action='store_const',
-                        const='fcfs_cluster', help='Choose earliest cluster scheduling')
+                        const='fcfs_cluster',
+                        help='Choose job from cluster created earliest')
+    parser.add_argument('--cooperative', action='store_true', dest='cooperative', default=False,
+                        help='if given, clients (clusters) can update CPUs')
     parser.add_argument('--daemon', action='store_true', dest='daemon', default=False,
                         help='if given, input is not read from terminal')
 
