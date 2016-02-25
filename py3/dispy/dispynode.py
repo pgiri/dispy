@@ -636,6 +636,7 @@ class _DispyNode(object):
             setattr(compute, 'pending_results', 0)
             setattr(compute, 'zombie', False)
             setattr(compute, 'globals', {})
+            setattr(compute, 'ante_modules', set(sys.modules.keys()))
             setattr(compute, 'file_uses', {})
 
             if compute.code:
@@ -1377,6 +1378,11 @@ class _DispyNode(object):
                     logger.warning('Variable "%s" changed by "%s" at %s is being reset' %
                                    (var, compute.name, compute.scheduler_ip_addr))
                     globals()[var] = value
+
+        for module in list(sys.modules.keys()):
+            if module not in compute.ante_modules:
+                sys.modules.pop(module, None)
+        sys.modules.update(self.__init_modules)
 
         for path, use in file_uses.items():
             if use == 1:
