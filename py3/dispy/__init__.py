@@ -332,7 +332,7 @@ class _Node(object):
         self.name = None
         self.cpus = cpus
         self.avail_cpus = cpus
-        self.busy = 0
+        self.busy = 0.0
         self.cpu_time = 0.0
         self.clusters = set()
         self.auth = auth_code(secret, sign)
@@ -1547,7 +1547,7 @@ class _Cluster(object, metaclass=MetaSingleton):
                 node.busy -= 1
             self._sched_event.set()
         else:
-            logger.debug('Running job %s / %s on %s (busy: %s / %s)',
+            logger.debug('Running job %s / %s on %s (busy: %d / %d)',
                          _job.job.id, _job.uid, node.ip_addr, node.busy, node.cpus)
             _job.job.status = DispyJob.Running
             _job.job.start_time = time.time()
@@ -1568,8 +1568,8 @@ class _Cluster(object, metaclass=MetaSingleton):
                 break
             if not any(self._clusters[cid]._pending_jobs for cid in node.clusters):
                 continue
-            if (float(node.busy) / node.cpus) < load:
-                load = float(node.busy) / node.cpus
+            if (node.busy / node.cpus) < load:
+                load = node.busy / node.cpus
                 host = node
         return host
 
@@ -2321,8 +2321,9 @@ class JobCluster(object):
         if info.jobs_pending:
             print('Jobs pending: %s' % info.jobs_pending)
         msg = 'Total job time: %.3f sec' % cpu_time
-        if wall_time:
-            msg += ', wall time: %.3f sec, speedup: %.3f' % (wall_time, cpu_time / wall_time)
+        if not wall_time:
+            wall_time = time.time() - self.start_time
+        msg += ', wall time: %.3f sec, speedup: %.3f' % (wall_time, cpu_time / wall_time)
         print(msg)
         print()
 
