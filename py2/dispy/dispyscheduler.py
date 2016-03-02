@@ -1521,7 +1521,7 @@ class _Scheduler(object):
         node = self.load_balance_node()
         if not node:
             return (None, None, None)
-        lrs = None
+        _job = cluster = lrs = None
         for cid in node.clusters:
             cluster = self._clusters[cid]
             if cluster._jobs and (not lrs or
@@ -1532,15 +1532,13 @@ class _Scheduler(object):
                 if node.pending_jobs[0].job.submit_time < lrs._jobs[0].job.submit_time:
                     _job = node.pending_jobs.pop(0)
                     cluster = self._clusters[_job.compute_id]
-            else:
+            if not _job:
                 cluster = lrs
                 _job = cluster._jobs.pop(0)
-            return (_job, node, cluster)
         elif node.pending_jobs:
             _job = node.pending_jobs.pop(0)
             cluster = self._clusters[_job.compute_id]
-            return (_job, node, cluster)
-        return (None, None, None)
+        return (_job, node, cluster)
 
     def fair_cluster_schedule(self):
         """Return tuple (_job, node, cluster) such that cluster is earliest
@@ -1549,7 +1547,7 @@ class _Scheduler(object):
         node = self.load_balance_node()
         if not node:
             return (None, None, None)
-        lrs = None
+        _job = cluster = lrs = None
         for cid in node.clusters:
             cluster = self._clusters[cid]
             if cluster._jobs and (not lrs or cluster.job_sched_time < lrs.job_sched_time):
@@ -1558,20 +1556,20 @@ class _Scheduler(object):
             if node.pending_jobs:
                 _job = node.pending_jobs[0]
                 cluster = self._clusters[_job.compute_id]
-                if cluster.job_sched_time > lrs.job_sched_time:
+                if cluster.job_sched_time < lrs.job_sched_time:
+                    node.pending_jobs.pop(0)
+                else:
                     cluster = lrs
                     _job = cluster._jobs.pop(0)
-            else:
+            if not _job:
                 cluster = lrs
                 _job = cluster._jobs.pop(0)
-            cluster.job_sched_time = time.time()
-            return (_job, node, cluster)
         elif node.pending_jobs:
             _job = node.pending_jobs.pop(0)
             cluster = self._clusters[_job.compute_id]
+        if _job:
             cluster.job_sched_time = time.time()
-            return (_job, node, cluster)
-        return (None, None, None)
+        return (_job, node, cluster)
 
     def fcfs_cluster_schedule(self):
         """Return tuple (_job, node, cluster) such that cluster is created
@@ -1580,7 +1578,7 @@ class _Scheduler(object):
         node = self.load_balance_node()
         if not node:
             return (None, None, None)
-        lrs = None
+        _job = cluster = lrs = None
         for cid in node.clusters:
             cluster = self._clusters[cid]
             if cluster._jobs and (not lrs or cluster.start_time < lrs.start_time):
@@ -1589,18 +1587,18 @@ class _Scheduler(object):
             if node.pending_jobs:
                 _job = node.pending_jobs[0]
                 cluster = self._clusters[_job.compute_id]
-                if cluster.start_time > lrs.start_time:
+                if cluster.start_time < lrs.start_time:
+                    node.pending_jobs.pop(0)
+                else:
                     cluster = lrs
                     _job = cluster._jobs.pop(0)
-            else:
+            if not _job:
                 cluster = lrs
                 _job = cluster._jobs.pop(0)
-            return (_job, node, cluster)
         elif node.pending_jobs:
             _job = node.pending_jobs.pop(0)
             cluster = self._clusters[_job.compute_id]
-            return (_job, node, cluster)
-        return (None, None, None)
+        return (_job, node, cluster)
 
     def run_job(self, _job, cluster, coro=None):
         # generator
@@ -1619,7 +1617,6 @@ class _Scheduler(object):
             if node.pending_jobs:
                 for njob in node.pending_jobs:
                     if njob.compute_id == cluster._compute.id:
-                        self.finish_job(cluster, njob, DispyJob.Cancelled)
                         dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
                         if cluster.status_callback and dispy_node:
                             dispy_node.update_time = time.time()
@@ -1640,7 +1637,6 @@ class _Scheduler(object):
             # this job might have been deleted already due to timeout
             node._jobs.discard(_job.uid)
             if self._sched_jobs.pop(_job.uid, None) == _job:
-                self.finish_job(cluster, _job, DispyJob.Cancelled)
                 if cluster.status_callback:
                     if dispy_node:
                         dispy_node.update_time = time.time()
@@ -1669,12 +1665,12 @@ class _Scheduler(object):
             # assert self.unsched_jobs == n, '%s != %s' % (self.unsched_jobs, n)
             logger.debug('Pending jobs: %s', self.unsched_jobs)
             _job, node, cluster = self.select_job_node_cluster()
-            if not node:
+            if not _job:
                 self._sched_event.clear()
                 yield self._sched_event.wait()
                 continue
             _job.node = node
-            assert node.busy < node.cpus
+            # assert node.busy < node.cpus
             self._sched_jobs[_job.uid] = _job
             self.unsched_jobs -= 1
             node.busy += 1
