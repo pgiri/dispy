@@ -447,16 +447,18 @@ class _Scheduler(object):
                                  if _job.node is not None and _job.node.ip_addr == node.ip_addr]
                     cids = list(node.clusters)
                     node.clusters = set()
-                    for cid in cids:
-                        cluster = self._clusters[cid]
-                        cluster._dispy_nodes.pop(node.ip_addr, None)
+                    status_msgs = []
                     for cid in cids:
                         cluster = self._clusters.get(cid, None)
-                        if cluster is None:
+                        if not cluster:
                             continue
-                        dispy_node = cluster._dispy_nodes[node.ip_addr]
-                        yield self.send_node_status(cluster, dispy_node, DispyNode.Closed)
+                        dispy_node = cluster._dispy_nodes.pop(node.ip_addr, None)
+                        if not dispy_node:
+                            continue
+                        status_msgs.append((cluster, dispy_node, DispyNode.Closed))
                     yield self.reschedule_jobs(dead_jobs)
+                    for stats_msg in status_msgs:
+                        yield self.send_node_status(*status_msg)
             except:
                 # logger.debug(traceback.format_exc())
                 pass
@@ -495,7 +497,6 @@ class _Scheduler(object):
                         if cpus <= 0:
                             continue
                         node.cpus = min(node.avail_cpus, cpus)
-                        cluster._dispy_nodes.pop(node.ip_addr, None)
                         node_computations.append(compute)
                         break
                 if node_computations:
@@ -1130,7 +1131,8 @@ class _Scheduler(object):
             # subnet mask; this is a limitation, but specifying with
             # subnet mask a bit cumbersome.
             if node_alloc.ip_rex.find('*') >= 0:
-                Coro(self.broadcast_ping, node_alloc.port)
+                if node_alloc.ip_rex != '.*':
+                    Coro(self.broadcast_ping, node_alloc.port)
             else:
                 ip_addr = node_alloc.ip_addr
                 if ip_addr in present_ip_addrs:
@@ -1157,7 +1159,6 @@ class _Scheduler(object):
                     continue
                 if cluster.exclusive or self.cooperative:
                     node.cpus = min(node.avail_cpus, cpus)
-                cluster._dispy_nodes.pop(node.ip_addr, None)
                 compute_nodes.append(node)
         for node in compute_nodes:
             Coro(self.setup_node, node, [compute])
@@ -1312,7 +1313,6 @@ class _Scheduler(object):
             for node_alloc in cluster._node_allocs:
                 cpus = node_alloc.allocate(cluster, node.ip_addr, node.name, node.avail_cpus)
                 if cpus > 0:
-                    cluster._dispy_nodes.pop(node.ip_addr, None)
                     node_computations.append(compute)
                     break
         if node_computations:

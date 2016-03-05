@@ -280,7 +280,7 @@ class _DispyNode(object):
         if not scheduler_port:
             scheduler_port = 51347
 
-        self.scheduler = {'ip_addr': None, 'port': scheduler_port, 'auth': []}
+        self.scheduler = {'ip_addr': None, 'port': scheduler_port, 'auth': set()}
         self.cpu_time = 0
         self.num_jobs = 0
         self.num_computations = 0
@@ -579,7 +579,7 @@ class _DispyNode(object):
                 except:
                     pass
                 raise StopIteration
-            if not ((self.scheduler['ip_addr'] is None and self.scheduler['auth'] == []) or
+            if not ((self.scheduler['ip_addr'] is None and not self.scheduler['auth']) or
                     (self.scheduler['ip_addr'] == compute.scheduler_ip_addr and
                      self.scheduler['port'] == compute.scheduler_port and
                      self.service_available())):
@@ -670,7 +670,7 @@ class _DispyNode(object):
             self.computations[compute.id] = compute
             self.scheduler['ip_addr'] = compute.scheduler_ip_addr
             self.scheduler['port'] = compute.scheduler_port
-            self.scheduler['auth'].append(compute.auth)
+            self.scheduler['auth'].add(compute.auth)
             self.pulse_interval = compute.pulse_interval
             if not self.pulse_interval:
                 self.pulse_interval = 10 * 60
@@ -700,7 +700,7 @@ class _DispyNode(object):
                 del self.computations[compute.id]
                 compute.globals = {}
                 self.scheduler['ip_addr'] = None
-                self.scheduler['auth'].remove(compute.auth)
+                self.scheduler['auth'].discard(compute.auth)
                 self.pulse_interval = None
                 if os.path.isdir(compute.dest_path):
                     try:
@@ -946,6 +946,7 @@ class _DispyNode(object):
                         for job_info in job_infos:
                             yield terminate_job_task(compute, job_info)
                     self.cleanup_computation(compute)
+            yield conn.send_msg('ACK')
             conn.close()
         elif msg.startswith('TERMINATE_JOB:'):
             msg = msg[len('TERMINATE_JOB:'):]
@@ -1329,10 +1330,8 @@ class _DispyNode(object):
             fd = open(pkl_path, 'wb')
             pickle.dump(compute, fd)
             fd.close()
-        try:
-            self.scheduler['auth'].remove(compute.auth)
-        except ValueError:
-            pass
+
+        self.scheduler['auth'].discard(compute.auth)
 
         if ((not self.computations) and (not self.scheduler['auth']) and
            compute.scheduler_ip_addr == self.scheduler['ip_addr'] and
@@ -1410,7 +1409,7 @@ class _DispyNode(object):
             if quit and self.reply_Q:
                 self.reply_Q.put(None)
             self.scheduler['ip_addr'] = None
-            self.scheduler['auth'] = []
+            self.scheduler['auth'] = set()
             self.avail_cpus += len(job_infos)
             if self.avail_cpus != self.num_cpus:
                 logger.warning('invalid cpus: %s / %s' % (self.avail_cpus, self.num_cpus))

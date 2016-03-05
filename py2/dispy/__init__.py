@@ -14,7 +14,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "MIT"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.6.9"
+__version__ = "4.6.10"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
@@ -438,7 +438,7 @@ class _Node(object):
         logger.debug('Closing node %s for %s / %s', self.ip_addr, compute.name, compute.id)
         req = {'compute_id': compute.id, 'auth': compute.auth, 'terminate_pending': False}
         try:
-            yield self.send('CLOSE:' + serialize(req), reply=False, coro=coro)
+            yield self.send('CLOSE:' + serialize(req), reply=True, coro=coro)
         except:
             logger.debug('Deleting computation %s/%s from %s failed',
                          compute.id, compute.name, self.ip_addr)
@@ -758,6 +758,7 @@ class _Cluster(object):
 
         if not self.shared:
             Coro(self.broadcast_ping)
+
         while True:
             try:
                 conn, addr = yield sock.accept()
@@ -901,7 +902,6 @@ class _Cluster(object):
                         if cpus <= 0:
                             continue
                         node.cpus = min(node.avail_cpus, cpus)
-                        cluster._dispy_nodes.pop(node.ip_addr, None)
                         node_computations.append(compute)
                         break
                 if node_computations:
@@ -932,15 +932,20 @@ class _Cluster(object):
                 if node.clusters:
                     dead_jobs = [_job for _job in self._sched_jobs.itervalues()
                                  if _job.node is not None and _job.node.ip_addr == node.ip_addr]
-                    yield self.reschedule_jobs(dead_jobs)
-                    for cid in node.clusters:
-                        cluster = self._clusters[cid]
-                        dispy_node = cluster._dispy_nodes[node.ip_addr]
+                    cids = list(node.clusters)
+                    node.clusters = set()
+                    for cid in cids:
+                        cluster = self._clusters.get(cid, None)
+                        if not cluster:
+                            continue
+                        dispy_node = cluster._dispy_nodes.pop(node.ip_addr, None)
+                        if not dispy_node:
+                            continue
                         dispy_node.avail_cpus = dispy_node.cpus = 0
                         if cluster.status_callback:
                             self.worker_Q.put((cluster.status_callback,
                                                (DispyNode.Closed, dispy_node, None)))
-                    node.clusters = set()
+                    yield self.reschedule_jobs(dead_jobs)
         elif msg.startswith('NODE_STATUS:'):
             # this message is from dispyscheduler for SharedJobCluster
             try:
@@ -1123,7 +1128,6 @@ class _Cluster(object):
             # subnet mask a bit cumbersome.
             if node_alloc.ip_rex.find('*') >= 0:
                 Coro(self.broadcast_ping, node_alloc.port)
-                # need to do broadcast only once
             else:
                 ip_addr = node_alloc.ip_addr
                 if ip_addr in cluster._dispy_nodes:
@@ -1235,7 +1239,6 @@ class _Cluster(object):
                 if cpus <= 0:
                     continue
                 node.cpus = min(node.avail_cpus, cpus)
-                cluster._dispy_nodes.pop(node.ip_addr, None)
                 compute_nodes.append(node)
         for node in compute_nodes:
             Coro(self.setup_node, node, [compute])
@@ -1369,7 +1372,6 @@ class _Cluster(object):
                 if cpus <= 0:
                     continue
                 node.cpus = min(node.avail_cpus, cpus)
-                cluster._dispy_nodes.pop(node.ip_addr, None)
                 node_computations.append(compute)
                 break
         if node_computations:
@@ -2919,7 +2921,7 @@ def recover_jobs(recover_file, timeout=None, terminate_pending=False):
                 logger.debug('pending jobs from %s for %s: %s' %
                              (node.ip_addr, compute['name'], reply))
                 if reply == 0:
-                    yield node.send('CLOSE:' + req, reply=False)
+                    yield node.send('CLOSE:' + req, reply=True, coro=coro)
                 else:
                     pending['count'] += reply
         pending['resend_req_done'] = True
@@ -2944,7 +2946,7 @@ def recover_jobs(recover_file, timeout=None, terminate_pending=False):
             node = nodes.get(ip_addr, None)
             if not node:
                 continue
-            Coro(node.send, 'CLOSE:' + req, reply=False)
+            Coro(node.send, 'CLOSE:' + req, reply=True)
 
     if terminate_pending:
         # wait a bit to get cancelled job results

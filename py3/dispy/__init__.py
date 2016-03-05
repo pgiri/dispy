@@ -14,7 +14,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "MIT"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.6.9"
+__version__ = "4.6.10"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
@@ -438,7 +438,7 @@ class _Node(object):
         logger.debug('Closing node %s for %s / %s', self.ip_addr, compute.name, compute.id)
         req = {'compute_id': compute.id, 'auth': compute.auth, 'terminate_pending': False}
         try:
-            yield self.send(b'CLOSE:' + serialize(req), reply=False, coro=coro)
+            yield self.send(b'CLOSE:' + serialize(req), reply=True, coro=coro)
         except:
             logger.debug('Deleting computation %s/%s from %s failed',
                          compute.id, compute.name, self.ip_addr)
@@ -763,6 +763,7 @@ class _Cluster(object, metaclass=MetaSingleton):
 
         if not self.shared:
             Coro(self.broadcast_ping)
+
         while True:
             try:
                 conn, addr = yield sock.accept()
@@ -906,7 +907,6 @@ class _Cluster(object, metaclass=MetaSingleton):
                         if cpus <= 0:
                             continue
                         node.cpus = min(node.avail_cpus, cpus)
-                        cluster._dispy_nodes.pop(node.ip_addr, None)
                         node_computations.append(compute)
                         break
                 if node_computations:
@@ -937,15 +937,20 @@ class _Cluster(object, metaclass=MetaSingleton):
                 if node.clusters:
                     dead_jobs = [_job for _job in self._sched_jobs.values()
                                  if _job.node is not None and _job.node.ip_addr == node.ip_addr]
-                    yield self.reschedule_jobs(dead_jobs)
-                    for cid in node.clusters:
-                        cluster = self._clusters[cid]
-                        dispy_node = cluster._dispy_nodes[node.ip_addr]
+                    cids = list(node.clusters)
+                    node.clusters = set()
+                    for cid in cids:
+                        cluster = self._clusters.get(cid, None)
+                        if not cluster:
+                            continue
+                        dispy_node = cluster._dispy_nodes.pop(node.ip_addr, None)
+                        if not dispy_node:
+                            continue
                         dispy_node.avail_cpus = dispy_node.cpus = 0
                         if cluster.status_callback:
                             self.worker_Q.put((cluster.status_callback,
                                                (DispyNode.Closed, dispy_node, None)))
-                    node.clusters = set()
+                    yield self.reschedule_jobs(dead_jobs)
         elif msg.startswith(b'NODE_STATUS:'):
             # this message is from dispyscheduler for SharedJobCluster
             try:
@@ -1128,7 +1133,6 @@ class _Cluster(object, metaclass=MetaSingleton):
             # subnet mask a bit cumbersome.
             if node_alloc.ip_rex.find('*') >= 0:
                 Coro(self.broadcast_ping, node_alloc.port)
-                # need to do broadcast only once
             else:
                 ip_addr = node_alloc.ip_addr
                 if ip_addr in cluster._dispy_nodes:
@@ -1240,7 +1244,6 @@ class _Cluster(object, metaclass=MetaSingleton):
                 if cpus <= 0:
                     continue
                 node.cpus = min(node.avail_cpus, cpus)
-                cluster._dispy_nodes.pop(node.ip_addr, None)
                 compute_nodes.append(node)
         for node in compute_nodes:
             Coro(self.setup_node, node, [compute])
@@ -1374,7 +1377,6 @@ class _Cluster(object, metaclass=MetaSingleton):
                 if cpus <= 0:
                     continue
                 node.cpus = min(node.avail_cpus, cpus)
-                cluster._dispy_nodes.pop(node.ip_addr, None)
                 node_computations.append(compute)
                 break
         if node_computations:
@@ -2402,6 +2404,7 @@ class SharedJobCluster(JobCluster):
         node_allocs = _parse_node_allocs(nodes)
         if not node_allocs:
             raise Exception('"nodes" argument is invalid')
+        node_allocs = [(na.ip_addr, na.port, na.cpus) for na in node_allocs]
         if ext_ip_addr:
             ext_ip_addr = _node_ipaddr(ext_ip_addr)
 
@@ -2421,7 +2424,6 @@ class SharedJobCluster(JobCluster):
         Coro(_terminate_scheduler, self).value()
         self._cluster._scheduler.value()
         self._cluster.job_uid = None
-        node_allocs = sorted(node_allocs, key=lambda node_alloc: node_alloc.ip_rex, reverse=True)
 
         if not scheduler_port:
             scheduler_port = 51349
