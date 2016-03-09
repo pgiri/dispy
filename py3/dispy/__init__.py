@@ -2167,9 +2167,6 @@ class JobCluster(object):
         arguments for computation used when cluster is created.
         """
         if self._compute.type == _Compute.prog_type:
-            if kwargs:
-                logger.warning('Programs can not have keyword arguments')
-                return None
             args = [str(arg) for arg in args]
         try:
             _job = _DispyJob_(self._compute.id, args, kwargs)
@@ -2206,9 +2203,6 @@ class JobCluster(object):
             return None
 
         if self._compute.type == _Compute.prog_type:
-            if kwargs:
-                logger.warning('Programs can not have keyword arguments')
-                return None
             args = [str(arg) for arg in args]
         try:
             _job = _DispyJob_(self._compute.id, args, kwargs)
@@ -2550,9 +2544,6 @@ class SharedJobCluster(JobCluster):
                 return None
 
         if self._compute.type == _Compute.prog_type:
-            if kwargs:
-                logger.warning('Programs can not have keyword arguments')
-                return None
             args = [str(arg) for arg in args]
         try:
             _job = _DispyJob_(self._compute.id, args, kwargs)
