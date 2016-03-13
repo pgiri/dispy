@@ -14,7 +14,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "MIT"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.6.10"
+__version__ = "4.6.11"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
@@ -945,7 +945,7 @@ class _Cluster(object):
                         if cluster.status_callback:
                             self.worker_Q.put((cluster.status_callback,
                                                (DispyNode.Closed, dispy_node, None)))
-                    yield self.reschedule_jobs(dead_jobs)
+                    self.reschedule_jobs(dead_jobs)
         elif msg.startswith('NODE_STATUS:'):
             # this message is from dispyscheduler for SharedJobCluster
             try:
@@ -1034,18 +1034,23 @@ class _Cluster(object):
                                            node.ip_addr, node.busy, node.last_pulse, now)
                             dead_nodes[node.ip_addr] = node
                     for node in dead_nodes.itervalues():
-                        for cid in node.clusters:
+                        cids = list(node.clusters)
+                        node.clusters = set()
+                        for cid in cids:
                             cluster = self._clusters.get(cid, None)
-                            if cluster:
-                                dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
-                                if dispy_node:
-                                    dispy_node.cpus = dispy_node.avail_cpus = dispy_node.busy = 0
+                            if not cluster:
+                                continue
+                            dispy_node = cluster._dispy_nodes.pop(node.ip_addr, None)
+                            if not dispy_node:
+                                continue
+                            dispy_node.avail_cpus = dispy_node.cpus = 0
+                            if cluster.status_callback:
+                                self.worker_Q.put((cluster.status_callback,
+                                                   (DispyNode.Closed, dispy_node, None)))
                         del self._nodes[node.ip_addr]
                     dead_jobs = [_job for _job in self._sched_jobs.itervalues()
                                  if _job.node is not None and _job.node.ip_addr in dead_nodes]
-                    yield self.reschedule_jobs(dead_jobs)
-                    if dead_nodes or dead_jobs:
-                        self._sched_event.set()
+                    self.reschedule_jobs(dead_jobs)
 
             if self.ping_interval and (now - last_ping_time) >= self.ping_interval:
                 last_ping_time = now
@@ -1356,9 +1361,21 @@ class _Cluster(object):
             if node.auth is not None:
                 dead_jobs = [_job for _job in self._sched_jobs.itervalues()
                              if _job.node is not None and _job.node.ip_addr == node.ip_addr]
-                node.clusters = set()
+                node.busy = 0
                 node.auth = auth
-                yield self.reschedule_jobs(dead_jobs)
+                cids = list(node.clusters)
+                node.clusters = set()
+                for cid in cids:
+                    cluster = self._clusters.get(cid, None)
+                    if not cluster:
+                        continue
+                    dispy_node = cluster._dispy_nodes.pop(node.ip_addr, None)
+                    if not dispy_node:
+                        continue
+                    if cluster.status_callback:
+                        self.worker_Q.put((cluster.status_callback,
+                                           (DispyNode.Closed, dispy_node, None)))
+                self.reschedule_jobs(dead_jobs)
             node.auth = auth
         node_computations = []
         node.name = info['name']
@@ -1472,7 +1489,6 @@ class _Cluster(object):
             self._sched_event.set()
 
     def reschedule_jobs(self, dead_jobs):
-        # generator
         for _job in dead_jobs:
             cluster = self._clusters[_job.compute_id]
             del self._sched_jobs[_job.uid]
@@ -1496,6 +1512,7 @@ class _Cluster(object):
                     self.worker_Q.put((cluster.status_callback,
                                        (DispyJob.Abandoned, dispy_node, _job.job)))
                 self.finish_job(cluster, _job, DispyJob.Abandoned)
+        self._sched_event.set()
 
     def run_job(self, _job, cluster, coro=None):
         # generator
@@ -2076,7 +2093,6 @@ class JobCluster(object):
                                  secret=secret, keyfile=keyfile, certfile=certfile,
                                  recover_file=recover_file)
         atexit.register(self.shutdown)
-        # self.ip_addr = self._cluster.ip_addr
 
         depend_ids = {}
         for dep in depends:

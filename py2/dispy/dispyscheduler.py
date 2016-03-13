@@ -41,7 +41,7 @@ del path
 
 from dispy import _Compute, DispyJob, _DispyJob_, _Function, _Node, DispyNode, NodeAllocate, \
     _JobReply, auth_code, num_min, _parse_node_allocs, _node_ipaddr, _XferFile, _dispy_version, \
-    _same_file
+    _same_file, MsgTimeout
 import dispy.httpd
 
 import asyncoro
@@ -51,7 +51,6 @@ __version__ = _dispy_version
 __all__ = []
 
 MaxFileSize = 10*(1024**2)
-MsgTimeout = 5
 
 logger = logging.getLogger('dispyscheduler')
 logger.setLevel(logging.INFO)
@@ -447,7 +446,6 @@ class _Scheduler(object):
                                  if _job.node is not None and _job.node.ip_addr == node.ip_addr]
                     cids = list(node.clusters)
                     node.clusters = set()
-                    status_msgs = []
                     for cid in cids:
                         cluster = self._clusters.get(cid, None)
                         if not cluster:
@@ -455,10 +453,8 @@ class _Scheduler(object):
                         dispy_node = cluster._dispy_nodes.pop(node.ip_addr, None)
                         if not dispy_node:
                             continue
-                        status_msgs.append((cluster, dispy_node, DispyNode.Closed))
-                    yield self.reschedule_jobs(dead_jobs)
-                    for stats_msg in status_msgs:
-                        yield self.send_node_status(*status_msg)
+                        Coro(self.send_node_status, cluster, dispy_node, DispyNode.Closed)
+                    self.reschedule_jobs(dead_jobs)
             except:
                 # logger.debug(traceback.format_exc())
                 pass
@@ -1008,18 +1004,20 @@ class _Scheduler(object):
                         dead_nodes[node.ip_addr] = node
                 for ip_addr in dead_nodes:
                     node = self._nodes.pop(ip_addr, None)
-                    for cid in node.clusters:
-                        cluster = self._clusters[cid]
-                        dispy_node = cluster._dispy_nodes.get(ip_addr, None)
-                        if dispy_node:
-                            dispy_node.busy = 0
-                            yield self.send_node_status(cluster, dispy_node, DispyNode.Closed)
+                    cids = list(node.clusters)
+                    node.clusters = set()
+                    for cid in cids:
+                        cluster = self._clusters.get(cid, None)
+                        if not cluster:
+                            continue
+                        dispy_node = cluster._dispy_nodes.pop(node.ip_addr, None)
+                        if not dispy_node:
+                            continue
+                        Coro(self.send_node_status, cluster, dispy_node, DispyNode.Closed)
 
                 dead_jobs = [_job for _job in self._sched_jobs.itervalues()
                              if _job.node is not None and _job.node.ip_addr in dead_nodes]
                 self.reschedule_jobs(dead_jobs)
-                if dead_nodes or dead_jobs:
-                    self._sched_event.set()
                 resend = [resend_cluster for resend_cluster in self._clusters.itervalues()
                           if resend_cluster.pending_results and not resend_cluster.zombie]
                 for cluster in resend:
@@ -1289,19 +1287,19 @@ class _Scheduler(object):
             if node.auth is not None:
                 dead_jobs = [_job for _job in self._sched_jobs.itervalues()
                              if _job.node is not None and _job.node.ip_addr == node.ip_addr]
-                for cid in node.clusters:
-                    cluster = self._clusters.get(cid, None)
-                    if cluster is None:
-                        continue
-                    dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
-                    if dispy_node:
-                        dispy_node.busy = 0
-                        yield self.send_node_status(cluster, dispy_node, DispyNode.Closed)
-
-                node.clusters = set()
                 node.busy = 0
                 node.auth = auth
-                yield self.reschedule_jobs(dead_jobs)
+                cids = list(node.clusters)
+                node.clusters = set()
+                for cid in cids:
+                    cluster = self._clusters.get(cid, None)
+                    if not cluster:
+                        continue
+                    dispy_node = cluster._dispy_nodes.pop(node.ip_addr, None)
+                    if not dispy_node:
+                        continue
+                    Coro(self.send_node_status, cluster, dispy_node, DispyNode.Closed)
+                self.reschedule_jobs(dead_jobs)
             node.auth = auth
         node_computations = []
         node.name = info['name']
@@ -1476,7 +1474,6 @@ class _Scheduler(object):
         Coro(self.send_job_result, _job.uid, cluster, reply, resending=False)
 
     def reschedule_jobs(self, dead_jobs):
-        # non-generator
         for _job in dead_jobs:
             cluster = self._clusters[_job.compute_id]
             del self._sched_jobs[_job.uid]
@@ -1495,6 +1492,7 @@ class _Scheduler(object):
                     cluster.end_time = time.time()
                 self.done_jobs[_job.uid] = _job
                 Coro(self.send_job_result, _job.uid, cluster, reply, resending=False)
+        self._sched_event.set()
 
     def load_balance_node(self):
         """Return node with least load
