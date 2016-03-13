@@ -34,7 +34,7 @@ import pickle
 import io
 
 from dispy import _JobReply, DispyJob, _Function, _Compute, _XferFile, _node_ipaddr, \
-    _dispy_version, auth_code, num_min, _same_file
+    _dispy_version, auth_code, num_min, _same_file, MsgTimeout
 
 import asyncoro
 from asyncoro import Coro, AsynCoro, AsyncSocket, serialize, unserialize
@@ -43,7 +43,6 @@ __version__ = _dispy_version
 __all__ = []
 
 MaxFileSize = 10*(1024**2)
-MsgTimeout = 5
 
 logger = logging.getLogger('dispynode')
 logger.setLevel(logging.INFO)
@@ -695,6 +694,7 @@ class _DispyNode(object):
                             'MaxFileSize', 'MsgTimeout', 'logger'):
                     compute.globals[var] = globals()[var]
                 compute.globals.update(self.__init_modules)
+            compute.globals['_DispyNode'] = None
 
             try:
                 yield conn.send_msg(serialize(self.avail_cpus))
