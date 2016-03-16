@@ -946,7 +946,7 @@ class _Cluster(object, metaclass=MetaSingleton):
                         dispy_node = cluster._dispy_nodes.pop(node.ip_addr, None)
                         if not dispy_node:
                             continue
-                        dispy_node.avail_cpus = dispy_node.cpus = 0
+                        dispy_node.avail_cpus = dispy_node.cpus = dispy_node.busy = 0
                         if cluster.status_callback:
                             self.worker_Q.put((cluster.status_callback,
                                                (DispyNode.Closed, dispy_node, None)))
@@ -1048,7 +1048,7 @@ class _Cluster(object, metaclass=MetaSingleton):
                             dispy_node = cluster._dispy_nodes.pop(node.ip_addr, None)
                             if not dispy_node:
                                 continue
-                            dispy_node.avail_cpus = dispy_node.cpus = 0
+                            dispy_node.avail_cpus = dispy_node.cpus = dispy_node.busy = 0
                             if cluster.status_callback:
                                 self.worker_Q.put((cluster.status_callback,
                                                    (DispyNode.Closed, dispy_node, None)))
@@ -1374,7 +1374,7 @@ class _Cluster(object, metaclass=MetaSingleton):
                     cluster = self._clusters.get(cid, None)
                     if not cluster:
                         continue
-                    dispy_node = cluster._dispy_nodes.pop(node.ip_addr, None)
+                    dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
                     if not dispy_node:
                         continue
                     if cluster.status_callback:
