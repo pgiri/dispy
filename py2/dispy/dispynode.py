@@ -175,7 +175,8 @@ def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
     """
 
     if os.name == 'nt':
-        __dispy_job_globals.update(globals())
+        globals().update(__dispy_job_globals)
+        __dispy_job_globals = globals()
     os.chdir(__dispy_path)
     sys.stdout = io.StringIO()
     sys.stderr = io.StringIO()
@@ -528,21 +529,23 @@ class _DispyNode(object):
                 except:
                     logger.warning('Failed to send response for new job to %s', str(addr))
                     raise StopIteration
-                job_info.proc = multiprocessing.Process(target=_dispy_job_func, args=args)
-                job_info.job_reply.status = DispyJob.Running
+                proc = multiprocessing.Process(target=_dispy_job_func, args=args)
                 self.avail_cpus -= 1
                 compute.pending_jobs += 1
                 self.thread_lock.acquire()
                 self.job_infos[_job.uid] = job_info
                 self.thread_lock.release()
                 try:
-                    job_info.proc.start()
+                    proc.start()
                 except:
                     job_info.job_reply.status = DispyJob.Terminated
                     job_info.job_reply.exception = traceback.format_exc()
                     job_info.job_reply.end_time = time.time()
                     job_info.proc = None
                     self.reply_Q.put(job_info.job_reply)
+                else:
+                    job_info.proc = proc
+                    job_info.job_reply.status = DispyJob.Running
                 raise StopIteration
             elif compute.type == _Compute.prog_type:
                 try:
