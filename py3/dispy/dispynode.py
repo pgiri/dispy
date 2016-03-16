@@ -1665,6 +1665,12 @@ if __name__ == '__main__':
     except:
         pass
 
+    # Python 3 under Windows blocks multiprocessing.Process on reading input;
+    # pressing "Enter" twice works (for one subprocess). Until this is
+    # understood / fixed, disable reading input.
+    if os.name == 'nt':
+        _dispy_config['daemon'] = True
+
     _dispy_node = None
     _dispy_node = _DispyNode(**_dispy_config)
     del _dispy_config
