@@ -7,6 +7,7 @@
     <link type="text/css" rel="stylesheet" href="dispy.css" />
 
     <script type="text/javascript" src="jquery.js"></script>
+    <script type="text/javascript" src="dispy.js"></script>
 
     <script type="text/javascript">
     //<![CDATA[
@@ -42,6 +43,11 @@
               $('#node_name').text(node.name);
               $('#node_avail_cpus').text(node.avail_cpus);
               $('#node_cpus').text(node.cpus);
+              if (node.avail_info) {
+                $('#node_cpu_usage').text(node.avail_info.cpu.toFixed(2) + ' %%');
+                $('#node_avail_memory').text(formatBytes(node.avail_info.memory));
+                $('#node_avail_disk').text(formatBytes(node.avail_info.disk));
+              }
               $('#node_done').text(node.jobs_done);
               $('#node_cpu_time').text(node.cpu_time.toFixed(2));
               $('#node_sec_job').text((node.jobs_done > 0 ?
@@ -236,6 +242,15 @@
           </tr>
           <tr>
             <td>CPUs Managed by dispy</td><td id="node_cpus"></td>
+          </tr>
+          <tr>
+            <td>Available CPU</td><td id="node_cpu_usage">Unknown</td>
+          </tr>
+          <tr>
+            <td>Available Memory</td><td id="node_avail_memory">Unknown</td>
+          </tr>
+          <tr>
+            <td>Available Disk Space</td><td id="node_avail_disk">Unknown</td>
           </tr>
           <tr>
             <td>Jobs Done</td><td id="node_done"></td>

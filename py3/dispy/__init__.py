@@ -14,7 +14,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "MIT"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.6.11"
+__version__ = "4.6.12"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
@@ -136,6 +136,18 @@ class DispyJob(object):
             return False
 
 
+class DispyNodeAvailInfo(object):
+    """A node's status is represented as available CPU as percent, memory in
+    bytes and disk as bytes. This information is passed to NodeAllocte.allocate
+    method and in cluster status callback with status DispyNode.AvailInfo.
+    """
+
+    def __init__(self, cpu, memory, disk):
+        self.cpu = cpu
+        self.memory = memory
+        self.disk = disk
+
+
 class DispyNode(object):
     """If 'cluster_status' is used when creating cluster, that function
     is called with an instance of this class as first argument.
@@ -144,6 +156,7 @@ class DispyNode(object):
 
     Initialized = DispyJob.Created - 1
     Closed = DispyJob.Finished + 5
+    AvailInfo = Closed + 1
 
     def __init__(self, ip_addr, name, cpus):
         self.ip_addr = ip_addr
@@ -154,6 +167,26 @@ class DispyNode(object):
         self.jobs_done = 0
         self.cpu_time = 0.0
         self.update_time = 0
+        self.avail_info = None
+
+    def __getstate__(self):
+        # used for json encoding
+        state = {'ip_addr': self.ip_addr, 'name': self.name, 'cpus': self.cpus,
+                 'avail_cpus': self.avail_cpus, 'busy': self.busy, 'jobs_done': self.jobs_done,
+                 'cpu_time': self.cpu_time, 'update_time': self.update_time}
+        if isinstance(self.avail_info, DispyNodeAvailInfo):
+            state['avail_info'] = self.avail_info.__dict__
+        else:
+            state['avail_info'] = self.avail_info
+        return state
+
+    def __setstate__(self, state):
+        for k, v in state.items():
+            setattr(self, k, v)
+        if state['avail_info']:
+            self.avail_info = DispyNodeAvailInfo(state['avail_info']['cpu'],
+                                                 state['avail_info']['memory'],
+                                                 state['avail_info']['disk'])
 
 
 class NodeAllocate(object):
@@ -192,7 +225,7 @@ class NodeAllocate(object):
                 cpus = 0
         self.cpus = cpus
 
-    def allocate(self, cluster, ip_addr, name, cpus):
+    def allocate(self, cluster, ip_addr, name, cpus, avail_info=None):
         """When a node is found, dispy calls this method with the
         cluster for which the node is being allocated, IP address,
         name and CPUs available on that node. This method should
@@ -326,6 +359,10 @@ class _XferFile(object):
 class _Node(object):
     """Internal use only.
     """
+    __slots__ = ['ip_addr', 'port', 'name', 'cpus', 'avail_cpus', 'busy', 'cpu_time', 'clusters',
+                 'auth', 'secret', 'keyfile', 'certfile', 'last_pulse', 'scheduler_ip_addr',
+                 '_jobs', 'pending_jobs', 'avail_info']
+
     def __init__(self, ip_addr, port, cpus, sign, secret, keyfile=None, certfile=None):
         self.ip_addr = ip_addr
         self.port = port
@@ -343,6 +380,7 @@ class _Node(object):
         self.scheduler_ip_addr = None
         self._jobs = set()
         self.pending_jobs = []
+        self.avail_info = None
 
     def setup(self, compute, coro=None):
         # generator
@@ -689,7 +727,16 @@ class _Cluster(object, metaclass=MetaSingleton):
                     node = self._nodes[info['ip_addr']]
                     assert 0 <= info['cpus'] <= node.cpus
                     node.last_pulse = time.time()
-                    pulse_msg = {'ip_addr': info['scheduler_ip_addr'], 'port': self.port}
+                    if info['avail_info']:
+                        node.avail_info = info['avail_info']
+                        for cid in node.clusters:
+                            cluster = self._clusters[cid]
+                            if cluster.status_callback:
+                                dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
+                                if dispy_node:
+                                    dispy_node.avail_info = info['avail_info']
+                                    self.worker_Q.put((cluster.status_callback,
+                                                       (DispyNode.AvailInfo, dispy_node, None)))
                 except:
                     logger.warning('Ignoring pulse message from %s', addr[0])
                     # logger.debug(traceback.format_exc())
@@ -704,6 +751,7 @@ class _Cluster(object, metaclass=MetaSingleton):
                         pass
                     sock.close()
 
+                pulse_msg = {'ip_addr': info['scheduler_ip_addr'], 'port': self.port}
                 Coro(_send_pulse, self, pulse_msg, (info['ip_addr'], info['port']))
             elif msg.startswith(b'PING:'):
                 try:
@@ -903,7 +951,7 @@ class _Cluster(object, metaclass=MetaSingleton):
                     compute = cluster._compute
                     for node_alloc in cluster._node_allocs:
                         cpus = node_alloc.allocate(cluster, node.ip_addr, node.name,
-                                                   node.avail_cpus)
+                                                   node.avail_cpus, node.avail_info)
                         if cpus <= 0:
                             continue
                         node.cpus = min(node.avail_cpus, cpus)
@@ -961,9 +1009,16 @@ class _Cluster(object, metaclass=MetaSingleton):
                 logger.debug('invalid node status from %s:%s ignored' % (addr[0], addr[1]))
                 # logger.debug(traceback.format_exc())
             else:
-                dispy_node = info['dispy_node']
-                dispy_node.update_time = time.time()
-                if info['status'] == DispyNode.Initialized:
+                if info['status'] == DispyNode.AvailInfo:
+                    dispy_node = cluster._dispy_nodes.get(info['ip_addr'], None)
+                    if dispy_node:
+                        dispy_node.avail_info = info['avail_info']
+                        if cluster.status_callback:
+                            self.worker_Q.put((cluster.status_callback,
+                                               (DispyNode.AvailInfo, dispy_node, None)))
+                elif info['status'] == DispyNode.Initialized:
+                    dispy_node = info['dispy_node']
+                    dispy_node.update_time = time.time()
                     node = self._nodes.get(dispy_node.ip_addr, None)
                     if node:
                         node.name = dispy_node.name
@@ -977,7 +1032,7 @@ class _Cluster(object, metaclass=MetaSingleton):
                         self.worker_Q.put((cluster.status_callback,
                                            (DispyNode.Initialized, dispy_node, None)))
                 elif info['status'] == DispyNode.Closed:
-                    dispy_node = cluster._dispy_nodes.get(dispy_node.ip_addr, None)
+                    dispy_node = cluster._dispy_nodes.get(info['ip_addr'], None)
                     if dispy_node:
                         dispy_node.avail_cpus = dispy_node.cpus = 0
                         if cluster.status_callback:
@@ -1038,24 +1093,25 @@ class _Cluster(object, metaclass=MetaSingleton):
                             logger.warning('Node %s is not responding; removing it (%s, %s, %s)',
                                            node.ip_addr, node.busy, node.last_pulse, now)
                             dead_nodes[node.ip_addr] = node
-                    for node in dead_nodes.values():
-                        cids = list(node.clusters)
-                        node.clusters = set()
-                        for cid in cids:
-                            cluster = self._clusters.get(cid, None)
-                            if not cluster:
-                                continue
-                            dispy_node = cluster._dispy_nodes.pop(node.ip_addr, None)
-                            if not dispy_node:
-                                continue
-                            dispy_node.avail_cpus = dispy_node.cpus = dispy_node.busy = 0
-                            if cluster.status_callback:
-                                self.worker_Q.put((cluster.status_callback,
-                                                   (DispyNode.Closed, dispy_node, None)))
-                        del self._nodes[node.ip_addr]
-                    dead_jobs = [_job for _job in self._sched_jobs.values()
-                                 if _job.node is not None and _job.node.ip_addr in dead_nodes]
-                    self.reschedule_jobs(dead_jobs)
+                    if dead_nodes:
+                        for node in dead_nodes.values():
+                            cids = list(node.clusters)
+                            node.clusters = set()
+                            for cid in cids:
+                                cluster = self._clusters.get(cid, None)
+                                if not cluster:
+                                    continue
+                                dispy_node = cluster._dispy_nodes.pop(node.ip_addr, None)
+                                if not dispy_node:
+                                    continue
+                                dispy_node.avail_cpus = dispy_node.cpus = dispy_node.busy = 0
+                                if cluster.status_callback:
+                                    self.worker_Q.put((cluster.status_callback,
+                                                       (DispyNode.Closed, dispy_node, None)))
+                            del self._nodes[node.ip_addr]
+                        dead_jobs = [_job for _job in self._sched_jobs.values()
+                                     if _job.node is not None and _job.node.ip_addr in dead_nodes]
+                        self.reschedule_jobs(dead_jobs)
 
             if self.ping_interval and (now - last_ping_time) >= self.ping_interval:
                 last_ping_time = now
@@ -1202,6 +1258,7 @@ class _Cluster(object, metaclass=MetaSingleton):
             node.auth = cluster._scheduler_auth
             self._nodes[cluster.scheduler_ip_addr] = node
             dispy_node = DispyNode(cluster.scheduler_ip_addr, None, 0)
+            dispy_node.avail_info = node.avail_info
             cluster._dispy_nodes[dispy_node.ip_addr] = dispy_node
             info = self.shelf['_cluster']
             info['port'] = self.port
@@ -1245,7 +1302,8 @@ class _Cluster(object, metaclass=MetaSingleton):
             if compute.id in node.clusters:
                 continue
             for node_alloc in cluster._node_allocs:
-                cpus = node_alloc.allocate(cluster, node.ip_addr, node.name, node.avail_cpus)
+                cpus = node_alloc.allocate(cluster, node.ip_addr, node.name, node.avail_cpus,
+                                           node.avail_info)
                 if cpus <= 0:
                     continue
                 node.cpus = min(node.avail_cpus, cpus)
@@ -1303,7 +1361,7 @@ class _Cluster(object, metaclass=MetaSingleton):
                 continue
             dispy_node = DispyNode(node.ip_addr, node.name, node.cpus)
             dispy_node.avail_cpus = node.avail_cpus
-            dispy_node.update_time = time.time()
+            dispy_node.avail_info = node.avail_info
             cluster._dispy_nodes[node.ip_addr] = dispy_node
             self.shelf['node_%s' % (node.ip_addr)] = {'port': node.port, 'auth': node.auth}
             shelf_compute = self.shelf['compute_%s' % compute.id]
@@ -1320,6 +1378,7 @@ class _Cluster(object, metaclass=MetaSingleton):
                 self.shelf.sync()
                 yield node.close(compute, coro=coro)
             else:
+                dispy_node.update_time = time.time()
                 node.clusters.add(compute.id)
                 self._sched_event.set()
                 if cluster.status_callback:
@@ -1343,6 +1402,7 @@ class _Cluster(object, metaclass=MetaSingleton):
             node = _Node(info['ip_addr'], info['port'], info['cpus'], info['sign'],
                          self.secret, keyfile=self.keyfile, certfile=self.certfile)
             node.name = info['name']
+            node.avail_info = info['avail_info']
             self._nodes[node.ip_addr] = node
         else:
             node.last_pulse = time.time()
@@ -1390,7 +1450,8 @@ class _Cluster(object, metaclass=MetaSingleton):
                 continue
             compute = cluster._compute
             for node_alloc in cluster._node_allocs:
-                cpus = node_alloc.allocate(cluster, node.ip_addr, node.name, node.avail_cpus)
+                cpus = node_alloc.allocate(cluster, node.ip_addr, node.name, node.avail_cpus,
+                                           node.avail_info)
                 if cpus <= 0:
                     continue
                 node.cpus = min(node.avail_cpus, cpus)
@@ -1494,6 +1555,8 @@ class _Cluster(object, metaclass=MetaSingleton):
             self._sched_event.set()
 
     def reschedule_jobs(self, dead_jobs):
+        if not dead_jobs:
+            return
         for _job in dead_jobs:
             cluster = self._clusters[_job.compute_id]
             del self._sched_jobs[_job.uid]

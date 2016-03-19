@@ -33,10 +33,19 @@ else:
     from BaseHTTPServer import BaseHTTPRequestHandler, HTTPServer
     from urlparse import urlparse
 
-from dispy import DispyJob, logger
+from dispy import DispyJob, DispyNode, logger
 
 
 class DispyHTTPServer(object):
+
+    class ObjectEncoder(json.JSONEncoder):
+        def default(self, obj):
+            if hasattr(obj, '__getstate__'):
+                return obj.__getstate__()
+            elif hasattr(obj, '__dict__'):
+                return obj.__dict__
+            else:
+                raise TypeError('Object %s (type %s) not serialized' % (obj, type(obj)))
 
     class _ClusterInfo(object):
 
@@ -68,43 +77,46 @@ class DispyHTTPServer(object):
                 updates = [
                     {'name': name,
                      'jobs': {'submitted': cluster.jobs_submitted, 'done': cluster.jobs_done},
-                     'nodes': [node.__dict__ for node in cluster.updates.values()]
+                     'nodes': list(cluster.updates.values())
                      } for name, cluster in self._dispy_ctx._clusters.items()
                     ]
                 for cluster in self._dispy_ctx._clusters.values():
                     cluster.updates = {}
+                updates = json.dumps(updates, cls=DispyHTTPServer.ObjectEncoder)
                 self._dispy_ctx._cluster_lock.release()
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
                 self.end_headers()
-                self.wfile.write(json.dumps(updates).encode())
+                self.wfile.write(updates.encode())
                 return
             elif self.path == '/cluster_status':
                 self._dispy_ctx._cluster_lock.acquire()
                 status = [
                     {'name': name,
                      'jobs': {'submitted': cluster.jobs_submitted, 'done': cluster.jobs_done},
-                     'nodes': [node.__dict__ for node in cluster.status.values()]
+                     'nodes': list(cluster.updates.values())
                      } for name, cluster in self._dispy_ctx._clusters.items()
                     ]
+                status = json.dumps(status, cls=DispyHTTPServer.ObjectEncoder)
                 self._dispy_ctx._cluster_lock.release()
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
                 self.end_headers()
-                self.wfile.write(json.dumps(status).encode())
+                self.wfile.write(status.encode())
                 return
             elif self.path == '/nodes':
                 self._dispy_ctx._cluster_lock.acquire()
                 clusters = [
                     {'name': name,
-                     'nodes': [node.__dict__ for node in cluster.status.values()]
+                     'nodes': [node for node in cluster.status.values()]
                      } for name, cluster in self._dispy_ctx._clusters.items()
                     ]
+                clusters = json.dumps(clusters, cls=DispyHTTPServer.ObjectEncoder)
                 self._dispy_ctx._cluster_lock.release()
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
                 self.end_headers()
-                self.wfile.write(json.dumps(clusters).encode())
+                self.wfile.write(clusters.encode())
                 return
             else:
                 parsed_path = urlparse(self.path)
@@ -193,7 +205,8 @@ class DispyHTTPServer(object):
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
                 self.end_headers()
-                self.wfile.write(json.dumps({'node': node, 'jobs': jobs}).encode())
+                self.wfile.write(json.dumps({'node': node, 'jobs': jobs},
+                                            cls=DispyHTTPServer.ObjectEncoder).encode())
                 return
             elif self.path == '/cancel_jobs':
                 uids = []

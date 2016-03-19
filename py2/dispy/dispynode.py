@@ -32,9 +32,13 @@ import functools
 import inspect
 import cPickle as pickle
 import cStringIO as io
+try:
+    import psutil
+except ImportError:
+    psutil = None
 
-from dispy import _JobReply, DispyJob, _Function, _Compute, _XferFile, _node_ipaddr, \
-    _dispy_version, auth_code, num_min, _same_file, MsgTimeout
+from dispy import _JobReply, DispyJob, DispyNodeAvailInfo, _Function, _Compute, _XferFile, \
+     _node_ipaddr, _dispy_version, auth_code, num_min, _same_file, MsgTimeout
 
 import asyncoro
 from asyncoro import Coro, AsynCoro, AsyncSocket, serialize, unserialize
@@ -374,6 +378,13 @@ class _DispyNode(object):
             pong_msg = {'ip_addr': self.ext_ip_addr, 'port': self.port, 'sign': self.sign,
                         'version': _dispy_version, 'name': self.name, 'cpus': self.avail_cpus,
                         'auth': auth_code(self.secret, info['sign'])}
+            if psutil:
+                pong_msg['avail_info'] = DispyNodeAvailInfo(
+                    100.0 - psutil.cpu_percent(), psutil.virtual_memory().available,
+                    psutil.disk_usage(self.dest_path_prefix).free)
+            else:
+                pong_msg['avail_info'] = None
+
             for scheduler_ip_addr in scheduler_ip_addrs:
                 addr = (scheduler_ip_addr, scheduler_port)
                 pong_msg['scheduler_ip_addr'] = scheduler_ip_addr
@@ -673,13 +684,8 @@ class _DispyNode(object):
             self.scheduler['ip_addr'] = compute.scheduler_ip_addr
             self.scheduler['port'] = compute.scheduler_port
             self.scheduler['auth'].add(compute.auth)
-            self.pulse_interval = compute.pulse_interval
-            if not self.pulse_interval:
-                self.pulse_interval = 10 * 60
-            if self.zombie_interval:
-                self.pulse_interval = num_min(self.pulse_interval, self.zombie_interval / 5.0)
-            fd = open(os.path.join(self.dest_path_prefix,
-                                   '%s_%s' % (compute.id, compute.auth)), 'wb')
+            compute_save = os.path.join(self.dest_path_prefix, '%s_%s' % (compute.id, compute.auth))
+            fd = open(compute_save, 'wb')
             pickle.dump(compute, fd)
             fd.close()
 
@@ -704,13 +710,18 @@ class _DispyNode(object):
                 compute.globals = {}
                 self.scheduler['ip_addr'] = None
                 self.scheduler['auth'].discard(compute.auth)
-                self.pulse_interval = None
+                os.remove(compute_save)
                 if os.path.isdir(compute.dest_path):
                     try:
                         os.rmdir(compute.dest_path)
                     except:
                         pass
             else:
+                self.pulse_interval = num_min(self.pulse_interval, compute.pulse_interval)
+                if not self.pulse_interval:
+                    self.pulse_interval = 10 * 60
+                if self.zombie_interval:
+                    self.pulse_interval = num_min(self.pulse_interval, self.zombie_interval / 5.0)
                 self.timer_coro.resume(True)
 
         def xfer_file_task(msg):
@@ -1091,6 +1102,13 @@ class _DispyNode(object):
                     info = {'ip_addr': self.ext_ip_addr, 'port': self.port,
                             'cpus': self.num_cpus - self.avail_cpus,
                             'scheduler_ip_addr': self.scheduler['ip_addr']}
+                    if psutil:
+                        info['avail_info'] = DispyNodeAvailInfo(
+                            100.0 - psutil.cpu_percent(), psutil.virtual_memory().available,
+                            psutil.disk_usage(self.dest_path_prefix).free)
+                    else:
+                        info['avail_info'] = None
+
                     yield sock.sendto('PULSE:' + serialize(info),
                                       (self.scheduler['ip_addr'], self.scheduler['port']))
                     sock.close()
@@ -1661,6 +1679,10 @@ if __name__ == '__main__':
             _dispy_config['daemon'] = True
     except:
         pass
+
+    if not psutil:
+        print('\n  "psutil" module is not available;')
+        print('    node status (CPU, memory, disk space usage) will not be sent to clients\n')
 
     _dispy_node = None
     _dispy_node = _DispyNode(**_dispy_config)

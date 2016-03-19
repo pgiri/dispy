@@ -58,3 +58,19 @@ function bin_desc_search(arr, elem, compare, min, max) {
   }
   return -1;
 }
+
+function formatBytes(bytes, precision) {
+    bytes = parseFloat(bytes);
+    precision = precision || 2;
+    var n = bytes;
+    var i;
+    for (i = 0; n > 1024; i++) {
+	n /= 1024;
+    }
+    var sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB'];
+    if (i >= sizes.length) {
+	i = sizes.length - 1;
+	n = bytes / Math.pow(1024, i);
+    }
+    return n.toFixed(precision) + ' ' + sizes[i];
+}
