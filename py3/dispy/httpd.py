@@ -35,6 +35,13 @@ else:
 
 from dispy import DispyJob, DispyNode, logger
 
+if sys.version_info.major >= 3:
+    def dict_values_list(d):
+        return list(d.values())
+else:
+    def dict_values_list(d):
+        return d.values()
+
 
 class DispyHTTPServer(object):
 
@@ -77,7 +84,7 @@ class DispyHTTPServer(object):
                 updates = [
                     {'name': name,
                      'jobs': {'submitted': cluster.jobs_submitted, 'done': cluster.jobs_done},
-                     'nodes': list(cluster.updates.values())
+                     'nodes': dict_values_list(cluster.updates)
                      } for name, cluster in self._dispy_ctx._clusters.items()
                     ]
                 for cluster in self._dispy_ctx._clusters.values():
@@ -94,7 +101,7 @@ class DispyHTTPServer(object):
                 status = [
                     {'name': name,
                      'jobs': {'submitted': cluster.jobs_submitted, 'done': cluster.jobs_done},
-                     'nodes': list(cluster.updates.values())
+                     'nodes': dict_values_list(cluster.status)
                      } for name, cluster in self._dispy_ctx._clusters.items()
                     ]
                 status = json.dumps(status, cls=DispyHTTPServer.ObjectEncoder)
@@ -108,7 +115,7 @@ class DispyHTTPServer(object):
                 self._dispy_ctx._cluster_lock.acquire()
                 clusters = [
                     {'name': name,
-                     'nodes': [node for node in cluster.status.values()]
+                     'nodes': dict_values_list(cluster.status)
                      } for name, cluster in self._dispy_ctx._clusters.items()
                     ]
                 clusters = json.dumps(clusters, cls=DispyHTTPServer.ObjectEncoder)
@@ -198,10 +205,6 @@ class DispyHTTPServer(object):
                                   'sched_time_ms': int(1000 * job.start_time),
                                   'cluster': name}
                                  for job in cluster_jobs])
-                if node:
-                    node = node.__dict__
-                else:
-                    node = {}
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
                 self.end_headers()
