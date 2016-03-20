@@ -182,10 +182,9 @@ class DispyNode(object):
     def __setstate__(self, state):
         for k, v in state.iteritems():
             setattr(self, k, v)
-        if state['avail_info']:
-            self.avail_info = DispyNodeAvailInfo(state['avail_info']['cpu'],
-                                                 state['avail_info']['memory'],
-                                                 state['avail_info']['disk'])
+        if self.avail_info:
+            self.avail_info = DispyNodeAvailInfo(self.avail_info['cpu'], self.avail_info['memory'],
+                                                 self.avail_info['disk'])
 
 
 class NodeAllocate(object):
@@ -728,10 +727,12 @@ class _Cluster(object):
                             cluster = self._clusters[cid]
                             if cluster.status_callback:
                                 dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
-                                if dispy_node:
-                                    dispy_node.avail_info = info['avail_info']
-                                    self.worker_Q.put((cluster.status_callback,
-                                                       (DispyNode.AvailInfo, dispy_node, None)))
+                                if not dispy_node:
+                                    continue
+                                dispy_node.avail_info = info['avail_info']
+                                dispy_node.update_time = node.last_pulse
+                                self.worker_Q.put((cluster.status_callback,
+                                                   (DispyNode.AvailInfo, dispy_node, None)))
                 except:
                     logger.warning('Ignoring pulse message from %s', addr[0])
                     # logger.debug(traceback.format_exc())

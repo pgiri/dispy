@@ -299,9 +299,10 @@ class _Scheduler(object):
                                 if not dispy_node:
                                     continue
                                 dispy_node.avail_info = info['avail_info']
+                                dispy_node.update_time = node.last_pulse
+                                Coro(self.send_node_status, cluster, dispy_node, DispyNode.AvailInfo)
                                 if cluster.status_callback:
                                     cluster.status_callback(DispyNode.AvailInfo, dispy_node, None)
-                                Coro(self.send_node_status, cluster, dispy_node, DispyNode.AvailInfo)
 
                         def _send_pulse(self, pulse_msg, addr, coro=None):
                             sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
