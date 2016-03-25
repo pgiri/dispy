@@ -33,26 +33,19 @@ else:
     from BaseHTTPServer import BaseHTTPRequestHandler, HTTPServer
     from urlparse import urlparse
 
-from dispy import DispyJob, DispyNode, logger
+from dispy import DispyJob, DispyNode, DispyNodeAvailInfo, logger
 
+
+# Compatability function to work with both Python 2.7 and Python 3
 if sys.version_info.major >= 3:
-    def dict_values_list(d):
-        return list(d.values())
+    def dict_iter(arg, iterator):
+        return getattr(arg, iterator)()
 else:
-    def dict_values_list(d):
-        return d.values()
+    def dict_iter(arg, iterator):
+        return getattr(arg, 'iter' + iterator)()
 
 
 class DispyHTTPServer(object):
-
-    class ObjectEncoder(json.JSONEncoder):
-        def default(self, obj):
-            if hasattr(obj, '__getstate__'):
-                return obj.__getstate__()
-            elif hasattr(obj, '__dict__'):
-                return obj.__dict__
-            else:
-                raise TypeError('Object %s (type %s) not serialized' % (obj, type(obj)))
 
     class _ClusterInfo(object):
 
@@ -74,6 +67,14 @@ class DispyHTTPServer(object):
             self.DocumentRoot = DocumentRoot
             BaseHTTPRequestHandler.__init__(self, *args)
 
+        @staticmethod
+        def json_encode_nodes(arg):
+            nodes = [dict(node.__dict__) for node in dict_iter(arg, 'values')]
+            for node in nodes:
+                if isinstance(node['avail_info'], DispyNodeAvailInfo):
+                    node['avail_info'] = node['avail_info'].__dict__
+            return nodes
+
         def log_message(self, fmt, *args):
             # logger.debug('HTTP client %s: %s' % (self.client_address[0], fmt % args))
             return
@@ -81,49 +82,46 @@ class DispyHTTPServer(object):
         def do_GET(self):
             if self.path == '/cluster_updates':
                 self._dispy_ctx._cluster_lock.acquire()
-                updates = [
+                clusters = [
                     {'name': name,
                      'jobs': {'submitted': cluster.jobs_submitted, 'done': cluster.jobs_done},
-                     'nodes': dict_values_list(cluster.updates)
-                     } for name, cluster in self._dispy_ctx._clusters.items()
+                     'nodes': self.__class__.json_encode_nodes(cluster.updates)
+                     } for name, cluster in dict_iter(self._dispy_ctx._clusters, 'items')
                     ]
-                for cluster in self._dispy_ctx._clusters.values():
-                    cluster.updates = {}
-                updates = json.dumps(updates, cls=DispyHTTPServer.ObjectEncoder)
+                for cluster in dict_iter(self._dispy_ctx._clusters, 'values'):
+                    cluster.updates.clear()
                 self._dispy_ctx._cluster_lock.release()
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
                 self.end_headers()
-                self.wfile.write(updates.encode())
+                self.wfile.write(json.dumps(clusters).encode())
                 return
             elif self.path == '/cluster_status':
                 self._dispy_ctx._cluster_lock.acquire()
-                status = [
+                clusters = [
                     {'name': name,
                      'jobs': {'submitted': cluster.jobs_submitted, 'done': cluster.jobs_done},
-                     'nodes': dict_values_list(cluster.status)
-                     } for name, cluster in self._dispy_ctx._clusters.items()
+                     'nodes': self.__class__.json_encode_nodes(cluster.status)
+                     } for name, cluster in dict_iter(self._dispy_ctx._clusters, 'items')
                     ]
-                status = json.dumps(status, cls=DispyHTTPServer.ObjectEncoder)
                 self._dispy_ctx._cluster_lock.release()
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
                 self.end_headers()
-                self.wfile.write(status.encode())
+                self.wfile.write(json.dumps(clusters).encode())
                 return
             elif self.path == '/nodes':
                 self._dispy_ctx._cluster_lock.acquire()
-                clusters = [
+                nodes = [
                     {'name': name,
-                     'nodes': dict_values_list(cluster.status)
-                     } for name, cluster in self._dispy_ctx._clusters.items()
+                     'nodes': self.__class__.json_encode_nodes(cluster.status)
+                     } for name, cluster in dict_iter(self._dispy_ctx._clusters, 'items')
                     ]
-                clusters = json.dumps(clusters, cls=DispyHTTPServer.ObjectEncoder)
                 self._dispy_ctx._cluster_lock.release()
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
                 self.end_headers()
-                self.wfile.write(clusters.encode())
+                self.wfile.write(json.dumps(nodes).encode())
                 return
             else:
                 parsed_path = urlparse(self.path)
@@ -132,8 +130,8 @@ class DispyHTTPServer(object):
                     path = 'monitor.html'
                 path = os.path.join(self.DocumentRoot, path)
                 try:
-                    f = open(path)
-                    data = f.read()
+                    with open(path) as fd:
+                        data = fd.read()
                     if path.endswith('.html'):
                         if path.endswith('monitor.html') or path.endswith('node.html'):
                             data = data % {'TIMEOUT': str(self._dispy_ctx._poll_sec)}
@@ -150,7 +148,6 @@ class DispyHTTPServer(object):
                         self.send_header('Cache-Control', 'private, max-age=86400')
                     self.end_headers()
                     self.wfile.write(data.encode())
-                    f.close()
                     return
                 except:
                     logger.warning('HTTP client %s: Could not read/send "%s"',
@@ -208,8 +205,9 @@ class DispyHTTPServer(object):
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
                 self.end_headers()
-                self.wfile.write(json.dumps({'node': node, 'jobs': jobs},
-                                            cls=DispyHTTPServer.ObjectEncoder).encode())
+                if node and node.avail_info:
+                    node.avail_info = node.avail_info.__dict__
+                self.wfile.write(json.dumps({'node': node.__dict__, 'jobs': jobs}).encode())
                 return
             elif self.path == '/cancel_jobs':
                 uids = []

@@ -14,7 +14,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "MIT"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.6.12"
+__version__ = "4.6.13"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
@@ -168,24 +168,6 @@ class DispyNode(object):
         self.cpu_time = 0.0
         self.update_time = 0
         self.avail_info = None
-
-    def __getstate__(self):
-        # used for json encoding
-        state = {'ip_addr': self.ip_addr, 'name': self.name, 'cpus': self.cpus,
-                 'avail_cpus': self.avail_cpus, 'busy': self.busy, 'jobs_done': self.jobs_done,
-                 'cpu_time': self.cpu_time, 'update_time': self.update_time}
-        if isinstance(self.avail_info, DispyNodeAvailInfo):
-            state['avail_info'] = self.avail_info.__dict__
-        else:
-            state['avail_info'] = self.avail_info
-        return state
-
-    def __setstate__(self, state):
-        for k, v in state.items():
-            setattr(self, k, v)
-        if self.avail_info:
-            self.avail_info = DispyNodeAvailInfo(self.avail_info['cpu'], self.avail_info['memory'],
-                                                 self.avail_info['disk'])
 
 
 class NodeAllocate(object):
