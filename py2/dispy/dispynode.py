@@ -178,23 +178,20 @@ def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
     """Internal use only.
     """
 
-    if os.name == 'nt':
-        globals().update(__dispy_job_globals)
-        __dispy_job_globals = globals()
     os.chdir(__dispy_path)
     sys.stdout = io.StringIO()
     sys.stderr = io.StringIO()
     __dispy_job_reply = __dispy_job_info.job_reply
+    globals().update(__dispy_job_globals)
     try:
-        exec(marshal.loads(__dispy_job_code[0])) in __dispy_job_globals
+        exec(marshal.loads(__dispy_job_code[0])) in globals()
         if __dispy_job_code[1]:
-            exec(__dispy_job_code[1]) in __dispy_job_globals
-        globals().update(__dispy_job_globals)
+            exec(__dispy_job_code[1]) in globals()
         __dispy_job_args = unserialize(__dispy_job_args)
         __dispy_job_kwargs = unserialize(__dispy_job_kwargs)
-        __dispy_job_globals.update(locals())
+        globals().update(locals())
         exec('__dispy_job_reply.result = %s(*__dispy_job_args, **__dispy_job_kwargs)' %
-             __dispy_job_name) in __dispy_job_globals
+             __dispy_job_name) in globals()
         __dispy_job_reply.status = DispyJob.Finished
     except:
         __dispy_job_reply.exception = traceback.format_exc()
@@ -1468,7 +1465,7 @@ class _DispyNode(object):
         coro.set_daemon()
         thread_pool = asyncoro.AsyncThreadPool(1)
         while True:
-            sys.stdout.write('Enter "quit" or "exit" to terminate dispynode,\n'
+            sys.stdout.write('\nEnter "quit" or "exit" to terminate dispynode,\n'
                              '  "stop" to stop service, "start" to restart service,\n'
                              '  "cpus" to change CPUs used, anything else to get status: ')
             sys.stdout.flush()
