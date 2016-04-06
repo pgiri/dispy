@@ -688,11 +688,9 @@ class _DispyNode(object):
             pickle.dump(compute, fd)
             fd.close()
 
-            # add variables needed for
-            # 'dispy_provisional_result' and 'dispy_send_file'
-            # to compute.globals; but in Windows
-            # compute.globals can't be passed via
-            # multiprocessing.Process
+            # add variables needed for 'dispy_provisional_result' and
+            # 'dispy_send_file' to compute.globals; but in Windows
+            # compute.globals can't be passed via multiprocessing.Process
             if os.name == 'nt':
                 compute.globals = {}
             else:
@@ -1401,23 +1399,28 @@ class _DispyNode(object):
                 sys.modules.pop(module, None)
         sys.modules.update(self.__init_modules)
 
-        for path, use in file_uses.items():
-            if use == 1:
+        for path in os.listdir(compute.dest_path):
+            path = os.path.join(compute.dest_path, path)
+            if file_uses.get(path, 1) == 1:
                 try:
-                    os.remove(path)
-                    if os.path.splitext(path)[1] == '.py' and os.path.isfile(path + 'c'):
-                        os.remove(path + 'c')
+                    if os.path.isfile(path) or os.path.islink(path):
+                        os.remove(path)
+                    elif os.path.isdir(path):
+                        shutil.rmtree(path, ignore_errors=True)
+                    else:
+                        os.remove(path)
                 except:
-                    logger.warning('Could not remove file "%s"', path)
+                    logger.warning('Could not remove "%s"', path)
 
         if os.path.isdir(compute.dest_path) and \
            compute.dest_path.startswith(self.dest_path_prefix) and \
            len(os.listdir(compute.dest_path)) == 0:
-            logger.debug('Removing "%s"', compute.dest_path)
             try:
                 os.rmdir(compute.dest_path)
             except:
                 logger.warning('Could not remove directory "%s"', compute.dest_path)
+            else:
+                logger.debug('Removed "%s"', compute.dest_path)
 
         if self.serve == 0:
             self.shutdown(quit=True)
@@ -1686,9 +1689,12 @@ if __name__ == '__main__':
     if os.name == 'nt':
         _dispy_config['daemon'] = True
 
-    if not psutil:
+    if psutil:
+        psutil.cpu_percent(0.1)
+    else:
         print('\n  "psutil" module is not available;')
-        print('    node status (CPU, memory, disk space usage) will not be sent to clients\n')
+        print('    node status (CPU, memory, disk and swap space usage) '
+              'will not be sent to clients\n')
 
     _dispy_node = None
     _dispy_node = _DispyNode(**_dispy_config)
