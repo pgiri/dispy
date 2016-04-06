@@ -141,10 +141,11 @@ class DispyNodeAvailInfo(object):
     bytes and disk as bytes. This information is passed to NodeAllocte.allocate
     method and in cluster status callback with status DispyNode.AvailInfo.
     """
-    def __init__(self, cpu, memory, disk):
+    def __init__(self, cpu, memory, disk, swap):
         self.cpu = cpu
         self.memory = memory
         self.disk = disk
+        self.swap = swap
 
 
 class DispyNode(object):

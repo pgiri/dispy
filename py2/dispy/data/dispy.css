@@ -131,19 +131,19 @@ td:last-child {
     border-right: none;
 }
 
-tr:first-child td:first-child {
+tr:first-child > td:first-child {
     border-top-left-radius: 8px;
 }
 
-tr:first-child td:last-child {
+tr:first-child > td:last-child {
     border-top-right-radius: 8px;
 }
 
-tr:last-child td:first-child {
+tr:last-child > td:first-child {
     border-bottom-left-radius: 8px;
 }
 
-tr:last-child td:last-child {
+tr:last-child > td:last-child {
     border-bottom-right-radius: 8px;
 }
 

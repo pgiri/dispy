@@ -45,6 +45,7 @@
               if (node.avail_info) {
                 $('#node_cpu_usage').text(node.avail_info.cpu.toFixed(2) + ' %%');
                 $('#node_avail_memory').text(formatBytes(node.avail_info.memory));
+                $('#node_avail_swap').text(node.avail_info.swap.toFixed(2) + ' %%');
                 $('#node_avail_disk').text(formatBytes(node.avail_info.disk));
               }
               $('#node_done').text(node.jobs_done);
@@ -228,13 +229,16 @@
 
       <h1 style="margin:2em 0;"><span class="title">dispy: Node Information</span></h1>
 
-      <table id="node" class="fancy shadow" style="margin:20px auto;text-align:left;font-weight:bold;">
+      <table id="node" class="fancy shadow" style="margin:10px auto;text-align:left;font-weight:bold;">
         <tbody>
           <tr>
             <td>IP Address</td><td id="node_ip_addr"></td>
           </tr>
           <tr>
             <td>Name</td><td id="node_name"></td>
+          </tr>
+          <tr>
+            <td>Status</td><td id="node_status"></td>
           </tr>
           <tr>
             <td>CPUs Managed by dispy</td><td id="node_cpus"></td>
@@ -244,6 +248,9 @@
           </tr>
           <tr>
             <td>Available Memory</td><td id="node_avail_memory">Unknown</td>
+          </tr>
+          <tr>
+            <td>Available Swap Space</td><td id="node_avail_swap">Unknown</td>
           </tr>
           <tr>
             <td>Available Disk Space</td><td id="node_avail_disk">Unknown</td>

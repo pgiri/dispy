@@ -47,9 +47,10 @@
           if (node.avail_info) {
             rows += '<td>' + (node.avail_info.cpu.toFixed(2) + ' %%') +
                      '</td><td>' + formatBytes(node.avail_info.memory) +
-                     '</td><td>' + formatBytes(node.avail_info.disk);
+                     '</td><td>' + (node.avail_info.swap.toFixed(2) + ' %%') +
+                     '</td><td>' + formatBytes(node.avail_info.disk) + '</td>';
           } else {
-            rows += '<td>-</td><td>-</td><td>-</td>';
+            rows += '<td>-</td><td>-</td><td>-</td><td>-</td>';
           }
           rows += '<td>' + node.jobs_done + '</td><td>' +
             (node.jobs_done > 0 ? (node.cpu_time / node.jobs_done).toFixed(2) : 0) + '</td><td>' +
@@ -265,13 +266,13 @@
           <tr>
             <th rowspan="2"></th><th rowspan="2">IP Address</th><th rowspan="2">Name</th>
 	    <th rowspan="2">CPUs</th><th rowspan="2">Busy</th>
-	    <th colspan="3">Available</th><th rowspan="2">Jobs<br />Done</th>
+	    <th colspan="4">Available</th><th rowspan="2">Jobs<br />Done</th>
             <th rowspan="2">Sec/Job</th><th rowspan="2">CPU Time<br />Sec</th>
 	    <th rowspan="2">Last Update</th>
 	  </tr>
 
 	  <tr>
-	    <th>CPU</th><th>Memory</th><th>Disk</th>
+	    <th>CPU</th><th>Memory</th><th>Swap</th><th>Disk</th>
           </tr>
         </thead>
         <tbody id="nodes">
