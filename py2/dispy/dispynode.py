@@ -46,7 +46,7 @@ from asyncoro import Coro, AsynCoro, AsyncSocket, serialize, unserialize
 __version__ = _dispy_version
 __all__ = []
 
-MaxFileSize = 10*(1024**2)
+MaxFileSize = 0
 
 
 def dispy_provisional_result(result, timeout=MsgTimeout):
