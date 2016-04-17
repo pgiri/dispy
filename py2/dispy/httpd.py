@@ -155,7 +155,7 @@ class DispyHTTPServer(object):
                     logger.debug(traceback.format_exc())
                 self.send_error(404)
                 return
-            logger.debug('Bad GET request from %s: %s' % (self.client_address[0], self.path))
+            logger.debug('Bad GET request from %s: %s', self.client_address[0], self.path)
             self.send_error(400)
             return
 
@@ -216,7 +216,7 @@ class DispyHTTPServer(object):
                         try:
                             uids.append(int(item.value))
                         except ValueError:
-                            logger.debug('Cancel job uid "%s" is invalid' % item.value)
+                            logger.debug('Cancel job uid "%s" is invalid', item.value)
 
                 self._dispy_ctx._cluster_lock.acquire()
                 cluster_jobs = [(cluster_info.cluster, cluster_info.jobs.get(uid, None))
@@ -302,7 +302,7 @@ class DispyHTTPServer(object):
                 self.wfile.write(json.dumps(node_cpus).encode())
                 return
 
-            logger.debug('Bad POST request from %s: %s' % (self.client_address[0], self.path))
+            logger.debug('Bad POST request from %s: %s', self.client_address[0], self.path)
             self.send_error(400)
             return
 
@@ -318,7 +318,7 @@ class DispyHTTPServer(object):
         if not DocumentRoot:
             DocumentRoot = os.path.join(os.path.dirname(__file__), 'data')
         if poll_sec < 1:
-            logger.warning('invalid poll_sec value %s; it must be at least 1' % poll_sec)
+            logger.warning('invalid poll_sec value %s; it must be at least 1', poll_sec)
             poll_sec = 1
         self._poll_sec = poll_sec
         self._http_handler = None
@@ -330,8 +330,8 @@ class DispyHTTPServer(object):
         self._httpd_thread = threading.Thread(target=self._server.serve_forever)
         self._httpd_thread.daemon = True
         self._httpd_thread.start()
-        logger.info('Started HTTP%s server at %s' %
-                    ('s' if certfile else '', str(self._server.socket.getsockname())))
+        logger.info('Started HTTP%s server at %s',
+                    's' if certfile else '', str(self._server.socket.getsockname()))
 
     def cluster_status(self, cluster_info, status, node, job):
         """This method is called by JobCluster/SharedJobCluster
@@ -366,7 +366,7 @@ class DispyHTTPServer(object):
         """
         if wait:
             logger.info(
-                'HTTP server waiting for %s seconds for client updates before quitting',
+                'HTTP server waiting for %s seconds for client updates before quitting' %
                 self._poll_sec)
             time.sleep(self._poll_sec)
         self._server.shutdown()
@@ -377,7 +377,7 @@ class DispyHTTPServer(object):
         added to http server for monitoring.
         """
         if cluster.name in self._clusters:
-            logger.warning('Cluster "%s" is already registered' % (cluster.name))
+            logger.warning('Cluster "%s" is already registered', cluster.name)
             return
         cluster_info = self.__class__._ClusterInfo(cluster)
         self._clusters[cluster.name] = cluster_info

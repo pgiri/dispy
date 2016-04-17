@@ -52,13 +52,6 @@ __all__ = []
 
 MaxFileSize = 10*(1024**2)
 
-logger = logging.getLogger('dispyscheduler')
-logger.setLevel(logging.INFO)
-handler = logging.StreamHandler()
-handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(message)s'))
-logger.addHandler(handler)
-del handler
-
 
 class _Cluster(object):
     """Internal use only.
@@ -137,7 +130,7 @@ class _Scheduler(object):
                     if addr:
                         self.ip_addrs.add(addr)
                     else:
-                        logger.warning('ignoring invalid ip_addr "%s"' % node)
+                        logger.warning('ignoring invalid ip_addr "%s"', node)
             if not self.ip_addrs:
                 self.ip_addrs.add(None)
             self.ext_ip_addrs = set(self.ip_addrs)
@@ -149,7 +142,7 @@ class _Scheduler(object):
                     if addr:
                         self.ext_ip_addrs.add(addr)
                     else:
-                        logger.warning('ignoring invalid ext_ip_addr "%s"' % node)
+                        logger.warning('ignoring invalid ext_ip_addr "%s"', node)
             if not port:
                 port = 51347
             if not node_port:
@@ -347,7 +340,6 @@ class _Scheduler(object):
                 finally:
                     sock.close()
             else:
-                # logger.debug('Ignoring UDP message %s from: %s', msg[:min(5, len(msg))], addr[0])
                 pass
 
     def tcp_server(self, ip_addr, coro=None):
@@ -365,7 +357,7 @@ class _Scheduler(object):
                 ip_addr = None
             self.ip_addrs.discard(ip_addr)
             raise StopIteration
-        logger.debug('tcp server at %s:%s' % (ip_addr, self.port))
+        logger.debug('tcp server at %s:%s', ip_addr, self.port)
         sock.listen(32)
 
         while True:
@@ -379,7 +371,6 @@ class _Scheduler(object):
             except:
                 logger.debug(traceback.format_exc())
                 continue
-            # logger.debug('received job result from %s', str(addr))
             Coro(self.tcp_task, conn, addr)
 
     def tcp_task(self, conn, addr, coro=None):
@@ -390,7 +381,7 @@ class _Scheduler(object):
             try:
                 info = unserialize(msg[len('JOB_REPLY:'):])
             except:
-                logger.warning('invalid job reply from %s:%s ignored' % (addr[0], addr[1]))
+                logger.warning('invalid job reply from %s:%s ignored', addr[0], addr[1])
             else:
                 yield self.job_reply_process(info, conn, addr)
         elif msg.startswith('PONG:'):
@@ -486,10 +477,9 @@ class _Scheduler(object):
                 conn.close()
                 raise StopIteration
             if cpus < 0:
-                logger.warning('Node requested using %s CPUs, disabling it' %
-                               (node.ip_addr, cpus))
+                logger.warning('Node requested using %s CPUs, disabling it', node.ip_addr, cpus)
                 cpus = 0
-            logger.debug('Setting cpus for %s to %s' % (node.ip_addr, cpus))
+            logger.debug('Setting cpus for %s to %s', node.ip_addr, cpus)
             # TODO: set node.cpus to min(cpus, node.cpus)?
             node.cpus = cpus
             if cpus > node.avail_cpus:
@@ -518,7 +508,7 @@ class _Scheduler(object):
                 if dispy_node:
                     dispy_node.cpus = cpus
         else:
-            logger.warning('invalid message from %s:%s ignored' % addr)
+            logger.warning('invalid message from %s:%s ignored', addr)
         conn.close()
 
     def schedule_cluster(self, coro=None):
@@ -546,9 +536,9 @@ class _Scheduler(object):
                 self.add_cluster(cluster)
             except:
                 self._clusters.pop(cluster._compute.id, None)
-                logger.debug('Ignoring computation %s / %s from %s:%s' %
-                             (cluster._compute.name, cluster._compute.id,
-                              cluster.client_ip_addr, cluster.client_job_result_port))
+                logger.debug('Ignoring computation %s / %s from %s:%s',
+                             cluster._compute.name, cluster._compute.id,
+                             cluster.client_ip_addr, cluster.client_job_result_port)
                 continue
             finally:
                 reply_sock.close()
@@ -567,7 +557,7 @@ class _Scheduler(object):
                 ip_addr = None
             self.ip_addrs.discard(ip_addr)
             raise StopIteration
-        logger.debug('scheduler at %s:%s' % (ip_addr, self.scheduler_port))
+        logger.debug('scheduler at %s:%s', ip_addr, self.scheduler_port)
         sock.listen(32)
         while True:
             conn, addr = yield sock.accept()
@@ -592,7 +582,7 @@ class _Scheduler(object):
             setattr(_job, 'pinned', node)
             setattr(_job, 'job', job)
             setattr(_job, 'node', None)
-            logger.debug('submitted job %s / %s' % (_job.uid, job.submit_time))
+            logger.debug('submitted job %s / %s', _job.uid, job.submit_time)
             self.unsched_jobs += 1
             cluster.pending_jobs += 1
             cluster.last_pulse = job.submit_time
@@ -657,7 +647,8 @@ class _Scheduler(object):
             pickle.dump(cluster, fd)
             fd.close()
             self.pending_clusters[cluster._compute.id] = cluster
-            logger.debug('New computation %s: %s, %s', compute.id, compute.name, cluster.dest_path)
+            logger.debug('New computation %s: %s, %s',
+                         compute.id, compute.name, cluster.dest_path)
             return serialize({'compute_id': cluster._compute.id, 'auth': cluster.client_auth})
 
         def xfer_from_client(self, msg):
@@ -672,7 +663,7 @@ class _Scheduler(object):
                 # if file is transfered for 'dispy_job_depends', cluster would be active
                 cluster = self._clusters.get(xf.compute_id, None)
                 if not cluster:
-                    logger.error('Computation "%s" is invalid' % xf.compute_id)
+                    logger.error('Computation "%s" is invalid', xf.compute_id)
                     raise StopIteration(serialize(-1))
             tgt = os.path.join(cluster.dest_path, os.path.basename(xf.name))
             if os.path.isfile(tgt) and _same_file(tgt, xf):
@@ -702,8 +693,7 @@ class _Scheduler(object):
                     cluster.file_uses[tgt] = 1
                 logger.debug('Copied file %s', tgt)
             except:
-                logger.warning('Copying file "%s" failed with "%s"',
-                               xf.name, traceback.format_exc())
+                logger.warning('Copying file "%s" failed with "%s"', xf.name, traceback.format_exc())
                 recvd = -1
                 try:
                     os.remove(tgt)
@@ -724,7 +714,7 @@ class _Scheduler(object):
                 raise StopIteration(serialize(-1))
             cluster = self._clusters.get(xf.compute_id, None)
             if not cluster or not node or node.ip_addr not in cluster._dispy_nodes:
-                logger.error('send_file "%s" is invalid' % xf.name)
+                logger.error('send_file "%s" is invalid', xf.name)
                 raise StopIteration(serialize(-1))
             if _same_file(xf.name, xf):
                 resp = yield node.xfer_file(xf)
@@ -765,8 +755,7 @@ class _Scheduler(object):
         try:
             req = yield conn.recvall(len(self.cluster_auth))
         except:
-            logger.warning('Failed to read message from %s: %s',
-                           str(addr), traceback.format_exc())
+            logger.warning('Failed to read message from %s: %s', str(addr), traceback.format_exc())
             conn.close()
             raise StopIteration
 
@@ -1068,13 +1057,15 @@ class _Scheduler(object):
     def xfer_to_client(self, job_reply, xf, conn, addr):
         _job = self._sched_jobs.get(job_reply.uid, None)
         if _job is None or _job.hash != job_reply.hash:
-            logger.warning('Ignoring invalid file transfer from job %s at %s', job_reply.uid, addr[0])
+            logger.warning('Ignoring invalid file transfer from job %s at %s',
+                           job_reply.uid, addr[0])
             yield conn.send_msg(serialize(-1))
             raise StopIteration
         node = self._nodes.get(job_reply.ip_addr, None)
         cluster = self._clusters.get(_job.compute_id, None)
         if not node or not cluster:
-            logger.warning('Ignoring invalid file transfer from job %s at %s', job_reply.uid, addr[0])
+            logger.warning('Ignoring invalid file transfer from job %s at %s',
+                           job_reply.uid, addr[0])
             yield conn.send_msg(serialize(-1))
             raise StopIteration
         node.last_pulse = time.time()
@@ -1178,13 +1169,13 @@ class _Scheduler(object):
         if not cluster.zombie:
             raise StopIteration
         if cluster.pending_jobs:
-            logger.debug('pedning jobs for "%s" / %s: %s', cluster._compute.name,
-                         cluster._compute.id, cluster.pending_jobs)
+            logger.debug('pedning jobs for "%s" / %s: %s',
+                         cluster._compute.name, cluster._compute.id, cluster.pending_jobs)
             raise StopIteration
 
         compute = cluster._compute
         if self._clusters.pop(compute.id, None) is None:
-            logger.warning('Invalid computation "%s" to cleanup ignored' % compute.id)
+            logger.warning('Invalid computation "%s" to cleanup ignored', compute.id)
             raise StopIteration
 
         pkl_path = os.path.join(self.dest_path_prefix,
@@ -1193,7 +1184,7 @@ class _Scheduler(object):
             try:
                 os.remove(pkl_path)
             except:
-                logger.warning('Could not remove "%s"' % pkl_path)
+                logger.warning('Could not remove "%s"', pkl_path)
         else:
             fd = open(pkl_path, 'wb')
             pickle.dump(compute, fd)
@@ -1257,8 +1248,7 @@ class _Scheduler(object):
             r = yield node.setup(compute, coro=coro)
             if r or compute.id not in self._clusters:
                 cluster._dispy_nodes.pop(node.ip_addr, None)
-                logger.warning('Failed to setup %s for computation "%s"',
-                               node.ip_addr, compute.name)
+                logger.warning('Failed to setup %s for computation "%s"', node.ip_addr, compute.name)
                 Coro(node.close, compute)
             else:
                 dispy_node.update_time = time.time()
@@ -1274,7 +1264,6 @@ class _Scheduler(object):
             # TODO: check if it is one of ext_ip_addr?
         except:
             # logger.debug(traceback.format_exc())
-            # logger.debug('Ignoring node %s', addr[0])
             raise StopIteration
         node = self._nodes.get(info['ip_addr'], None)
         if node is None:
@@ -1292,11 +1281,10 @@ class _Scheduler(object):
                 node.avail_cpus = info['cpus']
                 node.cpus = min(node.cpus, node.avail_cpus)
             else:
-                logger.warning('invalid "cpus" %s from %s ignored',
-                               (info['cpus'], info['ip_addr']))
+                logger.warning('invalid "cpus" %s from %s ignored', info['cpus'], info['ip_addr'])
             if node.port == info['port'] and node.auth == auth:
                 raise StopIteration
-            logger.debug('node %s rediscovered' % info['ip_addr'])
+            logger.debug('node %s rediscovered', info['ip_addr'])
             node.port = info['port']
             if node.auth is not None:
                 dead_jobs = [_job for _job in self._sched_jobs.itervalues()
@@ -1368,7 +1356,7 @@ class _Scheduler(object):
                         try:
                             os.remove(f)
                         except:
-                            logger.warning('Could not remove "%s"' % f)
+                            logger.warning('Could not remove "%s"', f)
                 else:
                     self.done_jobs.pop(uid, None)
                     if cluster.pending_results:
@@ -1456,7 +1444,6 @@ class _Scheduler(object):
             # assert reply.ip_addr == node.ip_addr
         except:
             logger.warning('Invalid job result for %s from %s', _job.uid, addr[0])
-            # logger.debug('%s, %s', str(reply), traceback.format_exc())
             yield sock.send_msg('ACK')
             raise StopIteration
 
@@ -1490,7 +1477,7 @@ class _Scheduler(object):
                         cluster.file_uses.pop(xf.name)
                         os.remove(xf.name)
                 except:
-                    logger.warning('Could not remove "%s"' % xf.name)
+                    logger.warning('Could not remove "%s"', xf.name)
         Coro(self.send_job_result, _job.uid, cluster, reply, resending=False)
 
     def reschedule_jobs(self, dead_jobs):
@@ -1888,8 +1875,8 @@ class _Scheduler(object):
         self.terminate = True
         while (self.pending_clusters or
                any(cluster.pending_jobs for cluster in self._clusters.itervalues())):
-            logger.warning('Waiting for %s clusters to finish' %
-                           (len(self.pending_clusters) + len(self._clusters)))
+            logger.warning('Waiting for %s clusters to finish',
+                           len(self.pending_clusters) + len(self._clusters))
             time.sleep(5)
 
         def _terminate_scheduler(self, coro=None):
@@ -1899,7 +1886,7 @@ class _Scheduler(object):
         self.scheduler_coro.value()
 
     def print_status(self):
-        print
+        print('')
         heading = ' %30s | %5s | %13s' % ('Node', 'CPUs', 'Node Time Sec')
         print(heading)
         print('-' * len(heading))
@@ -1913,15 +1900,16 @@ class _Scheduler(object):
             else:
                 name = ip_addr
             print(' %-30.30s | %5s | %13.3f' % (name, node.cpus, node.cpu_time))
-        print
+        print('')
         print('Total job time: %.3f sec' % (tot_cpu_time))
-        print
+        print('')
 
 
 if __name__ == '__main__':
     import argparse
 
-    logger.info('dispyscheduler version %s' % _dispy_version)
+    logger = asyncoro.Logger('dispyscheduler')
+    logger.info('dispyscheduler version %s', _dispy_version)
 
     parser = argparse.ArgumentParser()
     parser.add_argument('-d', '--debug', action='store_true', dest='loglevel', default=False,

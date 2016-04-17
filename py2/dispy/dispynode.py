@@ -48,13 +48,6 @@ __all__ = []
 
 MaxFileSize = 10*(1024**2)
 
-logger = logging.getLogger('dispynode')
-logger.setLevel(logging.INFO)
-handler = logging.StreamHandler()
-handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(message)s'))
-logger.addHandler(handler)
-del handler
-
 
 def dispy_provisional_result(result, timeout=MsgTimeout):
     """Sends provisional result of computation back to the client.
@@ -87,8 +80,7 @@ def dispy_provisional_result(result, timeout=MsgTimeout):
         ack = sock.recv_msg()
         assert ack == 'ACK'
     except:
-        logger.debug("Couldn't send provisional results %s:\n%s",
-                     str(result), traceback.format_exc())
+        print("Couldn't send provisional results %s:\n%s" % (str(result), traceback.format_exc()))
         return -1
     else:
         return 0
@@ -151,7 +143,7 @@ def dispy_send_file(path, timeout=MsgTimeout):
         fd.close()
         assert recvd == xf.stat_buf.st_size
     except:
-        logger.debug('Could not transfer file "%s": %s' % (path, traceback.format_exc()))
+        print('Could not transfer file "%s": %s' % (path, traceback.format_exc()))
         return -1
     else:
         return 0
@@ -224,8 +216,9 @@ class _DispyNode(object):
         else:
             ip_addr = socket.gethostbyname(socket.gethostname())
         if ip_addr.startswith('127.'):
-            logger.warning('node IP address %s seems to be loopback address; this will prevent '
-                           'communication with clients on other machines. ' % ip_addr)
+            _dispy_logger.warning('node IP address %s seems to be loopback address; '
+                                  'this will prevent communication with clients on '
+                                  'other machines. ', ip_addr)
         if ext_ip_addr:
             ext_ip_addr = _node_ipaddr(ext_ip_addr)
             if not ext_ip_addr:
@@ -307,8 +300,9 @@ class _DispyNode(object):
         self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.udp_sock.bind(('', self.port))
-        logger.info('serving %s cpus at %s:%s', self.num_cpus, self.ext_ip_addr, self.port)
-        logger.debug('tcp server at %s:%s', self.address[0], self.address[1])
+        _dispy_logger.info('serving %s cpus at %s:%s',
+                           self.num_cpus, self.ext_ip_addr, self.port)
+        _dispy_logger.debug('tcp server at %s:%s', self.address[0], self.address[1])
         self.udp_sock = AsyncSocket(self.udp_sock)
 
         self.reply_Q = multiprocessing.Queue()
@@ -352,15 +346,15 @@ class _DispyNode(object):
             yield sock.sendto('PING:'.encode() + serialize(ping_msg),
                               ('<broadcast>', self.scheduler['port']))
         except:
-            logger.debug(traceback.format_exc())
+            _dispy_logger.debug(traceback.format_exc())
             pass
         sock.close()
 
     def send_pong_msg(self, info, addr, coro=None):
         if (self.scheduler['ip_addr'] or self.job_infos or not self.num_cpus or
            not self.service_available()):
-            logger.debug('Busy (%s/%s); ignoring ping message from %s',
-                         self.avail_cpus, self.num_cpus, addr[0])
+            _dispy_logger.debug('Busy (%s/%s); ignoring ping message from %s',
+                                self.avail_cpus, self.num_cpus, addr[0])
             raise StopIteration
         try:
             scheduler_ip_addrs = info['ip_addrs']
@@ -368,7 +362,7 @@ class _DispyNode(object):
                 scheduler_ip_addrs.append(addr[0])
             scheduler_port = info['port']
         except:
-            logger.debug(traceback.format_exc())
+            _dispy_logger.debug(traceback.format_exc())
             raise StopIteration
 
         if info.get('sign', None):
@@ -393,7 +387,7 @@ class _DispyNode(object):
                     yield sock.connect(addr)
                     yield sock.send_msg('PONG:'.encode() + serialize(pong_msg))
                 except:
-                    logger.debug('Could not connect to %s:%s' % (addr[0], addr[1]))
+                    _dispy_logger.debug('Could not connect to %s:%s', addr[0], addr[1])
                 finally:
                     sock.close()
         else:
@@ -407,7 +401,7 @@ class _DispyNode(object):
                 try:
                     yield sock.sendto('PING:'.encode() + serialize(ping_msg), addr)
                 except:
-                    logger.debug(traceback.format_exc())
+                    _dispy_logger.debug(traceback.format_exc())
                     pass
             sock.close()
 
@@ -451,24 +445,24 @@ class _DispyNode(object):
                 try:
                     info = unserialize(msg[len('PING:'):])
                     if info['version'] != _dispy_version:
-                        logger.warning('Ignoring %s due to version mismatch', addr[0])
+                        _dispy_logger.warning('Ignoring %s due to version mismatch', addr[0])
                         continue
                 except:
-                    logger.debug('Ignoring ping message from %s (%s)', addr[0], addr[1])
+                    _dispy_logger.debug('Ignoring ping message from %s (%s)', addr[0], addr[1])
                     continue
                 Coro(self.send_pong_msg, info, addr)
             elif msg.startswith('PULSE:'):
                 try:
                     info = unserialize(msg[len('PULSE:'):])
                 except:
-                    logger.warning('Ignoring PULSE from %s', addr[0])
+                    _dispy_logger.warning('Ignoring PULSE from %s', addr[0])
                 else:
                     if info['ip_addr'] == self.scheduler['ip_addr']:
                         now = time.time()
                         for compute in self.computations.itervalues():
                             compute.last_pulse = now
             else:
-                logger.warning('Ignoring ping message from %s', addr[0])
+                _dispy_logger.warning('Ignoring ping message from %s', addr[0])
 
     def tcp_server(self):
         while 1:
@@ -477,7 +471,7 @@ class _DispyNode(object):
             except GeneratorExit:
                 break
             except:
-                logger.debug(traceback.format_exc())
+                _dispy_logger.debug(traceback.format_exc())
                 continue
             Coro(self.tcp_serve_task, conn, addr)
 
@@ -486,8 +480,8 @@ class _DispyNode(object):
             try:
                 _job = unserialize(msg)
             except:
-                logger.debug('Ignoring job request from %s', addr[0])
-                # logger.debug(traceback.format_exc())
+                _dispy_logger.debug('Ignoring job request from %s', addr[0])
+                # _dispy_logger.debug(traceback.format_exc())
                 raise StopIteration
 
             compute = self.computations.get(_job.compute_id, None)
@@ -495,9 +489,9 @@ class _DispyNode(object):
                 if compute.scheduler_ip_addr != self.scheduler['ip_addr'] or \
                    compute.scheduler_port != self.scheduler['port'] or \
                    compute.auth not in self.scheduler['auth']:
-                    logger.debug('Invalid scheduler IP address: scheduler %s:%s != %s:%s' %
-                                 compute.scheduler_ip_addr, compute.scheduler_port,
-                                 self.scheduler['ip_addr'], self.scheduler['port'])
+                    _dispy_logger.debug('Invalid scheduler IP address: scheduler %s:%s != %s:%s',
+                                        compute.scheduler_ip_addr, compute.scheduler_port,
+                                        self.scheduler['ip_addr'], self.scheduler['port'])
                     compute = None
             if self.avail_cpus == 0:
                 try:
@@ -506,7 +500,7 @@ class _DispyNode(object):
                     pass
                 raise StopIteration
             elif compute is None:
-                logger.warning('Invalid computation %s', _job.compute_id)
+                _dispy_logger.warning('Invalid computation %s', _job.compute_id)
                 try:
                     yield conn.send_msg(('NAK (invalid computation %s)' %
                                          _job.compute_id).encode())
@@ -523,7 +517,8 @@ class _DispyNode(object):
                     raise StopIteration
 
             reply_addr = (compute.scheduler_ip_addr, compute.job_result_port)
-            logger.debug('New job id %s from %s/%s', _job.uid, addr[0], compute.scheduler_ip_addr)
+            _dispy_logger.debug('New job id %s from %s/%s',
+                                _job.uid, addr[0], compute.scheduler_ip_addr)
 
             if compute.type == _Compute.func_type:
                 reply = _JobReply(_job, self.ext_ip_addr)
@@ -536,7 +531,7 @@ class _DispyNode(object):
                 try:
                     yield conn.send_msg('ACK')
                 except:
-                    logger.warning('Failed to send response for new job to %s', str(addr))
+                    _dispy_logger.warning('Failed to send response for new job to %s', str(addr))
                     raise StopIteration
                 proc = multiprocessing.Process(target=_dispy_job_func, args=args)
                 self.avail_cpus -= 1
@@ -560,7 +555,7 @@ class _DispyNode(object):
                 try:
                     yield conn.send_msg('ACK')
                 except:
-                    logger.warning('Failed to send response for new job to %s', str(addr))
+                    _dispy_logger.warning('Failed to send response for new job to %s', str(addr))
                     raise StopIteration
                 reply = _JobReply(_job, self.ext_ip_addr)
                 reply.start_time = time.time()
@@ -579,7 +574,7 @@ class _DispyNode(object):
                     yield conn.send_msg(('NAK (invalid computation type "%s")' %
                                          compute.type).encode())
                 except:
-                    logger.warning('Failed to send response for new job to %s', str(addr))
+                    _dispy_logger.warning('Failed to send response for new job to %s', str(addr))
 
         def add_computation_task(msg):
             try:
@@ -594,9 +589,9 @@ class _DispyNode(object):
                     (self.scheduler['ip_addr'] == compute.scheduler_ip_addr and
                      self.scheduler['port'] == compute.scheduler_port and
                      self.service_available())):
-                logger.debug('Ignoring computation request from %s: %s, %s, %s',
-                             compute.scheduler_ip_addr, self.scheduler['ip_addr'],
-                             self.avail_cpus, self.num_cpus)
+                _dispy_logger.debug('Ignoring computation request from %s: %s, %s, %s',
+                                    compute.scheduler_ip_addr, self.scheduler['ip_addr'],
+                                    self.avail_cpus, self.num_cpus)
                 try:
                     yield conn.send_msg(('Node busy').encode())
                 except:
@@ -638,8 +633,8 @@ class _DispyNode(object):
             os.chmod(compute.dest_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
 
             if compute.id in self.computations:
-                logger.warning('Computation "%s" (%s) is being replaced',
-                               compute.name, compute.id)
+                _dispy_logger.warning('Computation "%s" (%s) is being replaced',
+                                      compute.name, compute.id)
             setattr(compute, 'last_pulse', time.time())
             setattr(compute, 'pending_jobs', 0)
             setattr(compute, 'pending_results', 0)
@@ -694,7 +689,7 @@ class _DispyNode(object):
                 compute.globals = {}
             else:
                 for var in ('AsyncSocket', 'DispyJob', 'serialize', 'unserialize', '_XferFile',
-                            'MaxFileSize', 'MsgTimeout', 'logger'):
+                            'MaxFileSize', 'MsgTimeout'):
                     compute.globals[var] = globals()[var]
                 compute.globals.update(self.__init_modules)
             compute.globals['_DispyNode'] = None
@@ -724,12 +719,12 @@ class _DispyNode(object):
             try:
                 xf = unserialize(msg)
             except:
-                logger.debug('Ignoring file trasnfer request from %s', addr[0])
+                _dispy_logger.debug('Ignoring file trasnfer request from %s', addr[0])
                 raise StopIteration
 
             compute = self.computations.get(xf.compute_id, None)
             if not compute or (MaxFileSize and xf.stat_buf.st_size > MaxFileSize):
-                logger.error('Invalid file transfer for "%s"' % xf.name)
+                _dispy_logger.error('Invalid file transfer for "%s"', xf.name)
                 yield conn.send_msg(serialize(-1))
                 raise StopIteration
             tgt = os.path.join(compute.dest_path, os.path.basename(xf.name))
@@ -743,7 +738,8 @@ class _DispyNode(object):
                 try:
                     fd = open(tgt, 'wb')
                     recvd = 0
-                    logger.debug('Copying file %s to %s (%s)', xf.name, tgt, xf.stat_buf.st_size)
+                    _dispy_logger.debug('Copying file %s to %s (%s)',
+                                        xf.name, tgt, xf.stat_buf.st_size)
                     while recvd < xf.stat_buf.st_size:
                         yield conn.send_msg(serialize(recvd))
                         data = yield conn.recvall(min(xf.stat_buf.st_size-recvd, 1024000))
@@ -753,13 +749,14 @@ class _DispyNode(object):
                         recvd += len(data)
                     yield conn.send_msg(serialize(recvd))
                     fd.close()
-                    logger.debug('Copied file %s, %s / %s', tgt, recvd, xf.stat_buf.st_size)
+                    _dispy_logger.debug('Copied file %s, %s / %s',
+                                        tgt, recvd, xf.stat_buf.st_size)
                     assert recvd == xf.stat_buf.st_size
                     os.utime(tgt, (xf.stat_buf.st_atime, xf.stat_buf.st_mtime))
                     os.chmod(tgt, stat.S_IMODE(xf.stat_buf.st_mode))
                 except:
-                    logger.warning('Copying file "%s" failed with "%s"',
-                                   xf.name, traceback.format_exc())
+                    _dispy_logger.warning('Copying file "%s" failed with "%s"',
+                                          xf.name, traceback.format_exc())
                     os.remove(tgt)
                 else:
                     if tgt in compute.file_uses:
@@ -787,7 +784,7 @@ class _DispyNode(object):
                     compute.globals.update({var: globals()[var] for var in globals()
                                             if var not in self.__init_globals})
             except:
-                logger.debug('Setup failed')
+                _dispy_logger.debug('Setup failed')
                 resp = traceback.format_exc().encode()
             else:
                 resp = 'ACK'
@@ -801,33 +798,34 @@ class _DispyNode(object):
         def terminate_job_task(compute, job_info):
             if not job_info.proc:
                 raise StopIteration
-            logger.debug('Terminating job %s of "%s"', job_info.job_reply.uid, compute.name)
+            _dispy_logger.debug('Terminating job %s of "%s"',
+                                job_info.job_reply.uid, compute.name)
             job_info.proc.terminate()
             if isinstance(job_info.proc, multiprocessing.Process):
                 for x in range(20):
                     if job_info.proc.is_alive():
                         yield coro.sleep(0.1)
                     else:
-                        logger.debug('Process "%s" for job %s terminated',
-                                     compute.name, job_info.job_reply.uid)
+                        _dispy_logger.debug('Process "%s" for job %s terminated',
+                                            compute.name, job_info.job_reply.uid)
                         break
                 else:
-                    logger.warning('Could not kill process %s', compute.name)
+                    _dispy_logger.warning('Could not kill process %s', compute.name)
                     raise StopIteration
             else:
                 assert isinstance(job_info.proc, subprocess.Popen)
                 for x in range(20):
                     rc = job_info.proc.poll()
-                    logger.debug('Program "%s" for job %s terminated with %s',
-                                 compute.name, job_info.job_reply.uid, rc)
+                    _dispy_logger.debug('Program "%s" for job %s terminated with %s',
+                                        compute.name, job_info.job_reply.uid, rc)
                     if rc is not None:
                         break
                     if x == 10:
-                        logger.debug('Killing job %s', job_info.job_reply.uid)
+                        _dispy_logger.debug('Killing job %s', job_info.job_reply.uid)
                         job_info.proc.kill()
                     yield coro.sleep(0.1)
                 else:
-                    logger.warning('Could not kill process %s', compute.name)
+                    _dispy_logger.warning('Could not kill process %s', compute.name)
                     raise StopIteration
             job_info.job_reply.end_time = time.time()
             job_info.proc = None
@@ -902,7 +900,7 @@ class _DispyNode(object):
         try:
             req = yield conn.recvall(len(self.auth))
         except:
-            logger.warning('Ignoring request; invalid client authentication?')
+            _dispy_logger.warning('Ignoring request; invalid client authentication?')
             conn.close()
             raise StopIteration
         msg = yield conn.recv_msg()
@@ -910,7 +908,7 @@ class _DispyNode(object):
             if msg.startswith('PING:'):
                 pass
             else:
-                logger.warning('Ignoring request; invalid client authentication?')
+                _dispy_logger.warning('Ignoring request; invalid client authentication?')
                 conn.close()
                 raise StopIteration
         if not msg:
@@ -940,12 +938,11 @@ class _DispyNode(object):
                 auth = info['auth']
                 terminate_pending = info.get('terminate_pending', False)
             except:
-                logger.debug('Deleting computation failed with %s',
-                             traceback.format_exc())
+                _dispy_logger.debug('Deleting computation failed with %s', traceback.format_exc())
             else:
                 compute = self.computations.get(compute_id, None)
                 if compute is None or compute.auth != auth:
-                    logger.warning('Computation "%s" is not valid', compute_id)
+                    _dispy_logger.warning('Computation "%s" is not valid', compute_id)
                 else:
                     compute.zombie = True
                     if terminate_pending:
@@ -969,8 +966,8 @@ class _DispyNode(object):
                 self.thread_lock.release()
                 assert job_info is not None
             except:
-                logger.debug('Invalid terminate job request from %s, %s',
-                             addr[0], compute.scheduler_ip_addr)
+                _dispy_logger.debug('Invalid terminate job request from %s, %s',
+                                    addr[0], compute.scheduler_ip_addr)
             else:
                 yield terminate_job_task(compute, job_info)
             conn.close()
@@ -1007,7 +1004,7 @@ class _DispyNode(object):
                    not self.scheduler['ip_addr'] and not self.job_infos):
                     Coro(self.send_pong_msg, info, addr)
             except:
-                logger.debug(traceback.format_exc())
+                _dispy_logger.debug(traceback.format_exc())
             conn.close()
         elif msg.startswith('PENDING_JOBS:'):
             msg = msg[len('PENDING_JOBS:'):]
@@ -1049,13 +1046,13 @@ class _DispyNode(object):
             yield retrieve_job_task(msg)
             conn.close()
         else:
-            logger.warning('Invalid request "%s" from %s',
-                           msg[:min(10, len(msg))], addr[0])
+            _dispy_logger.warning('Invalid request "%s" from %s',
+                                  msg[:min(10, len(msg))], addr[0])
             resp = ('NAK (invalid command: %s)' % (msg[:min(10, len(msg))])).encode()
             try:
                 yield conn.send_msg(resp)
             except:
-                logger.warning('Failed to send reply to %s', str(addr))
+                _dispy_logger.warning('Failed to send reply to %s', str(addr))
             conn.close()
 
     def resend_job_results(self, compute, coro=None):
@@ -1072,8 +1069,8 @@ class _DispyNode(object):
                 job_result = pickle.load(fd)
                 fd.close()
             except:
-                logger.debug('Could not load "%s"', result_file)
-                # logger.debug(traceback.format_exc())
+                _dispy_logger.debug('Could not load "%s"', result_file)
+                # _dispy_logger.debug(traceback.format_exc())
                 continue
             job_info = _DispyJobInfo(job_result, (compute.scheduler_ip_addr,
                                                   compute.job_result_port), compute, [])
@@ -1119,18 +1116,18 @@ class _DispyNode(object):
                 last_zombie_time = now
                 for compute in self.computations.itervalues():
                     if (now - compute.last_pulse) > self.zombie_interval:
-                        logger.warning('Computation "%s" is marked as zombie' % compute.name)
+                        _dispy_logger.warning('Computation "%s" is marked as zombie', compute.name)
                         compute.zombie = True
                 zombies = [compute for compute in self.computations.itervalues()
                            if compute.zombie and compute.pending_jobs == 0]
                 for compute in zombies:
-                    logger.warning('Deleting zombie computation "%s"', compute.name)
+                    _dispy_logger.warning('Deleting zombie computation "%s"', compute.name)
                     self.cleanup_computation(compute)
                 for compute in zombies:
                     sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                        keyfile=self.keyfile, certfile=self.certfile)
                     sock.settimeout(MsgTimeout)
-                    logger.debug('Sending TERMINATE to %s', compute.scheduler_ip_addr)
+                    _dispy_logger.debug('Sending TERMINATE to %s', compute.scheduler_ip_addr)
                     info = {'ip_addr': self.ext_ip_addr, 'port': self.port, 'sign': self.sign}
                     try:
                         yield sock.connect((compute.scheduler_ip_addr, compute.scheduler_port))
@@ -1172,10 +1169,10 @@ class _DispyNode(object):
                 if self.scheduler['ip_addr']:
                     now = time.localtime()
                     if self.service_end and (now.tm_hour, now.tm_min) > self.service_end:
-                        logger.debug('Shutting down service')
+                        _dispy_logger.debug('Shutting down service')
                         self.shutdown(quit=False)
                     else:
-                        logger.debug('Stopping service')
+                        _dispy_logger.debug('Stopping service')
                         sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                            keyfile=self.keyfile, certfile=self.certfile)
                         sock.settimeout(MsgTimeout)
@@ -1246,15 +1243,15 @@ class _DispyNode(object):
                             compute.file_uses.pop(path)
                             os.remove(path)
                     except:
-                        logger.warning('invalid file "%s" ignored' % path)
+                        _dispy_logger.warning('invalid file "%s" ignored', path)
                         continue
 
     def _send_job_reply(self, job_info, resending=False, coro=None):
         """Internal use only.
         """
         job_reply = job_info.job_reply
-        logger.debug('Sending result for job %s (%s) to %s',
-                     job_reply.uid, job_reply.status, str(job_info.reply_addr))
+        _dispy_logger.debug('Sending result for job %s (%s) to %s',
+                            job_reply.uid, job_reply.status, str(job_info.reply_addr))
         compute = self.computations.get(job_info.compute_id, None)
         if not resending:
             self.thread_lock.acquire()
@@ -1279,14 +1276,14 @@ class _DispyNode(object):
                 # store job result so it can be sent when client is
                 # reachable or recovered by user
                 f = os.path.join(job_info.compute_dest_path, '_dispy_job_reply_%s' % job_reply.uid)
-                logger.error('Could not send reply for job %s to %s; saving it in "%s"',
-                             job_reply.uid, str(job_info.reply_addr), f)
+                _dispy_logger.error('Could not send reply for job %s to %s; saving it in "%s"',
+                                    job_reply.uid, str(job_info.reply_addr), f)
                 try:
                     fd = open(f, 'wb')
                     pickle.dump(job_reply, fd)
                     fd.close()
                 except:
-                    logger.debug('Could not save reply for job %s', job_reply.uid)
+                    _dispy_logger.debug('Could not save reply for job %s', job_reply.uid)
                 else:
                     if compute is not None:
                         compute.pending_results += 1
@@ -1307,7 +1304,7 @@ class _DispyNode(object):
                     try:
                         os.remove(f)
                     except:
-                        logger.warning('Could not remove "%s"' % f)
+                        _dispy_logger.warning('Could not remove "%s"', f)
                 if compute is None:
                     fd = open(os.path.join(self.dest_path_prefix,
                                            '%s_%s' % (job_info.compute_id, job_info.compute_auth)),
@@ -1328,11 +1325,11 @@ class _DispyNode(object):
         if not compute.zombie or compute.pending_jobs > 0:
             return
         if compute.pending_jobs != 0:
-            logger.debug('pending jobs for computation "%s"/%s: %s',
-                         compute.name, compute.id, compute.pending_jobs)
+            _dispy_logger.debug('pending jobs for computation "%s"/%s: %s',
+                                compute.name, compute.id, compute.pending_jobs)
 
         if self.computations.pop(compute.id, None) is None:
-            logger.warning('Invalid computation "%s" to cleanup ignored' % compute.id)
+            _dispy_logger.warning('Invalid computation "%s" to cleanup ignored', compute.id)
             return
 
         self.num_computations += 1
@@ -1343,7 +1340,7 @@ class _DispyNode(object):
             try:
                 os.remove(pkl_path)
             except:
-                logger.warning('Could not remove "%s"' % pkl_path)
+                _dispy_logger.warning('Could not remove "%s"', pkl_path)
         else:
             fd = open(pkl_path, 'wb')
             pickle.dump(compute, fd)
@@ -1376,22 +1373,22 @@ class _DispyNode(object):
                 exec('%s(*_dispy_cleanup_args, **_dispy_cleanup_kwargs)' %
                      compute.cleanup.name) in globalvars, localvars
             except:
-                logger.debug('Cleanup "%s" failed' % compute.cleanup.name)
-                logger.debug(traceback.format_exc())
+                _dispy_logger.debug('Cleanup "%s" failed', compute.cleanup.name)
+                _dispy_logger.debug(traceback.format_exc())
 
         if os.name == 'nt':
             for var in globals().keys():
                 if var not in self.__init_globals:
-                    logger.debug('Variable "%s" left behind by "%s" at %s is being removed' %
-                                 (var, compute.name, compute.scheduler_ip_addr))
+                    _dispy_logger.debug('Variable "%s" left behind by "%s" at %s is being removed',
+                                        var, compute.name, compute.scheduler_ip_addr)
                     globals().pop(var, None)
 
             for var, value in self.__init_globals.iteritems():
                 if var in ('_dispy_node', '_dispy_conn', '_dispy_addr', '_dispy_config'):
                     continue
                 if value != globals().get(var, None):
-                    logger.warning('Variable "%s" changed by "%s" at %s is being reset' %
-                                   (var, compute.name, compute.scheduler_ip_addr))
+                    _dispy_logger.warning('Variable "%s" changed by "%s" at %s is being reset',
+                                          var, compute.name, compute.scheduler_ip_addr)
                     globals()[var] = value
 
         for module in sys.modules.keys():
@@ -1410,7 +1407,7 @@ class _DispyNode(object):
                     else:
                         os.remove(path)
                 except:
-                    logger.warning('Could not remove "%s"', path)
+                    _dispy_logger.warning('Could not remove "%s"', path)
 
         if os.path.isdir(compute.dest_path) and \
            compute.dest_path.startswith(self.dest_path_prefix) and \
@@ -1418,9 +1415,9 @@ class _DispyNode(object):
             try:
                 os.rmdir(compute.dest_path)
             except:
-                logger.warning('Could not remove directory "%s"', compute.dest_path)
+                _dispy_logger.warning('Could not remove directory "%s"', compute.dest_path)
             else:
-                logger.debug('Removed "%s"', compute.dest_path)
+                _dispy_logger.debug('Removed "%s"', compute.dest_path)
 
         if self.serve == 0:
             self.shutdown(quit=True)
@@ -1435,11 +1432,11 @@ class _DispyNode(object):
             self.scheduler['auth'] = set()
             self.avail_cpus += len(job_infos)
             if self.avail_cpus != self.num_cpus:
-                logger.warning('invalid cpus: %s / %s' % (self.avail_cpus, self.num_cpus))
+                _dispy_logger.warning('invalid cpus: %s / %s', self.avail_cpus, self.num_cpus)
             self.thread_lock.release()
             for uid, job_info in job_infos.iteritems():
                 job_info.proc.terminate()
-                logger.debug('process for %s is killed', uid)
+                _dispy_logger.debug('process for %s is killed', uid)
                 if isinstance(job_info.proc, multiprocessing.Process):
                     job_info.proc.join(2)
                 else:
@@ -1448,7 +1445,7 @@ class _DispyNode(object):
                 sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                    keyfile=self.keyfile, certfile=self.certfile)
                 sock.settimeout(MsgTimeout)
-                logger.debug('Sending TERMINATE to %s', compute.scheduler_ip_addr)
+                _dispy_logger.debug('Sending TERMINATE to %s', compute.scheduler_ip_addr)
                 info = {'ip_addr': self.ext_ip_addr, 'port': self.port, 'sign': self.sign}
                 try:
                     yield sock.connect((compute.scheduler_ip_addr, compute.scheduler_port))
@@ -1541,7 +1538,8 @@ if __name__ == '__main__':
     import argparse
     import re
 
-    logger.info('dispynode version %s' % _dispy_version)
+    _dispy_logger = asyncoro.Logger('dispynode')
+    _dispy_logger.info('dispynode version %s', _dispy_version)
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', dest='config', default=None,
@@ -1621,10 +1619,10 @@ if __name__ == '__main__':
     _dispy_config.pop('save_config', None)
 
     if _dispy_config['loglevel']:
-        logger.setLevel(logging.DEBUG)
+        _dispy_logger.setLevel(logging.DEBUG)
         asyncoro.logger.setLevel(logging.DEBUG)
     else:
-        logger.setLevel(logging.INFO)
+        _dispy_logger.setLevel(logging.INFO)
     del _dispy_config['loglevel']
 
     cpus = multiprocessing.cpu_count()

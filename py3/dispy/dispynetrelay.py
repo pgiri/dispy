@@ -22,15 +22,10 @@ import traceback
 import dispy
 import asyncoro
 
-logger = logging.getLogger('dispynetrelay')
-logger.setLevel(logging.INFO)
-handler = logging.StreamHandler()
-handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(message)s'))
-logger.addHandler(handler)
-del handler
-
 __version__ = dispy._dispy_version
 __all__ = []
+
+logger = asyncoro.Logger('dispynetrelay')
 
 
 class DispyNetRelay(object):
@@ -88,7 +83,7 @@ class DispyNetRelay(object):
             if info.get('relay', None):
                 logger.debug('Ignoring ping back (from %s)', addr[0])
                 continue
-            logger.debug('relaying ping from %s / %s' % (info['ip_addrs'], addr[0]))
+            logger.debug('relaying ping from %s / %s', info['ip_addrs'], addr[0])
             if self.node_port == self.listen_port:
                 info['relay'] = 'y'  # 'check if this message loops back to self
             bc_sock = asyncoro.AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
@@ -113,7 +108,7 @@ class DispyNetRelay(object):
                 msg = yield conn.recv_msg()
             except:
                 logger.debug(traceback.format_exc())
-                logger.debug('Ignoring invalid TCP message from %s:%s' % (addr[0], addr[1]))
+                logger.debug('Ignoring invalid TCP message from %s:%s', addr[0], addr[1])
                 raise StopIteration
             finally:
                 conn.close()
@@ -136,7 +131,7 @@ class DispyNetRelay(object):
             if info.get('relay', None):
                 logger.debug('Ignoring ping back (from %s)', addr[0])
                 raise StopIteration
-            logger.debug('relaying ping from %s / %s' % (info['ip_addrs'], addr[0]))
+            logger.debug('relaying ping from %s / %s', info['ip_addrs'], addr[0])
             if self.node_port == self.listen_port:
                 info['relay'] = 'y'  # 'check if this message loops back to self
             bc_sock = asyncoro.AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
@@ -162,7 +157,7 @@ class DispyNetRelay(object):
                 continue
             try:
                 info = asyncoro.unserialize(msg[len('PING:'.encode()):])
-                logger.debug('sched_sock: %s' % info)
+                logger.debug('sched_sock: %s', info)
                 assert info['version'] == __version__
                 # assert isinstance(info['cpus'], int)
             except:

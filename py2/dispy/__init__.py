@@ -44,13 +44,6 @@ from asyncoro import Coro, AsynCoro, AsyncSocket, MetaSingleton, serialize, unse
 _dispy_version = __version__
 MsgTimeout = 10
 
-logger = logging.getLogger('dispy')
-logger.setLevel(logging.INFO)
-handler = logging.StreamHandler()
-handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(message)s'))
-logger.addHandler(handler)
-del handler
-
 
 class DispyJob(object):
     """Job scheduled for execution with dispy.
@@ -186,7 +179,7 @@ class NodeAllocate(object):
     def __init__(self, host, port=None, cpus=0):
         self.ip_addr = _node_ipaddr(host)
         if not self.ip_addr:
-            logger.warning('host "%s" is invalid' % host)
+            logger.warning('host "%s" is invalid', host)
             self.ip_rex = ''
         else:
             self.ip_rex = self.ip_addr.replace('.', '\\.').replace('*', '.*')
@@ -195,14 +188,14 @@ class NodeAllocate(object):
                 port = int(port)
                 assert port > 0
             except:
-                logger.warning('port must be > 0 for node "%s"' % host)
+                logger.warning('port must be > 0 for node "%s"', host)
                 port = None
         self.port = port
         if cpus:
             try:
                 cpus = int(cpus)
             except:
-                logger.warning('invalid cpus for "%s" ignored' % host)
+                logger.warning('invalid cpus for "%s" ignored', host)
                 cpus = 0
         self.cpus = cpus
 
@@ -297,6 +290,7 @@ def _parse_node_allocs(nodes):
 # now'setup' and 'cleanup' functions can be partial functions.
 # TODO: useful to have 'compute' as partial function as well?
 _Function = collections.namedtuple('_Function', ['name', 'args', 'kwargs'])
+logger = asyncoro.Logger('dispy')
 
 
 class _Compute(object):
@@ -492,7 +486,7 @@ class _DispyJob_(object):
                     if dep.endswith('.pyc'):
                         dep = dep[:-1]
                     if not dep.endswith('.py'):
-                        logger.warning('Invalid module "%s" - must be python source.' % dep)
+                        logger.warning('Invalid module "%s" - must be python source.', dep)
                         continue
                 if dep in depend_ids:
                     continue
@@ -535,7 +529,7 @@ class _DispyJob_(object):
         for xf in self.xfer_files:
             resp = yield self.node.xfer_file(xf, coro=coro)
             if resp:
-                logger.warning('Transfer of file "%s" to %s failed' % (xf.name, self.node.ip_addr))
+                logger.warning('Transfer of file "%s" to %s failed', xf.name, self.node.ip_addr)
                 raise Exception(-1)
         resp = yield self.node.send('JOB:' + serialize(self), coro=coro)
         # TODO: deal with NAKs (reschedule?)
@@ -587,7 +581,7 @@ class _Cluster(object):
                     if addr:
                         self.ip_addrs.add(addr)
                     else:
-                        logger.warning('ignoring invalid ip_addr "%s"' % node)
+                        logger.warning('ignoring invalid ip_addr "%s"', node)
             if not self.ip_addrs:
                 self.ip_addrs.add(None)
             self.ext_ip_addrs = set(self.ip_addrs)
@@ -599,7 +593,7 @@ class _Cluster(object):
                     if addr:
                         self.ext_ip_addrs.add(addr)
                     else:
-                        logger.warning('ignoring invalid ext_ip_addr "%s"' % node)
+                        logger.warning('ignoring invalid ext_ip_addr "%s"', node)
             if port:
                 port = int(port)
             else:
@@ -688,7 +682,7 @@ class _Cluster(object):
             try:
                 udp_sock.bind(('', port))
             except:
-                logger.warning('Port %s seems to be used by another program' % port)
+                logger.warning('Port %s seems to be used by another program', port)
                 yield coro.sleep(5)
             else:
                 break
@@ -763,7 +757,6 @@ class _Cluster(object):
                 finally:
                     sock.close()
             else:
-                # logger.debug('Ignoring UDP message %s from: %s', msg[:min(5, len(msg))], addr[0])
                 pass
 
     def tcp_server(self, ip_addr, port, port_bound_event, coro=None):
@@ -785,7 +778,7 @@ class _Cluster(object):
             self.ip_addrs.discard(ip_addr)
             raise StopIteration
         self.port = sock.getsockname()[1]
-        logger.debug('dispy client at %s:%s' % (ip_addr, self.port))
+        logger.debug('dispy client at %s:%s', ip_addr, self.port)
         sock.listen(128)
 
         if not self.shared:
@@ -802,7 +795,6 @@ class _Cluster(object):
             except:
                 logger.debug(traceback.format_exc())
                 continue
-            # logger.debug('received job result from %s', str(addr))
             Coro(self.tcp_task, conn, addr)
 
     def tcp_task(self, conn, addr, coro=None):
@@ -813,7 +805,7 @@ class _Cluster(object):
             try:
                 info = unserialize(msg[len('JOB_REPLY:'):])
             except:
-                logger.warning('invalid job reply from %s:%s ignored' % (addr[0], addr[1]))
+                logger.warning('invalid job reply from %s:%s ignored', addr[0], addr[1])
             else:
                 yield self.job_reply_process(info, conn, addr)
         elif msg.startswith('JOB_STATUS:'):
@@ -823,7 +815,7 @@ class _Cluster(object):
                 _job = self._sched_jobs[info['uid']]
                 assert _job.hash == info['hash']
             except:
-                logger.warning('invalid job status from %s:%s ignored' % (addr[0], addr[1]))
+                logger.warning('invalid job status from %s:%s ignored', addr[0], addr[1])
             else:
                 job = _job.job
                 job.status = info['status']
@@ -835,7 +827,7 @@ class _Cluster(object):
                         job.start_time = info['start_time']
                         node.busy += 1
                     else:
-                        logger.warning('invalid job status for shared cluster: %s' % job.status)
+                        logger.warning('invalid job status for shared cluster: %s', job.status)
                     cluster = self._clusters.get(_job.compute_id, None)
                     if cluster:
                         dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
@@ -915,10 +907,10 @@ class _Cluster(object):
                 conn.close()
                 raise StopIteration
             if cpus < 0:
-                logger.warning('Node requested using %s CPUs, disabling it' %
-                               (node.ip_addr, cpus))
+                logger.warning('Node requested using %s CPUs, disabling it',
+                               node.ip_addr, cpus)
                 cpus = 0
-            logger.debug('Setting cpus for %s to %s' % (node.ip_addr, cpus))
+            logger.debug('Setting cpus for %s to %s', node.ip_addr, cpus)
             # TODO: set node.cpus to min(cpus, node.cpus)?
             node.cpus = cpus
             if cpus > node.avail_cpus:
@@ -985,7 +977,7 @@ class _Cluster(object):
                 cluster = self._clusters[info['compute_id']]
                 assert info['auth'] == cluster._compute.auth
             except:
-                logger.debug('invalid node status from %s:%s ignored' % (addr[0], addr[1]))
+                logger.debug('invalid node status from %s:%s ignored', addr[0], addr[1])
                 # logger.debug(traceback.format_exc())
             else:
                 if info['status'] == DispyNode.AvailInfo:
@@ -1033,7 +1025,7 @@ class _Cluster(object):
             except:
                 yield conn.send_msg('NAK')
         else:
-            logger.warning('invalid message from %s:%s ignored' % (addr[0], addr[1]))
+            logger.warning('invalid message from %s:%s ignored', addr[0], addr[1])
             # logger.debug(traceback.format_exc())
         conn.close()
 
@@ -1105,7 +1097,8 @@ class _Cluster(object):
     def file_xfer_process(self, job_reply, xf, sock, addr):
         _job = self._sched_jobs.get(job_reply.uid, None)
         if _job is None or _job.hash != job_reply.hash:
-            logger.warning('Ignoring invalid file transfer from job %s at %s', job_reply.uid, addr[0])
+            logger.warning('Ignoring invalid file transfer from job %s at %s',
+                           job_reply.uid, addr[0])
             yield sock.send_msg(serialize(-1))
             raise StopIteration
         node = self._nodes.get(job_reply.ip_addr, None)
@@ -1129,7 +1122,7 @@ class _Cluster(object):
         yield sock.send_msg(serialize(recvd))
         fd.close()
         if recvd != xf.stat_buf.st_size:
-            logger.warning('Transfer of file "%s" failed' % (tgt))
+            logger.warning('Transfer of file "%s" failed', tgt)
             # TODO: remove file?
         os.utime(tgt, (xf.stat_buf.st_atime, xf.stat_buf.st_mtime))
         os.chmod(tgt, stat.S_IMODE(xf.stat_buf.st_mode))
@@ -1221,7 +1214,7 @@ class _Cluster(object):
                     if isinstance(reply, _JobReply):
                         yield self.job_reply_process(reply, conn, (node.ip_addr, node.port))
                     else:
-                        logger.debug('invalid reply for %s' % uid)
+                        logger.debug('invalid reply for %s', uid)
                 finally:
                     conn.close()
 
@@ -1372,7 +1365,6 @@ class _Cluster(object):
             # TODO: check if it is one of ext_ip_addr?
         except:
             # logger.debug(traceback.format_exc())
-            # logger.debug('Ignoring node %s', addr[0])
             raise StopIteration
         node = self._nodes.get(info['ip_addr'], None)
         if node is None:
@@ -1396,11 +1388,10 @@ class _Cluster(object):
                         dispy_node.avail_cpus = node.avail_cpus
                         dispy_node.cpus = node.cpus
             else:
-                logger.warning('invalid "cpus" %s from %s ignored',
-                               (info['cpus'], info['ip_addr']))
+                logger.warning('invalid "cpus" %s from %s ignored', info['cpus'], info['ip_addr'])
             if node.port == info['port'] and node.auth == auth:
                 raise StopIteration
-            logger.debug('node %s rediscovered' % info['ip_addr'])
+            logger.debug('node %s rediscovered', info['ip_addr'])
             node.port = info['port']
             if node.auth is not None:
                 dead_jobs = [_job for _job in self._sched_jobs.itervalues()
@@ -1509,7 +1500,7 @@ class _Cluster(object):
         job.start_time = reply.start_time
         job.end_time = reply.end_time
         yield sock.send_msg('ACK')
-        logger.debug('Received reply for job %s / %s from %s' % (job.id, _job.uid, job.ip_addr))
+        logger.debug('Received reply for job %s / %s from %s', job.id, _job.uid, job.ip_addr)
         if reply.status == DispyJob.ProvisionalResult:
             self.finish_job(cluster, _job, reply.status)
         else:
@@ -1526,7 +1517,7 @@ class _Cluster(object):
                 assert self.shared is True
                 pass
             else:
-                logger.warning('invalid reply status: %s for job %s' % (reply.status, _job.uid))
+                logger.warning('invalid reply status: %s for job %s', reply.status, _job.uid)
             if cluster.status_callback:
                 self.worker_Q.put((cluster.status_callback,
                                    (reply.status, dispy_node, _job.job)))
@@ -1737,8 +1728,7 @@ class _Cluster(object):
             raise StopIteration(-1)
         cluster = self._clusters.get(_job.compute_id, None)
         if not cluster:
-            logger.warning('Invalid job %s for cluster "%s"!',
-                           _job.uid, cluster._compute.name)
+            logger.warning('Invalid job %s for cluster "%s"!', _job.uid, cluster._compute.name)
             raise StopIteration(-1)
         assert cluster._pending_jobs >= 1
         if _job.job.status == DispyJob.Created:
@@ -2004,7 +1994,7 @@ class JobCluster(object):
         asyncoro.logger.setLevel(loglevel)
         if reentrant is not True and reentrant is not False:
             logger.warning('Invalid value for reentrant (%s) is ignored; '
-                           'it must be either True or False' % reentrant)
+                           'it must be either True or False', reentrant)
             reentrant = False
         if ping_interval is not None:
             try:
@@ -2352,7 +2342,7 @@ class JobCluster(object):
         """
         Prints status of cluster (see 'status').
         """
-        print
+        print('')
         heading = ' %30s | %5s | %7s | %10s | %13s' % \
                   ('Node', 'CPUs', 'Jobs', 'Sec/Job', 'Node Time Sec')
         print(heading)
@@ -2371,7 +2361,7 @@ class JobCluster(object):
             print(' %-30.30s | %5s | %7s | %10.3f | %13.3f' %
                   (name, dispy_node.cpus, dispy_node.jobs_done,
                    secs_per_job, dispy_node.cpu_time))
-        print
+        print('')
         if info.jobs_pending:
             print('Jobs pending: %s' % info.jobs_pending)
         msg = 'Total job time: %.3f sec' % cpu_time
@@ -2379,7 +2369,7 @@ class JobCluster(object):
             wall_time = time.time() - self.start_time
         msg += ', wall time: %.3f sec, speedup: %.3f' % (wall_time, cpu_time / wall_time)
         print(msg)
-        print
+        print('')
 
     # for backward compatibility
     stats = print_status
@@ -2875,7 +2865,7 @@ def recover_jobs(recover_file, timeout=None, terminate_pending=False):
         elif key == '_cluster':
             cluster = val
         else:
-            logger.warning('invalid key "%s" ignored' % key)
+            logger.warning('invalid key "%s" ignored', key)
     shelf.close()
     if not cluster or not computes or not shelf_nodes:
         for ext in ('', '.db', '.bak', '.dat', '.dir'):
@@ -2901,11 +2891,11 @@ def recover_jobs(recover_file, timeout=None, terminate_pending=False):
             try:
                 reply = unserialize(msg[len('JOB_REPLY:'):])
             except:
-                logger.warning('invalid job reply from %s:%s ignored' % (addr[0], addr[1]))
+                logger.warning('invalid job reply from %s:%s ignored', addr[0], addr[1])
                 conn.close()
                 raise StopIteration
             yield conn.send_msg('ACK')
-            logger.debug('received reply for job %s' % reply.uid)
+            logger.debug('received reply for job %s', reply.uid)
             job = DispyJob((), {})
             job.result = reply.result
             job.stdout = reply.stdout
@@ -2921,7 +2911,7 @@ def recover_jobs(recover_file, timeout=None, terminate_pending=False):
             if pending['count'] == 0 and pending['resend_req_done'] is True:
                 pending['complete'].set()
         else:
-            logger.debug('Invalid TCP message from %s ignored' % addr[0])
+            logger.debug('Invalid TCP message from %s ignored', addr[0])
         conn.close()
 
     def tcp_server(ip_addr, pending, coro=None):
@@ -2970,10 +2960,10 @@ def recover_jobs(recover_file, timeout=None, terminate_pending=False):
                     reply = unserialize(reply)
                     assert isinstance(reply, int)
                 except:
-                    logger.warning('Invalid resend reply from %s' % ip_addr)
+                    logger.warning('Invalid resend reply from %s', ip_addr)
                     continue
-                logger.debug('pending jobs from %s for %s: %s' %
-                             (node.ip_addr, compute['name'], reply))
+                logger.debug('pending jobs from %s for %s: %s',
+                             node.ip_addr, compute['name'], reply)
                 if reply == 0:
                     yield node.send('CLOSE:' + req, reply=True, coro=coro)
                 else:
@@ -3024,7 +3014,7 @@ def recover_jobs(recover_file, timeout=None, terminate_pending=False):
 if __name__ == '__main__':
     import argparse
 
-    logger.info('dispy version %s' % _dispy_version)
+    logger.info('dispy version %s', _dispy_version)
 
     parser = argparse.ArgumentParser()
     parser.add_argument('computation', help='program to distribute and parallelize')
