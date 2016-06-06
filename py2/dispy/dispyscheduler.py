@@ -241,14 +241,13 @@ class _Scheduler(object):
                 self.tcp_coros.append(Coro(self.tcp_server, ip_addr))
                 self.scheduler_coros.append(Coro(self.scheduler_server, ip_addr))
 
-            fd = open(os.path.join(self.dest_path_prefix, 'config'), 'wb')
-            config = {
-                'port': self.port, 'sign': self.sign,
-                'cluster_secret': self.cluster_secret, 'cluster_auth': self.cluster_auth,
-                'node_secret': self.node_secret, 'node_auth': self.node_auth
-                }
-            pickle.dump(config, fd)
-            fd.close()
+            with open(os.path.join(self.dest_path_prefix, 'config'), 'wb') as fd:
+                config = {
+                    'port': self.port, 'sign': self.sign,
+                    'cluster_secret': self.cluster_secret, 'cluster_auth': self.cluster_auth,
+                    'node_secret': self.node_secret, 'node_auth': self.node_auth
+                    }
+                pickle.dump(config, fd)
 
             self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -646,10 +645,9 @@ class _Scheduler(object):
                 xf.compute_id = compute.id
                 xf.name = os.path.join(cluster.dest_path, os.path.basename(xf.name))
 
-            fd = open(os.path.join(self.dest_path_prefix,
-                                   '%s_%s' % (compute.id, cluster.client_auth)), 'wb')
-            pickle.dump(cluster, fd)
-            fd.close()
+            with open(os.path.join(self.dest_path_prefix,
+                                   '%s_%s' % (compute.id, cluster.client_auth)), 'wb') as fd:
+                pickle.dump(cluster, fd)
             self.pending_clusters[cluster._compute.id] = cluster
             logger.debug('New computation %s: %s, %s',
                          compute.id, compute.name, cluster.dest_path)
@@ -678,16 +676,15 @@ class _Scheduler(object):
                 raise StopIteration(serialize(xf.stat_buf.st_size))
             logger.debug('Copying file %s to %s (%s)', xf.name, tgt, xf.stat_buf.st_size)
             try:
-                fd = open(tgt, 'wb')
-                recvd = 0
-                while recvd < xf.stat_buf.st_size:
-                    yield conn.send_msg(serialize(recvd))
-                    data = yield conn.recvall(min(xf.stat_buf.st_size-recvd, 1024000))
-                    if not data:
-                        break
-                    fd.write(data)
-                    recvd += len(data)
-                fd.close()
+                with open(tgt, 'wb') as fd:
+                    recvd = 0
+                    while recvd < xf.stat_buf.st_size:
+                        yield conn.send_msg(serialize(recvd))
+                        data = yield conn.recvall(min(xf.stat_buf.st_size-recvd, 1024000))
+                        if not data:
+                            break
+                        fd.write(data)
+                        recvd += len(data)
                 assert recvd == xf.stat_buf.st_size
                 os.utime(tgt, (xf.stat_buf.st_atime, xf.stat_buf.st_mtime))
                 os.chmod(tgt, stat.S_IMODE(xf.stat_buf.st_mode))
@@ -879,10 +876,9 @@ class _Scheduler(object):
             else:
                 cluster = self._clusters.get(compute_id, None)
                 if cluster is None or cluster.client_auth != auth:
-                    fd = open(os.path.join(self.dest_path_prefix,
-                                           '%s_%s' % (compute_id, auth)), 'wb')
-                    cluster = pickle.load(fd)
-                    fd.close()
+                    with open(os.path.join(self.dest_path_prefix,
+                                           '%s_%s' % (compute_id, auth)), 'wb') as fd:
+                        cluster = pickle.load(fd)
                 if cluster is None or cluster.client_auth != auth:
                     resp = serialize(0)
                 else:
@@ -904,10 +900,9 @@ class _Scheduler(object):
             else:
                 cluster = self._clusters.get(compute_id, None)
                 if cluster is None or cluster.client_auth != auth:
-                    fd = open(os.path.join(self.dest_path_prefix,
-                                           '%s_%s' % (compute_id, auth)), 'wb')
-                    cluster = pickle.load(fd)
-                    fd.close()
+                    with open(os.path.join(self.dest_path_prefix,
+                                           '%s_%s' % (compute_id, auth)), 'wb') as fd:
+                        cluster = pickle.load(fd)
                 if cluster is not None and cluster.client_auth == auth:
                     done = []
                     if cluster.pending_results:
@@ -975,9 +970,8 @@ class _Scheduler(object):
         for result_file in result_files:
             result_file = os.path.join(cluster.dest_path, result_file)
             try:
-                fd = open(result_file, 'rb')
-                result = pickle.load(fd)
-                fd.close()
+                with open(result_file, 'rb') as fd:
+                    result = pickle.load(fd)
             except:
                 logger.debug('Could not load "%s"', result_file)
             else:
@@ -1190,9 +1184,8 @@ class _Scheduler(object):
             except:
                 logger.warning('Could not remove "%s"', pkl_path)
         else:
-            fd = open(pkl_path, 'wb')
-            pickle.dump(compute, fd)
-            fd.close()
+            with open(pkl_path, 'wb') as fd:
+                pickle.dump(compute, fd)
 
         for path, use in cluster.file_uses.iteritems():
             if use == 1:
@@ -1342,9 +1335,8 @@ class _Scheduler(object):
                 logger.error('Could not send reply for job %s to %s:%s; saving it in "%s"',
                              uid, cluster.client_ip_addr, cluster.client_job_result_port, f)
                 try:
-                    fd = open(f, 'wb')
-                    pickle.dump(result, fd)
-                    fd.close()
+                    with open(f, 'wb') as fd:
+                        pickle.dump(result, fd)
                 except:
                     logger.debug('Could not save reply for job %s', uid)
                 else:
@@ -1731,9 +1723,8 @@ class _Scheduler(object):
         pkl_path = os.path.join(self.dest_path_prefix, '%s_%s' % (compute_id, auth))
         cluster = self._clusters.get(compute_id, None)
         if not cluster or cluster.client_auth != auth:
-            fd = open(pkl_path, 'rb')
-            cluster = pickle.load(fd)
-            fd.close()
+            with open(pkl_path, 'rb') as fd:
+                cluster = pickle.load(fd)
         if not cluster or cluster.client_auth != auth:
             yield send_reply(None)
             raise StopIteration
@@ -1744,9 +1735,8 @@ class _Scheduler(object):
             raise StopIteration
 
         try:
-            fd = open(info_file, 'rb')
-            job_reply = pickle.load(fd)
-            fd.close()
+            with open(info_file, 'rb') as fd:
+                job_reply = pickle.load(fd)
             assert job_reply.hash == job_hash
         except:
             yield send_reply(None)
@@ -1757,9 +1747,8 @@ class _Scheduler(object):
             ack = yield conn.recv_msg()
             assert ack == 'ACK'.encode()
             cluster.pending_results -= 1
-            fd = open(pkl_path, 'wb')
-            pickle.dump(cluster, fd)
-            fd.close()
+            with open(pkl_path, 'wb') as fd:
+                pickle.dump(cluster, fd)
         except:
             pass
         else:

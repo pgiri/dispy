@@ -130,17 +130,16 @@ def dispy_send_file(path, timeout=MsgTimeout):
         sock.send_msg(serialize(dispy_job_reply))
         recvd = sock.recv_msg()
         recvd = unserialize(recvd)
-        fd = open(path, 'rb')
-        sent = 0
-        while sent == recvd:
-            data = fd.read(1024000)
-            if not data:
-                break
-            sock.sendall(data)
-            sent += len(data)
-            recvd = sock.recv_msg()
-            recvd = unserialize(recvd)
-        fd.close()
+        with open(path, 'rb') as fd:
+            sent = 0
+            while sent == recvd:
+                data = fd.read(1024000)
+                if not data:
+                    break
+                sock.sendall(data)
+                sent += len(data)
+                recvd = sock.recv_msg()
+                recvd = unserialize(recvd)
         assert recvd == xf.stat_buf.st_size
     except:
         print('Could not transfer file "%s": %s' % (path, traceback.format_exc()))
@@ -281,13 +280,12 @@ class _DispyNode(object):
         self.num_jobs = 0
         self.num_computations = 0
 
-        fd = open(os.path.join(self.dest_path_prefix, 'config'), 'wb')
-        config = {
-            'ext_ip_addr': self.ext_ip_addr, 'port': self.port, 'avail_cpus': self.avail_cpus,
-            'sign': self.sign, 'secret': self.secret, 'auth': self.auth
-            }
-        pickle.dump(config, fd)
-        fd.close()
+        with open(os.path.join(self.dest_path_prefix, 'config'), 'wb') as fd:
+            config = {
+                'ext_ip_addr': self.ext_ip_addr, 'port': self.port, 'avail_cpus': self.avail_cpus,
+                'sign': self.sign, 'secret': self.secret, 'auth': self.auth
+                }
+            pickle.dump(config, fd)
 
         # prepend current directory in sys.path so computations can
         # load modules from current working directory
@@ -680,9 +678,8 @@ class _DispyNode(object):
             self.scheduler['port'] = compute.scheduler_port
             self.scheduler['auth'].add(compute.auth)
             compute_save = os.path.join(self.dest_path_prefix, '%s_%s' % (compute.id, compute.auth))
-            fd = open(compute_save, 'wb')
-            pickle.dump(compute, fd)
-            fd.close()
+            with open(compute_save, 'wb') as fd:
+                pickle.dump(compute, fd)
 
             # add variables needed for 'dispy_provisional_result' and
             # 'dispy_send_file' to compute.globals; but in Windows
@@ -738,19 +735,18 @@ class _DispyNode(object):
                 yield conn.send_msg(serialize(xf.stat_buf.st_size))
             else:
                 try:
-                    fd = open(tgt, 'wb')
-                    recvd = 0
-                    _dispy_logger.debug('Copying file %s to %s (%s)',
-                                        xf.name, tgt, xf.stat_buf.st_size)
-                    while recvd < xf.stat_buf.st_size:
+                    with open(tgt, 'wb') as fd:
+                        recvd = 0
+                        _dispy_logger.debug('Copying file %s to %s (%s)',
+                                            xf.name, tgt, xf.stat_buf.st_size)
+                        while recvd < xf.stat_buf.st_size:
+                            yield conn.send_msg(serialize(recvd))
+                            data = yield conn.recvall(min(xf.stat_buf.st_size-recvd, 1024000))
+                            if not data:
+                                break
+                            fd.write(data)
+                            recvd += len(data)
                         yield conn.send_msg(serialize(recvd))
-                        data = yield conn.recvall(min(xf.stat_buf.st_size-recvd, 1024000))
-                        if not data:
-                            break
-                        fd.write(data)
-                        recvd += len(data)
-                    yield conn.send_msg(serialize(recvd))
-                    fd.close()
                     _dispy_logger.debug('Copied file %s, %s / %s',
                                         tgt, recvd, xf.stat_buf.st_size)
                     assert recvd == xf.stat_buf.st_size
@@ -860,9 +856,8 @@ class _DispyNode(object):
             pkl_path = os.path.join(self.dest_path_prefix, '%s_%s' % (compute_id, auth))
             compute = self.computations.get(compute_id, None)
             if not compute:
-                fd = open(pkl_path, 'rb')
-                compute = pickle.load(fd)
-                fd.close()
+                with open(pkl_path, 'rb') as fd:
+                    compute = pickle.load(fd)
             if not compute or compute.auth != auth:
                 yield send_reply(None)
                 raise StopIteration
@@ -872,9 +867,8 @@ class _DispyNode(object):
                 yield send_reply(None)
                 raise StopIteration
             try:
-                fd = open(info_file, 'rb')
-                job_reply = pickle.load(fd)
-                fd.close()
+                with open(info_file, 'rb') as fd:
+                    job_reply = pickle.load(fd)
                 assert job_reply.hash == job_hash
             except:
                 yield send_reply(None)
@@ -885,9 +879,8 @@ class _DispyNode(object):
                 ack = yield conn.recv_msg()
                 assert ack == b'ACK'
                 compute.pending_results -= 1
-                fd = open(pkl_path, 'wb')
-                pickle.dump(compute, fd)
-                fd.close()
+                with open(pkl_path, 'wb') as fd:
+                    pickle.dump(compute, fd)
             except:
                 pass
             else:
@@ -985,10 +978,9 @@ class _DispyNode(object):
                 compute = self.computations.get(compute_id, None)
                 if compute is None or compute.auth != auth:
                     try:
-                        fd = open(os.path.join(self.dest_path_prefix,
-                                               '%s_%s' % (compute_id, auth)), 'rb')
-                        compute = pickle.load(fd)
-                        fd.close()
+                        with open(os.path.join(self.dest_path_prefix,
+                                               '%s_%s' % (compute_id, auth)), 'rb') as fd:
+                            compute = pickle.load(fd)
                     except:
                         pass
                 if compute is None:
@@ -1020,10 +1012,9 @@ class _DispyNode(object):
             else:
                 compute = self.computations.get(compute_id, None)
                 if compute is None or compute.auth != auth:
-                    fd = open(os.path.join(self.dest_path_prefix,
-                                           '%s_%s' % (compute_id, auth)), 'rb')
-                    compute = pickle.load(fd)
-                    fd.close()
+                    with open(os.path.join(self.dest_path_prefix,
+                                           '%s_%s' % (compute_id, auth)), 'rb') as fd:
+                        compute = pickle.load(fd)
                 if compute is not None:
                     done = []
                     if compute.pending_results:
@@ -1067,9 +1058,8 @@ class _DispyNode(object):
         for result_file in result_files:
             result_file = os.path.join(compute.dest_path, result_file)
             try:
-                fd = open(result_file, 'rb')
-                job_result = pickle.load(fd)
-                fd.close()
+                with open(result_file, 'rb') as fd:
+                    job_result = pickle.load(fd)
             except:
                 _dispy_logger.debug('Could not load "%s"', result_file)
                 # _dispy_logger.debug(traceback.format_exc())
@@ -1281,9 +1271,8 @@ class _DispyNode(object):
                 _dispy_logger.error('Could not send reply for job %s to %s; saving it in "%s"',
                                     job_reply.uid, str(job_info.reply_addr), f)
                 try:
-                    fd = open(f, 'wb')
-                    pickle.dump(job_reply, fd)
-                    fd.close()
+                    with open(f, 'wb') as fd:
+                        pickle.dump(job_reply, fd)
                 except:
                     _dispy_logger.debug('Could not save reply for job %s', job_reply.uid)
                 else:
@@ -1308,11 +1297,10 @@ class _DispyNode(object):
                     except:
                         _dispy_logger.warning('Could not remove "%s"', f)
                 if compute is None:
-                    fd = open(os.path.join(self.dest_path_prefix,
+                    with open(os.path.join(self.dest_path_prefix,
                                            '%s_%s' % (job_info.compute_id, job_info.compute_auth)),
-                              'rb')
-                    compute = pickle.load(fd)
-                    fd.close()
+                              'rb') as fd:
+                        compute = pickle.load(fd)
                     if compute:
                         compute.pending_results -= 1
 
@@ -1344,9 +1332,8 @@ class _DispyNode(object):
             except:
                 _dispy_logger.warning('Could not remove "%s"', pkl_path)
         else:
-            fd = open(pkl_path, 'wb')
-            pickle.dump(compute, fd)
-            fd.close()
+            with open(pkl_path, 'wb') as fd:
+                pickle.dump(compute, fd)
 
         self.scheduler['auth'].discard(compute.auth)
 

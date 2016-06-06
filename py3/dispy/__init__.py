@@ -424,17 +424,16 @@ class _Node(object):
             yield sock.send_msg(b'FILEXFER:' + serialize(xf))
             recvd = yield sock.recv_msg()
             recvd = unserialize(recvd)
-            fd = open(xf.name, 'rb')
-            sent = 0
-            while sent == recvd:
-                data = fd.read(1024000)
-                if not data:
-                    break
-                yield sock.sendall(data)
-                sent += len(data)
-                recvd = yield sock.recv_msg()
-                recvd = unserialize(recvd)
-            fd.close()
+            with open(xf.name, 'rb') as fd:
+                sent = 0
+                while sent == recvd:
+                    data = fd.read(1024000)
+                    if not data:
+                        break
+                    yield sock.sendall(data)
+                    sent += len(data)
+                    recvd = yield sock.recv_msg()
+                    recvd = unserialize(recvd)
             if recvd == xf.stat_buf.st_size:
                 resp = 0
             else:
@@ -728,7 +727,8 @@ class _Cluster(object, metaclass=Singleton):
                         yield sock.sendto(b'PULSE:' + serialize(pulse_msg), addr)
                     except:
                         pass
-                    sock.close()
+                    finally:
+                        sock.close()
 
                 pulse_msg = {'ip_addr': info['scheduler_ip_addr'], 'port': self.port}
                 Coro(_send_pulse, self, pulse_msg, (info['ip_addr'], info['port']))
@@ -764,6 +764,7 @@ class _Cluster(object, metaclass=Singleton):
                     sock.close()
             else:
                 pass
+        udp_sock.close()
 
     def tcp_server(self, ip_addr, port, port_bound_event, coro=None):
         # generator
@@ -802,6 +803,7 @@ class _Cluster(object, metaclass=Singleton):
                 logger.debug(traceback.format_exc())
                 continue
             Coro(self.tcp_task, conn, addr)
+        sock.close()
 
     def tcp_task(self, conn, addr, coro=None):
         # generator
@@ -1122,17 +1124,16 @@ class _Cluster(object, metaclass=Singleton):
         tgt = os.path.join(self.dest_path, xf.name)
         if not os.path.isdir(os.path.dirname(tgt)):
             os.makedirs(os.path.dirname(tgt))
-        fd = open(tgt, 'wb')
-        recvd = 0
-        while recvd < xf.stat_buf.st_size:
+        with open(tgt, 'wb') as fd:
+            recvd = 0
+            while recvd < xf.stat_buf.st_size:
+                yield sock.send_msg(serialize(recvd))
+                data = yield sock.recvall(min(xf.stat_buf.st_size-recvd, 1024000))
+                if not data:
+                    break
+                fd.write(data)
+                recvd += len(data)
             yield sock.send_msg(serialize(recvd))
-            data = yield sock.recvall(min(xf.stat_buf.st_size-recvd, 1024000))
-            if not data:
-                break
-            fd.write(data)
-            recvd += len(data)
-        yield sock.send_msg(serialize(recvd))
-        fd.close()
         if recvd != xf.stat_buf.st_size:
             logger.warning('Transfer of file "%s" failed', tgt)
             # TODO: remove file?
@@ -2164,8 +2165,8 @@ class JobCluster(object):
                     else:
                         raise Exception('Program "%s" is not valid' % dep)
                 try:
-                    fd = open(dep, 'rb')
-                    fd.close()
+                    with open(dep, 'rb') as fd:
+                        pass
                     xf = _XferFile(dep, os.stat(dep), compute.id)
                     compute.xfer_files.add(xf)
                     depend_ids[dep] = dep
@@ -2541,16 +2542,15 @@ class SharedJobCluster(JobCluster):
                 recvd = sock.recv_msg()
                 recvd = unserialize(recvd)
                 sent = 0
-                fd = open(xf.name, 'rb')
-                while sent == recvd:
-                    data = fd.read(1024000)
-                    if not data:
-                        break
-                    sock.sendall(data)
-                    sent += len(data)
-                    recvd = sock.recv_msg()
-                    recvd = unserialize(recvd)
-                fd.close()
+                with open(xf.name, 'rb') as fd:
+                    while sent == recvd:
+                        data = fd.read(1024000)
+                        if not data:
+                            break
+                        sock.sendall(data)
+                        sent += len(data)
+                        recvd = sock.recv_msg()
+                        recvd = unserialize(recvd)
                 assert recvd == xf.stat_buf.st_size
             except:
                 logger.error('Could not transfer %s to %s', xf.name, self.scheduler_ip_addr)
@@ -2623,16 +2623,15 @@ class SharedJobCluster(JobCluster):
                 recvd = sock.recv_msg()
                 recvd = unserialize(recvd)
                 sent = 0
-                fd = open(xf.name, 'rb')
-                while sent == recvd:
-                    data = fd.read(1024000)
-                    if not data:
-                        break
-                    sock.sendall(data)
-                    sent += len(data)
-                    recvd = sock.recv_msg()
-                    recvd = unserialize(recvd)
-                fd.close()
+                with open(xf.name, 'rb') as fd:
+                    while sent == recvd:
+                        data = fd.read(1024000)
+                        if not data:
+                            break
+                        sock.sendall(data)
+                        sent += len(data)
+                        recvd = sock.recv_msg()
+                        recvd = unserialize(recvd)
                 assert recvd == xf.stat_buf.st_size
                 sock.close()
 
@@ -2800,16 +2799,15 @@ class SharedJobCluster(JobCluster):
             recvd = sock.recv_msg()
             recvd = unserialize(recvd)
             sent = 0
-            fd = open(xf.name, 'rb')
-            while sent == recvd:
-                data = fd.read(1024000)
-                if not data:
-                    break
-                sock.sendall(data)
-                sent += len(data)
-                recvd = sock.recv_msg()
-                recvd = unserialize(recvd)
-            fd.close()
+            with open(xf.name, 'rb') as fd:
+                while sent == recvd:
+                    data = fd.read(1024000)
+                    if not data:
+                        break
+                    sock.sendall(data)
+                    sent += len(data)
+                    recvd = sock.recv_msg()
+                    recvd = unserialize(recvd)
             assert recvd == xf.stat_buf.st_size
         except:
             return -1
