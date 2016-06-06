@@ -14,7 +14,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "MIT"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.6.13"
+__version__ = "4.6.14"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
@@ -39,7 +39,7 @@ import numbers
 import collections
 
 import asyncoro
-from asyncoro import Coro, AsynCoro, AsyncSocket, MetaSingleton, serialize, unserialize
+from asyncoro import Coro, AsynCoro, AsyncSocket, Singleton, serialize, unserialize
 
 _dispy_version = __version__
 MsgTimeout = 10
@@ -566,7 +566,8 @@ class _JobReply(object):
 class _Cluster(object):
     """Internal use only.
     """
-    __metaclass__ = MetaSingleton
+    __metaclass__ = Singleton
+    _instance = None
 
     def __init__(self, ip_addr=None, ext_ip_addr=None, port=None, node_port=None,
                  shared=False, secret='', keyfile=None, certfile=None, recover_file=None):
@@ -690,7 +691,10 @@ class _Cluster(object):
         port_bound_event.set()
         del port_bound_event
         while True:
-            msg, addr = yield udp_sock.recvfrom(1000)
+            try:
+                msg, addr = yield udp_sock.recvfrom(1000)
+            except GeneratorExit:
+                break
             if msg.startswith('PULSE:'):
                 msg = msg[len('PULSE:'):]
                 try:
@@ -722,7 +726,8 @@ class _Cluster(object):
                         yield sock.sendto('PULSE:' + serialize(pulse_msg), addr)
                     except:
                         pass
-                    sock.close()
+                    finally:
+                        sock.close()
 
                 pulse_msg = {'ip_addr': info['scheduler_ip_addr'], 'port': self.port}
                 Coro(_send_pulse, self, pulse_msg, (info['ip_addr'], info['port']))
@@ -758,6 +763,7 @@ class _Cluster(object):
                     sock.close()
             else:
                 pass
+        udp_sock.close()
 
     def tcp_server(self, ip_addr, port, port_bound_event, coro=None):
         # generator
@@ -796,6 +802,7 @@ class _Cluster(object):
                 logger.debug(traceback.format_exc())
                 continue
             Coro(self.tcp_task, conn, addr)
+        sock.close()
 
     def tcp_task(self, conn, addr, coro=None):
         # generator
@@ -808,7 +815,9 @@ class _Cluster(object):
                 logger.warning('invalid job reply from %s:%s ignored', addr[0], addr[1])
             else:
                 yield self.job_reply_process(info, conn, addr)
+            conn.close()
         elif msg.startswith('JOB_STATUS:'):
+            conn.close()
             # message from dispyscheduler
             try:
                 info = unserialize(msg[len('JOB_STATUS:'):])
@@ -839,6 +848,7 @@ class _Cluster(object):
                                 self.worker_Q.put((cluster.status_callback,
                                                    (job.status, dispy_node, job)))
         elif msg.startswith('PONG:'):
+            conn.close()
             try:
                 info = unserialize(msg[len('PONG:'):])
                 if info['version'] != _dispy_version:
@@ -849,8 +859,9 @@ class _Cluster(object):
             except:
                 logger.warning('Ignoring node %s ("secret" mismatch?)', addr[0])
             else:
-                yield self.add_node(info, coro=coro)
+                self.add_node(info)
         elif msg.startswith('PING:'):
+            conn.close()
             try:
                 info = unserialize(msg[len('PING:'):])
                 if info['version'] != _dispy_version:
@@ -862,13 +873,11 @@ class _Cluster(object):
             except:
                 # logger.debug(traceback.format_exc())
                 logger.debug('Ignoring node %s', addr[0])
-                conn.close()
                 raise StopIteration
             auth = auth_code(self.secret, info['sign'])
             node = self._nodes.get(info['ip_addr'], None)
             if node:
                 if node.auth == auth:
-                    conn.close()
                     raise StopIteration
             sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                keyfile=self.keyfile, certfile=self.certfile)
@@ -892,7 +901,9 @@ class _Cluster(object):
                 logger.debug(traceback.format_exc())
             else:
                 yield self.file_xfer_process(job_reply, xf, conn, addr)
+            conn.close()
         elif msg.startswith('NODE_CPUS:'):
+            conn.close()
             try:
                 info = unserialize(msg[len('NODE_CPUS:'):])
                 node = self._nodes.get(info['ip_addr'], None)
@@ -904,7 +915,6 @@ class _Cluster(object):
                     raise StopIteration
                 cpus = info['cpus']
             except:
-                conn.close()
                 raise StopIteration
             if cpus < 0:
                 logger.warning('Node requested using %s CPUs, disabling it',
@@ -939,6 +949,7 @@ class _Cluster(object):
                 if dispy_node:
                     dispy_node.cpus = cpus
         elif msg.startswith('TERMINATED:'):
+            conn.close()
             try:
                 info = unserialize(msg[len('TERMINATED:'):])
             except:
@@ -971,6 +982,7 @@ class _Cluster(object):
                                                (DispyNode.Closed, dispy_node, None)))
                     self.reschedule_jobs(dead_jobs)
         elif msg.startswith('NODE_STATUS:'):
+            conn.close()
             # this message is from dispyscheduler for SharedJobCluster
             try:
                 info = unserialize(msg[len('NODE_STATUS:'):])
@@ -1024,10 +1036,11 @@ class _Cluster(object):
                 cluster._scheduled_event.set()
             except:
                 yield conn.send_msg('NAK')
+            conn.close()
         else:
             logger.warning('invalid message from %s:%s ignored', addr[0], addr[1])
             # logger.debug(traceback.format_exc())
-        conn.close()
+            conn.close()
 
     def timer_task(self, coro=None):
         coro.set_daemon()
@@ -1357,7 +1370,7 @@ class _Cluster(object):
                     self.worker_Q.put((cluster.status_callback,
                                        (DispyNode.Initialized, dispy_node, None)))
 
-    def add_node(self, info, coro=None):
+    def add_node(self, info):
         try:
             # assert info['version'] == _dispy_version
             assert info['port'] > 0 and info['cpus'] > 0
@@ -1365,7 +1378,7 @@ class _Cluster(object):
             # TODO: check if it is one of ext_ip_addr?
         except:
             # logger.debug(traceback.format_exc())
-            raise StopIteration
+            return
         node = self._nodes.get(info['ip_addr'], None)
         if node is None:
             logger.debug('Discovered %s:%s (%s) with %s cpus',
@@ -1390,7 +1403,7 @@ class _Cluster(object):
             else:
                 logger.warning('invalid "cpus" %s from %s ignored', info['cpus'], info['ip_addr'])
             if node.port == info['port'] and node.auth == auth:
-                raise StopIteration
+                return
             logger.debug('node %s rediscovered', info['ip_addr'])
             node.port = info['port']
             if node.auth is not None:

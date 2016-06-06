@@ -46,7 +46,7 @@ from dispy import _Compute, DispyJob, _DispyJob_, _Function, _Node, DispyNode, N
 import dispy.httpd
 
 import asyncoro
-from asyncoro import Coro, AsynCoro, AsyncSocket, MetaSingleton, serialize, unserialize
+from asyncoro import Coro, AsynCoro, AsyncSocket, Singleton, serialize, unserialize
 
 __version__ = _dispy_version
 __all__ = []
@@ -108,11 +108,12 @@ class _Cluster(object):
         return Coro(self.scheduler.set_node_cpus, node, cpus).value()
 
 
-class _Scheduler(object, metaclass=MetaSingleton):
+class _Scheduler(object, metaclass=Singleton):
     """Internal use only.
 
     See dispy's JobCluster and SharedJobCluster for documentation.
     """
+    _instance = None
 
     def __init__(self, nodes=[], ip_addr=None, ext_ip_addr=None,
                  port=None, node_port=None, scheduler_port=None, scheduler_alg=None,
@@ -384,15 +385,18 @@ class _Scheduler(object, metaclass=MetaSingleton):
                 logger.warning('invalid job reply from %s:%s ignored', addr[0], addr[1])
             else:
                 yield self.job_reply_process(info, conn, addr)
+            conn.close()
         elif msg.startswith(b'PONG:'):
+            conn.close()
             try:
                 info = unserialize(msg[len(b'PONG:'):])
                 assert info['auth'] == self.node_auth
             except:
                 logger.warning('Ignoring node %s due to "secret" mismatch', addr[0])
             else:
-                yield self.add_node(info, coro=coro)
+                self.add_node(info)
         elif msg.startswith(b'PING:'):
+            conn.close()
             try:
                 info = unserialize(msg[len(b'PING:'):])
                 if info['version'] != _dispy_version:
@@ -403,13 +407,11 @@ class _Scheduler(object, metaclass=MetaSingleton):
             except:
                 logger.debug('Ignoring node %s', addr[0])
                 logger.debug(traceback.format_exc())
-                conn.close()
                 raise StopIteration
             auth = auth_code(self.node_secret, info['sign'])
             node = self._nodes.get(info['ip_addr'], None)
             if node:
                 if node.auth == auth:
-                    conn.close()
                     raise StopIteration
             sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                keyfile=self.node_keyfile, certfile=self.node_certfile)
@@ -432,7 +434,9 @@ class _Scheduler(object, metaclass=MetaSingleton):
                 yield self.xfer_to_client(job_reply, xf, conn, addr)
             except:
                 logger.debug(traceback.format_exc())
+            conn.close()
         elif msg.startswith(b'TERMINATED:'):
+            conn.close()
             try:
                 info = unserialize(msg[len(b'TERMINATED:'):])
                 node = self._nodes.get(info['ip_addr'], None)
@@ -462,6 +466,7 @@ class _Scheduler(object, metaclass=MetaSingleton):
                 # logger.debug(traceback.format_exc())
                 pass
         elif msg.startswith(b'NODE_CPUS:'):
+            conn.close()
             try:
                 info = unserialize(msg[len(b'NODE_CPUS:'):])
                 node = self._nodes.get(info['ip_addr'], None)
@@ -474,7 +479,6 @@ class _Scheduler(object, metaclass=MetaSingleton):
                 cpus = info['cpus']
             except:
                 logger.debug(traceback.format_exc())
-                conn.close()
                 raise StopIteration
             if cpus < 0:
                 logger.warning('Node requested using %s CPUs, disabling it', node.ip_addr, cpus)
@@ -509,7 +513,7 @@ class _Scheduler(object, metaclass=MetaSingleton):
                     dispy_node.cpus = cpus
         else:
             logger.warning('invalid message from %s:%s ignored', addr)
-        conn.close()
+            conn.close()
 
     def schedule_cluster(self, coro=None):
         while self.unsched_clusters:
@@ -1255,7 +1259,7 @@ class _Scheduler(object, metaclass=MetaSingleton):
                 self._sched_event.set()
                 Coro(self.send_node_status, cluster, dispy_node, DispyNode.Initialized)
 
-    def add_node(self, info, coro=None):
+    def add_node(self, info):
         try:
             # assert info['version'] == _dispy_version
             assert info['port'] > 0 and info['cpus'] > 0
@@ -1263,7 +1267,7 @@ class _Scheduler(object, metaclass=MetaSingleton):
             # TODO: check if it is one of ext_ip_addr?
         except:
             # logger.debug(traceback.format_exc())
-            raise StopIteration
+            return
         node = self._nodes.get(info['ip_addr'], None)
         if node is None:
             logger.debug('Discovered %s:%s (%s) with %s cpus',
@@ -1282,7 +1286,7 @@ class _Scheduler(object, metaclass=MetaSingleton):
             else:
                 logger.warning('invalid "cpus" %s from %s ignored', info['cpus'], info['ip_addr'])
             if node.port == info['port'] and node.auth == auth:
-                raise StopIteration
+                return
             logger.debug('node %s rediscovered', info['ip_addr'])
             node.port = info['port']
             if node.auth is not None:

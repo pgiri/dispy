@@ -14,7 +14,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "MIT"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.6.13"
+__version__ = "4.6.14"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
@@ -39,7 +39,7 @@ import numbers
 import collections
 
 import asyncoro
-from asyncoro import Coro, AsynCoro, AsyncSocket, MetaSingleton, serialize, unserialize
+from asyncoro import Coro, AsynCoro, AsyncSocket, Singleton, serialize, unserialize
 
 _dispy_version = __version__
 MsgTimeout = 10
@@ -563,9 +563,10 @@ class _JobReply(object):
         self.end_time = 0
 
 
-class _Cluster(object, metaclass=MetaSingleton):
+class _Cluster(object, metaclass=Singleton):
     """Internal use only.
     """
+    _instance = None
 
     def __init__(self, ip_addr=None, ext_ip_addr=None, port=None, node_port=None,
                  shared=False, secret='', keyfile=None, certfile=None, recover_file=None):
@@ -813,7 +814,9 @@ class _Cluster(object, metaclass=MetaSingleton):
                 logger.warning('invalid job reply from %s:%s ignored', addr[0], addr[1])
             else:
                 yield self.job_reply_process(info, conn, addr)
+            conn.close()
         elif msg.startswith(b'JOB_STATUS:'):
+            conn.close()
             # message from dispyscheduler
             try:
                 info = unserialize(msg[len(b'JOB_STATUS:'):])
@@ -844,6 +847,7 @@ class _Cluster(object, metaclass=MetaSingleton):
                                 self.worker_Q.put((cluster.status_callback,
                                                    (job.status, dispy_node, job)))
         elif msg.startswith(b'PONG:'):
+            conn.close()
             try:
                 info = unserialize(msg[len(b'PONG:'):])
                 if info['version'] != _dispy_version:
@@ -854,8 +858,9 @@ class _Cluster(object, metaclass=MetaSingleton):
             except:
                 logger.warning('Ignoring node %s ("secret" mismatch?)', addr[0])
             else:
-                yield self.add_node(info, coro=coro)
+                self.add_node(info)
         elif msg.startswith(b'PING:'):
+            conn.close()
             try:
                 info = unserialize(msg[len(b'PING:'):])
                 if info['version'] != _dispy_version:
@@ -867,13 +872,11 @@ class _Cluster(object, metaclass=MetaSingleton):
             except:
                 # logger.debug(traceback.format_exc())
                 logger.debug('Ignoring node %s', addr[0])
-                conn.close()
                 raise StopIteration
             auth = auth_code(self.secret, info['sign'])
             node = self._nodes.get(info['ip_addr'], None)
             if node:
                 if node.auth == auth:
-                    conn.close()
                     raise StopIteration
             sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                keyfile=self.keyfile, certfile=self.certfile)
@@ -897,7 +900,9 @@ class _Cluster(object, metaclass=MetaSingleton):
                 logger.debug(traceback.format_exc())
             else:
                 yield self.file_xfer_process(job_reply, xf, conn, addr)
+            conn.close()
         elif msg.startswith(b'NODE_CPUS:'):
+            conn.close()
             try:
                 info = unserialize(msg[len(b'NODE_CPUS:'):])
                 node = self._nodes.get(info['ip_addr'], None)
@@ -909,7 +914,6 @@ class _Cluster(object, metaclass=MetaSingleton):
                     raise StopIteration
                 cpus = info['cpus']
             except:
-                conn.close()
                 raise StopIteration
             if cpus < 0:
                 logger.warning('Node requested using %s CPUs, disabling it',
@@ -944,6 +948,7 @@ class _Cluster(object, metaclass=MetaSingleton):
                 if dispy_node:
                     dispy_node.cpus = cpus
         elif msg.startswith(b'TERMINATED:'):
+            conn.close()
             try:
                 info = unserialize(msg[len(b'TERMINATED:'):])
             except:
@@ -976,6 +981,7 @@ class _Cluster(object, metaclass=MetaSingleton):
                                                (DispyNode.Closed, dispy_node, None)))
                     self.reschedule_jobs(dead_jobs)
         elif msg.startswith(b'NODE_STATUS:'):
+            conn.close()
             # this message is from dispyscheduler for SharedJobCluster
             try:
                 info = unserialize(msg[len(b'NODE_STATUS:'):])
@@ -1029,10 +1035,11 @@ class _Cluster(object, metaclass=MetaSingleton):
                 cluster._scheduled_event.set()
             except:
                 yield conn.send_msg(b'NAK')
+            conn.close()
         else:
             logger.warning('invalid message from %s:%s ignored', addr[0], addr[1])
             # logger.debug(traceback.format_exc())
-        conn.close()
+            conn.close()
 
     def timer_task(self, coro=None):
         coro.set_daemon()
@@ -1362,7 +1369,7 @@ class _Cluster(object, metaclass=MetaSingleton):
                     self.worker_Q.put((cluster.status_callback,
                                        (DispyNode.Initialized, dispy_node, None)))
 
-    def add_node(self, info, coro=None):
+    def add_node(self, info):
         try:
             # assert info['version'] == _dispy_version
             assert info['port'] > 0 and info['cpus'] > 0
@@ -1370,7 +1377,7 @@ class _Cluster(object, metaclass=MetaSingleton):
             # TODO: check if it is one of ext_ip_addr?
         except:
             # logger.debug(traceback.format_exc())
-            raise StopIteration
+            return
         node = self._nodes.get(info['ip_addr'], None)
         if node is None:
             logger.debug('Discovered %s:%s (%s) with %s cpus',
@@ -1395,7 +1402,7 @@ class _Cluster(object, metaclass=MetaSingleton):
             else:
                 logger.warning('invalid "cpus" %s from %s ignored', info['cpus'], info['ip_addr'])
             if node.port == info['port'] and node.auth == auth:
-                raise StopIteration
+                return
             logger.debug('node %s rediscovered', info['ip_addr'])
             node.port = info['port']
             if node.auth is not None:
