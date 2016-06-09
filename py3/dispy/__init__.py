@@ -465,8 +465,11 @@ class _DispyJob_(object):
                  'xfer_files', 'args', 'kwargs', 'code')
 
     def __init__(self, compute_id, args, kwargs):
+        job_deps = kwargs.pop('dispy_job_depends', [])
         self.job = DispyJob(args, kwargs)
         self.job._dispy_job_ = self
+        self.args = self.job.args
+        self.kwargs = self.job.kwargs
         self.uid = None
         self.compute_id = compute_id
         self.hash = ''.join(hex(_)[2:] for _ in os.urandom(10))
@@ -474,9 +477,6 @@ class _DispyJob_(object):
         self.pinned = None
         self.xfer_files = []
         self.code = ''
-        job_deps = kwargs.pop('dispy_job_depends', [])
-        self.args = serialize(args)
-        self.kwargs = serialize(kwargs)
         depend_ids = set()
         for dep in job_deps:
             if isinstance(dep, str) or inspect.ismodule(dep):
@@ -507,8 +507,9 @@ class _DispyJob_(object):
 
     def __getstate__(self):
         state = {'uid': self.uid, 'hash': self.hash, 'compute_id': self.compute_id,
-                 'args': self.args, 'kwargs': self.kwargs, 'xfer_files': self.xfer_files,
-                 'code': self.code}
+                 'args': self.args if isinstance(self.args, bytes) else serialize(self.args),
+                 'kwargs': self.kwargs if isinstance(self.kwargs, bytes) else serialize(self.kwargs),
+                 'xfer_files': self.xfer_files, 'code': self.code}
         return state
 
     def __setstate__(self, state):
