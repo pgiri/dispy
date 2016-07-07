@@ -1586,16 +1586,16 @@ if __name__ == '__main__':
     del parser
 
     if _dispy_config['config'] and os.path.isfile(_dispy_config['config']):
-        import ConfigParser
-        cfgp = ConfigParser.ConfigParser()
+        import configparser
+        cfgp = configparser.ConfigParser()
         cfgp.read(_dispy_config['config'])
         _dispy_config, cfgp = dict(cfgp.items('DEFAULT')), _dispy_config
         _dispy_config.update(cfgp)
         del cfgp
 
     if _dispy_config['save_config']:
-        import ConfigParser
-        cfgp = ConfigParser.ConfigParser(_dispy_config)
+        import configparser
+        cfgp = configparser.ConfigParser(_dispy_config)
         if _dispy_config['config']:
             cfgfd = open(_dispy_config['config'], 'w')
             _dispy_config.pop('config')
