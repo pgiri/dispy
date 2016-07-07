@@ -5,15 +5,6 @@ dispynode: Execute computations on behalf of dispy clients;
 see accompanying 'dispy' for more details.
 """
 
-__author__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
-__email__ = "pgiri@yahoo.com"
-__copyright__ = "Copyright 2011, Giridhar Pemmasani"
-__contributors__ = []
-__maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
-__license__ = "MIT"
-__url__ = "http://dispy.sourceforge.net"
-__status__ = "Production"
-
 import os
 import sys
 import time
@@ -43,6 +34,14 @@ from dispy import _JobReply, DispyJob, DispyNodeAvailInfo, _Function, _Compute, 
 import asyncoro
 from asyncoro import Coro, AsynCoro, AsyncSocket, serialize, unserialize
 
+__author__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
+__email__ = "pgiri@yahoo.com"
+__copyright__ = "Copyright 2011, Giridhar Pemmasani"
+__contributors__ = []
+__maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
+__license__ = "MIT"
+__url__ = "http://dispy.sourceforge.net"
+__status__ = "Production"
 __version__ = _dispy_version
 __all__ = []
 

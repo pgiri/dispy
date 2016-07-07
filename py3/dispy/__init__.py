@@ -6,18 +6,6 @@ machines in cluster(s), grid, cloud etc. for parallel execution.
 See http://dispy.sourceforge.net for details.
 """
 
-__author__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
-__email__ = "pgiri@yahoo.com"
-__copyright__ = "Copyright 2011, Giridhar Pemmasani"
-__contributors__ = []
-__maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
-__license__ = "MIT"
-__url__ = "http://dispy.sourceforge.net"
-__status__ = "Production"
-__version__ = "4.6.14"
-
-__all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
-
 import os
 import sys
 import time
@@ -40,6 +28,18 @@ import collections
 
 import asyncoro
 from asyncoro import Coro, AsynCoro, AsyncSocket, Singleton, serialize, unserialize
+
+__author__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
+__email__ = "pgiri@yahoo.com"
+__copyright__ = "Copyright 2011, Giridhar Pemmasani"
+__contributors__ = []
+__maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
+__license__ = "MIT"
+__url__ = "http://dispy.sourceforge.net"
+__status__ = "Production"
+__version__ = "4.6.14"
+
+__all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
 _dispy_version = __version__
 MsgTimeout = 10

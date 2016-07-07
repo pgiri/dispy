@@ -5,15 +5,6 @@ dispynetrelay: Relay ping messages from client(s) to nodes
 in a network; see accompanying 'dispy' for more details.
 """
 
-__author__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
-__email__ = "pgiri@yahoo.com"
-__copyright__ = "Copyright 2011, Giridhar Pemmasani"
-__contributors__ = []
-__maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
-__license__ = "MIT"
-__url__ = "http://dispy.sourceforge.net"
-__status__ = "Production"
-
 import sys
 import socket
 import logging
@@ -22,6 +13,14 @@ import traceback
 import dispy
 import asyncoro
 
+__author__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
+__email__ = "pgiri@yahoo.com"
+__copyright__ = "Copyright 2011, Giridhar Pemmasani"
+__contributors__ = []
+__maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
+__license__ = "MIT"
+__url__ = "http://dispy.sourceforge.net"
+__status__ = "Production"
 __version__ = dispy._dispy_version
 __all__ = []
 

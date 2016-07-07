@@ -3,16 +3,6 @@ This file is part of dispy project.
 See http://dispy.sourceforge.net for details.
 """
 
-__author__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
-__email__ = "pgiri@yahoo.com"
-__copyright__ = "Copyright 2015, Giridhar Pemmasani"
-__contributors__ = []
-__maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
-__license__ = "MIT"
-__url__ = "http://dispy.sourceforge.net"
-
-__all__ = ['DispyHTTPServer']
-
 import sys
 import os
 import threading
@@ -26,6 +16,8 @@ import functools
 import copy
 import traceback
 
+from dispy import DispyJob, DispyNode, DispyNodeAvailInfo, logger
+
 if sys.version_info.major > 2:
     from http.server import BaseHTTPRequestHandler, HTTPServer
     from urllib.parse import urlparse
@@ -33,8 +25,15 @@ else:
     from BaseHTTPServer import BaseHTTPRequestHandler, HTTPServer
     from urlparse import urlparse
 
-from dispy import DispyJob, DispyNode, DispyNodeAvailInfo, logger
+__author__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
+__email__ = "pgiri@yahoo.com"
+__copyright__ = "Copyright 2015, Giridhar Pemmasani"
+__contributors__ = []
+__maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
+__license__ = "MIT"
+__url__ = "http://dispy.sourceforge.net"
 
+__all__ = ['DispyHTTPServer']
 
 # Compatability function to work with both Python 2.7 and Python 3
 if sys.version_info.major >= 3:

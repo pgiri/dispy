@@ -7,15 +7,6 @@ when multiple processes may use same nodes simultaneously with
 SharedJobCluster; see accompanying 'dispy' for more details.
 """
 
-__author__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
-__email__ = "pgiri@yahoo.com"
-__copyright__ = "Copyright 2011, Giridhar Pemmasani"
-__contributors__ = []
-__maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
-__license__ = "MIT"
-__url__ = "http://dispy.sourceforge.net"
-__status__ = "Production"
-
 import os
 import sys
 import time
@@ -40,14 +31,22 @@ for path in sys.path:
         break
 del path
 
+import asyncoro
+from asyncoro import Coro, AsynCoro, AsyncSocket, Singleton, serialize, unserialize
+
 from dispy import _Compute, DispyJob, _DispyJob_, _Function, _Node, DispyNode, NodeAllocate, \
     _JobReply, auth_code, num_min, _parse_node_allocs, _node_ipaddr, _XferFile, _dispy_version, \
     _same_file, MsgTimeout
 import dispy.httpd
 
-import asyncoro
-from asyncoro import Coro, AsynCoro, AsyncSocket, Singleton, serialize, unserialize
-
+__author__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
+__email__ = "pgiri@yahoo.com"
+__copyright__ = "Copyright 2011, Giridhar Pemmasani"
+__contributors__ = []
+__maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
+__license__ = "MIT"
+__url__ = "http://dispy.sourceforge.net"
+__status__ = "Production"
 __version__ = _dispy_version
 __all__ = []
 
