@@ -27,6 +27,10 @@ try:
     import psutil
 except ImportError:
     psutil = None
+try:
+    import netifaces
+except:
+    netifaces = None
 
 from dispy import _JobReply, DispyJob, DispyNodeAvailInfo, _Function, _Compute, _XferFile, \
      _node_ipaddr, _dispy_version, auth_code, num_min, _same_file, MsgTimeout
@@ -212,7 +216,17 @@ class _DispyNode(object):
             if not ip_addr:
                 raise Exception('invalid ip_addr')
         else:
-            ip_addr = socket.gethostbyname(socket.gethostname())
+            if netifaces:
+                for iface in netifaces.interfaces():
+                    for link in netifaces.ifaddresses(iface).get(netifaces.AF_INET, []):
+                        if link.get('broadcast', None) and link.get('netmask', None):
+                            ip_addr = socket.gethostbyname(link.get('addr', ''))
+                            break
+                    else:
+                        continue
+                    break
+            if not ip_addr:
+                ip_addr = socket.gethostbyname(socket.gethostname())
         if ip_addr.startswith('127.'):
             _dispy_logger.warning('node IP address %s seems to be loopback address; '
                                   'this will prevent communication with clients on '
