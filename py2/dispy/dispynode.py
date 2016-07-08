@@ -1600,8 +1600,8 @@ if __name__ == '__main__':
         cfgp.read(_dispy_config['config'])
         _dispy_config, cfgp = dict(cfgp.items('DEFAULT')), _dispy_config
         if _dispy_config:
-            for key, value in _dispy_config.items():
-                if cfgp[key] != parser.get_default(key):
+            for key, value in cfgp.items():
+                if cfgp[key] != parser.get_default(key) or key not in _dispy_config:
                     print('set %s to %s' % (key, cfgp[key]))
                     _dispy_config[key] = cfgp[key]
             del key, value
