@@ -571,7 +571,10 @@ class _Scheduler(object, metaclass=Singleton):
             # function
             _job.uid = id(_job)
             for xf in _job.xfer_files:
-                xf.name = os.path.join(cluster.dest_path, os.path.basename(xf.name))
+                if xf.destination is None:
+                    xf.name = os.path.join(cluster.dest_path, os.path.basename(xf.name))
+                else:
+                    xf.name = os.path.join(cluster.dest_path, xf.destination)
             job = DispyJob((), {})
             job.id = _job.uid
             if node:
@@ -642,7 +645,10 @@ class _Scheduler(object, metaclass=Singleton):
             cluster.last_pulse = time.time()
             for xf in compute.xfer_files:
                 xf.compute_id = compute.id
-                xf.name = os.path.join(cluster.dest_path, os.path.basename(xf.name))
+                if xf.destination is None:
+                    xf.name = os.path.join(cluster.dest_path, os.path.basename(xf.name))
+                else:
+                    xf.name = os.path.join(cluster.dest_path, xf.destination)
 
             with open(os.path.join(self.dest_path_prefix,
                                    '%s_%s' % (compute.id, cluster.client_auth)), 'wb') as fd:
