@@ -571,7 +571,10 @@ class _Scheduler(object, metaclass=Singleton):
             # function
             _job.uid = id(_job)
             for xf in _job.xfer_files:
-                xf.name = os.path.join(cluster.dest_path, os.path.basename(xf.name))
+                if xf.destination is None:
+                    xf.name = os.path.join(cluster.dest_path, os.path.basename(xf.name))
+                else:
+                    xf.name = os.path.join(cluster.dest_path, xf.destination)
             job = DispyJob((), {})
             job.id = _job.uid
             if node:
@@ -642,7 +645,10 @@ class _Scheduler(object, metaclass=Singleton):
             cluster.last_pulse = time.time()
             for xf in compute.xfer_files:
                 xf.compute_id = compute.id
-                xf.name = os.path.join(cluster.dest_path, os.path.basename(xf.name))
+                if xf.destination is None:
+                    xf.name = os.path.join(cluster.dest_path, os.path.basename(xf.name))
+                else:
+                    xf.name = os.path.join(cluster.dest_path, xf.destination)
 
             with open(os.path.join(self.dest_path_prefix,
                                    '%s_%s' % (compute.id, cluster.client_auth)), 'wb') as fd:
@@ -666,7 +672,12 @@ class _Scheduler(object, metaclass=Singleton):
                 if not cluster:
                     logger.error('Computation "%s" is invalid', xf.compute_id)
                     raise StopIteration(serialize(-1))
-            tgt = os.path.join(cluster.dest_path, os.path.basename(xf.name))
+            if xf.destination is None:
+                # Remove the source file's directory hiearchy.
+                tgt = os.path.join(cluster.dest_path, os.path.basename(xf.name))
+            else:
+                # Retain the source file's needed directory hiearchy.
+                tgt = os.path.join(cluster.dest_path, xf.destination)
             if os.path.isfile(tgt) and _same_file(tgt, xf):
                 if tgt in cluster.file_uses:
                     cluster.file_uses[tgt] += 1
@@ -675,6 +686,9 @@ class _Scheduler(object, metaclass=Singleton):
                 raise StopIteration(serialize(xf.stat_buf.st_size))
             logger.debug('Copying file %s to %s (%s)', xf.name, tgt, xf.stat_buf.st_size)
             try:
+                if xf.destination is not None:
+                    # Create missing directories
+                    os.makedirs(os.path.dirname(tgt), exist_ok=True)
                 with open(tgt, 'wb') as fd:
                     recvd = 0
                     while recvd < xf.stat_buf.st_size:
