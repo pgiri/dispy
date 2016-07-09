@@ -325,11 +325,15 @@ class _Compute(object):
 class _XferFile(object):
     """Internal use only.
     """
-    def __init__(self, name, stat_buf, compute_id=None):
+    def __init__(self, name, stat_buf, compute_id=None, destination=None):
         self.name = name
         self.stat_buf = stat_buf
         self.compute_id = compute_id
         self.sep = os.sep
+        self.destination = destination
+
+    def __repr__(self):
+        return '_XferFile(name={}, compute_id={}, dest={})'.format(self.name, self.compute_id, self.destination)
 
 
 class _Node(object):
@@ -480,7 +484,10 @@ class _DispyJob_(object):
         depend_ids = set()
         for dep in job_deps:
             if isinstance(dep, str) or inspect.ismodule(dep):
+                destination = None
                 if inspect.ismodule(dep):
+                    destination = dep.__package__.replace('.', os.sep)
+                    destination = os.path.join(destination, os.path.basename(dep.__file__))
                     dep = dep.__file__
                     if dep.endswith('.pyc'):
                         dep = dep[:-1]
@@ -489,7 +496,7 @@ class _DispyJob_(object):
                         continue
                 if dep in depend_ids:
                     continue
-                self.xfer_files.append(_XferFile(dep, os.stat(dep), compute_id))
+                self.xfer_files.append(_XferFile(dep, os.stat(dep), compute_id, destination))
                 depend_ids.add(dep)
             elif inspect.isfunction(dep) or inspect.isclass(dep) or hasattr(dep, '__class__'):
                 if inspect.isfunction(dep) or inspect.isclass(dep):
@@ -2148,7 +2155,10 @@ class JobCluster(object):
         depend_ids = {}
         for dep in depends:
             if isinstance(dep, str) or inspect.ismodule(dep):
+                destination = None
                 if inspect.ismodule(dep):
+                    destination = dep.__package__.replace('.', os.sep)
+                    destination = os.path.join(destination, os.path.basename(dep.__file__))
                     dep = dep.__file__
                     if dep.endswith('.pyc'):
                         dep = dep[:-1]
@@ -2168,7 +2178,7 @@ class JobCluster(object):
                 try:
                     with open(dep, 'rb') as fd:
                         pass
-                    xf = _XferFile(dep, os.stat(dep), compute.id)
+                    xf = _XferFile(dep, os.stat(dep), compute.id, destination)
                     compute.xfer_files.add(xf)
                     depend_ids[dep] = dep
                 except:

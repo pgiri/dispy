@@ -666,7 +666,10 @@ class _Scheduler(object, metaclass=Singleton):
                 if not cluster:
                     logger.error('Computation "%s" is invalid', xf.compute_id)
                     raise StopIteration(serialize(-1))
-            tgt = os.path.join(cluster.dest_path, os.path.basename(xf.name))
+            if xf.destination is None:
+                tgt = os.path.join(cluster.dest_path, os.path.basename(xf.name))
+            else:
+                tgt = os.path.join(cluster.dest_path, xf.destination)
             if os.path.isfile(tgt) and _same_file(tgt, xf):
                 if tgt in cluster.file_uses:
                     cluster.file_uses[tgt] += 1
@@ -675,6 +678,8 @@ class _Scheduler(object, metaclass=Singleton):
                 raise StopIteration(serialize(xf.stat_buf.st_size))
             logger.debug('Copying file %s to %s (%s)', xf.name, tgt, xf.stat_buf.st_size)
             try:
+                if xf.destination is not None:
+                    os.makedirs(os.path.dirname(tgt), exist_ok=True)
                 with open(tgt, 'wb') as fd:
                     recvd = 0
                     while recvd < xf.stat_buf.st_size:

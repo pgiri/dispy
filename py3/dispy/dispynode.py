@@ -740,7 +740,10 @@ class _DispyNode(object):
                 _dispy_logger.error('Invalid file transfer for "%s"', xf.name)
                 yield conn.send_msg(serialize(-1))
                 raise StopIteration
-            tgt = os.path.join(compute.dest_path, os.path.basename(xf.name))
+            if xf.destination is None:
+                tgt = os.path.join(compute.dest_path, os.path.basename(xf.name))
+            else:
+                tgt = os.path.join(compute.dest_path, xf.destination)
             if os.path.isfile(tgt) and _same_file(tgt, xf):
                 if tgt in compute.file_uses:
                     compute.file_uses[tgt] += 1
@@ -749,6 +752,8 @@ class _DispyNode(object):
                 yield conn.send_msg(serialize(xf.stat_buf.st_size))
             else:
                 try:
+                    if xf.destination is not None:
+                        os.makedirs(os.path.dirname(tgt), exist_ok=True)
                     with open(tgt, 'wb') as fd:
                         recvd = 0
                         _dispy_logger.debug('Copying file %s to %s (%s)',
