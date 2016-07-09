@@ -741,8 +741,10 @@ class _DispyNode(object):
                 yield conn.send_msg(serialize(-1))
                 raise StopIteration
             if xf.destination is None:
+                # Remove the source file's directory hiearchy.
                 tgt = os.path.join(compute.dest_path, os.path.basename(xf.name))
             else:
+                # Retain the source file's needed directory hiearchy.
                 tgt = os.path.join(compute.dest_path, xf.destination)
             if os.path.isfile(tgt) and _same_file(tgt, xf):
                 if tgt in compute.file_uses:
@@ -753,6 +755,7 @@ class _DispyNode(object):
             else:
                 try:
                     if xf.destination is not None:
+                        # Create missing directories
                         os.makedirs(os.path.dirname(tgt), exist_ok=True)
                     with open(tgt, 'wb') as fd:
                         recvd = 0

@@ -667,8 +667,10 @@ class _Scheduler(object, metaclass=Singleton):
                     logger.error('Computation "%s" is invalid', xf.compute_id)
                     raise StopIteration(serialize(-1))
             if xf.destination is None:
+                # Remove the source file's directory hiearchy.
                 tgt = os.path.join(cluster.dest_path, os.path.basename(xf.name))
             else:
+                # Retain the source file's needed directory hiearchy.
                 tgt = os.path.join(cluster.dest_path, xf.destination)
             if os.path.isfile(tgt) and _same_file(tgt, xf):
                 if tgt in cluster.file_uses:
@@ -679,6 +681,7 @@ class _Scheduler(object, metaclass=Singleton):
             logger.debug('Copying file %s to %s (%s)', xf.name, tgt, xf.stat_buf.st_size)
             try:
                 if xf.destination is not None:
+                    # Create missing directories
                     os.makedirs(os.path.dirname(tgt), exist_ok=True)
                 with open(tgt, 'wb') as fd:
                     recvd = 0

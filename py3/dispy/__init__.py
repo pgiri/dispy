@@ -330,6 +330,8 @@ class _XferFile(object):
         self.stat_buf = stat_buf
         self.compute_id = compute_id
         self.sep = os.sep
+        # @destination will hold the file name together with the needed directory hierarchy.
+        # If this is present @name will be ignored when creating the file.
         self.destination = destination
 
     def __repr__(self):
@@ -486,6 +488,7 @@ class _DispyJob_(object):
             if isinstance(dep, str) or inspect.ismodule(dep):
                 destination = None
                 if inspect.ismodule(dep):
+                    # Use the module hierarchy to determine the needed directory hiearchy.
                     destination = dep.__package__.replace('.', os.sep)
                     destination = os.path.join(destination, os.path.basename(dep.__file__))
                     dep = dep.__file__
@@ -2157,6 +2160,7 @@ class JobCluster(object):
             if isinstance(dep, str) or inspect.ismodule(dep):
                 destination = None
                 if inspect.ismodule(dep):
+                    # Use the module hierarchy to determine the needed directory hiearchy.
                     destination = dep.__package__.replace('.', os.sep)
                     destination = os.path.join(destination, os.path.basename(dep.__file__))
                     dep = dep.__file__
