@@ -1558,7 +1558,7 @@ if __name__ == '__main__':
                         help='IP address to use (may be needed in case of multiple interfaces)')
     parser.add_argument('--ext_ip_addr', dest='ext_ip_addr', default='',
                         help='External IP address to use (needed in case of NAT firewall/gateway)')
-    parser.add_argument('-p', '--node_port', dest='node_port', type=int, default=0,
+    parser.add_argument('-p', '--node_port', dest='node_port', type=int, default=51348,
                         help='port number to use')
     parser.add_argument('--name', dest='name', default='',
                         help='name asscoiated to this node; default is obtained with gethostname()')
