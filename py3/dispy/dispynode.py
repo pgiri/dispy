@@ -23,6 +23,7 @@ import functools
 import inspect
 import pickle
 import io
+import signal
 try:
     import psutil
 except ImportError:
@@ -1711,5 +1712,10 @@ if __name__ == '__main__':
     _dispy_node = None
     _dispy_node = _DispyNode(**_dispy_config)
     del _dispy_config
+
+    def shutdown(_, __):
+        _dispy_node.shutdown(quit=True)
+
+    signal.signal(signal.SIGTERM, shutdown)
 
     _dispy_node.asyncoro.finish()
