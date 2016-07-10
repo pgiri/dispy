@@ -1514,7 +1514,7 @@ class _Cluster(object):
             node._jobs.discard(_job.uid)
 
         node.last_pulse = time.time()
-        job.result = reply.result
+        job.result = unserialize(reply.result)
         job.stdout = reply.stdout
         job.stderr = reply.stderr
         job.exception = reply.exception
@@ -2940,7 +2940,7 @@ def recover_jobs(recover_file, timeout=None, terminate_pending=False):
             yield conn.send_msg('ACK')
             logger.debug('received reply for job %s', reply.uid)
             job = DispyJob((), {})
-            job.result = reply.result
+            job.result = unserialize(reply.result)
             job.stdout = reply.stdout
             job.stderr = reply.stderr
             job.exception = reply.exception

@@ -72,7 +72,7 @@ def dispy_provisional_result(result, timeout=MsgTimeout):
 
     dispy_job_reply = __dispy_job_info.job_reply
     dispy_job_reply.status = DispyJob.ProvisionalResult
-    dispy_job_reply.result = result
+    dispy_job_reply.result = serialize(result)
     dispy_job_reply.end_time = time.time()
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock = AsyncSocket(sock, blocking=True, keyfile=__dispy_job_keyfile,
@@ -193,6 +193,7 @@ def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
         exec('__dispy_job_reply.result = %s(*__dispy_job_args, **__dispy_job_kwargs)' %
              __dispy_job_name) in globals()
         __dispy_job_reply.status = DispyJob.Finished
+        __dispy_job_reply.result = serialize(__dispy_job_reply.result)
     except:
         __dispy_job_reply.exception = traceback.format_exc()
         __dispy_job_reply.status = DispyJob.Terminated
@@ -1216,7 +1217,7 @@ class _DispyNode(object):
 
             assert isinstance(job_info.proc, subprocess.Popen)
             reply.stdout, reply.stderr = job_info.proc.communicate()
-            reply.result = job_info.proc.returncode
+            reply.result = serialize(job_info.proc.returncode)
             reply.status = DispyJob.Finished
         except:
             reply.exception = traceback.format_exc()
@@ -1715,11 +1716,11 @@ if __name__ == '__main__':
     _dispy_node = _DispyNode(**_dispy_config)
     del _dispy_config
 
-    def shutdown(signum, frame):
+    def sighandler(signum, frame):
         _dispy_node.shutdown(quit=True)
 
-    signal.signal(signal.SIGTERM, shutdown)
-    signal.signal(signal.SIGINT, shutdown)
-    signal.signal(signal.SIGHUP, shutdown)
+    signal.signal(signal.SIGTERM, sighandler)
+    signal.signal(signal.SIGINT, sighandler)
+    signal.signal(signal.SIGHUP, sighandler)
 
     _dispy_node.asyncoro.finish()

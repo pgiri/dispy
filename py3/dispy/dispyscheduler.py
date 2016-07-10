@@ -510,7 +510,7 @@ class _Scheduler(object, metaclass=Singleton):
                 if dispy_node:
                     dispy_node.cpus = cpus
         else:
-            logger.warning('invalid message from %s:%s ignored', addr)
+            logger.warning('invalid message from %s:%s ignored', addr[0], addr[1])
             conn.close()
 
     def schedule_cluster(self, coro=None):
@@ -1199,7 +1199,7 @@ class _Scheduler(object, metaclass=Singleton):
                     os.remove(path)
                 except:
                     logger.warning('Could not remove "%s"', path)
-        cluster.file_uses = {}
+        cluster.file_uses.clear()
 
         if os.path.isdir(cluster.dest_path):
             for dirpath, dirnames, filenames in os.walk(cluster.dest_path, topdown=False):
