@@ -324,10 +324,11 @@ class _Compute(object):
 class _XferFile(object):
     """Internal use only.
     """
-    def __init__(self, name, stat_buf, compute_id=None):
+    def __init__(self, name, dest_path, compute_id=None):
         self.name = name
-        self.stat_buf = stat_buf
+        self.dest_path = dest_path
         self.compute_id = compute_id
+        self.stat_buf = os.stat(name)
         self.sep = os.sep
 
 
@@ -439,7 +440,7 @@ class _Node(object):
             else:
                 resp = -1
         except:
-            logger.error('Could not transfer %s to %s: %s', xf.name, self.ip_addr, resp)
+            logger.error('Could not transfer %s to %s', xf.name, self.ip_addr)
             # TODO: mark this node down, reschedule on different node?
             resp = -1
         finally:
@@ -478,19 +479,32 @@ class _DispyJob_(object):
         self.xfer_files = []
         self.code = ''
         depend_ids = set()
+        cwd = os.getcwd()
         for dep in job_deps:
             if isinstance(dep, str) or inspect.ismodule(dep):
                 if inspect.ismodule(dep):
-                    dep = dep.__file__
-                    if dep.endswith('.pyc'):
-                        dep = dep[:-1]
-                    if not dep.endswith('.py'):
+                    name = dep.__file__
+                    if name.endswith('.pyc'):
+                        name = name[:-1]
+                    if not name.endswith('.py'):
                         logger.warning('Invalid module "%s" - must be python source.', dep)
                         continue
-                if dep in depend_ids:
+                    if name.startswith(cwd):
+                        dst = os.path.dirname(name[len(cwd)+1:])
+                    elif dep.__package__:
+                        dst = dep.__package__.replace('.', os.sep)
+                    else:
+                        dst = os.path.dirname(dep.__name__.replace('.', os.sep))
+                else:
+                    name = dep
+                    if name.startswith(cwd):
+                        dst = name[len(cwd)+1:]
+                    else:
+                        dst = '.'
+                if name in depend_ids:
                     continue
-                self.xfer_files.append(_XferFile(dep, os.stat(dep), compute_id))
-                depend_ids.add(dep)
+                self.xfer_files.append(_XferFile(name, dst, compute_id))
+                depend_ids.add(name)
             elif inspect.isfunction(dep) or inspect.isclass(dep) or hasattr(dep, '__class__'):
                 if inspect.isfunction(dep) or inspect.isclass(dep):
                     pass
@@ -1114,10 +1128,8 @@ class _Cluster(object):
         node = self._nodes.get(job_reply.ip_addr, None)
         if node:
             node.last_pulse = time.time()
-        xf.name = xf.name.replace(xf.sep, os.sep)
-        if xf.name.startswith(os.sep):
-            xf.name = xf.name[len(os.sep):]
-        tgt = os.path.join(self.dest_path, xf.name)
+        tgt = os.path.join(self.dest_path, xf.dest_path.replace(xf.sep, os.sep),
+                           xf.name.split(xf.sep)[-1])
         if not os.path.isdir(os.path.dirname(tgt)):
             os.makedirs(os.path.dirname(tgt))
         with open(tgt, 'wb') as fd:
@@ -2141,33 +2153,48 @@ class JobCluster(object):
         atexit.register(self.shutdown)
 
         depend_ids = {}
+        cwd = os.getcwd()
         for dep in depends:
             if isinstance(dep, str) or inspect.ismodule(dep):
                 if inspect.ismodule(dep):
-                    dep = dep.__file__
-                    if dep.endswith('.pyc'):
-                        dep = dep[:-1]
-                    if not (dep.endswith('.py') and os.path.isfile(dep)):
-                        raise Exception('Invalid module "%s" - must be python source.' % dep)
-                if dep in depend_ids:
-                    continue
-                if compute.type == _Compute.prog_type and not os.path.isfile(dep):
-                    for p in os.environ['PATH'].split(os.pathsep):
-                        f = os.path.join(p, dep)
-                        if os.path.isfile(f):
-                            logger.debug('Assuming "%s" is program "%s"', dep, f)
-                            dep = f
-                            break
+                    name = dep.__file__
+                    if name.endswith('.pyc'):
+                        name = name[:-1]
+                    if not name.endswith('.py'):
+                        logger.warning('Invalid module "%s" - must be python source.', dep)
+                        continue
+                    if name.startswith(cwd):
+                        dst = os.path.dirname(name[len(cwd)+1:])
+                    elif dep.__package__:
+                        dst = dep.__package__.replace('.', os.sep)
                     else:
-                        raise Exception('Program "%s" is not valid' % dep)
+                        dst = os.path.dirname(dep.__name__.replace('.', os.sep))
+                else:
+                    if os.path.isfile(dep):
+                        name = dep
+                    elif compute.type == _Compute.prog_type:
+                        for p in os.environ['PATH'].split(os.pathsep):
+                            f = os.path.join(p, dep)
+                            if os.path.isfile(f):
+                                logger.debug('Assuming "%s" is program "%s"', dep, f)
+                                name = f
+                                break
+                    else:
+                        raise Exception('Path "%s" is not valid' % dep)
+                    if name.startswith(cwd):
+                        dst = name[len(cwd)+1:]
+                    else:
+                        dst = '.'
+                if name in depend_ids:
+                    continue
                 try:
-                    with open(dep, 'rb') as fd:
+                    with open(name, 'rb') as fd:
                         pass
-                    xf = _XferFile(dep, os.stat(dep), compute.id)
+                    xf = _XferFile(name, dst, compute.id)
                     compute.xfer_files.add(xf)
-                    depend_ids[dep] = dep
+                    depend_ids[name] = dep
                 except:
-                    raise Exception('File "%s" is not valid' % dep)
+                    raise Exception('File "%s" is not valid' % name)
             elif inspect.isfunction(dep) or inspect.isclass(dep) or hasattr(dep, '__class__'):
                 if inspect.isfunction(dep) or inspect.isclass(dep):
                     pass
@@ -2320,6 +2347,8 @@ class JobCluster(object):
 
         if not node:
             return -1
+        if path.startswith(os.curdir):
+            path = path[len(os.curdir)+1:]
         xf = _XferFile(path, os.stat(path), self._compute.id)
         return Coro(self._cluster.send_file, self, node, xf).value()
 
@@ -2785,6 +2814,8 @@ class SharedJobCluster(JobCluster):
         if not node:
             return -1
 
+        if path.startswith(os.curdir):
+            path = path[len(os.curdir)+1:]
         xf = _XferFile(path, os.stat(path), self._compute.id)
         sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), blocking=True,
                            keyfile=self._cluster.keyfile, certfile=self._cluster.certfile)

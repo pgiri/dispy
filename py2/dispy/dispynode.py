@@ -116,13 +116,18 @@ def dispy_send_file(path, timeout=MsgTimeout):
     Return value of 0 indicates successfull transfer.
     """
 
-    path = os.path.expanduser(path)
-    xf = _XferFile(path, os.stat(path))
+    if not os.path.isfile(path):
+        return -1
+    path = os.path.splitdrive(os.path.expanduser(path))[1]
+    if path.startswith(os.sep):
+        path = path[len(os.sep):]
+    if path.startswith(os.getcwd()):
+        dst = path[len(os.getcwd())+1:]
+    else:
+        dst = os.path.dirname(path)
+    xf = _XferFile(path, dst)
     if MaxFileSize and xf.stat_buf.st_size > MaxFileSize:
         return -1
-    xf.name = os.path.splitdrive(path)[1]
-    if xf.name.startswith(os.sep):
-        xf.name = xf.name[len(os.sep):]
     dispy_job_reply = __dispy_job_info.job_reply
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock = AsyncSocket(sock, blocking=True,
@@ -738,7 +743,8 @@ class _DispyNode(object):
                 _dispy_logger.error('Invalid file transfer for "%s"', xf.name)
                 yield conn.send_msg(serialize(-1))
                 raise StopIteration
-            tgt = os.path.join(compute.dest_path, os.path.basename(xf.name))
+            tgt = os.path.join(compute.dest_path, xf.dest_path.replace(xf.sep, os.sep),
+                               xf.name.split(xf.sep)[-1])
             if os.path.isfile(tgt) and _same_file(tgt, xf):
                 if tgt in compute.file_uses:
                     compute.file_uses[tgt] += 1
@@ -747,6 +753,8 @@ class _DispyNode(object):
                 yield conn.send_msg(serialize(xf.stat_buf.st_size))
             else:
                 try:
+                    if not os.path.isdir(os.path.dirname(tgt)):
+                        os.makedirs(os.path.dirname(tgt))
                     with open(tgt, 'wb') as fd:
                         recvd = 0
                         _dispy_logger.debug('Copying file %s to %s (%s)',
@@ -1240,7 +1248,8 @@ class _DispyNode(object):
                 if not compute:
                     continue
                 for xf in job_info.xfer_files:
-                    path = os.path.join(compute.dest_path, os.path.basename(xf.name))
+                    path = os.path.join(compute.dest_path, xf.dest_path.replace(xf.sep, os.sep),
+                                        xf.name.split(xf.sep)[-1])
                     try:
                         compute.file_uses[path] -= 1
                         if compute.file_uses[path] == 0:
@@ -1397,26 +1406,26 @@ class _DispyNode(object):
                 sys.modules.pop(module, None)
         sys.modules.update(self.__init_modules)
 
-        for path in os.listdir(compute.dest_path):
-            path = os.path.join(compute.dest_path, path)
-            if file_uses.get(path, 1) == 1:
+        for path, use_count in file_uses.iteritems():
+            if use_count == 1:
                 try:
-                    if os.path.isfile(path) or os.path.islink(path):
-                        os.remove(path)
-                    elif os.path.isdir(path):
-                        shutil.rmtree(path, ignore_errors=True)
-                    else:
-                        os.remove(path)
+                    os.remove(path)
+                    if path.endswith('.py'):
+                        path = path + 'c'
+                        if os.path.isfile(path):
+                            os.remove(path)
                 except:
                     _dispy_logger.warning('Could not remove "%s"', path)
 
-        if os.path.isdir(compute.dest_path) and \
-           compute.dest_path.startswith(self.dest_path_prefix) and \
-           len(os.listdir(compute.dest_path)) == 0:
-            try:
-                os.rmdir(compute.dest_path)
-            except:
-                _dispy_logger.warning('Could not remove directory "%s"', compute.dest_path)
+        if (os.path.isdir(compute.dest_path) and
+            compute.dest_path.startswith(self.dest_path_prefix)):
+            for dirpath, dirnames, filenames in os.walk(compute.dest_path, topdown=False):
+                if not filenames:
+                    try:
+                        os.rmdir(dirpath)
+                    except:
+                        _dispy_logger.warning('Could not remove "%s"', dirpath)
+                        break
             else:
                 _dispy_logger.debug('Removed "%s"', compute.dest_path)
 
@@ -1603,7 +1612,6 @@ if __name__ == '__main__':
         if _dispy_config:
             for key, value in cfgp.items():
                 if cfgp[key] != parser.get_default(key) or key not in _dispy_config:
-                    print('set %s to %s' % (key, cfgp[key]))
                     _dispy_config[key] = cfgp[key]
             del key, value
         del cfgp

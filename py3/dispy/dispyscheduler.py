@@ -571,7 +571,10 @@ class _Scheduler(object, metaclass=Singleton):
             # function
             _job.uid = id(_job)
             for xf in _job.xfer_files:
-                xf.name = os.path.join(cluster.dest_path, os.path.basename(xf.name))
+                xf.name = os.path.join(cluster.dest_path, xf.dest_path.replace(xf.sep, os.sep),
+                                       xf.name.split(xf.sep)[-1])
+                xf.sep = os.sep
+
             job = DispyJob((), {})
             job.id = _job.uid
             if node:
@@ -642,7 +645,9 @@ class _Scheduler(object, metaclass=Singleton):
             cluster.last_pulse = time.time()
             for xf in compute.xfer_files:
                 xf.compute_id = compute.id
-                xf.name = os.path.join(cluster.dest_path, os.path.basename(xf.name))
+                xf.name = os.path.join(cluster.dest_path, xf.dest_path.replace(xf.sep, os.sep),
+                                       xf.name.split(xf.sep)[-1])
+                xf.sep = os.sep
 
             with open(os.path.join(self.dest_path_prefix,
                                    '%s_%s' % (compute.id, cluster.client_auth)), 'wb') as fd:
@@ -666,7 +671,8 @@ class _Scheduler(object, metaclass=Singleton):
                 if not cluster:
                     logger.error('Computation "%s" is invalid', xf.compute_id)
                     raise StopIteration(serialize(-1))
-            tgt = os.path.join(cluster.dest_path, os.path.basename(xf.name))
+            tgt = os.path.join(cluster.dest_path, xf.dest_path.replace(xf.sep, os.sep),
+                                       xf.name.split(xf.sep)[-1])
             if os.path.isfile(tgt) and _same_file(tgt, xf):
                 if tgt in cluster.file_uses:
                     cluster.file_uses[tgt] += 1
@@ -675,6 +681,8 @@ class _Scheduler(object, metaclass=Singleton):
                 raise StopIteration(serialize(xf.stat_buf.st_size))
             logger.debug('Copying file %s to %s (%s)', xf.name, tgt, xf.stat_buf.st_size)
             try:
+                if not os.path.isdir(os.path.dirname(tgt)):
+                    os.makedirs(os.path.dirname(tgt))
                 with open(tgt, 'wb') as fd:
                     recvd = 0
                     while recvd < xf.stat_buf.st_size:
@@ -1185,20 +1193,24 @@ class _Scheduler(object, metaclass=Singleton):
             with open(pkl_path, 'wb') as fd:
                 pickle.dump(compute, fd)
 
-        for path, use in cluster.file_uses.items():
-            if use == 1:
+        for path, use_count in cluster.file_uses.items():
+            if use_count == 1:
                 try:
                     os.remove(path)
                 except:
-                    logger.warning('Could not remove file "%s"', path)
+                    logger.warning('Could not remove "%s"', path)
         cluster.file_uses = {}
 
-        if os.path.isdir(cluster.dest_path) and len(os.listdir(cluster.dest_path)) == 0:
-            logger.debug('Removing "%s"', cluster.dest_path)
-            try:
-                os.rmdir(cluster.dest_path)
-            except:
-                logger.warning('Could not remove directory "%s"', cluster.dest_path)
+        if os.path.isdir(cluster.dest_path):
+            for dirpath, dirnames, filenames in os.walk(cluster.dest_path, topdown=False):
+                if not filenames or dirpath.endswith('__pycache__'):
+                    try:
+                        shutil.rmtree(dirpath)
+                    except:
+                        logger.warning('Could not remove "%s"', dirpath)
+                        break
+            else:
+                logger.debug('Removed "%s"', compute.dest_path)
 
         # remove cluster from all nodes before closing (which uses
         # yield); otherwise, scheduler may access removed cluster
