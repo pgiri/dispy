@@ -1721,5 +1721,7 @@ if __name__ == '__main__':
         _dispy_node.shutdown(quit=True)
 
     signal.signal(signal.SIGTERM, shutdown)
+    signal.signal(signal.SIGINT, shutdown)
+    signal.signal(signal.SIGHUP, shutdown)
 
     _dispy_node.asyncoro.finish()
