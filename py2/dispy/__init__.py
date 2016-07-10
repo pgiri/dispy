@@ -2153,7 +2153,7 @@ class JobCluster(object):
         atexit.register(self.shutdown)
 
         depend_ids = {}
-        cwd = os.getcwd()
+        cwd = self._cluster.dest_path
         for dep in depends:
             if isinstance(dep, str) or inspect.ismodule(dep):
                 if inspect.ismodule(dep):
@@ -2347,9 +2347,12 @@ class JobCluster(object):
 
         if not node:
             return -1
-        if path.startswith(os.curdir):
-            path = path[len(os.curdir)+1:]
-        xf = _XferFile(path, os.stat(path), self._compute.id)
+        cwd = self._cluster.dest_path
+        if path.startswith(cwd):
+            dst = path[len(cwd)+1:]
+        else:
+            dst = '.'
+        xf = _XferFile(path, dst, self._compute.id)
         return Coro(self._cluster.send_file, self, node, xf).value()
 
     @property
@@ -2814,9 +2817,12 @@ class SharedJobCluster(JobCluster):
         if not node:
             return -1
 
-        if path.startswith(os.curdir):
-            path = path[len(os.curdir)+1:]
-        xf = _XferFile(path, os.stat(path), self._compute.id)
+        cwd = self._cluster.dest_path
+        if path.startswith(cwd):
+            dst = path[len(cwd)+1:]
+        else:
+            dst = '.'
+        xf = _XferFile(path, dst, self._compute.id)
         sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), blocking=True,
                            keyfile=self._cluster.keyfile, certfile=self._cluster.certfile)
         sock.settimeout(MsgTimeout)
