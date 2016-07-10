@@ -1481,6 +1481,8 @@ class _DispyNode(object):
             sys.stdout.flush()
             try:
                 cmd = yield thread_pool.async_task(input)
+            except GeneratorExit:
+                break
             except:
                 continue
 
@@ -1717,7 +1719,7 @@ if __name__ == '__main__':
     _dispy_node = _DispyNode(**_dispy_config)
     del _dispy_config
 
-    def shutdown(_, __):
+    def shutdown(signum, frame):
         _dispy_node.shutdown(quit=True)
 
     signal.signal(signal.SIGTERM, shutdown)
