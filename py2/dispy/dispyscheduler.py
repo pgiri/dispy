@@ -1657,18 +1657,20 @@ class _Scheduler(object):
                 node.busy -= 1
             self._sched_event.set()
         else:
-            logger.debug('Running job %s on %s (busy: %d / %d)',
-                         _job.uid, node.ip_addr, node.busy, node.cpus)
-            _job.job.status = DispyJob.Running
-            _job.job.start_time = time.time()
-            cluster = self._clusters[_job.compute_id]
-            # TODO/Note: It is likely that this job status may arrive at
-            # the client before the job is done and the node's status
-            # arrives. Either use queing for messages (ideally with
-            # asyncoro's message passing) or tag messages with timestamps
-            # so recipient can use temporal ordering to ignore prior
-            # messages
-            Coro(self.send_job_status, cluster, _job)
+            # job may have already finished (in which case _job.job would be None)
+            if _job.job:
+                logger.debug('Running job %s on %s (busy: %d / %d)',
+                             _job.uid, node.ip_addr, node.busy, node.cpus)
+                _job.job.status = DispyJob.Running
+                _job.job.start_time = time.time()
+                cluster = self._clusters[_job.compute_id]
+                # TODO/Note: It is likely that this job status may arrive at
+                # the client before the job is done and the node's status
+                # arrives. Either use queing for messages (ideally with
+                # asyncoro's message passing) or tag messages with timestamps
+                # so recipient can use temporal ordering to ignore prior
+                # messages
+                Coro(self.send_job_status, cluster, _job)
 
     def _schedule_jobs(self, coro=None):
         # generator

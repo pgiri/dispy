@@ -1620,15 +1620,17 @@ class _Cluster(object):
                 node.busy -= 1
             self._sched_event.set()
         else:
-            logger.debug('Running job %s / %s on %s (busy: %d / %d)',
-                         _job.job.id, _job.uid, node.ip_addr, node.busy, node.cpus)
-            _job.job.status = DispyJob.Running
-            _job.job.start_time = time.time()
-            dispy_node.busy += 1
-            dispy_node.update_time = time.time()
-            if cluster.status_callback:
-                self.worker_Q.put((cluster.status_callback,
-                                   (DispyJob.Running, dispy_node, _job.job)))
+            # job may have already finished (in which case _job.job would be None)
+            if _job.job:
+                logger.debug('Running job %s / %s on %s (busy: %d / %d)',
+                             _job.job.id, _job.uid, node.ip_addr, node.busy, node.cpus)
+                _job.job.status = DispyJob.Running
+                _job.job.start_time = time.time()
+                dispy_node.busy += 1
+                dispy_node.update_time = time.time()
+                if cluster.status_callback:
+                    self.worker_Q.put((cluster.status_callback,
+                                       (DispyJob.Running, dispy_node, _job.job)))
 
     def load_balance_schedule(self):
         host = None
