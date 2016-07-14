@@ -118,13 +118,12 @@ def dispy_send_file(path, timeout=MsgTimeout):
 
     if not os.path.isfile(path):
         return -1
-    path = os.path.splitdrive(os.path.expanduser(path))[1]
-    if path.startswith(os.sep):
-        path = path[len(os.sep):]
-    if path.startswith(os.getcwd()):
-        dst = path[len(os.getcwd())+1:]
+    path = os.path.abspath(path)
+    cwd = os.getcwd()
+    if path.startswith(cwd):
+        dst = os.path.dirname(path[len(cwd+os.sep):])
     else:
-        dst = os.path.dirname(path)
+        dst = '.'
     xf = _XferFile(path, dst)
     if MaxFileSize and xf.stat_buf.st_size > MaxFileSize:
         return -1
@@ -195,10 +194,10 @@ def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
         exec('__dispy_job_reply.result = %s(*__dispy_job_args, **__dispy_job_kwargs)' %
              __dispy_job_name, globals())
         __dispy_job_reply.status = DispyJob.Finished
-        __dispy_job_reply.result = serialize(__dispy_job_reply.result)
     except:
         __dispy_job_reply.exception = traceback.format_exc()
         __dispy_job_reply.status = DispyJob.Terminated
+    __dispy_job_reply.result = serialize(__dispy_job_reply.result)
     __dispy_job_reply.stdout = sys.stdout.getvalue()
     __dispy_job_reply.stderr = sys.stderr.getvalue()
     __dispy_job_reply.end_time = time.time()
@@ -264,6 +263,18 @@ class _DispyNode(object):
             self.keyfile = os.path.abspath(self.keyfile)
         if self.certfile:
             self.certfile = os.path.abspath(self.certfile)
+        if not dest_path_prefix:
+            dest_path_prefix = os.path.join(tempfile.gettempdir(), 'dispy', 'node')
+        self.dest_path_prefix = os.path.abspath(dest_path_prefix.strip()).rstrip(os.sep)
+
+        config = os.path.join(self.dest_path_prefix, 'config')
+        if os.path.isfile(config):
+            with open(config, 'rb') as fd:
+                config = pickle.load(fd)
+                if config.get('pid', None):
+                    raise Exception('Another dispynode server seems to be running with PID %s;\n'
+                                    '    terminate that process and remove file "%s"' %
+                                    (config['pid'], os.path.join(self.dest_path_prefix, 'config')))
 
         self.asyncoro = AsynCoro()
 
@@ -275,9 +286,6 @@ class _DispyNode(object):
         self.port = self.address[1]
         self.tcp_sock.listen(30)
 
-        if not dest_path_prefix:
-            dest_path_prefix = os.path.join(tempfile.gettempdir(), 'dispy', 'node')
-        self.dest_path_prefix = os.path.abspath(dest_path_prefix.strip()).rstrip(os.sep)
         if clean:
             shutil.rmtree(self.dest_path_prefix, ignore_errors=True)
         if not os.path.isdir(self.dest_path_prefix):
@@ -300,10 +308,11 @@ class _DispyNode(object):
         self.num_jobs = 0
         self.num_computations = 0
 
-        with open(os.path.join(self.dest_path_prefix, 'config'), 'wb') as fd:
+        config = os.path.join(self.dest_path_prefix, 'config')
+        with open(config, 'wb') as fd:
             config = {
                 'ext_ip_addr': self.ext_ip_addr, 'port': self.port, 'avail_cpus': self.avail_cpus,
-                'sign': self.sign, 'secret': self.secret, 'auth': self.auth
+                'sign': self.sign, 'secret': self.secret, 'auth': self.auth, 'pid': os.getpid()
                 }
             pickle.dump(config, fd)
 
@@ -1427,6 +1436,10 @@ class _DispyNode(object):
                         break
             else:
                 _dispy_logger.debug('Removed "%s"', compute.dest_path)
+        try:
+            os.remove(os.path.join(self.dest_path_prefix, '%s_%s' % (compute.id, compute.auth)))
+        except:
+            pass
 
         if self.serve == 0:
             self.shutdown(quit=True)
@@ -1468,6 +1481,8 @@ class _DispyNode(object):
             if quit:
                 self.tcp_coro.terminate()
                 self.sign = ''
+                config = os.path.join(self.dest_path_prefix, 'config')
+                os.remove(config)
 
         if self.sign:
             Coro(_shutdown, self, quit)
@@ -1725,6 +1740,9 @@ if __name__ == '__main__':
 
     signal.signal(signal.SIGTERM, sighandler)
     signal.signal(signal.SIGINT, sighandler)
-    signal.signal(signal.SIGHUP, sighandler)
+    try:
+        signal.signal(signal.SIGHUP, sighandler)
+    except:
+        pass
 
     _dispy_node.asyncoro.finish()

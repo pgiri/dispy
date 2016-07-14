@@ -490,15 +490,15 @@ class _DispyJob_(object):
                         logger.warning('Invalid module "%s" - must be python source.', dep)
                         continue
                     if name.startswith(cwd):
-                        dst = os.path.dirname(name[len(cwd)+1:])
+                        dst = os.path.dirname(name[len(cwd+os.sep):])
                     elif dep.__package__:
                         dst = dep.__package__.replace('.', os.sep)
                     else:
                         dst = os.path.dirname(dep.__name__.replace('.', os.sep))
                 else:
-                    name = dep
+                    name = os.path.abspath(dep)
                     if name.startswith(cwd):
-                        dst = name[len(cwd)+1:]
+                        dst = os.path.dirname(name[len(cwd+os.sep):])
                     else:
                         dst = '.'
                 if name in depend_ids:
@@ -2164,14 +2164,14 @@ class JobCluster(object):
                         logger.warning('Invalid module "%s" - must be python source.', dep)
                         continue
                     if name.startswith(cwd):
-                        dst = os.path.dirname(name[len(cwd)+1:])
+                        dst = os.path.dirname(name[len(cwd+os.sep):])
                     elif dep.__package__:
                         dst = dep.__package__.replace('.', os.sep)
                     else:
                         dst = os.path.dirname(dep.__name__.replace('.', os.sep))
                 else:
                     if os.path.isfile(dep):
-                        name = dep
+                        name = os.path.abspath(dep)
                     elif compute.type == _Compute.prog_type:
                         for p in os.environ['PATH'].split(os.pathsep):
                             f = os.path.join(p, dep)
@@ -2182,7 +2182,7 @@ class JobCluster(object):
                     else:
                         raise Exception('Path "%s" is not valid' % dep)
                     if name.startswith(cwd):
-                        dst = name[len(cwd)+1:]
+                        dst = os.path.dirname(name[len(cwd+os.sep):])
                     else:
                         dst = '.'
                 if name in depend_ids:
@@ -2348,8 +2348,9 @@ class JobCluster(object):
         if not node:
             return -1
         cwd = self._cluster.dest_path
+        path = os.path.abspath(path)
         if path.startswith(cwd):
-            dst = path[len(cwd)+1:]
+            dst = os.path.dirname(path[len(cwd+os.sep):])
         else:
             dst = '.'
         xf = _XferFile(path, dst, self._compute.id)
@@ -2818,8 +2819,9 @@ class SharedJobCluster(JobCluster):
             return -1
 
         cwd = self._cluster.dest_path
+        path = os.path.abspath(path)
         if path.startswith(cwd):
-            dst = path[len(cwd)+1:]
+            dst = os.path.dirname(path[len(cwd+os.sep):])
         else:
             dst = '.'
         xf = _XferFile(path, dst, self._compute.id)
