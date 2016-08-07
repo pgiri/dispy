@@ -9,7 +9,7 @@ def compute(n): # executed on nodes
     import random, time, socket
     name = socket.gethostname()
     cur_best = 1
-    for i in xrange(0, n):
+    for i in range(0, n):
         r = random.uniform(0, 1)
         if r <= cur_best:
             # possible result (local optimal value)
