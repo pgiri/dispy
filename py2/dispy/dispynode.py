@@ -157,6 +157,7 @@ def dispy_send_file(path, timeout=MsgTimeout):
     finally:
         sock.close()
 
+
 class _DispyJobInfo(object):
     """Internal use only.
     """
@@ -1561,18 +1562,18 @@ class _DispyNode(object):
                 print('')
         self.shutdown(quit=True)
 
+
 if __name__ == '__main__':
     import argparse
     import re
 
     _dispy_logger = asyncoro.Logger('dispynode')
-    _dispy_logger.info('dispynode version %s', _dispy_version)
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', dest='config', default=None,
+    parser.add_argument('--config', dest='config', default='',
                         help='use configuration in given file')
-    parser.add_argument('--save_config', dest='save_config', default=False, action='store_true',
-                        help='save configuration in --config file and exit')
+    parser.add_argument('--save_config', dest='save_config', default='',
+                        help='save configuration in given file and exit')
     parser.add_argument('-c', '--cpus', dest='cpus', type=int, default=0,
                         help='number of cpus used by dispy; if negative, '
                         'that many cpus are not used')
@@ -1621,41 +1622,36 @@ if __name__ == '__main__':
                         '(to set CPUs or get status)')
     _dispy_config = vars(parser.parse_args(sys.argv[1:]))
 
-    if _dispy_config['config'] and os.path.isfile(_dispy_config['config']):
-        import ConfigParser
-        cfgp = ConfigParser.ConfigParser()
-        cfgp.read(_dispy_config['config'])
-        _dispy_config, cfgp = dict(cfgp.items('DEFAULT')), _dispy_config
-        if _dispy_config:
-            for key, value in cfgp.items():
-                if cfgp[key] != parser.get_default(key) or key not in _dispy_config:
-                    _dispy_config[key] = cfgp[key]
-            del key, value
-        del cfgp
-        # TODO: dump serialized config and deserialize after load instead?
-        _dispy_config['cpus'] = int(_dispy_config['cpus'])
-        _dispy_config['node_port'] = int(_dispy_config['node_port'])
-        _dispy_config['scheduler_port'] = int(_dispy_config['scheduler_port'])
-        _dispy_config['zombie_interval'] = float(_dispy_config['zombie_interval'])
-        _dispy_config['msg_timeout'] = float(_dispy_config['msg_timeout'])
-        _dispy_config['serve'] = int(_dispy_config['serve'])
-        _dispy_config['loglevel'] = True if _dispy_config['loglevel'] == 'True' else False
-        _dispy_config['clean'] = True if _dispy_config['clean'] == 'True' else False
-        _dispy_config['daemon'] = True if _dispy_config['daemon'] == 'True' else False
-    del parser
-
-    if _dispy_config.pop('save_config', None):
-        import ConfigParser
-        cfgp = ConfigParser.ConfigParser(_dispy_config)
-        if _dispy_config['config']:
-            cfgfd = open(_dispy_config['config'], 'w')
-            _dispy_config.pop('config')
-        else:
-            cfgfd = sys.stdout
-        cfgp.write(cfgfd)
-        exit(0)
-
+    if _dispy_config['config']:
+        import configparser
+        cfg = configparser.ConfigParser()
+        cfg.read(_dispy_config['config'])
+        cfg = dict(cfg.items('DEFAULT'))
+        cfg['cpus'] = int(cfg['cpus'])
+        cfg['node_port'] = int(cfg['node_port'])
+        cfg['scheduler_port'] = int(cfg['scheduler_port'])
+        cfg['zombie_interval'] = float(cfg['zombie_interval'])
+        cfg['msg_timeout'] = float(cfg['msg_timeout'])
+        cfg['serve'] = int(cfg['serve'])
+        cfg['loglevel'] = cfg['loglevel'] == 'True'
+        cfg['clean'] = cfg['clean'] == 'True'
+        cfg['daemon'] = cfg['daemon'] == 'True'
+        for key, value in _dispy_config.items():
+            if _dispy_config[key] != parser.get_default(key) or key not in cfg:
+                cfg[key] = _dispy_config[key]
+        _dispy_config = cfg
+        del key, value
     _dispy_config.pop('config', None)
+
+    cfg = _dispy_config.pop('save_config', None)
+    if cfg:
+        import configparser
+        _dispy_config = configparser.ConfigParser(_dispy_config)
+        cfg = open(cfg, 'w')
+        _dispy_config.write(cfg)
+        cfg.close()
+        exit(0)
+    del parser, cfg
 
     if _dispy_config['loglevel']:
         _dispy_logger.setLevel(logging.DEBUG)
@@ -1725,8 +1721,8 @@ if __name__ == '__main__':
         print('    node status (CPU, memory, disk and swap space usage) '
               'will not be sent to clients\n')
 
+    _dispy_logger.info('dispynode version %s', _dispy_version)
     _dispy_node = None
-
     _dispy_node = _DispyNode(**_dispy_config)
     del _dispy_config
 
