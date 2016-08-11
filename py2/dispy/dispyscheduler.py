@@ -568,24 +568,25 @@ class _Scheduler(object):
     def scheduler_task(self, conn, addr, coro=None):
         # generator
         def _job_request_task(self, cluster, node, _job):
-            # function
+            # generator
             _job.uid = id(_job)
             for xf in _job.xfer_files:
                 xf.name = os.path.join(cluster.dest_path, xf.dest_path.replace(xf.sep, os.sep),
                                        xf.name.split(xf.sep)[-1])
                 xf.sep = os.sep
+
             job = DispyJob((), {})
             job.id = _job.uid
+            _job.job = job
+            yield conn.send_msg(serialize(_job.uid))
+            ack = yield conn.recv_msg()
+            if ack != 'ACK':
+                raise StopIteration
             if node:
-                node = self._nodes.get(node, None)
-                if not node or cluster._compute.id not in node.clusters:
-                    return None
+                _job.pinned = node
                 node.pending_jobs.append(_job)
             else:
                 cluster._jobs.append(_job)
-            setattr(_job, 'pinned', node)
-            setattr(_job, 'job', job)
-            setattr(_job, 'node', None)
             logger.debug('submitted job %s / %s', _job.uid, job.submit_time)
             self.unsched_jobs += 1
             cluster.pending_jobs += 1
@@ -593,7 +594,6 @@ class _Scheduler(object):
             self._sched_event.set()
             if cluster.status_callback:
                 cluster.status_callback(DispyJob.Created, None, job)
-            return _job.uid
 
         def _compute_task(self, msg):
             # function
@@ -799,11 +799,13 @@ class _Scheduler(object):
                 cluster = self._clusters[_job.compute_id]
                 assert cluster.client_auth == req['auth']
                 node = req['node']
+                if node:
+                    node = self._nodes[node]
             except:
-                resp = None
+                pass
             else:
-                resp = _job_request_task(self, cluster, node, _job)
-            resp = serialize(resp)
+                yield _job_request_task(self, cluster, node, _job)
+            resp = None
         elif msg.startswith('COMPUTE:'):
             msg = msg[len('COMPUTE:'):]
             resp = _compute_task(self, msg)
@@ -1205,12 +1207,10 @@ class _Scheduler(object):
             for dirpath, dirnames, filenames in os.walk(cluster.dest_path, topdown=False):
                 if not filenames:
                     try:
-                        os.rmdir(dirpath)
+                        shutil.rmtree(dirpath)
                     except:
                         logger.warning('Could not remove "%s"', dirpath)
                         break
-            else:
-                logger.debug('Removed "%s"', compute.dest_path)
 
         # remove cluster from all nodes before closing (which uses
         # yield); otherwise, scheduler may access removed cluster

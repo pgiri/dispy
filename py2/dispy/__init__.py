@@ -335,7 +335,6 @@ class _XferFile(object):
 class _Node(object):
     """Internal use only.
     """
-
     __slots__ = ['ip_addr', 'port', 'name', 'cpus', 'avail_cpus', 'busy', 'cpu_time', 'clusters',
                  'auth', 'secret', 'keyfile', 'certfile', 'last_pulse', 'scheduler_ip_addr',
                  '_jobs', 'pending_jobs', 'avail_info']
@@ -1520,7 +1519,6 @@ class _Cluster(object):
         job.exception = reply.exception
         job.start_time = reply.start_time
         job.end_time = reply.end_time
-        yield sock.send_msg('ACK')
         logger.debug('Received reply for job %s / %s from %s', job.id, _job.uid, job.ip_addr)
         if reply.status == DispyJob.ProvisionalResult:
             self.finish_job(cluster, _job, reply.status)
@@ -1544,6 +1542,7 @@ class _Cluster(object):
                                    (reply.status, dispy_node, _job.job)))
             self.finish_job(cluster, _job, reply.status)
             self._sched_event.set()
+        yield sock.send_msg('ACK')
 
     def reschedule_jobs(self, dead_jobs):
         if not dead_jobs:
@@ -2644,6 +2643,7 @@ class SharedJobCluster(JobCluster):
                            str(args), str(kwargs), traceback.format_exc())
             return None
 
+        job = None
         try:
             for xf in _job.xfer_files:
                 sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), blocking=True,
@@ -2680,22 +2680,23 @@ class SharedJobCluster(JobCluster):
                 self._cluster._sched_jobs[_job.uid] = _job
                 self._pending_jobs += 1
                 self._complete.clear()
+                sock.send_msg('ACK')
                 if self.status_callback:
                     self._cluster.worker_Q.put((self.status_callback,
                                                 (DispyJob.Created, None, _job.job)))
-                return _job.job
+                job = _job.job
             else:
+                sock.send_msg('nak')
                 _job.job._dispy_job_ = None
                 del _job.job
-                return None
         except:
             logger.warning('Creating job for "%s", "%s" failed with "%s"',
                            str(args), str(kwargs), traceback.format_exc())
             _job.job._dispy_job_ = None
             del _job.job
-            return None
         finally:
             sock.close()
+        return job
 
     def cancel(self, job):
         """Similar to 'cancel' of JobCluster.
