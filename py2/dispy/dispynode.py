@@ -210,7 +210,7 @@ class _DispyNode(object):
                  name='', scheduler_node=None, scheduler_port=None,
                  dest_path_prefix='', clean=False, secret='', keyfile=None, certfile=None,
                  zombie_interval=60, service_start=None, service_stop=None, service_end=None,
-                 serve=-1, daemon=False):
+                 serve=-1, daemon=False, client_shutdown=False):
         assert 0 < cpus <= multiprocessing.cpu_count()
         self.num_cpus = cpus
         if name:
@@ -347,6 +347,7 @@ class _DispyNode(object):
             if isinstance(service_end, int):
                 self.service_end = service_end
             Coro(self.service_schedule)
+        self.client_shutdown = client_shutdown
 
         self.__init_code = ''.join(inspect.getsource(dispy_provisional_result))
         self.__init_code += ''.join(inspect.getsource(dispy_send_file))
@@ -1392,6 +1393,8 @@ class _DispyNode(object):
                              '_dispy_cleanup_kwargs': compute.cleanup.kwargs}
                 if os.name == 'nt':
                     globalvars = globals()
+                if self.client_shutdown:
+                    globalvars['dispynode_shutdown'] = functools.partial(self.shutdown, True)
                 exec(marshal.loads(compute.code)) in globalvars, localvars
                 exec('%s(*_dispy_cleanup_args, **_dispy_cleanup_kwargs)' %
                      compute.cleanup.name) in globalvars, localvars
@@ -1612,6 +1615,8 @@ if __name__ == '__main__':
                         '(terminate running jobs)')
     parser.add_argument('--serve', dest='serve', type=int, default=-1,
                         help='number of clients to serve before exiting')
+    parser.add_argument('--client_shutdown', dest='client_shutdown', action='store_true',
+                        default=False, help='if given, client can shutdown node')
     parser.add_argument('--msg_timeout', dest='msg_timeout', type=float, default=MsgTimeout,
                         help='timeout used for messages to/from client in seconds')
     parser.add_argument('-s', '--secret', dest='secret', default='',
