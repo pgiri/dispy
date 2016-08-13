@@ -359,7 +359,7 @@ class _DispyNode(object):
         self.tcp_coro = Coro(self.tcp_server)
         self.udp_coro = Coro(self.udp_server, _node_ipaddr(scheduler_node), scheduler_port)
         if not daemon:
-            Coro(self.read_stdin)
+            self.cmd_coro = Coro(self.cmd_proc)
 
     def broadcast_ping_msg(self, coro=None):
         if (self.scheduler['ip_addr'] or self.job_infos or not self.avail_cpus or
@@ -1201,7 +1201,7 @@ class _DispyNode(object):
                 now = int(time.time())
                 yield coro.sleep(self.service_end - now)
                 _dispy_logger.debug('Shutting down service')
-                self.shutdown(quit=False)
+                self.shutdown('close')
 
             # advance times for next day
             self.service_start += 24 * 3600
@@ -1386,7 +1386,7 @@ class _DispyNode(object):
 
         if compute.cleanup is False:
             if self.serve == 0:
-                self.shutdown(quit=True)
+                self.shutdown('terminate')
             return
         os.chdir(self.dest_path_prefix)
         if isinstance(compute.cleanup, _Function):
@@ -1396,7 +1396,7 @@ class _DispyNode(object):
                 if os.name == 'nt':
                     globalvars = globals()
                 if self.client_shutdown:
-                    globalvars['dispynode_shutdown'] = functools.partial(self.shutdown, True)
+                    globalvars['dispynode_shutdown'] = functools.partial(self.shutdown, 'terminate')
                 exec(marshal.loads(compute.code), globalvars, localvars)
                 exec('%s(*_dispy_cleanup_args, **_dispy_cleanup_kwargs)' %
                      compute.cleanup.name, globalvars, localvars)
@@ -1405,6 +1405,8 @@ class _DispyNode(object):
                 _dispy_logger.debug(traceback.format_exc())
 
         if os.name == 'nt':
+            if self.client_shutdown:
+                globals().pop('dispynode_shutdown', None)
             for var in list(globals().keys()):
                 if var not in self.__init_globals:
                     _dispy_logger.debug('Variable "%s" left behind by "%s" at %s is being removed',
@@ -1444,13 +1446,20 @@ class _DispyNode(object):
         _dispy_logger.debug('Computation "%s" from %s done',
                             compute.auth, compute.scheduler_ip_addr)
         if self.serve == 0:
-            self.shutdown(quit=True)
+            self.shutdown('terminate')
 
-    def shutdown(self, quit=True):
-        def _shutdown(self, quit, coro=None):
+    def shutdown(self, how):
+        def _shutdown(self, how, coro=None):
             self.thread_lock.acquire()
+            if how == 'exit':
+                if self.scheduler['ip_addr']:
+                    self.serve = 0
+                    print('dispynode will shutdown when current computation closes.')
+                    self.thread_lock.release()
+                    raise StopIteration
+                how = 'terminate'
             job_infos, self.job_infos = self.job_infos, {}
-            if quit and self.reply_Q:
+            if self.reply_Q and (how == 'quit' or how == 'terminate'):
                 self.reply_Q.put(None)
             self.scheduler['ip_addr'] = None
             self.scheduler['auth'] = set()
@@ -1480,16 +1489,20 @@ class _DispyNode(object):
                 compute.pending_jobs = 0
                 compute.zombie = True
                 self.cleanup_computation(compute)
-            if quit:
+            if how == 'quit' or how == 'terminate':
                 self.tcp_coro.terminate()
                 self.sign = ''
-                config = os.path.join(self.dest_path_prefix, 'config')
-                os.remove(config)
+                cfg_file = os.path.join(self.dest_path_prefix, 'config')
+                with open(cfg_file, 'rb') as fd:
+                    config = pickle.load(fd)
+                os.remove(cfg_file)
+                if how == 'terminate':
+                    os.kill(config['pid'], signal.SIGABRT)
 
         if self.sign:
-            Coro(_shutdown, self, quit)
+            Coro(_shutdown, self, how)
 
-    def read_stdin(self, coro=None):
+    def cmd_proc(self, coro=None):
         coro.set_daemon()
         thread_pool = asyncoro.AsyncThreadPool(1)
         if self.service_start:
@@ -1500,19 +1513,8 @@ class _DispyNode(object):
                 service_to = ' to %s' % time.strftime('%H:%M', time.localtime(self.service_stop))
         else:
             service_from = service_to = ''
-        while True:
-            sys.stdout.write('\nEnter "quit" or "exit" to terminate dispynode,\n'
-                             '  "stop" to stop service, "start" to restart service,\n'
-                             '  "cpus" to change CPUs used, anything else to get status: ')
-            sys.stdout.flush()
-            try:
-                cmd = yield thread_pool.async_task(input)
-            except GeneratorExit:
-                break
-            except:
-                continue
-
-            cmd = cmd.strip().lower()
+        while 1:
+            cmd = yield coro.receive()
             if cmd in ('quit', 'exit'):
                 break
             elif cmd in ('stop', 'start', 'cpus'):
@@ -1566,7 +1568,7 @@ class _DispyNode(object):
                     print('    Client %s: %s @ %s running %s jobs' %
                           (i, compute.name, compute.scheduler_ip_addr, compute.pending_jobs))
                 print('')
-        self.shutdown(quit=True)
+        self.shutdown('quit')
 
 
 if __name__ == '__main__':
@@ -1750,7 +1752,9 @@ if __name__ == '__main__':
     # Python 3 under Windows blocks multiprocessing.Process on reading input;
     # pressing "Enter" twice works (for one subprocess). Until this is
     # understood / fixed, disable reading input.
-    if os.name == 'nt':
+    if os.name == 'nt' and not _dispy_config['daemon']:
+        print('Enabling daemon mode, as multiprocessing does not seem to work with reading input '
+              'under Windows')
         _dispy_config['daemon'] = True
 
     if psutil:
@@ -1760,20 +1764,48 @@ if __name__ == '__main__':
         print('    node status (CPU, memory, disk and swap space usage) '
               'will not be sent to clients\n')
 
-    _dispy_logger.info('dispynode version %s', _dispy_version)
-    _dispy_node = None
-    _dispy_node = _DispyNode(**_dispy_config)
-    del _dispy_config
-
     def sighandler(signum, frame):
-        _dispy_node.shutdown(quit=True)
+        if signum == signal.SIGTERM or signum == signal.SIGINT:
+            _dispy_node.shutdown('exit')
+        elif signum == signal.SIGABRT:
+            if not os.path.isfile(os.path.join(_dispy_node.dest_path_prefix, 'config')):
+                signal.signal(signal.SIGINT, signal.SIG_DFL)
+                os.kill(os.getpid(), signal.SIGINT)
+        else:
+            _dispy_node.shutdown('terminate')
 
-    signal.signal(signal.SIGTERM, sighandler)
-    signal.signal(signal.SIGINT, sighandler)
     try:
         signal.signal(signal.SIGHUP, sighandler)
+        signal.signal(signal.SIGQUIT, sighandler)
     except:
         pass
+    signal.signal(signal.SIGINT, sighandler)
+    signal.signal(signal.SIGABRT, sighandler)
+    signal.signal(signal.SIGTERM, sighandler)
     globals().pop('sighandler')
+
+    # TODO: reset these signals in processes that execute computations?
+
+    _dispy_logger.info('dispynode version %s', _dispy_version)
+    _dispy_node = _dispy_cmd = None
+    _dispy_node = _DispyNode(**_dispy_config)
+    _dispy_daemon = _dispy_config['daemon']
+    del _dispy_config
+
+    if not globals().pop('_dispy_daemon'):
+        while 1:
+            # wait a bit for any output for command is done
+            time.sleep(0.1)
+            try:
+                _dispy_cmd = input(
+                    '\nEnter "quit" or "exit" to terminate dispynode,\n'
+                    '  "stop" to stop service, "start" to restart service,\n'
+                    '  "cpus" to change CPUs used, anything else to get status: ')
+            except:
+                continue
+            _dispy_cmd = _dispy_cmd.strip().lower()
+            _dispy_node.cmd_coro.send(_dispy_cmd)
+            if _dispy_cmd in ('quit', 'exit'):
+                break
 
     _dispy_node.asyncoro.finish()
