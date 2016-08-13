@@ -68,7 +68,7 @@ class DispyNetRelay(object):
                 continue
             logger.debug('Ping message from %s (%s)', addr[0], addr[1])
             try:
-                info = asyncoro.unserialize(msg[len('PING:'.encode()):])
+                info = asyncoro.deserialize(msg[len('PING:'.encode()):])
                 if info['version'] != __version__:
                     logger.warning('Ignoring %s due to version mismatch: %s / %s',
                                    info['ip_addrs'], info['version'], __version__)
@@ -113,7 +113,7 @@ class DispyNetRelay(object):
                 conn.close()
             logger.debug('Ping message from %s (%s)', addr[0], addr[1])
             try:
-                info = asyncoro.unserialize(msg[len('PING:'.encode()):])
+                info = asyncoro.deserialize(msg[len('PING:'.encode()):])
                 if info['version'] != __version__:
                     logger.warning('Ignoring %s due to version mismatch: %s / %s',
                                    info['ip_addrs'], info['version'], __version__)
@@ -155,7 +155,7 @@ class DispyNetRelay(object):
                 logger.debug('Ignoring ping message from %s (%s)', addr[0], addr[1])
                 continue
             try:
-                info = asyncoro.unserialize(msg[len('PING:'.encode()):])
+                info = asyncoro.deserialize(msg[len('PING:'.encode()):])
                 logger.debug('sched_sock: %s', info)
                 assert info['version'] == __version__
                 # assert isinstance(info['cpus'], int)

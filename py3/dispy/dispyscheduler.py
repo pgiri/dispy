@@ -32,7 +32,7 @@ for path in sys.path:
 del path
 
 import asyncoro
-from asyncoro import Coro, AsynCoro, AsyncSocket, Singleton, serialize, unserialize
+from asyncoro import Coro, AsynCoro, AsyncSocket, Singleton, serialize, deserialize
 
 from dispy import _Compute, DispyJob, _DispyJob_, _Function, _Node, DispyNode, NodeAllocate, \
     _JobReply, auth_code, num_min, _parse_node_allocs, _node_ipaddr, _XferFile, _dispy_version, \
@@ -269,7 +269,7 @@ class _Scheduler(object, metaclass=Singleton):
             if msg.startswith(b'PULSE:'):
                 msg = msg[len(b'PULSE:'):]
                 try:
-                    info = unserialize(msg)
+                    info = deserialize(msg)
                 except:
                     logger.warning('Ignoring pulse message from %s', addr[0])
                     continue
@@ -309,7 +309,7 @@ class _Scheduler(object, metaclass=Singleton):
                         Coro(_send_pulse, self, pulse_msg, (info['ip_addr'], info['port']))
             elif msg.startswith(b'PING:'):
                 try:
-                    info = unserialize(msg[len(b'PING:'):])
+                    info = deserialize(msg[len(b'PING:'):])
                     if info['version'] != _dispy_version:
                         logger.warning('Ignoring %s due to version mismatch', addr[0])
                         continue
@@ -378,7 +378,7 @@ class _Scheduler(object, metaclass=Singleton):
         msg = yield conn.recv_msg()
         if msg.startswith(b'JOB_REPLY:'):
             try:
-                info = unserialize(msg[len(b'JOB_REPLY:'):])
+                info = deserialize(msg[len(b'JOB_REPLY:'):])
             except:
                 logger.warning('invalid job reply from %s:%s ignored', addr[0], addr[1])
             else:
@@ -387,7 +387,7 @@ class _Scheduler(object, metaclass=Singleton):
         elif msg.startswith(b'PONG:'):
             conn.close()
             try:
-                info = unserialize(msg[len(b'PONG:'):])
+                info = deserialize(msg[len(b'PONG:'):])
                 assert info['auth'] == self.node_auth
             except:
                 logger.warning('Ignoring node %s due to "secret" mismatch', addr[0])
@@ -396,7 +396,7 @@ class _Scheduler(object, metaclass=Singleton):
         elif msg.startswith(b'PING:'):
             conn.close()
             try:
-                info = unserialize(msg[len(b'PING:'):])
+                info = deserialize(msg[len(b'PING:'):])
                 if info['version'] != _dispy_version:
                     logger.warning('Ignoring node %s due to version mismatch', addr[0])
                     raise Exception('')
@@ -426,9 +426,9 @@ class _Scheduler(object, metaclass=Singleton):
                 sock.close()
         elif msg.startswith(b'FILEXFER:'):
             try:
-                xf = unserialize(msg[len(b'FILEXFER:'):])
+                xf = deserialize(msg[len(b'FILEXFER:'):])
                 msg = yield conn.recv_msg()
-                job_reply = unserialize(msg)
+                job_reply = deserialize(msg)
                 yield self.xfer_to_client(job_reply, xf, conn, addr)
             except:
                 logger.debug(traceback.format_exc())
@@ -436,7 +436,7 @@ class _Scheduler(object, metaclass=Singleton):
         elif msg.startswith(b'TERMINATED:'):
             conn.close()
             try:
-                info = unserialize(msg[len(b'TERMINATED:'):])
+                info = deserialize(msg[len(b'TERMINATED:'):])
                 node = self._nodes.get(info['ip_addr'], None)
                 if not node:
                     raise StopIteration
@@ -466,7 +466,7 @@ class _Scheduler(object, metaclass=Singleton):
         elif msg.startswith(b'NODE_CPUS:'):
             conn.close()
             try:
-                info = unserialize(msg[len(b'NODE_CPUS:'):])
+                info = deserialize(msg[len(b'NODE_CPUS:'):])
                 node = self._nodes.get(info['ip_addr'], None)
                 if not node:
                     raise StopIteration
@@ -598,7 +598,7 @@ class _Scheduler(object, metaclass=Singleton):
         def _compute_task(self, msg):
             # function
             try:
-                req = unserialize(msg)
+                req = deserialize(msg)
                 compute = req['compute']
                 node_allocs = req['node_allocs']
                 exclusive = req['exclusive']
@@ -659,7 +659,7 @@ class _Scheduler(object, metaclass=Singleton):
         def xfer_from_client(self, msg):
             # generator
             try:
-                xf = unserialize(msg)
+                xf = deserialize(msg)
             except:
                 logger.debug('Ignoring file trasnfer request from %s', addr[0])
                 raise StopIteration(serialize(-1))
@@ -713,7 +713,7 @@ class _Scheduler(object, metaclass=Singleton):
         def send_file(self, msg):
             # generator
             try:
-                msg = unserialize(msg)
+                msg = deserialize(msg)
                 node = self._nodes.get(msg['node'], None)
                 xf = msg['xf']
             except:
@@ -738,7 +738,7 @@ class _Scheduler(object, metaclass=Singleton):
                 yield node_sock.sendall(node.auth)
                 yield node_sock.send_msg('FILEXFER:'.encode() + serialize(xf))
                 recvd = yield node_sock.recv_msg()
-                recvd = unserialize(recvd)
+                recvd = deserialize(recvd)
                 while recvd < xf.stat_buf.st_size:
                     yield conn.send_msg(serialize(recvd))
                     data = yield conn.recvall(min(xf.stat_buf.st_size-recvd, 1024000))
@@ -746,7 +746,7 @@ class _Scheduler(object, metaclass=Singleton):
                         break
                     yield node_sock.sendall(data)
                     recvd = yield node_sock.recv_msg()
-                    recvd = unserialize(recvd)
+                    recvd = deserialize(recvd)
             except:
                 logger.error('Could not transfer %s to %s: %s', xf.name, node.ip_addr, recvd)
                 logger.debug(traceback.format_exc())
@@ -770,7 +770,7 @@ class _Scheduler(object, metaclass=Singleton):
             msg = yield conn.recv_msg()
             if msg.startswith(b'CLIENT:'):
                 try:
-                    req = unserialize(msg[len(b'CLIENT:'):])
+                    req = deserialize(msg[len(b'CLIENT:'):])
                     if req['version'] != _dispy_version:
                         logger.warning('Ignoring %s due to version mismatch', addr[0])
                         raise Exception('')
@@ -794,7 +794,7 @@ class _Scheduler(object, metaclass=Singleton):
         if msg.startswith(b'JOB:'):
             msg = msg[len(b'JOB:'):]
             try:
-                req = unserialize(msg)
+                req = deserialize(msg)
                 _job = req['job']
                 cluster = self._clusters[_job.compute_id]
                 assert cluster.client_auth == req['auth']
@@ -812,7 +812,7 @@ class _Scheduler(object, metaclass=Singleton):
         elif msg.startswith(b'SCHEDULE:'):
             msg = msg[len(b'SCHEDULE:'):]
             try:
-                req = unserialize(msg)
+                req = deserialize(msg)
                 cluster = self.pending_clusters[req['compute_id']]
                 assert cluster.client_auth == req['auth']
                 for xf in cluster._compute.xfer_files:
@@ -828,7 +828,7 @@ class _Scheduler(object, metaclass=Singleton):
         elif msg.startswith(b'CLOSE:'):
             msg = msg[len(b'CLOSE:'):]
             try:
-                req = unserialize(msg)
+                req = deserialize(msg)
                 auth = req['auth']
             except:
                 logger.warning('Invalid compuation for deleting')
@@ -850,7 +850,7 @@ class _Scheduler(object, metaclass=Singleton):
         elif msg.startswith(b'NODE_JOBS:'):
             msg = msg[len(b'NODE_JOBS:'):]
             try:
-                req = unserialize(msg)
+                req = deserialize(msg)
                 cluster = self._clusters.get(req['compute_id'], None)
                 if cluster is None or cluster.client_auth != req['auth']:
                     job_uids = []
@@ -864,7 +864,7 @@ class _Scheduler(object, metaclass=Singleton):
         elif msg.startswith(b'TERMINATE_JOB:'):
             msg = msg[len(b'TERMINATE_JOB:'):]
             try:
-                req = unserialize(msg)
+                req = deserialize(msg)
                 uid = req['uid']
                 cluster = self._clusters[req['compute_id']]
                 assert cluster.client_auth == req['auth']
@@ -876,7 +876,7 @@ class _Scheduler(object, metaclass=Singleton):
         elif msg.startswith(b'RESEND_JOB_RESULTS:'):
             msg = msg[len(b'RESEND_JOB_RESULTS:'):]
             try:
-                info = unserialize(msg)
+                info = deserialize(msg)
                 compute_id = info['compute_id']
                 auth = info['auth']
             except:
@@ -900,7 +900,7 @@ class _Scheduler(object, metaclass=Singleton):
             msg = msg[len(b'PENDING_JOBS:'):]
             reply = {'done': [], 'pending': 0}
             try:
-                info = unserialize(msg)
+                info = deserialize(msg)
                 compute_id = info['compute_id']
                 auth = info['auth']
             except:
@@ -935,7 +935,7 @@ class _Scheduler(object, metaclass=Singleton):
         elif msg.startswith(b'ALLOCATE_NODE:'):
             req = msg[len(b'ALLOCATE_NODE:'):]
             try:
-                req = unserialize(req)
+                req = deserialize(req)
                 cluster = self._clusters[req['compute_id']]
                 assert cluster.client_auth == req['auth']
                 resp = yield self.allocate_node(cluster, req['node_alloc'], coro=coro)
@@ -946,7 +946,7 @@ class _Scheduler(object, metaclass=Singleton):
             req = msg[len(b'SET_NODE_CPUS:'):]
             cpus = -1
             try:
-                req = unserialize(req)
+                req = deserialize(req)
                 cluster = self._clusters[req['compute_id']]
                 assert cluster.client_auth == req['auth']
                 # for shared cluster, changing cpus may not be valid, as we
@@ -1084,7 +1084,7 @@ class _Scheduler(object, metaclass=Singleton):
             yield client_sock.send_msg(serialize(job_reply))
 
             recvd = yield client_sock.recv_msg()
-            recvd = unserialize(recvd)
+            recvd = deserialize(recvd)
             while recvd < xf.stat_buf.st_size:
                 yield conn.send_msg(serialize(recvd))
                 data = yield conn.recvall(min(xf.stat_buf.st_size-recvd, 1024000))
@@ -1092,7 +1092,7 @@ class _Scheduler(object, metaclass=Singleton):
                     break
                 yield client_sock.sendall(data)
                 recvd = yield client_sock.recv_msg()
-                recvd = unserialize(recvd)
+                recvd = deserialize(recvd)
             yield conn.send_msg(serialize(recvd))
         except:
             yield conn.send_msg(serialize(-1))
@@ -1723,7 +1723,7 @@ class _Scheduler(object, metaclass=Singleton):
             raise StopIteration(0)
 
         try:
-            req = unserialize(msg)
+            req = deserialize(msg)
             uid = req['uid']
             compute_id = req['compute_id']
             auth = req['auth']
@@ -1832,7 +1832,7 @@ class _Scheduler(object, metaclass=Singleton):
                 yield sock.sendall(node.auth)
                 yield sock.send_msg(b'JOBS:')
                 msg = yield sock.recv_msg()
-                uids = [info['uid'] for info in unserialize(msg)]
+                uids = [info['uid'] for info in deserialize(msg)]
             except:
                 logger.debug(traceback.format_exc())
                 uids = []

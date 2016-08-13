@@ -37,7 +37,7 @@ from dispy import _JobReply, DispyJob, DispyNodeAvailInfo, _Function, _Compute, 
      _node_ipaddr, _dispy_version, auth_code, num_min, _same_file, MsgTimeout
 
 import asyncoro
-from asyncoro import Coro, AsynCoro, AsyncSocket, serialize, unserialize
+from asyncoro import Coro, AsynCoro, AsyncSocket, serialize, deserialize
 
 __author__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __email__ = "pgiri@yahoo.com"
@@ -137,7 +137,7 @@ def dispy_send_file(path, timeout=MsgTimeout):
         sock.send_msg('FILEXFER:'.encode() + serialize(xf))
         sock.send_msg(serialize(dispy_job_reply))
         recvd = sock.recv_msg()
-        recvd = unserialize(recvd)
+        recvd = deserialize(recvd)
         with open(path, 'rb') as fd:
             sent = 0
             while sent == recvd:
@@ -147,7 +147,7 @@ def dispy_send_file(path, timeout=MsgTimeout):
                 sock.sendall(data)
                 sent += len(data)
                 recvd = sock.recv_msg()
-                recvd = unserialize(recvd)
+                recvd = deserialize(recvd)
         assert recvd == xf.stat_buf.st_size
     except:
         print('Could not transfer file "%s": %s' % (path, traceback.format_exc()))
@@ -186,8 +186,8 @@ def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
         exec(marshal.loads(__dispy_job_code[0])) in globals()
         if __dispy_job_code[1]:
             exec(__dispy_job_code[1]) in globals()
-        __dispy_job_args = unserialize(__dispy_job_args)
-        __dispy_job_kwargs = unserialize(__dispy_job_kwargs)
+        __dispy_job_args = deserialize(__dispy_job_args)
+        __dispy_job_kwargs = deserialize(__dispy_job_kwargs)
         globals().update(locals())
         exec('__dispy_job_reply.result = %s(*__dispy_job_args, **__dispy_job_kwargs)' %
              __dispy_job_name) in globals()
@@ -470,7 +470,7 @@ class _DispyNode(object):
             # exceptions are contained?
             if msg.startswith('PING:'):
                 try:
-                    info = unserialize(msg[len('PING:'):])
+                    info = deserialize(msg[len('PING:'):])
                     if info['version'] != _dispy_version:
                         _dispy_logger.warning('Ignoring %s due to version mismatch', addr[0])
                         continue
@@ -480,7 +480,7 @@ class _DispyNode(object):
                 Coro(self.send_pong_msg, info, addr)
             elif msg.startswith('PULSE:'):
                 try:
-                    info = unserialize(msg[len('PULSE:'):])
+                    info = deserialize(msg[len('PULSE:'):])
                 except:
                     _dispy_logger.warning('Ignoring PULSE from %s', addr[0])
                 else:
@@ -505,7 +505,7 @@ class _DispyNode(object):
     def tcp_serve_task(self, conn, addr, coro=None):
         def job_request_task(msg):
             try:
-                _job = unserialize(msg)
+                _job = deserialize(msg)
             except:
                 _dispy_logger.debug('Ignoring job request from %s', addr[0])
                 # _dispy_logger.debug(traceback.format_exc())
@@ -605,7 +605,7 @@ class _DispyNode(object):
 
         def add_computation_task(msg):
             try:
-                compute = unserialize(msg)
+                compute = deserialize(msg)
             except:
                 try:
                     yield conn.send_msg(('Invalid computation request ignored').encode())
@@ -714,7 +714,7 @@ class _DispyNode(object):
             if os.name == 'nt':
                 compute.globals = {}
             else:
-                for var in ('AsyncSocket', 'DispyJob', 'serialize', 'unserialize', '_XferFile',
+                for var in ('AsyncSocket', 'DispyJob', 'serialize', 'deserialize', '_XferFile',
                             'MaxFileSize', 'MsgTimeout'):
                     compute.globals[var] = globals()[var]
                 compute.globals.update(self.__init_modules)
@@ -745,7 +745,7 @@ class _DispyNode(object):
 
         def xfer_file_task(msg):
             try:
-                xf = unserialize(msg)
+                xf = deserialize(msg)
             except:
                 _dispy_logger.debug('Ignoring file trasnfer request from %s', addr[0])
                 raise StopIteration
@@ -797,7 +797,7 @@ class _DispyNode(object):
 
         def setup_computation(msg):
             try:
-                compute_id = unserialize(msg)
+                compute_id = deserialize(msg)
                 compute = self.computations[compute_id]
                 assert isinstance(compute.setup, _Function)
                 os.chdir(compute.dest_path)
@@ -876,7 +876,7 @@ class _DispyNode(object):
                 raise StopIteration(0)
 
             try:
-                req = unserialize(msg)
+                req = deserialize(msg)
                 uid = req['uid']
                 compute_id = req['compute_id']
                 auth = req['auth']
@@ -960,7 +960,7 @@ class _DispyNode(object):
         elif msg.startswith('CLOSE:'):
             msg = msg[len('CLOSE:'):]
             try:
-                info = unserialize(msg)
+                info = deserialize(msg)
                 compute_id = info['compute_id']
                 auth = info['auth']
                 terminate_pending = info.get('terminate_pending', False)
@@ -985,7 +985,7 @@ class _DispyNode(object):
         elif msg.startswith('TERMINATE_JOB:'):
             msg = msg[len('TERMINATE_JOB:'):]
             try:
-                _job = unserialize(msg)
+                _job = deserialize(msg)
                 compute = self.computations[_job.compute_id]
                 # assert addr[0] == compute.scheduler_ip_addr
                 self.thread_lock.acquire()
@@ -1001,7 +1001,7 @@ class _DispyNode(object):
         elif msg.startswith('RESEND_JOB_RESULTS:'):
             msg = msg[len('RESEND_JOB_RESULTS:'):]
             try:
-                info = unserialize(msg)
+                info = deserialize(msg)
                 compute_id = info['compute_id']
                 auth = info['auth']
             except:
@@ -1025,7 +1025,7 @@ class _DispyNode(object):
                 yield self.resend_job_results(compute, coro=coro)
         elif msg.startswith('PING:'):
             try:
-                info = unserialize(msg[len('PING:'):])
+                info = deserialize(msg[len('PING:'):])
                 if info['version'] == _dispy_version:
                     Coro(self.send_pong_msg, info, addr)
             except:
@@ -1035,7 +1035,7 @@ class _DispyNode(object):
             msg = msg[len('PENDING_JOBS:'):]
             reply = {'done': [], 'pending': 0}
             try:
-                info = unserialize(msg)
+                info = deserialize(msg)
                 compute_id = info['compute_id']
                 auth = info['auth']
             except:
@@ -1217,7 +1217,7 @@ class _DispyNode(object):
             program = [sys.executable, compute.name]
         else:
             program = [compute.name]
-        args = unserialize(_job.args)
+        args = deserialize(_job.args)
         program.extend(args)
         reply = job_info.job_reply
         try:

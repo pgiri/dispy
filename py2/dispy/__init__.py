@@ -27,7 +27,7 @@ import numbers
 import collections
 
 import asyncoro
-from asyncoro import Coro, AsynCoro, AsyncSocket, Singleton, serialize, unserialize
+from asyncoro import Coro, AsynCoro, AsyncSocket, Singleton, serialize, deserialize
 
 __author__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __email__ = "pgiri@yahoo.com"
@@ -37,7 +37,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "MIT"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.6.15"
+__version__ = "4.6.16"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
@@ -363,7 +363,7 @@ class _Node(object):
         compute.scheduler_ip_addr = self.scheduler_ip_addr
         cpus = yield self.send('COMPUTE:' + serialize(compute), coro=coro)
         try:
-            cpus = unserialize(cpus)
+            cpus = deserialize(cpus)
         except:
             pass
         if not isinstance(cpus, int) or cpus < 0:
@@ -423,7 +423,7 @@ class _Node(object):
             yield sock.sendall(self.auth)
             yield sock.send_msg('FILEXFER:' + serialize(xf))
             recvd = yield sock.recv_msg()
-            recvd = unserialize(recvd)
+            recvd = deserialize(recvd)
             with open(xf.name, 'rb') as fd:
                 sent = 0
                 while sent == recvd:
@@ -433,7 +433,7 @@ class _Node(object):
                     yield sock.sendall(data)
                     sent += len(data)
                     recvd = yield sock.recv_msg()
-                    recvd = unserialize(recvd)
+                    recvd = deserialize(recvd)
             if recvd == xf.stat_buf.st_size:
                 resp = 0
             else:
@@ -708,7 +708,7 @@ class _Cluster(object):
             if msg.startswith('PULSE:'):
                 msg = msg[len('PULSE:'):]
                 try:
-                    info = unserialize(msg)
+                    info = deserialize(msg)
                     node = self._nodes[info['ip_addr']]
                     assert 0 <= info['cpus'] <= node.cpus
                     node.last_pulse = time.time()
@@ -743,7 +743,7 @@ class _Cluster(object):
                 Coro(_send_pulse, self, pulse_msg, (info['ip_addr'], info['port']))
             elif msg.startswith('PING:'):
                 try:
-                    info = unserialize(msg[len('PING:'):])
+                    info = deserialize(msg[len('PING:'):])
                     if info['version'] != _dispy_version:
                         logger.warning('Ignoring %s due to version mismatch', addr[0])
                         continue
@@ -820,7 +820,7 @@ class _Cluster(object):
         msg = yield conn.recv_msg()
         if msg.startswith('JOB_REPLY:'):
             try:
-                info = unserialize(msg[len('JOB_REPLY:'):])
+                info = deserialize(msg[len('JOB_REPLY:'):])
             except:
                 logger.warning('invalid job reply from %s:%s ignored', addr[0], addr[1])
             else:
@@ -830,7 +830,7 @@ class _Cluster(object):
             conn.close()
             # message from dispyscheduler
             try:
-                info = unserialize(msg[len('JOB_STATUS:'):])
+                info = deserialize(msg[len('JOB_STATUS:'):])
                 _job = self._sched_jobs[info['uid']]
                 assert _job.hash == info['hash']
             except:
@@ -860,7 +860,7 @@ class _Cluster(object):
         elif msg.startswith('PONG:'):
             conn.close()
             try:
-                info = unserialize(msg[len('PONG:'):])
+                info = deserialize(msg[len('PONG:'):])
                 if info['version'] != _dispy_version:
                     logger.warning('Ignoring node %s due to version mismatch: %s != %s',
                                    info['ip_addr'], info['version'], _dispy_version)
@@ -873,7 +873,7 @@ class _Cluster(object):
         elif msg.startswith('PING:'):
             conn.close()
             try:
-                info = unserialize(msg[len('PING:'):])
+                info = deserialize(msg[len('PING:'):])
                 if info['version'] != _dispy_version:
                     logger.warning('Ignoring %s due to version mismatch', addr[0])
                     raise StopIteration
@@ -904,9 +904,9 @@ class _Cluster(object):
                 sock.close()
         elif msg.startswith('FILEXFER:'):
             try:
-                xf = unserialize(msg[len('FILEXFER:'):])
+                xf = deserialize(msg[len('FILEXFER:'):])
                 msg = yield conn.recv_msg()
-                job_reply = unserialize(msg)
+                job_reply = deserialize(msg)
             except:
                 logger.debug(traceback.format_exc())
             else:
@@ -915,7 +915,7 @@ class _Cluster(object):
         elif msg.startswith('NODE_CPUS:'):
             conn.close()
             try:
-                info = unserialize(msg[len('NODE_CPUS:'):])
+                info = deserialize(msg[len('NODE_CPUS:'):])
                 node = self._nodes.get(info['ip_addr'], None)
                 if not node:
                     raise StopIteration
@@ -961,7 +961,7 @@ class _Cluster(object):
         elif msg.startswith('TERMINATED:'):
             conn.close()
             try:
-                info = unserialize(msg[len('TERMINATED:'):])
+                info = deserialize(msg[len('TERMINATED:'):])
             except:
                 # logger.debug(traceback.format_exc())
                 pass
@@ -995,7 +995,7 @@ class _Cluster(object):
             conn.close()
             # this message is from dispyscheduler for SharedJobCluster
             try:
-                info = unserialize(msg[len('NODE_STATUS:'):])
+                info = deserialize(msg[len('NODE_STATUS:'):])
                 cluster = self._clusters[info['compute_id']]
                 assert info['auth'] == cluster._compute.auth
             except:
@@ -1036,7 +1036,7 @@ class _Cluster(object):
                                    info['status'], addr[0], addr[1])
         elif msg.startswith('SCHEDULED:'):
             try:
-                info = unserialize(msg[len('SCHEDULED:'):])
+                info = deserialize(msg[len('SCHEDULED:'):])
                 assert self.shared
                 cluster = self._clusters.get(info['compute_id'], None)
                 assert info['pulse_interval'] is None or info['pulse_interval'] >= 1
@@ -1205,7 +1205,7 @@ class _Cluster(object):
             try:
                 req = {'compute_id': cluster._compute.id, 'auth': cluster._compute.auth}
                 reply = yield node.send('PENDING_JOBS:' + serialize(req))
-                reply = unserialize(reply)
+                reply = deserialize(reply)
             except:
                 logger.debug(traceback.format_exc())
                 continue
@@ -1226,7 +1226,7 @@ class _Cluster(object):
                     yield conn.sendall(node.auth)
                     yield conn.send_msg('RETRIEVE_JOB:' + serialize(req))
                     reply = yield conn.recv_msg()
-                    reply = unserialize(reply)
+                    reply = deserialize(reply)
                 except:
                     logger.debug(traceback.format_exc())
                     continue
@@ -1513,7 +1513,7 @@ class _Cluster(object):
             node._jobs.discard(_job.uid)
 
         node.last_pulse = time.time()
-        job.result = unserialize(reply.result)
+        job.result = deserialize(reply.result)
         job.stdout = reply.stdout
         job.stderr = reply.stderr
         job.exception = reply.exception
@@ -1843,7 +1843,7 @@ class _Cluster(object):
                 req = {'compute_id': cluster._compute.id, 'auth': cluster._compute.auth}
                 yield sock.send_msg('JOBS:' + serialize(req))
                 msg = yield sock.recv_msg()
-                _jobs = [self._sched_jobs.get(info['uid'], None) for info in unserialize(msg)]
+                _jobs = [self._sched_jobs.get(info['uid'], None) for info in deserialize(msg)]
             except:
                 logger.debug(traceback.format_exc())
                 _jobs = []
@@ -2526,7 +2526,7 @@ class SharedJobCluster(JobCluster):
         sock.send_msg('CLIENT:' + serialize(req))
         reply = sock.recv_msg()
         sock.close()
-        reply = unserialize(reply)
+        reply = deserialize(reply)
         if reply['version'] != _dispy_version:
             raise Exception('dispyscheduler version "%s" is different from dispy version "%s"' %
                             reply['version'], _dispy_version)
@@ -2548,7 +2548,7 @@ class SharedJobCluster(JobCluster):
                    'exclusive': bool(exclusive)}
             sock.send_msg('COMPUTE:' + serialize(req))
             reply = sock.recv_msg()
-            reply = unserialize(reply)
+            reply = deserialize(reply)
             if isinstance(reply, dict):
                 self._compute.id = reply['compute_id']
                 self._compute.auth = reply['auth']
@@ -2570,7 +2570,7 @@ class SharedJobCluster(JobCluster):
                 sock.sendall(self._scheduler_auth)
                 sock.send_msg('FILEXFER:' + serialize(xf))
                 recvd = sock.recv_msg()
-                recvd = unserialize(recvd)
+                recvd = deserialize(recvd)
                 sent = 0
                 with open(xf.name, 'rb') as fd:
                     while sent == recvd:
@@ -2580,7 +2580,7 @@ class SharedJobCluster(JobCluster):
                         sock.sendall(data)
                         sent += len(data)
                         recvd = sock.recv_msg()
-                        recvd = unserialize(recvd)
+                        recvd = deserialize(recvd)
                 assert recvd == xf.stat_buf.st_size
             except:
                 logger.error('Could not transfer %s to %s', xf.name, self.scheduler_ip_addr)
@@ -2653,7 +2653,7 @@ class SharedJobCluster(JobCluster):
                 sock.sendall(self._scheduler_auth)
                 sock.send_msg('FILEXFER:' + serialize(xf))
                 recvd = sock.recv_msg()
-                recvd = unserialize(recvd)
+                recvd = deserialize(recvd)
                 sent = 0
                 with open(xf.name, 'rb') as fd:
                     while sent == recvd:
@@ -2663,7 +2663,7 @@ class SharedJobCluster(JobCluster):
                         sock.sendall(data)
                         sent += len(data)
                         recvd = sock.recv_msg()
-                        recvd = unserialize(recvd)
+                        recvd = deserialize(recvd)
                 assert recvd == xf.stat_buf.st_size
                 sock.close()
 
@@ -2675,7 +2675,7 @@ class SharedJobCluster(JobCluster):
             req = {'node': node, 'job': _job, 'auth': self._compute.auth}
             sock.send_msg('JOB:' + serialize(req))
             msg = sock.recv_msg()
-            _job.uid = unserialize(msg)
+            _job.uid = deserialize(msg)
             if _job.uid:
                 self._cluster._sched_jobs[_job.uid] = _job
                 self._pending_jobs += 1
@@ -2748,7 +2748,7 @@ class SharedJobCluster(JobCluster):
                    'node_alloc': node_alloc}
             sock.send_msg('ALLOCATE_NODE:' + serialize(req))
             reply = sock.recv_msg()
-            reply = unserialize(reply)
+            reply = deserialize(reply)
         except:
             logger.warning('Could not connect to scheduler to add node')
             reply = -1
@@ -2772,7 +2772,7 @@ class SharedJobCluster(JobCluster):
                    'node': node, 'from_node': bool(from_node)}
             sock.send_msg('NODE_JOBS:' + serialize(req))
             reply = sock.recv_msg()
-            job_uids = unserialize(reply)
+            job_uids = deserialize(reply)
             _jobs = [self._cluster._sched_jobs.get(uid, None) for uid in job_uids]
         except:
             logger.warning('Could not connect to scheduler to get running jobs at node')
@@ -2797,7 +2797,7 @@ class SharedJobCluster(JobCluster):
                    'cpus': cpus}
             sock.send_msg('SET_NODE_CPUS:' + serialize(req))
             reply = sock.recv_msg()
-            reply = unserialize(reply)
+            reply = deserialize(reply)
         except:
             logger.warning('Could not connect to scheduler to add node')
             return -1
@@ -2836,7 +2836,7 @@ class SharedJobCluster(JobCluster):
             sock.sendall(self._scheduler_auth)
             sock.send_msg('SENDFILE:' + serialize({'node': node, 'xf': xf}))
             recvd = sock.recv_msg()
-            recvd = unserialize(recvd)
+            recvd = deserialize(recvd)
             sent = 0
             with open(xf.name, 'rb') as fd:
                 while sent == recvd:
@@ -2846,7 +2846,7 @@ class SharedJobCluster(JobCluster):
                     sock.sendall(data)
                     sent += len(data)
                     recvd = sock.recv_msg()
-                    recvd = unserialize(recvd)
+                    recvd = deserialize(recvd)
             assert recvd == xf.stat_buf.st_size
         except:
             return -1
@@ -2937,7 +2937,7 @@ def recover_jobs(recover_file, timeout=None, terminate_pending=False):
         msg = yield conn.recv_msg()
         if msg.startswith('JOB_REPLY:'):
             try:
-                reply = unserialize(msg[len('JOB_REPLY:'):])
+                reply = deserialize(msg[len('JOB_REPLY:'):])
             except:
                 logger.warning('invalid job reply from %s:%s ignored', addr[0], addr[1])
                 conn.close()
@@ -2945,7 +2945,7 @@ def recover_jobs(recover_file, timeout=None, terminate_pending=False):
             yield conn.send_msg('ACK')
             logger.debug('received reply for job %s', reply.uid)
             job = DispyJob((), {})
-            job.result = unserialize(reply.result)
+            job.result = deserialize(reply.result)
             job.stdout = reply.stdout
             job.stderr = reply.stderr
             job.exception = reply.exception
@@ -3005,7 +3005,7 @@ def recover_jobs(recover_file, timeout=None, terminate_pending=False):
                     continue
                 reply = yield node.send('RESEND_JOB_RESULTS:' + req)
                 try:
-                    reply = unserialize(reply)
+                    reply = deserialize(reply)
                     assert isinstance(reply, int)
                 except:
                     logger.warning('Invalid resend reply from %s', ip_addr)
