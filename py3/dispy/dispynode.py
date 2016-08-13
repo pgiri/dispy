@@ -341,14 +341,13 @@ class _DispyNode(object):
         self.serve = serve
         self.timer_coro = Coro(self.timer_task)
         self.service_start = self.service_stop = self.service_end = None
-        if isinstance(service_start, time.struct_time) and \
-           (isinstance(service_stop, time.struct_time) or
-           isinstance(service_end, time.struct_time)):
-            self.service_start = (service_start.tm_hour, service_start.tm_min)
-            if isinstance(service_stop, time.struct_time):
-                self.service_stop = (service_stop.tm_hour, service_stop.tm_min)
-            if isinstance(service_end, time.struct_time):
-                self.service_end = (service_end.tm_hour, service_end.tm_min)
+        if isinstance(service_start, int) and (isinstance(service_stop, int) or
+                                               isinstance(service_end, int)):
+            self.service_start = service_start
+            if isinstance(service_stop, int):
+                self.service_stop = service_stop
+            if isinstance(service_end, int):
+                self.service_end = service_end
             Coro(self.service_schedule)
 
         self.__init_code = ''.join(inspect.getsource(dispy_provisional_result))
@@ -742,6 +741,8 @@ class _DispyNode(object):
                 if self.zombie_interval:
                     self.pulse_interval = num_min(self.pulse_interval, self.zombie_interval / 5.0)
                 self.timer_coro.resume(True)
+                _dispy_logger.debug('New computation "%s" from %s',
+                                    compute.auth, compute.scheduler_ip_addr)
 
         def xfer_file_task(msg):
             try:
@@ -1026,8 +1027,7 @@ class _DispyNode(object):
         elif msg.startswith(b'PING:'):
             try:
                 info = unserialize(msg[len(b'PING:'):])
-                if (info['version'] == _dispy_version and
-                   not self.scheduler['ip_addr'] and not self.job_infos):
+                if info['version'] == _dispy_version:
                     Coro(self.send_pong_msg, info, addr)
             except:
                 _dispy_logger.debug(traceback.format_exc())
@@ -1167,47 +1167,50 @@ class _DispyNode(object):
     def service_available(self):
         if self.serve == 0:
             return False
-        if not self.service_start or not self.service_end:
+        if not self.service_start:
             return True
-        now = time.localtime()
+        now = int(time.time())
         if self.service_stop:
-            end = self.service_stop
-        else:
-            end = self.service_end
-        if self.service_start < end:
-            if self.service_start <= (now.tm_hour, now.tm_min) < end:
+            if (self.service_start <= now < self.service_stop):
                 return True
-        else:
-            if (now.tm_hour, now.tm_min) >= self.service_start or \
-               (now.tm_hour, now.tm_min) < end:
-                return True
+        elif (self.service_start <= now < self.service_end):
+            return True
         return False
 
     def service_schedule(self, coro=None):
         coro.set_daemon()
-        while True:
-            yield coro.sleep(60)
-            if self.service_available():
-                yield self.broadcast_ping_msg(coro=coro)
-            else:
-                if self.scheduler['ip_addr']:
-                    now = time.localtime()
-                    if self.service_end and (now.tm_hour, now.tm_min) > self.service_end:
-                        _dispy_logger.debug('Shutting down service')
-                        self.shutdown(quit=False)
-                    else:
-                        _dispy_logger.debug('Stopping service')
-                        sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
-                                           keyfile=self.keyfile, certfile=self.certfile)
-                        sock.settimeout(MsgTimeout)
-                        try:
-                            yield sock.connect((self.scheduler['ip_addr'], self.scheduler['port']))
-                            info = {'ip_addr': self.ext_ip_addr, 'sign': self.sign, 'cpus': 0}
-                            yield sock.send_msg('NODE_CPUS:'.encode() + serialize(info))
-                        except:
-                            pass
-                        finally:
-                            sock.close()
+        while 1:
+            if self.service_stop:
+                now = int(time.time())
+                yield coro.sleep(self.service_stop - now)
+                _dispy_logger.debug('Stopping service')
+                sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                                   keyfile=self.keyfile, certfile=self.certfile)
+                sock.settimeout(MsgTimeout)
+                try:
+                    yield sock.connect((self.scheduler['ip_addr'], self.scheduler['port']))
+                    info = {'ip_addr': self.ext_ip_addr, 'sign': self.sign, 'cpus': 0}
+                    yield sock.send_msg('NODE_CPUS:'.encode() + serialize(info))
+                except:
+                    pass
+                finally:
+                    sock.close()
+
+            if self.service_end:
+                now = int(time.time())
+                yield coro.sleep(self.service_end - now)
+                _dispy_logger.debug('Shutting down service')
+                self.shutdown(quit=False)
+
+            # advance times for next day
+            self.service_start += 24 * 3600
+            if self.service_stop:
+                self.service_stop += 24 * 3600
+            if self.service_end:
+                self.service_end += 24 * 3600
+            now = int(time.time())
+            yield coro.sleep(self.service_start - now)
+            yield self.broadcast_ping_msg(coro=coro)
 
     def __job_program(self, _job, job_info):
         compute = self.computations[_job.compute_id]
@@ -1434,13 +1437,9 @@ class _DispyNode(object):
                     except:
                         _dispy_logger.warning('Could not remove "%s"', dirpath)
                         break
-            else:
-                _dispy_logger.debug('Removed "%s"', compute.dest_path)
-        try:
-            os.remove(os.path.join(self.dest_path_prefix, '%s_%s' % (compute.id, compute.auth)))
-        except:
-            pass
 
+        _dispy_logger.debug('Computation "%s" from %s done',
+                            compute.auth, compute.scheduler_ip_addr)
         if self.serve == 0:
             self.shutdown(quit=True)
 
@@ -1490,6 +1489,14 @@ class _DispyNode(object):
     def read_stdin(self, coro=None):
         coro.set_daemon()
         thread_pool = asyncoro.AsyncThreadPool(1)
+        if self.service_start:
+            service_from = ' from %s' % time.strftime('%H:%M', time.localtime(self.service_start))
+            if self.service_end:
+                service_to = ' to %s' % time.strftime('%H:%M', time.localtime(self.service_end))
+            else:
+                service_to = ' to %s' % time.strftime('%H:%M', time.localtime(self.service_stop))
+        else:
+            service_from = service_to = ''
         while True:
             sys.stdout.write('\nEnter "quit" or "exit" to terminate dispynode,\n'
                              '  "stop" to stop service, "start" to restart service,\n'
@@ -1547,9 +1554,7 @@ class _DispyNode(object):
                         Coro(self.broadcast_ping_msg)
             else:
                 print('\n  Serving %d CPUs%s%s%s' %
-                      (self.avail_cpus + len(self.job_infos),
-                       ' from %s' % self.serivce_start if self.service_start else '',
-                       ' to %s' % self.service_end if self.service_end else '',
+                      (self.avail_cpus + len(self.job_infos), service_from, service_to,
                        ' for %d clients' % self.serve if self.serve > 0 else ''))
                 print('  Completed:\n    %d Computations, %d jobs, %.3f sec CPU time' %
                       (self.num_computations, self.num_jobs, self.cpu_time))
@@ -1699,12 +1704,37 @@ if __name__ == '__main__':
     del m
     del _dispy_config['max_file_size']
 
+    # begining of day
+    bod = time.localtime()
+    bod = (int(time.time()) - (bod.tm_hour * 3600) - (bod.tm_min * 60))
     if _dispy_config['service_start']:
-        _dispy_config['service_start'] = time.strptime(_dispy_config['service_start'], '%H:%M')
+        _dispy_config['service_start'] = time.strptime(_dispy_config.pop('service_start'), '%H:%M')
+        _dispy_config['service_start'] = (bod + (_dispy_config['service_start'].tm_hour * 3600) +
+                                          (_dispy_config['service_start'].tm_min * 60))
     if _dispy_config['service_stop']:
-        _dispy_config['service_stop'] = time.strptime(_dispy_config['service_stop'], '%H:%M')
+        _dispy_config['service_stop'] = time.strptime(_dispy_config.pop('service_stop'), '%H:%M')
+        _dispy_config['service_stop'] = (bod + (_dispy_config['service_stop'].tm_hour * 3600) +
+                                         (_dispy_config['service_stop'].tm_min * 60))
     if _dispy_config['service_end']:
-        _dispy_config['service_end'] = time.strptime(_dispy_config['service_end'], '%H:%M')
+        _dispy_config['service_end'] = time.strptime(_dispy_config.pop('service_end'), '%H:%M')
+        _dispy_config['service_end'] = (bod + (_dispy_config['service_end'].tm_hour * 3600) +
+                                        (_dispy_config['service_end'].tm_min * 60))
+    del bod
+    if (_dispy_config['service_start'] or _dispy_config['service_stop'] or
+        _dispy_config['service_end']):
+        if not _dispy_config['service_start']:
+            _dispy_config['service_start'] = int(time.time())
+        if not _dispy_config['service_stop'] and not _dispy_config['service_end']:
+            raise Exception('"service_stop" or "service_end" must also be given')
+        if _dispy_config['service_stop']:
+            if _dispy_config['service_start'] >= _dispy_config['service_stop']:
+                raise Exception('"service_start" must be before "service_stop"')
+        if _dispy_config['service_end']:
+            if _dispy_config['service_start'] >= _dispy_config['service_end']:
+                raise Exception('"service_start" must be before "service_end"')
+            if (_dispy_config['service_stop'] and
+                _dispy_config['service_stop'] >= _dispy_config['service_end']):
+                raise Exception('"service_stop" must be before "service_end"')
 
     try:
         if os.getpgrp() != os.tcgetpgrp(sys.stdin.fileno()):
@@ -1739,5 +1769,6 @@ if __name__ == '__main__':
         signal.signal(signal.SIGHUP, sighandler)
     except:
         pass
+    globals().pop('sighandler')
 
     _dispy_node.asyncoro.finish()
