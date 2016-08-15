@@ -33,10 +33,10 @@ try:
 except:
     netifaces = None
 
+import asyncoro
+
 from dispy import _JobReply, DispyJob, DispyNodeAvailInfo, _Function, _Compute, _XferFile, \
      _node_ipaddr, _dispy_version, auth_code, num_min, _same_file, MsgTimeout
-
-import asyncoro
 from asyncoro import Coro, AsynCoro, AsyncSocket, serialize, deserialize
 
 __author__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
@@ -310,7 +310,8 @@ class _DispyNode(object):
         with open(config, 'wb') as fd:
             config = {
                 'ext_ip_addr': self.ext_ip_addr, 'port': self.port, 'avail_cpus': self.avail_cpus,
-                'sign': self.sign, 'secret': self.secret, 'auth': self.auth, 'pid': os.getpid()
+                'sign': self.sign, 'secret': self.secret, 'auth': self.auth,
+                'keyfile': self.keyfile, 'certfile': self.certfile, 'pid': os.getpid()
                 }
             pickle.dump(config, fd)
 
@@ -354,6 +355,8 @@ class _DispyNode(object):
         self.__init_modules = dict(sys.modules)
         if os.name == 'nt':
             self.__init_globals = dict(globals())
+            self.__init_globals.pop('_dispy_config')
+            self.__init_globals['_dispy_node'] = self
         self.tcp_coro = Coro(self.tcp_server)
         self.udp_coro = Coro(self.udp_server, _node_ipaddr(scheduler_node), scheduler_port)
         if not daemon:
@@ -464,7 +467,7 @@ class _DispyNode(object):
         if scheduler_ip:
             Coro(send_ping_msg, self, {'ip_addr': scheduler_ip, 'port': scheduler_port})
 
-        while True:
+        while 1:
             msg, addr = yield self.udp_sock.recvfrom(1000)
             # TODO: process each message as separate Coro, so
             # exceptions are contained?
@@ -1104,7 +1107,7 @@ class _DispyNode(object):
     def timer_task(self, coro=None):
         coro.set_daemon()
         last_pulse_time = last_zombie_time = time.time()
-        while True:
+        while 1:
             reset = yield coro.suspend(self.pulse_interval)
             if reset:
                 continue
@@ -1240,7 +1243,7 @@ class _DispyNode(object):
         self.reply_Q.put(reply)
 
     def __reply_Q(self):
-        while True:
+        while 1:
             job_reply = self.reply_Q.get()
             if job_reply is None:
                 break
@@ -1394,7 +1397,7 @@ class _DispyNode(object):
                 if os.name == 'nt':
                     globalvars = globals()
                 if self.client_shutdown:
-                    globalvars['dispynode_shutdown'] = functools.partial(self.shutdown, 'terminate')
+                    globalvars['dispynode_shutdown'] = lambda: setattr(self, 'serve', 0)
                 exec(marshal.loads(compute.code)) in globalvars, localvars
                 exec('%s(*_dispy_cleanup_args, **_dispy_cleanup_kwargs)' %
                      compute.cleanup.name) in globalvars, localvars
@@ -1407,13 +1410,13 @@ class _DispyNode(object):
                 globals().pop('dispynode_shutdown', None)
             for var in globals().keys():
                 if var not in self.__init_globals:
+                    if var == '_dispy_cmd':
+                        continue
                     _dispy_logger.debug('Variable "%s" left behind by "%s" at %s is being removed',
                                         var, compute.name, compute.scheduler_ip_addr)
                     globals().pop(var, None)
 
             for var, value in self.__init_globals.iteritems():
-                if var in ('_dispy_node', '_dispy_conn', '_dispy_addr', '_dispy_config'):
-                    continue
                 if value != globals().get(var, None):
                     _dispy_logger.warning('Variable "%s" changed by "%s" at %s is being reset',
                                           var, compute.name, compute.scheduler_ip_addr)
@@ -1495,11 +1498,17 @@ class _DispyNode(object):
                 self.tcp_coro.terminate()
                 self.sign = ''
                 cfg_file = os.path.join(self.dest_path_prefix, 'config')
-                with open(cfg_file, 'rb') as fd:
-                    config = pickle.load(fd)
-                os.remove(cfg_file)
+                try:
+                    with open(cfg_file, 'rb') as fd:
+                        config = pickle.load(fd)
+                    os.remove(cfg_file)
+                except:
+                    pass
                 if how == 'terminate':
-                    os.kill(config['pid'], signal.SIGABRT)
+                    # delay a bit for client to close node, in case shutdown
+                    # is called by 'dispynode_shutdown'
+                    yield coro.sleep(0.1)
+                    os.kill(os.getpid(), signal.SIGABRT)
 
         if self.sign:
             Coro(_shutdown, self, how)
@@ -1763,8 +1772,7 @@ if __name__ == '__main__':
             _dispy_node.shutdown('exit')
         elif signum == signal.SIGABRT:
             if not os.path.isfile(os.path.join(_dispy_node.dest_path_prefix, 'config')):
-                signal.signal(signal.SIGINT, signal.SIG_DFL)
-                os.kill(os.getpid(), signal.SIGINT)
+                raise KeyboardInterrupt
         else:
             _dispy_node.shutdown('terminate')
 
@@ -1776,17 +1784,17 @@ if __name__ == '__main__':
     signal.signal(signal.SIGINT, sighandler)
     signal.signal(signal.SIGABRT, sighandler)
     signal.signal(signal.SIGTERM, sighandler)
-    globals().pop('sighandler')
+    del sighandler
 
     # TODO: reset these signals in processes that execute computations?
 
-    _dispy_logger.info('dispynode version %s', _dispy_version)
-    _dispy_node = _dispy_cmd = None
+    _dispy_logger.info('dispynode version: %s, PID: %s', _dispy_version, os.getpid())
     _dispy_node = _DispyNode(**_dispy_config)
-    _dispy_daemon = _dispy_config['daemon']
-    del _dispy_config
 
-    if not globals().pop('_dispy_daemon'):
+    if _dispy_config['daemon']:
+        del _dispy_config
+    else:
+        del _dispy_config
         while 1:
             # wait a bit for any output for command is done
             time.sleep(0.1)
@@ -1795,6 +1803,12 @@ if __name__ == '__main__':
                     '\nEnter "quit" or "exit" to terminate dispynode,\n'
                     '  "stop" to stop service, "start" to restart service,\n'
                     '  "cpus" to change CPUs used, anything else to get status: ')
+            except KeyboardInterrupt:
+                if not os.path.isfile(os.path.join(_dispy_node.dest_path_prefix, 'config')):
+                    break
+                else:
+                    _dispy_node.shutdown('exit')
+                    continue
             except:
                 continue
             _dispy_cmd = _dispy_cmd.strip().lower()
