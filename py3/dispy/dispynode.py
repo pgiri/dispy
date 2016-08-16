@@ -271,10 +271,17 @@ class _DispyNode(object):
         if os.path.isfile(config):
             with open(config, 'rb') as fd:
                 config = pickle.load(fd)
-                if config.get('pid', None):
-                    raise Exception('Another dispynode server seems to be running with PID %s;\n'
-                                    '    terminate that process and remove file "%s"' %
-                                    (config['pid'], os.path.join(self.dest_path_prefix, 'config')))
+            if not clean:
+                raise Exception('Another dispynode server seems to be running with PID %s;\n'
+                                '    terminate that process and rerun with "clean" option' %
+                                (config['pid']))
+
+        if clean:
+            shutil.rmtree(self.dest_path_prefix, ignore_errors=True)
+
+        if not os.path.isdir(self.dest_path_prefix):
+            os.makedirs(self.dest_path_prefix)
+            os.chmod(self.dest_path_prefix, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
 
         self.asyncoro = AsynCoro()
 
@@ -285,12 +292,6 @@ class _DispyNode(object):
         self.address = self.tcp_sock.getsockname()
         self.port = self.address[1]
         self.tcp_sock.listen(30)
-
-        if clean:
-            shutil.rmtree(self.dest_path_prefix, ignore_errors=True)
-        if not os.path.isdir(self.dest_path_prefix):
-            os.makedirs(self.dest_path_prefix)
-            os.chmod(self.dest_path_prefix, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
 
         self.avail_cpus = self.num_cpus
         self.computations = {}
@@ -1758,6 +1759,14 @@ if __name__ == '__main__':
     except:
         pass
 
+    if os.name == 'nt':
+        # Python 3 under Windows blocks multiprocessing.Process on reading
+        # input; pressing "Enter" twice works (for one subprocess). Until
+        # this is understood / fixed, disable reading input.
+        print('\nReading standard input disabled, as multiprocessing does not seem to work'
+              'with reading input under Windows')
+        _dispy_config['daemon'] = True
+
     if psutil:
         psutil.cpu_percent(0.1)
     else:
@@ -1766,13 +1775,10 @@ if __name__ == '__main__':
               'will not be sent to clients\n')
 
     def sighandler(signum, frame):
-        if signum == signal.SIGTERM or signum == signal.SIGINT:
+        if os.path.isfile(os.path.join(_dispy_node.dest_path_prefix, 'config')):
             _dispy_node.shutdown('exit')
-        elif signum == signal.SIGABRT:
-            if not os.path.isfile(os.path.join(_dispy_node.dest_path_prefix, 'config')):
-                raise KeyboardInterrupt
         else:
-            _dispy_node.shutdown('terminate')
+            raise KeyboardInterrupt
 
     try:
         signal.signal(signal.SIGHUP, sighandler)
@@ -1791,42 +1797,31 @@ if __name__ == '__main__':
 
     if _dispy_config['daemon']:
         del _dispy_config
+        while 1:
+            try:
+                time.sleep(3600)
+            except:
+                if os.path.isfile(os.path.join(_dispy_node.dest_path_prefix, 'config')):
+                    _dispy_node.shutdown('exit')
+                else:
+                    break
     else:
         del _dispy_config
-        if os.name == 'nt':
-            # Python 3 under Windows blocks multiprocessing.Process on reading
-            # input; pressing "Enter" twice works (for one subprocess). Until
-            # this is understood / fixed, disable reading input.
-            print('\nReading standard input disabled, as multiprocessing does not seem to work'
-                  'with reading input under Windows')
-            while 1:
-                try:
-                    time.sleep(3600)
-                except KeyboardInterrupt:
-                    if not os.path.isfile(os.path.join(_dispy_node.dest_path_prefix, 'config')):
-                        break
-                    else:
-                        _dispy_node.shutdown('exit')
-        else:
-            while 1:
-                # wait a bit for any output for command is done
-                time.sleep(0.1)
-                try:
-                    _dispy_cmd = input(
-                        '\nEnter "quit" or "exit" to terminate dispynode,\n'
-                        '  "stop" to stop service, "start" to restart service,\n'
-                        '  "cpus" to change CPUs used, anything else to get status: ')
-                except KeyboardInterrupt:
-                    if not os.path.isfile(os.path.join(_dispy_node.dest_path_prefix, 'config')):
-                        break
-                    else:
-                        _dispy_node.shutdown('exit')
-                        continue
-                except:
-                    continue
+        while 1:
+            # wait a bit for any output for command is done
+            time.sleep(0.1)
+            try:
+                _dispy_cmd = input(
+                    '\nEnter "quit" or "exit" to terminate dispynode,\n'
+                    '  "stop" to stop service, "start" to restart service,\n'
+                    '  "cpus" to change CPUs used, anything else to get status: ')
+            except:
+                if os.path.isfile(os.path.join(_dispy_node.dest_path_prefix, 'config')):
+                    _dispy_node.shutdown('exit')
+                else:
+                    break
+            else:
                 _dispy_cmd = _dispy_cmd.strip().lower()
                 _dispy_node.cmd_coro.send(_dispy_cmd)
-                if _dispy_cmd in ('quit', 'exit'):
-                    break
 
     _dispy_node.asyncoro.finish()
