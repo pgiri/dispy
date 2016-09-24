@@ -83,13 +83,9 @@ installed; otherwise, inefficient *select* notifier is used.
 
 Installation
 ------------
-To install dispy for Python 2.7+, run::
+To install dispy, run::
 
-   pip install dispy
-
-or to install dispy for Python 3.1+, run::
-
-   pip3 install dispy
+   python -m pip install dispy
 
 Authors
 -------

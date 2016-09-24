@@ -274,7 +274,7 @@ class _DispyNode(object):
             if not clean:
                 raise Exception('Another dispynode server seems to be running with PID %s;\n'
                                 '    terminate that process and rerun with "clean" option' %
-                                (config['pid']))
+                                config.get('pid', None))
 
         if clean:
             shutil.rmtree(self.dest_path_prefix, ignore_errors=True)
@@ -933,7 +933,7 @@ class _DispyNode(object):
         try:
             req = yield conn.recvall(len(self.auth))
         except:
-            _dispy_logger.warning('Ignoring request; invalid client authentication?')
+            _dispy_logger.warning('Ignoring request from %s:%s', addr[0], addr[1])
             conn.close()
             raise StopIteration
         msg = yield conn.recv_msg()
@@ -941,7 +941,7 @@ class _DispyNode(object):
             if msg.startswith(b'PING:'):
                 pass
             else:
-                _dispy_logger.warning('Ignoring request; invalid client authentication?')
+                _dispy_logger.warning('Ignoring invalid request from %s:%s', addr[0], addr[1])
                 conn.close()
                 raise StopIteration
         if not msg:
@@ -1578,7 +1578,7 @@ class _DispyNode(object):
                     print('    Client %s: %s @ %s running %s jobs' %
                           (i, compute.name, compute.scheduler_ip_addr, compute.pending_jobs))
                 print('')
-        self.shutdown('quit')
+        self.shutdown('terminate')
 
 
 if __name__ == '__main__':
