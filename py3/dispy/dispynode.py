@@ -24,6 +24,7 @@ import inspect
 import pickle
 import io
 import signal
+import platform
 try:
     import psutil
 except ImportError:
@@ -401,6 +402,7 @@ class _DispyNode(object):
         if info.get('sign', None):
             pong_msg = {'ip_addr': self.ext_ip_addr, 'port': self.port, 'sign': self.sign,
                         'version': _dispy_version, 'name': self.name, 'cpus': self.avail_cpus,
+                        'platform': platform.platform(),
                         'auth': auth_code(self.secret, info['sign'])}
             if psutil:
                 pong_msg['avail_info'] = DispyNodeAvailInfo(

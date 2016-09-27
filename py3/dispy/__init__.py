@@ -200,7 +200,7 @@ class NodeAllocate(object):
                 cpus = 0
         self.cpus = cpus
 
-    def allocate(self, cluster, ip_addr, name, cpus, avail_info=None):
+    def allocate(self, cluster, ip_addr, name, cpus, avail_info=None, platform=None):
         """When a node is found, dispy calls this method with the
         cluster for which the node is being allocated, IP address,
         name and CPUs available on that node. This method should
@@ -338,9 +338,10 @@ class _Node(object):
     """
     __slots__ = ['ip_addr', 'port', 'name', 'cpus', 'avail_cpus', 'busy', 'cpu_time', 'clusters',
                  'auth', 'secret', 'keyfile', 'certfile', 'last_pulse', 'scheduler_ip_addr',
-                 '_jobs', 'pending_jobs', 'avail_info']
+                 '_jobs', 'pending_jobs', 'avail_info', 'platform']
 
-    def __init__(self, ip_addr, port, cpus, sign, secret, keyfile=None, certfile=None):
+    def __init__(self, ip_addr, port, cpus, sign, secret, platform=None,
+                 keyfile=None, certfile=None):
         self.ip_addr = ip_addr
         self.port = port
         self.name = None
@@ -358,6 +359,7 @@ class _Node(object):
         self._jobs = set()
         self.pending_jobs = []
         self.avail_info = None
+        self.platform = platform
 
     def setup(self, compute, coro=None):
         # generator
@@ -948,7 +950,8 @@ class _Cluster(object, metaclass=Singleton):
                     compute = cluster._compute
                     for node_alloc in cluster._node_allocs:
                         cpus = node_alloc.allocate(cluster, node.ip_addr, node.name,
-                                                   node.avail_cpus, node.avail_info)
+                                                   node.avail_cpus, avail_info=node.avail_info,
+                                                   platform=node.platform)
                         if cpus <= 0:
                             continue
                         node.cpus = min(node.avail_cpus, cpus)
@@ -1023,7 +1026,7 @@ class _Cluster(object, metaclass=Singleton):
                         node.name = dispy_node.name
                         node.cpus = dispy_node.cpus
                     else:
-                        node = _Node(dispy_node.ip_addr, 0, dispy_node.cpus, '', '')
+                        node = _Node(dispy_node.ip_addr, 0, dispy_node.cpus, '', '', platform=None)
                         node.name = dispy_node.name
                         self._nodes[node.ip_addr] = node
                     cluster._dispy_nodes[dispy_node.ip_addr] = dispy_node
@@ -1252,7 +1255,7 @@ class _Cluster(object, metaclass=Singleton):
                 xf.compute_id = compute.id
 
             node = _Node(cluster.scheduler_ip_addr, cluster.scheduler_port, 0, '', '',
-                         keyfile=self.keyfile, certfile=self.certfile)
+                         platform=None, keyfile=self.keyfile, certfile=self.certfile)
             node.auth = cluster._scheduler_auth
             self._nodes[cluster.scheduler_ip_addr] = node
             dispy_node = DispyNode(cluster.scheduler_ip_addr, None, 0)
@@ -1301,7 +1304,7 @@ class _Cluster(object, metaclass=Singleton):
                 continue
             for node_alloc in cluster._node_allocs:
                 cpus = node_alloc.allocate(cluster, node.ip_addr, node.name, node.avail_cpus,
-                                           node.avail_info)
+                                           avail_info=node.avail_info, platform=node.platform)
                 if cpus <= 0:
                     continue
                 node.cpus = min(node.avail_cpus, cpus)
@@ -1397,7 +1400,8 @@ class _Cluster(object, metaclass=Singleton):
             logger.debug('Discovered %s:%s (%s) with %s cpus',
                          info['ip_addr'], info['port'], info['name'], info['cpus'])
             node = _Node(info['ip_addr'], info['port'], info['cpus'], info['sign'],
-                         self.secret, keyfile=self.keyfile, certfile=self.certfile)
+                         self.secret, platform=info.get('platform', None),
+                         keyfile=self.keyfile, certfile=self.certfile)
             node.name = info['name']
             node.avail_info = info['avail_info']
             self._nodes[node.ip_addr] = node
@@ -1447,7 +1451,7 @@ class _Cluster(object, metaclass=Singleton):
             compute = cluster._compute
             for node_alloc in cluster._node_allocs:
                 cpus = node_alloc.allocate(cluster, node.ip_addr, node.name, node.avail_cpus,
-                                           node.avail_info)
+                                           avail_info=node.avail_info, platform=node.platform)
                 if cpus <= 0:
                     continue
                 node.cpus = min(node.avail_cpus, cpus)
@@ -1503,7 +1507,7 @@ class _Cluster(object, metaclass=Singleton):
         if node is None:
             if self.shared:
                 node = _Node(reply.ip_addr, 0, getattr(reply, 'cpus', 0), '', self.secret,
-                             keyfile=None, certfile=None)
+                             platform=None, keyfile=None, certfile=None)
                 self._nodes[reply.ip_addr] = node
                 dispy_node = DispyNode(node.ip_addr, node.name, node.cpus)
                 dispy_node.update_time = time.time()
@@ -2930,7 +2934,7 @@ def recover_jobs(recover_file, timeout=None, terminate_pending=False):
 
     nodes = {}
     for ip_addr, info in shelf_nodes.items():
-        node = _Node(ip_addr, info['port'], 0, '', cluster['secret'],
+        node = _Node(ip_addr, info['port'], 0, '', cluster['secret'], platform=None,
                      keyfile=cluster['keyfile'], certfile=cluster['certfile'])
         node.auth = info['auth']
         nodes[node.ip_addr] = node

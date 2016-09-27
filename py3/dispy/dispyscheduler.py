@@ -1277,7 +1277,8 @@ class _Scheduler(object, metaclass=Singleton):
             logger.debug('Discovered %s:%s (%s) with %s cpus',
                          info['ip_addr'], info['port'], info['name'], info['cpus'])
             node = _Node(info['ip_addr'], info['port'], info['cpus'], info['sign'],
-                         self.node_secret, keyfile=self.node_keyfile, certfile=self.node_certfile)
+                         self.node_secret, platform=info.get('platform', None),
+                         keyfile=self.node_keyfile, certfile=self.node_certfile)
             node.name = info['name']
             node.avail_info = info['avail_info']
             self._nodes[node.ip_addr] = node
