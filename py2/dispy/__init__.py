@@ -199,7 +199,7 @@ class NodeAllocate(object):
                 cpus = 0
         self.cpus = cpus
 
-    def allocate(self, cluster, ip_addr, name, cpus, avail_info=None, platform=None):
+    def allocate(self, cluster, ip_addr, name, cpus, avail_info=None, platform=''):
         """When a node is found, dispy calls this method with the
         cluster for which the node is being allocated, IP address,
         name and CPUs available on that node. This method should
@@ -339,7 +339,7 @@ class _Node(object):
                  'auth', 'secret', 'keyfile', 'certfile', 'last_pulse', 'scheduler_ip_addr',
                  '_jobs', 'pending_jobs', 'avail_info', 'platform']
 
-    def __init__(self, ip_addr, port, cpus, sign, secret, platform=None,
+    def __init__(self, ip_addr, port, cpus, sign, secret, platform='',
                  keyfile=None, certfile=None):
         self.ip_addr = ip_addr
         self.port = port
@@ -1020,7 +1020,7 @@ class _Cluster(object):
                         node.name = dispy_node.name
                         node.cpus = dispy_node.cpus
                     else:
-                        node = _Node(dispy_node.ip_addr, 0, dispy_node.cpus, '', '', platform=None)
+                        node = _Node(dispy_node.ip_addr, 0, dispy_node.cpus, '', '', platform='')
                         node.name = dispy_node.name
                         self._nodes[node.ip_addr] = node
                     cluster._dispy_nodes[dispy_node.ip_addr] = dispy_node
@@ -1249,7 +1249,7 @@ class _Cluster(object):
                 xf.compute_id = compute.id
 
             node = _Node(cluster.scheduler_ip_addr, cluster.scheduler_port, 0, '', '',
-                         platform=None, keyfile=self.keyfile, certfile=self.certfile)
+                         platform='', keyfile=self.keyfile, certfile=self.certfile)
             node.auth = cluster._scheduler_auth
             self._nodes[cluster.scheduler_ip_addr] = node
             dispy_node = DispyNode(cluster.scheduler_ip_addr, None, 0)
@@ -1394,7 +1394,7 @@ class _Cluster(object):
             logger.debug('Discovered %s:%s (%s) with %s cpus',
                          info['ip_addr'], info['port'], info['name'], info['cpus'])
             node = _Node(info['ip_addr'], info['port'], info['cpus'], info['sign'],
-                         self.secret, platform=info.get('platform', None),
+                         self.secret, platform=info['platform'],
                          keyfile=self.keyfile, certfile=self.certfile)
             node.name = info['name']
             node.avail_info = info['avail_info']
@@ -1501,7 +1501,7 @@ class _Cluster(object):
         if node is None:
             if self.shared:
                 node = _Node(reply.ip_addr, 0, getattr(reply, 'cpus', 0), '', self.secret,
-                             platform=None, keyfile=None, certfile=None)
+                             platform='', keyfile=None, certfile=None)
                 self._nodes[reply.ip_addr] = node
                 dispy_node = DispyNode(node.ip_addr, node.name, node.cpus)
                 dispy_node.update_time = time.time()
@@ -2929,7 +2929,7 @@ def recover_jobs(recover_file, timeout=None, terminate_pending=False):
 
     nodes = {}
     for ip_addr, info in shelf_nodes.iteritems():
-        node = _Node(ip_addr, info['port'], 0, '', cluster['secret'], platform=None,
+        node = _Node(ip_addr, info['port'], 0, '', cluster['secret'], platform='',
                      keyfile=cluster['keyfile'], certfile=cluster['certfile'])
         node.auth = info['auth']
         nodes[node.ip_addr] = node
