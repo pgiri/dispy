@@ -588,6 +588,7 @@ class _Cluster(object):
                  shared=False, secret='', keyfile=None, certfile=None, recover_file=None):
         if not hasattr(self, 'asyncoro'):
             self.asyncoro = AsynCoro()
+            logger.info('dispy client version: %s', __version__)
             self.ip_addrs = set()
             if ip_addr:
                 if not isinstance(ip_addr, list):
