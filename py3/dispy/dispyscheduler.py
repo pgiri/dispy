@@ -1147,8 +1147,7 @@ class _Scheduler(object, metaclass=Singleton):
                 port = node_alloc.port
                 Coro(self.send_ping_node, ip_addr, port)
 
-    def add_cluster(self, cluster, coro=None):
-        # generator
+    def add_cluster(self, cluster):
         compute = cluster._compute
         compute.pulse_interval = self.pulse_interval
         if self.httpd and cluster.status_callback is None:
@@ -1874,22 +1873,29 @@ class _Scheduler(object, metaclass=Singleton):
             yield self._sched_event.set()
         raise StopIteration(cpus)
 
-    def shutdown(self):
+    def shutdown(self, coro=None):
         if self.terminate:
             return
         logger.debug('shutting down scheduler ...')
         self.terminate = True
-        while (self.pending_clusters or
-               any(cluster.pending_jobs for cluster in self._clusters.values())):
-            logger.warning('Waiting for %s clusters to finish',
-                           len(self.pending_clusters) + len(self._clusters))
-            time.sleep(5)
+        for cluster in list(self.pending_clusters.values()) + self.unsched_clusters:
+            path = os.path.join(self.dest_path_prefix,
+                                '%s_%s' % (cluster._compute.id, cluster.client_auth))
+            if os.path.isfile(path):
+                os.remove(path)
+            try:
+                shutil.rmtree(cluster.dest_path)
+            except:
+                logger.debug(traceback.format_exc())
+            # TODO: inform cluster
+        self.pending_clusters.clear()
+        self.unsched_clusters = []
+        while (any(cluster.pending_jobs for cluster in self._clusters.values())):
+            logger.warning('Waiting for %s clusters to finish', len(self._clusters))
+            yield coro.sleep(5)
 
-        def _terminate_scheduler(self, coro=None):
-            yield self._sched_event.set()
-
-        Coro(_terminate_scheduler, self).value()
-        self.scheduler_coro.value()
+        self._sched_event.set()
+        yield self.scheduler_coro.finish()
 
     def print_status(self):
         print('')
@@ -1907,8 +1913,15 @@ class _Scheduler(object, metaclass=Singleton):
                 name = ip_addr
             print(' %-30.30s | %5s | %13.3f' % (name, node.cpus, node.cpu_time))
         print('')
-        print('Total job time: %.3f sec' % (tot_cpu_time))
+        print('Total job time: %.3f sec\n' % (tot_cpu_time))
+        if self._clusters:
+            print('Current clients: %s (%s)' % (len(self._clusters),
+                                                ', '.join(cluster.ip_addr for cluster in
+                                                          self._clusters.values())))
+        if self.unsched_clusters:
+            print('Pending clients: %s' % (len(self.unsched_clusters)))
         print('')
+        yield 0
 
 
 if __name__ == '__main__':
@@ -2036,7 +2049,7 @@ if __name__ == '__main__':
                 break
             except:
                 logger.debug(traceback.format_exc())
-            scheduler.print_status()
-        scheduler.shutdown()
-    scheduler.print_status()
+            Coro(scheduler.print_status).value()
+        Coro(scheduler.shutdown).value()
+    Coro(scheduler.print_status).value()
     exit(0)

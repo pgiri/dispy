@@ -770,11 +770,11 @@ class _DispyNode(object):
                     compute.file_uses[tgt] = 2
                 yield conn.send_msg(serialize(xf.stat_buf.st_size))
             else:
+                recvd = 0
                 try:
                     if not os.path.isdir(os.path.dirname(tgt)):
                         os.makedirs(os.path.dirname(tgt))
                     with open(tgt, 'wb') as fd:
-                        recvd = 0
                         _dispy_logger.debug('Copying file %s to %s (%s)',
                                             xf.name, tgt, xf.stat_buf.st_size)
                         while recvd < xf.stat_buf.st_size:
@@ -785,14 +785,13 @@ class _DispyNode(object):
                             fd.write(data)
                             recvd += len(data)
                         yield conn.send_msg(serialize(recvd))
-                    _dispy_logger.debug('Copied file %s, %s / %s',
-                                        tgt, recvd, xf.stat_buf.st_size)
                     assert recvd == xf.stat_buf.st_size
                     os.utime(tgt, (xf.stat_buf.st_atime, xf.stat_buf.st_mtime))
                     os.chmod(tgt, stat.S_IMODE(xf.stat_buf.st_mode))
                 except:
-                    _dispy_logger.warning('Copying file "%s" failed with "%s"',
-                                          xf.name, traceback.format_exc())
+                    _dispy_logger.warning('Copying file "%s" failed (%s / %s) with "%s"',
+                                          xf.name, recvd, xf.stat_buf.st_size,
+                                          traceback.format_exc())
                     os.remove(tgt)
                 else:
                     if tgt in compute.file_uses:

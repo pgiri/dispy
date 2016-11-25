@@ -37,7 +37,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "MIT"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.6.17"
+__version__ = "4.6.18"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
@@ -1242,7 +1242,7 @@ class _Cluster(object):
                 finally:
                     conn.close()
 
-    def add_cluster(self, cluster):
+    def add_cluster(self, cluster, coro=None):
         compute = cluster._compute
         if self.shared:
             self._clusters[compute.id] = cluster
@@ -1269,7 +1269,7 @@ class _Cluster(object):
                 self.poll_interval = num_min(self.poll_interval, cluster.poll_interval)
             if self.poll_interval:
                 self.timer_coro.resume(True)
-            return
+            raise StopIteration
 
         # if a node is added with 'allocate_node', compute is already
         # initialized, so don't reinitialize it
@@ -1306,6 +1306,7 @@ class _Cluster(object):
                 compute_nodes.append(node)
         for node in compute_nodes:
             Coro(self.setup_node, node, [compute])
+        yield None
 
     def del_cluster(self, cluster, coro=None):
         # generator
@@ -1332,7 +1333,7 @@ class _Cluster(object):
                 if not node:
                     continue
                 node.clusters.discard(cluster._compute.id)
-            for dispy_node in cluster._dispy_nodes.itervalues():
+            for dispy_node in cluster._dispy_nodes.values():
                 node = self._nodes.get(dispy_node.ip_addr, None)
                 if not node:
                     continue
@@ -1796,7 +1797,7 @@ class _Cluster(object):
         cluster._node_allocs = [na for na in cluster._node_allocs
                                 if na.ip_rex not in present and not present.add(na.ip_rex)]
         del present
-        self.add_cluster(cluster)
+        yield self.add_cluster(cluster, coro=coro)
         yield self._sched_event.set()
         raise StopIteration(0)
 
@@ -2248,7 +2249,7 @@ class JobCluster(object):
         self.start_time = time.time()
         self.end_time = None
         if not shared:
-            self._cluster.add_cluster(self)
+            Coro(self._cluster.add_cluster, self).value()
 
     def submit(self, *args, **kwargs):
         """Submit a job for execution with the given arguments.
@@ -2592,7 +2593,7 @@ class SharedJobCluster(JobCluster):
                 # TODO: delete computation?
             sock.close()
 
-        self._cluster.add_cluster(self)
+        Coro(self._cluster.add_cluster, self).value()
         self._scheduled_event = threading.Event()
         sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), blocking=True,
                            keyfile=keyfile, certfile=certfile)
