@@ -339,6 +339,7 @@ class _DispyNode(object):
 
         self.reply_Q = multiprocessing.Queue()
         self.reply_Q_thread = threading.Thread(target=self.__reply_Q)
+        self.reply_Q_thread.daemon = True
         self.reply_Q_thread.start()
 
         self.serve = serve
@@ -555,25 +556,28 @@ class _DispyNode(object):
             _dispy_logger.debug('New job id %s from %s/%s',
                                 _job.uid, addr[0], compute.scheduler_ip_addr)
 
-            if compute.type == _Compute.func_type:
-                reply = _JobReply(_job, self.ext_ip_addr)
-                reply.start_time = time.time()
-                job_info = _DispyJobInfo(reply, reply_addr, compute, _job.xfer_files)
+            reply = _JobReply(_job, self.ext_ip_addr)
+            job_info = _DispyJobInfo(reply, reply_addr, compute, _job.xfer_files)
+            job_info.job_reply.start_time = time.time()
+            job_info.job_reply.status = DispyJob.Running
+            self.thread_lock.acquire()
+            self.job_infos[_job.uid] = job_info
+            self.thread_lock.release()
 
-                args = (job_info, self.certfile, self.keyfile, compute.name,
-                        _job.args, _job.kwargs, (compute.code, _job.code),
-                        compute.globals, compute.dest_path, self.reply_Q)
+            if compute.type == _Compute.func_type:
                 try:
                     yield conn.send_msg(b'ACK')
                 except:
                     _dispy_logger.warning('Failed to send response for new job to %s', str(addr))
+                    job_info.job_reply.status = DispyJob.Terminated
                     raise StopIteration
+                args = (job_info, self.certfile, self.keyfile, compute.name,
+                        _job.args, _job.kwargs, (compute.code, _job.code),
+                        compute.globals, compute.dest_path, self.reply_Q)
                 proc = multiprocessing.Process(target=_dispy_job_func, args=args)
                 self.avail_cpus -= 1
                 compute.pending_jobs += 1
-                self.thread_lock.acquire()
-                self.job_infos[_job.uid] = job_info
-                self.thread_lock.release()
+                job_info.proc = proc
                 try:
                     proc.start()
                 except:
@@ -582,34 +586,20 @@ class _DispyNode(object):
                     job_info.job_reply.end_time = time.time()
                     job_info.proc = None
                     self.reply_Q.put(job_info.job_reply)
-                else:
-                    job_info.proc = proc
-                    job_info.job_reply.status = DispyJob.Running
                 raise StopIteration
-            elif compute.type == _Compute.prog_type:
+            else:
+                # compute.type == _Compute.prog_type:
                 try:
                     yield conn.send_msg(b'ACK')
                 except:
                     _dispy_logger.warning('Failed to send response for new job to %s', str(addr))
+                    job_info.job_reply.status = DispyJob.Terminated
                     raise StopIteration
-                reply = _JobReply(_job, self.ext_ip_addr)
-                reply.start_time = time.time()
-                job_info = _DispyJobInfo(reply, reply_addr, compute, _job.xfer_files)
-                job_info.job_reply.status = DispyJob.Running
-                self.thread_lock.acquire()
-                self.job_infos[_job.uid] = job_info
-                self.thread_lock.release()
+                prog_thread = threading.Thread(target=self.__job_program, args=(_job, job_info))
                 self.avail_cpus -= 1
                 compute.pending_jobs += 1
-                prog_thread = threading.Thread(target=self.__job_program, args=(_job, job_info))
                 prog_thread.start()
                 raise StopIteration
-            else:
-                try:
-                    yield conn.send_msg(('NAK (invalid computation type "%s")' %
-                                         compute.type).encode())
-                except:
-                    _dispy_logger.warning('Failed to send response for new job to %s', str(addr))
 
         def add_computation_task(msg):
             try:
@@ -833,44 +823,50 @@ class _DispyNode(object):
             yield conn.send_msg(resp)
 
         def terminate_job_task(compute, job_info):
-            if not job_info.proc:
-                raise StopIteration
-            _dispy_logger.debug('Terminating job %s of "%s"',
-                                job_info.job_reply.uid, compute.name)
-            job_info.proc.terminate()
-            if isinstance(job_info.proc, multiprocessing.Process):
-                for x in range(20):
-                    if job_info.proc.is_alive():
-                        yield coro.sleep(0.1)
-                    else:
-                        _dispy_logger.debug('Process "%s" for job %s terminated',
-                                            compute.name, job_info.job_reply.uid)
-                        break
-                else:
-                    _dispy_logger.warning('Could not kill process %s', compute.name)
-                    raise StopIteration
+            proc = None
+            for i in range(20):
+                if job_info.job_reply.status != DispyJob.Running:
+                    break
+                # technically, locking should be used to check and update
+                # termination status, as job process may finish in between;
+                # here, it shouldn't matter - job is deemed terminated even if
+                # job finishes
+                proc, job_info.proc = job_info.proc, None
+                if proc:
+                    _dispy_logger.debug('Terminating job %s of "%s"',
+                                        job_info.job_reply.uid, compute.name)
+                    job_info.job_reply.status = DispyJob.Terminated
+                    job_info.job_reply.result = serialize(None)
+                    try:
+                        proc.terminate()
+                    except:
+                        raise StopIteration
+                    break
+                yield coro.sleep(0.1)
             else:
-                assert isinstance(job_info.proc, subprocess.Popen)
-                for x in range(20):
-                    rc = job_info.proc.poll()
-                    _dispy_logger.debug('Program "%s" for job %s terminated with %s',
-                                        compute.name, job_info.job_reply.uid, rc)
-                    if rc is not None:
+                raise StopIteration
+            for i in range(20):
+                if job_info.job_reply.status != DispyJob.Running:
+                    _dispy_logger.debug('Job %s for computation "%s" terminated',
+                                        job_info.job_reply.uid, compute.name)
+                    break
+                if isinstance(proc, multiprocessing.Process):
+                    if not proc.is_alive():
                         break
-                    if x == 10:
+                elif isinstance(proc, subprocess.Popen):
+                    if proc.poll() is not None:
+                        break
+                    if i == 10:
                         _dispy_logger.debug('Killing job %s', job_info.job_reply.uid)
-                        job_info.proc.kill()
-                    yield coro.sleep(0.1)
+                        proc.kill()
                 else:
-                    _dispy_logger.warning('Could not kill process %s', compute.name)
-                    raise StopIteration
+                    break
+                yield coro.sleep(0.1)
+            else:
+                _dispy_logger.warning('Could not kill process %s', compute.name)
+                raise StopIteration
             job_info.job_reply.end_time = time.time()
-            job_info.proc = None
-            self.thread_lock.acquire()
-            if self.job_infos.get(job_info.job_reply.uid, None) == job_info:
-                job_info.job_reply.status = DispyJob.Terminated
-                self.reply_Q.put(job_info.job_reply)
-            self.thread_lock.release()
+            self.reply_Q.put(job_info.job_reply)
 
         def retrieve_job_task(msg):
             # generator
@@ -1234,51 +1230,52 @@ class _DispyNode(object):
             env['PATH'] = compute.dest_path + os.pathsep + env['PATH']
             job_info.proc = subprocess.Popen(program, stdout=subprocess.PIPE,
                                              stderr=subprocess.PIPE, env=env)
-
-            assert isinstance(job_info.proc, subprocess.Popen)
             reply.stdout, reply.stderr = job_info.proc.communicate()
-            reply.result = serialize(job_info.proc.returncode)
-            reply.status = DispyJob.Finished
+            # if process is killed (because job is cancelled), job_info.proc
+            # would've been cleared by terminate_job_task
+            try:
+                reply.result = serialize(job_info.proc.returncode)
+                reply.status = DispyJob.Finished
+            except:
+                return
         except:
-            reply.exception = traceback.format_exc()
+            reply.result = serialize(None)
             reply.status = DispyJob.Terminated
-        reply.end_time = time.time()
+            reply.exception = traceback.format_exc()
         job_info.proc = None
+        reply.end_time = time.time()
         self.reply_Q.put(reply)
 
     def __reply_Q(self):
         while 1:
             job_reply = self.reply_Q.get()
-            if job_reply is None:
-                break
             self.thread_lock.acquire()
-            job_info = self.job_infos.get(job_reply.uid, None)
-            if job_info is not None:
-                job_info.job_reply = job_reply
+            job_info = self.job_infos.pop(job_reply.uid, None)
             self.thread_lock.release()
-            if job_info is not None:
-                self.num_jobs += 1
-                self.cpu_time += (job_reply.end_time - job_reply.start_time)
-                if job_info.proc is not None:
-                    if isinstance(job_info.proc, multiprocessing.Process):
-                        job_info.proc.join(2)
-                    else:
-                        job_info.proc.wait()
-                Coro(self._send_job_reply, job_info, resending=False)
-                compute = self.computations.get(job_info.compute_id, None)
-                if not compute:
+            if not job_info:
+                continue
+            job_info.proc = None
+            if job_info.job_reply.status == DispyJob.Terminated:
+                job_reply.result = serialize(None)
+                job_reply.status = DispyJob.Terminated
+            job_info.job_reply = job_reply
+            self.num_jobs += 1
+            self.cpu_time += (job_reply.end_time - job_reply.start_time)
+            Coro(self._send_job_reply, job_info, resending=False)
+            compute = self.computations.get(job_info.compute_id, None)
+            if not compute:
+                continue
+            for xf in job_info.xfer_files:
+                path = os.path.join(compute.dest_path, xf.dest_path.replace(xf.sep, os.sep),
+                                    xf.name.split(xf.sep)[-1])
+                try:
+                    compute.file_uses[path] -= 1
+                    if compute.file_uses[path] == 0:
+                        compute.file_uses.pop(path)
+                        os.remove(path)
+                except:
+                    _dispy_logger.warning('invalid file "%s" ignored', path)
                     continue
-                for xf in job_info.xfer_files:
-                    path = os.path.join(compute.dest_path, xf.dest_path.replace(xf.sep, os.sep),
-                                        xf.name.split(xf.sep)[-1])
-                    try:
-                        compute.file_uses[path] -= 1
-                        if compute.file_uses[path] == 0:
-                            compute.file_uses.pop(path)
-                            os.remove(path)
-                    except:
-                        _dispy_logger.warning('invalid file "%s" ignored', path)
-                        continue
 
     def _send_job_reply(self, job_info, resending=False, coro=None):
         """Internal use only.
@@ -1288,9 +1285,6 @@ class _DispyNode(object):
                             job_reply.uid, job_reply.status, str(job_info.reply_addr))
         compute = self.computations.get(job_info.compute_id, None)
         if not resending:
-            self.thread_lock.acquire()
-            assert self.job_infos.pop(job_reply.uid, None) is not None
-            self.thread_lock.release()
             self.avail_cpus += 1
             assert self.avail_cpus <= self.num_cpus
             if compute:
@@ -1464,21 +1458,18 @@ class _DispyNode(object):
                     raise StopIteration
                 how = 'terminate'
             job_infos, self.job_infos = self.job_infos, {}
-            if self.reply_Q and (how == 'quit' or how == 'terminate'):
-                self.reply_Q.put(None)
             self.scheduler['ip_addr'] = None
             self.scheduler['auth'] = set()
             self.avail_cpus += len(job_infos)
             if self.avail_cpus != self.num_cpus:
                 _dispy_logger.warning('invalid cpus: %s / %s', self.avail_cpus, self.num_cpus)
             self.thread_lock.release()
-            for uid, job_info in job_infos.items():
-                job_info.proc.terminate()
-                _dispy_logger.debug('process for %s is killed', uid)
-                if isinstance(job_info.proc, multiprocessing.Process):
-                    job_info.proc.join(2)
-                else:
-                    job_info.proc.wait()
+            for job_info in job_infos.values():
+                if job_info.proc:
+                    try:
+                        job_info.proc.terminate()
+                    except:
+                        continue
             for cid, compute in list(self.computations.items()):
                 sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                    keyfile=self.keyfile, certfile=self.certfile)
