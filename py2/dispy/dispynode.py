@@ -172,7 +172,7 @@ class _DispyJobInfo(object):
         self.proc = None
 
 
-def _dispy_job_func(__dispy_job_reply, __dispy_job_certfile, __dispy_job_keyfile,
+def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
                     __dispy_job_name, __dispy_job_args, __dispy_job_kwargs,
                     __dispy_job_code, __dispy_job_globals, __dispy_path, __dispy_reply_Q):
     """Internal use only.
@@ -181,6 +181,7 @@ def _dispy_job_func(__dispy_job_reply, __dispy_job_certfile, __dispy_job_keyfile
     os.chdir(__dispy_path)
     sys.stdout = io.StringIO()
     sys.stderr = io.StringIO()
+    __dispy_job_reply = __dispy_job_info.job_reply
     globals().update(__dispy_job_globals)
     try:
         exec(marshal.loads(__dispy_job_code[0])) in globals()
@@ -567,7 +568,7 @@ class _DispyNode(object):
                     _dispy_logger.warning('Failed to send response for new job to %s', str(addr))
                     job_info.job_reply.status = DispyJob.Terminated
                     raise StopIteration
-                args = (job_info.job_reply, self.certfile, self.keyfile, compute.name,
+                args = (job_info, self.certfile, self.keyfile, compute.name,
                         _job.args, _job.kwargs, (compute.code, _job.code),
                         compute.globals, compute.dest_path, self.reply_Q)
                 proc = multiprocessing.Process(target=_dispy_job_func, args=args)
