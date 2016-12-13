@@ -172,7 +172,7 @@ class _DispyJobInfo(object):
         self.proc = None
 
 
-def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
+def _dispy_job_func(__dispy_job_reply, __dispy_job_certfile, __dispy_job_keyfile,
                     __dispy_job_name, __dispy_job_args, __dispy_job_kwargs,
                     __dispy_job_code, __dispy_job_globals, __dispy_path, __dispy_reply_Q):
     """Internal use only.
@@ -181,7 +181,6 @@ def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
     os.chdir(__dispy_path)
     sys.stdout = io.StringIO()
     sys.stderr = io.StringIO()
-    __dispy_job_reply = __dispy_job_info.job_reply
     globals().update(__dispy_job_globals)
     try:
         exec(marshal.loads(__dispy_job_code[0]), globals())
@@ -202,7 +201,6 @@ def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
     __dispy_job_reply.stdout = sys.stdout.getvalue()
     __dispy_job_reply.stderr = sys.stderr.getvalue()
     __dispy_job_reply.end_time = time.time()
-    __dispy_job_info.proc = None
     __dispy_reply_Q.put(__dispy_job_reply)
 
 
@@ -571,7 +569,7 @@ class _DispyNode(object):
                     _dispy_logger.warning('Failed to send response for new job to %s', str(addr))
                     job_info.job_reply.status = DispyJob.Terminated
                     raise StopIteration
-                args = (job_info, self.certfile, self.keyfile, compute.name,
+                args = (job_info.job_reply, self.certfile, self.keyfile, compute.name,
                         _job.args, _job.kwargs, (compute.code, _job.code),
                         compute.globals, compute.dest_path, self.reply_Q)
                 proc = multiprocessing.Process(target=_dispy_job_func, args=args)
@@ -867,6 +865,11 @@ class _DispyNode(object):
                 raise StopIteration
             job_info.job_reply.end_time = time.time()
             self.reply_Q.put(job_info.job_reply)
+            if proc:
+                if isinstance(proc, multiprocessing.Process):
+                    proc.join(2)
+                elif isinstance(proc, subprocess.Popen):
+                    proc.wait()
 
         def retrieve_job_task(msg):
             # generator
@@ -1242,7 +1245,6 @@ class _DispyNode(object):
             reply.result = serialize(None)
             reply.status = DispyJob.Terminated
             reply.exception = traceback.format_exc()
-        job_info.proc = None
         reply.end_time = time.time()
         self.reply_Q.put(reply)
 
@@ -1254,7 +1256,12 @@ class _DispyNode(object):
             self.thread_lock.release()
             if not job_info:
                 continue
-            job_info.proc = None
+            proc, job_info.proc = job_info.proc, None
+            if proc:
+                if isinstance(proc, multiprocessing.Process):
+                    proc.join(2)
+                elif isinstance(proc, subprocess.Popen):
+                    proc.wait()
             if job_info.job_reply.status == DispyJob.Terminated:
                 job_reply.result = serialize(None)
                 job_reply.status = DispyJob.Terminated
@@ -1465,11 +1472,16 @@ class _DispyNode(object):
                 _dispy_logger.warning('invalid cpus: %s / %s', self.avail_cpus, self.num_cpus)
             self.thread_lock.release()
             for job_info in job_infos.values():
-                if job_info.proc:
+                proc, job_info.proc = job_info.proc, None
+                if proc:
                     try:
-                        job_info.proc.terminate()
+                        proc.terminate()
                     except:
                         continue
+                    if isinstance(proc, multiprocessing.Process):
+                        proc.join(2)
+                    elif isinstance(proc, subprocess.Popen):
+                        proc.wait()
             for cid, compute in list(self.computations.items()):
                 sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                    keyfile=self.keyfile, certfile=self.certfile)
