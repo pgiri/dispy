@@ -569,7 +569,7 @@ class _DispyNode(object):
                     job_info.job_reply.status = DispyJob.Terminated
                     raise StopIteration
                 args = (job_info, self.certfile, self.keyfile, compute.name,
-                        _job.args, _job.kwargs, (compute.code, _job.code),
+                        _job._args, _job._kwargs, (compute.code, _job.code),
                         compute.globals, compute.dest_path, self.reply_Q)
                 proc = multiprocessing.Process(target=_dispy_job_func, args=args)
                 self.avail_cpus -= 1
@@ -1222,7 +1222,7 @@ class _DispyNode(object):
             program = [sys.executable, compute.name]
         else:
             program = [compute.name]
-        args = deserialize(_job.args)
+        args = deserialize(_job._args)
         program.extend(args)
         reply = job_info.job_reply
         try:

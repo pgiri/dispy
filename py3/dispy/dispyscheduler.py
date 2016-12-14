@@ -1415,8 +1415,8 @@ class _Scheduler(object, metaclass=Singleton):
             yield sock.connect((cluster.client_ip_addr, cluster.client_job_result_port))
             yield sock.send_msg(b'NODE_STATUS:' + serialize(status_info))
         except:
-            logger.warning('Could not send node status to %s:%s',
-                           cluster.client_ip_addr, cluster.client_job_result_port)
+            logger.debug('Could not send node status to %s:%s',
+                         cluster.client_ip_addr, cluster.client_job_result_port)
         sock.close()
 
     def job_reply_process(self, reply, sock, addr):
@@ -1426,6 +1426,7 @@ class _Scheduler(object, metaclass=Singleton):
             yield sock.send_msg(b'ACK')
             raise StopIteration
         job = _job.job
+        _job._args = _job._kwargs = None
         node = self._nodes.get(reply.ip_addr, None)
         cluster = self._clusters.get(_job.compute_id, None)
         if cluster is None:
@@ -1671,6 +1672,8 @@ class _Scheduler(object, metaclass=Singleton):
                 # so recipient can use temporal ordering to ignore prior
                 # messages
                 Coro(self.send_job_status, cluster, _job)
+        if not cluster._compute.reentrant:
+            _job._args = _job._kwargs = None
 
     def _schedule_jobs(self, coro=None):
         # generator

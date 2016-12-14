@@ -37,7 +37,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "MIT"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.6.19"
+__version__ = "4.7.0"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
@@ -76,9 +76,9 @@ class DispyJob(object):
 
     """
 
-    __slots__ = ('id', 'args', 'kwargs', 'result', 'stdout', 'stderr', 'exception',
+    __slots__ = ('id', 'result', 'stdout', 'stderr', 'exception',
                  'submit_time', 'start_time', 'end_time', 'status',
-                 'ip_addr', 'finish', '_dispy_job_')
+                 'ip_addr', 'finish', '_args', '_kwargs', '_dispy_job_')
 
     Created = 5
     Running = 6
@@ -97,8 +97,6 @@ class DispyJob(object):
         # id can be assigned by user as appropriate (e.g., to distinguish jobs)
         self.id = None
         # rest are read-only
-        self.args = args
-        self.kwargs = kwargs
         self.result = None
         self.stdout = None
         self.stderr = None
@@ -110,7 +108,9 @@ class DispyJob(object):
         self.ip_addr = None
         self.finish = threading.Event()
 
-        # _dispy_job_ is for dispy implementation only - it is opaque to users
+        # rest are for dispy implementation only - these are opaque to clients
+        self._args = args
+        self._kwargs = kwargs
         self._dispy_job_ = None
 
     def __call__(self, clear=False):
@@ -464,14 +464,14 @@ class _DispyJob_(object):
     """
 
     __slots__ = ('job', 'uid', 'compute_id', 'hash', 'node', 'pinned',
-                 'xfer_files', 'args', 'kwargs', 'code')
+                 'xfer_files', '_args', '_kwargs', 'code')
 
     def __init__(self, compute_id, args, kwargs):
         job_deps = kwargs.pop('dispy_job_depends', [])
         self.job = DispyJob(args, kwargs)
         self.job._dispy_job_ = self
-        self.args = self.job.args
-        self.kwargs = self.job.kwargs
+        self._args = self.job._args
+        self._kwargs = self.job._kwargs
         self.uid = None
         self.compute_id = compute_id
         self.hash = os.urandom(10).encode('hex')
@@ -522,8 +522,9 @@ class _DispyJob_(object):
 
     def __getstate__(self):
         state = {'uid': self.uid, 'hash': self.hash, 'compute_id': self.compute_id,
-                 'args': self.args if isinstance(self.args, str) else serialize(self.args),
-                 'kwargs': self.kwargs if isinstance(self.kwargs, str) else serialize(self.kwargs),
+                 '_args': self._args if isinstance(self._args, str) else serialize(self._args),
+                 '_kwargs': self._kwargs if isinstance(self._kwargs, str) \
+                     else serialize(self._kwargs),
                  'xfer_files': self.xfer_files, 'code': self.code}
         return state
 
@@ -1526,6 +1527,7 @@ class _Cluster(object):
         job.start_time = reply.start_time
         job.end_time = reply.end_time
         logger.debug('Received reply for job %s / %s from %s', job.id, _job.uid, job.ip_addr)
+        job._args = job._kwargs = None
         if reply.status == DispyJob.ProvisionalResult:
             self.finish_job(cluster, _job, reply.status)
         else:
@@ -1636,6 +1638,8 @@ class _Cluster(object):
                 if cluster.status_callback:
                     self.worker_Q.put((cluster.status_callback,
                                        (DispyJob.Running, dispy_node, _job.job)))
+        if (not cluster._compute.reentrant) and _job.job:
+            _job.job._args = _job.job._kwargs = None
 
     def load_balance_schedule(self):
         host = None
