@@ -825,6 +825,7 @@ class _DispyNode(object):
             if proc and job_info.job_reply.status == DispyJob.Running:
                 _dispy_logger.debug('Terminating job %s of "%s" (%s)',
                                     job_info.job_reply.uid, compute.name, proc.pid)
+                job_info.job_reply.status = DispyJob.Terminated
                 try:
                     proc.terminate()
                 except:
@@ -848,13 +849,12 @@ class _DispyNode(object):
             else:
                 _dispy_logger.warning('Could not kill process %s for job %s',
                                       proc.pid, job_info.job_reply.uid)
+                job_info.job_reply.status = DispyJob.Running
                 raise StopIteration
-            if job_info.job_reply.status == DispyJob.Running:
-                job_reply = copy.copy(job_info.job_reply)
-                job_reply.status = DispyJob.Terminated
-                job_reply.result = serialize(None)
-                job_reply.end_time = time.time()
-                self.reply_Q.put(job_reply)
+            job_reply = copy.copy(job_info.job_reply)
+            job_reply.result = serialize(None)
+            job_reply.end_time = time.time()
+            self.reply_Q.put(job_reply)
 
         def retrieve_job_task(msg):
             # generator
@@ -1219,13 +1219,11 @@ class _DispyNode(object):
             job_info.proc = subprocess.Popen(program, stdout=subprocess.PIPE,
                                              stderr=subprocess.PIPE, env=env)
             reply.stdout, reply.stderr = job_info.proc.communicate()
-            # if process is killed (because job is cancelled), job_info.proc
-            # would've been cleared by terminate_job_task
-            try:
-                reply.result = serialize(job_info.proc.returncode)
+            reply.result = serialize(job_info.proc.returncode)
+            if reply.status == DispyJob.Running:
                 reply.status = DispyJob.Finished
-            except:
-                return
+            else:
+                reply.status = DispyJob.Terminated
         except:
             reply.result = serialize(None)
             reply.status = DispyJob.Terminated
