@@ -25,6 +25,7 @@ import cPickle as pickle
 import cStringIO as io
 import signal
 import platform
+import copy
 try:
     import psutil
 except ImportError:
@@ -85,7 +86,6 @@ def dispy_provisional_result(result, timeout=MsgTimeout):
         ack = sock.recv_msg()
         assert ack == 'ACK'
     except:
-        print("Couldn't send provisional results %s:\n%s" % (str(result), traceback.format_exc()))
         return -1
     else:
         return 0
@@ -151,7 +151,6 @@ def dispy_send_file(path, timeout=MsgTimeout):
                 recvd = deserialize(recvd)
         assert recvd == xf.stat_buf.st_size
     except:
-        print('Could not transfer file "%s": %s' % (path, traceback.format_exc()))
         return -1
     else:
         return 0
@@ -820,33 +819,18 @@ class _DispyNode(object):
             yield conn.send_msg(resp)
 
         def terminate_job_task(compute, job_info):
-            proc = None
-            for i in range(20):
-                if job_info.job_reply.status != DispyJob.Running:
-                    break
-                # technically, locking should be used to check and update
-                # termination status, as job process may finish in between;
-                # here, it shouldn't matter - job is deemed terminated even if
-                # job finishes
-                proc, job_info.proc = job_info.proc, None
-                if proc:
-                    _dispy_logger.debug('Terminating job %s of "%s"',
-                                        job_info.job_reply.uid, compute.name)
-                    job_info.job_reply.status = DispyJob.Terminated
-                    job_info.job_reply.result = serialize(None)
-                    try:
-                        proc.terminate()
-                    except:
-                        raise StopIteration
-                    break
-                yield coro.sleep(0.1)
+            proc = job_info.proc
+            if proc and job_info.job_reply.status == DispyJob.Running:
+                _dispy_logger.debug('Terminating job %s of "%s" (%s)',
+                                    job_info.job_reply.uid, compute.name, proc.pid)
+                try:
+                    proc.terminate()
+                except:
+                    _dispy_logger.debug(traceback.format_exc())
+                    raise StopIteration
             else:
                 raise StopIteration
             for i in range(20):
-                if job_info.job_reply.status != DispyJob.Running:
-                    _dispy_logger.debug('Job %s for computation "%s" terminated',
-                                        job_info.job_reply.uid, compute.name)
-                    break
                 if isinstance(proc, multiprocessing.Process):
                     if not proc.is_alive():
                         break
@@ -860,15 +844,15 @@ class _DispyNode(object):
                     break
                 yield coro.sleep(0.1)
             else:
-                _dispy_logger.warning('Could not kill process %s', compute.name)
+                _dispy_logger.warning('Could not kill process %s for job %s',
+                                      proc.pid, job_info.job_reply.uid)
                 raise StopIteration
-            job_info.job_reply.end_time = time.time()
-            self.reply_Q.put(job_info.job_reply)
-            if proc:
-                if isinstance(proc, multiprocessing.Process):
-                    proc.join(2)
-                elif isinstance(proc, subprocess.Popen):
-                    proc.wait()
+            if job_info.job_reply.status == DispyJob.Running:
+                job_reply = copy.copy(job_info.job_reply)
+                job_reply.status = DispyJob.Terminated
+                job_reply.result = serialize(None)
+                job_reply.end_time = time.time()
+                self.reply_Q.put(job_reply)
 
         def retrieve_job_task(msg):
             # generator
@@ -1261,9 +1245,6 @@ class _DispyNode(object):
                     proc.join(2)
                 elif isinstance(proc, subprocess.Popen):
                     proc.wait()
-            if job_info.job_reply.status == DispyJob.Terminated:
-                job_reply.result = serialize(None)
-                job_reply.status = DispyJob.Terminated
             job_info.job_reply = job_reply
             self.num_jobs += 1
             self.cpu_time += (job_reply.end_time - job_reply.start_time)
@@ -1477,6 +1458,8 @@ class _DispyNode(object):
             for job_info in job_infos.itervalues():
                 proc, job_info.proc = job_info.proc, None
                 if proc:
+                    _dispy_logger.debug('Killing process %s for job %s',
+                                        proc.pid, job_info.job_reply.uid)
                     try:
                         proc.terminate()
                     except:
@@ -1779,14 +1762,8 @@ if __name__ == '__main__':
         else:
             raise KeyboardInterrupt
 
-    try:
-        signal.signal(signal.SIGHUP, sighandler)
-        signal.signal(signal.SIGQUIT, sighandler)
-    except:
-        pass
     signal.signal(signal.SIGINT, sighandler)
     signal.signal(signal.SIGABRT, sighandler)
-    signal.signal(signal.SIGTERM, sighandler)
     del sighandler
 
     # TODO: reset these signals in processes that execute computations?
