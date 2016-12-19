@@ -1239,16 +1239,16 @@ class _DispyNode(object):
             self.thread_lock.release()
             if not job_info:
                 continue
+            job_info.job_reply = job_reply
+            self.num_jobs += 1
+            self.cpu_time += (job_reply.end_time - job_reply.start_time)
+            Coro(self._send_job_reply, job_info, resending=False)
             proc, job_info.proc = job_info.proc, None
             if proc:
                 if isinstance(proc, multiprocessing.Process):
                     proc.join(2)
                 elif isinstance(proc, subprocess.Popen):
                     proc.wait()
-            job_info.job_reply = job_reply
-            self.num_jobs += 1
-            self.cpu_time += (job_reply.end_time - job_reply.start_time)
-            Coro(self._send_job_reply, job_info, resending=False)
             compute = self.computations.get(job_info.compute_id, None)
             if not compute:
                 continue
@@ -1273,7 +1273,7 @@ class _DispyNode(object):
         compute = self.computations.get(job_info.compute_id, None)
         if not resending:
             self.avail_cpus += 1
-            assert self.avail_cpus <= self.num_cpus
+            # assert self.avail_cpus <= self.num_cpus
             if compute:
                 compute.pending_jobs -= 1
 
