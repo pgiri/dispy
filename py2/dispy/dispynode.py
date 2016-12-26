@@ -1424,7 +1424,22 @@ class _DispyNode(object):
         if (os.path.isdir(compute.dest_path) and
             compute.dest_path.startswith(self.dest_path_prefix)):
             for dirpath, dirnames, filenames in os.walk(compute.dest_path, topdown=False):
-                if not filenames:
+                remove = True
+                for filename in filenames:
+                    path = os.path.join(dirpath, filename)
+                    use_count = file_uses.get(path, 1)
+                    if use_count == 1:
+                        try:
+                            os.remove(path)
+                            if path.endswith('.py'):
+                                path = path + 'c'
+                                if os.path.isfile(path):
+                                    os.remove(path)
+                        except:
+                            _dispy_logger.warning('Could not remove "%s"', path)
+                    else:
+                        remove = False
+                if remove:
                     try:
                         shutil.rmtree(dirpath)
                     except:
