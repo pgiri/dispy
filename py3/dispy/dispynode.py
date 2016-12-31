@@ -1105,8 +1105,6 @@ class _DispyNode(object):
             if self.pulse_interval and (now - last_pulse_time) >= self.pulse_interval:
                 if self.scheduler['ip_addr']:
                     last_pulse_time = now
-                    sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
-                    sock.settimeout(MsgTimeout)
                     info = {'ip_addr': self.ext_ip_addr, 'port': self.port,
                             'cpus': self.num_cpus - self.avail_cpus,
                             'scheduler_ip_addr': self.scheduler['ip_addr']}
@@ -1118,8 +1116,17 @@ class _DispyNode(object):
                     else:
                         info['avail_info'] = None
 
-                    yield sock.sendto(b'PULSE:' + serialize(info),
-                                      (self.scheduler['ip_addr'], self.scheduler['port']))
+                    sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                                       keyfile=self.keyfile, certfile=self.certfile)
+                    sock.settimeout(MsgTimeout)
+                    try:
+                        yield sock.connect((self.scheduler['ip_addr'], self.scheduler['port']))
+                        yield sock.send_msg(b'PULSE:' + serialize(info))
+                        if (yield sock.recv_msg()) == b'PULSE':
+                            for compute in self.computations.values():
+                                compute.last_pulse = now
+                    except:
+                        pass
                     sock.close()
 
                 resend = [compute for compute in self.computations.values()

@@ -36,7 +36,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "MIT"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.7.0"
+__version__ = "4.7.1"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
@@ -107,7 +107,7 @@ class DispyJob(object):
         self.ip_addr = None
         self.finish = threading.Event()
 
-       # rest are for dispy implementation only - these are opaque to clients
+        # rest are for dispy implementation only - these are opaque to clients
         self._args = args
         self._kwargs = kwargs
         self._dispy_job_ = None
@@ -713,43 +713,7 @@ class _Cluster(object, metaclass=Singleton):
         del port_bound_event
         while 1:
             msg, addr = yield udp_sock.recvfrom(1000)
-            if msg.startswith(b'PULSE:'):
-                msg = msg[len(b'PULSE:'):]
-                try:
-                    info = deserialize(msg)
-                    node = self._nodes[info['ip_addr']]
-                    assert 0 <= info['cpus'] <= node.cpus
-                    node.last_pulse = time.time()
-                    if info['avail_info']:
-                        node.avail_info = info['avail_info']
-                        for cid in node.clusters:
-                            cluster = self._clusters[cid]
-                            if cluster.status_callback:
-                                dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
-                                if not dispy_node:
-                                    continue
-                                dispy_node.avail_info = info['avail_info']
-                                dispy_node.update_time = node.last_pulse
-                                self.worker_Q.put((cluster.status_callback,
-                                                   (DispyNode.AvailInfo, dispy_node, None)))
-                except:
-                    logger.warning('Ignoring pulse message from %s', addr[0])
-                    # logger.debug(traceback.format_exc())
-                    continue
-
-                def _send_pulse(self, pulse_msg, addr, coro=None):
-                    sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
-                    sock.settimeout(MsgTimeout)
-                    try:
-                        yield sock.sendto(b'PULSE:' + serialize(pulse_msg), addr)
-                    except:
-                        pass
-                    finally:
-                        sock.close()
-
-                pulse_msg = {'ip_addr': info['scheduler_ip_addr'], 'port': self.port}
-                Coro(_send_pulse, self, pulse_msg, (info['ip_addr'], info['port']))
-            elif msg.startswith(b'PING:'):
+            if msg.startswith(b'PING:'):
                 try:
                     info = deserialize(msg[len(b'PING:'):])
                     if info['version'] != _dispy_version:
@@ -834,6 +798,32 @@ class _Cluster(object, metaclass=Singleton):
             else:
                 yield self.job_reply_process(info, conn, addr)
             conn.close()
+
+        elif msg.startswith(b'PULSE:'):
+            msg = msg[len(b'PULSE:'):]
+            try:
+                info = deserialize(msg)
+                node = self._nodes[info['ip_addr']]
+                assert 0 <= info['cpus'] <= node.cpus
+                node.last_pulse = time.time()
+                yield conn.send_msg(b'PULSE')
+                if info['avail_info']:
+                    node.avail_info = info['avail_info']
+                    for cid in node.clusters:
+                        cluster = self._clusters[cid]
+                        if cluster.status_callback:
+                            dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
+                            if not dispy_node:
+                                continue
+                            dispy_node.avail_info = info['avail_info']
+                            dispy_node.update_time = node.last_pulse
+                            self.worker_Q.put((cluster.status_callback,
+                                               (DispyNode.AvailInfo, dispy_node, None)))
+            except:
+                logger.warning('Ignoring pulse message from %s', addr[0])
+                # logger.debug(traceback.format_exc())
+            conn.close()
+
         elif msg.startswith(b'JOB_STATUS:'):
             conn.close()
             # message from dispyscheduler
@@ -878,6 +868,7 @@ class _Cluster(object, metaclass=Singleton):
                 logger.warning('Ignoring node %s ("secret" mismatch?)', addr[0])
             else:
                 self.add_node(info)
+
         elif msg.startswith(b'PING:'):
             conn.close()
             try:
@@ -910,6 +901,7 @@ class _Cluster(object, metaclass=Singleton):
                 logger.debug(traceback.format_exc())
             finally:
                 sock.close()
+
         elif msg.startswith(b'FILEXFER:'):
             try:
                 xf = deserialize(msg[len(b'FILEXFER:'):])
@@ -920,6 +912,7 @@ class _Cluster(object, metaclass=Singleton):
             else:
                 yield self.file_xfer_process(job_reply, xf, conn, addr)
             conn.close()
+
         elif msg.startswith(b'NODE_CPUS:'):
             conn.close()
             try:
@@ -967,6 +960,7 @@ class _Cluster(object, metaclass=Singleton):
                 dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
                 if dispy_node:
                     dispy_node.cpus = cpus
+
         elif msg.startswith(b'TERMINATED:'):
             conn.close()
             try:
@@ -1000,6 +994,7 @@ class _Cluster(object, metaclass=Singleton):
                             self.worker_Q.put((cluster.status_callback,
                                                (DispyNode.Closed, dispy_node, None)))
                     self.reschedule_jobs(dead_jobs)
+
         elif msg.startswith(b'NODE_STATUS:'):
             conn.close()
             # this message is from dispyscheduler for SharedJobCluster
@@ -1043,6 +1038,7 @@ class _Cluster(object, metaclass=Singleton):
                 else:
                     logger.warning('Invalid node status %s from %s:%s ignored',
                                    info['status'], addr[0], addr[1])
+
         elif msg.startswith(b'SCHEDULED:'):
             try:
                 info = deserialize(msg[len(b'SCHEDULED:'):])
@@ -1056,6 +1052,7 @@ class _Cluster(object, metaclass=Singleton):
             except:
                 yield conn.send_msg(b'NAK')
             conn.close()
+
         else:
             logger.warning('invalid message from %s:%s ignored', addr[0], addr[1])
             # logger.debug(traceback.format_exc())
@@ -1082,11 +1079,15 @@ class _Cluster(object, metaclass=Singleton):
                     for cluster in clusters:
                         msg = {'client_ip_addr': cluster._compute.scheduler_ip_addr,
                                'client_port': cluster._compute.job_result_port}
-                        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                        sock = AsyncSocket(sock)
+                        sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                                           keyfile=self.keyfile, certfile=self.certfile)
                         sock.settimeout(MsgTimeout)
-                        yield sock.sendto(b'PULSE:' + serialize(msg),
-                                          (cluster.scheduler_ip_addr, cluster.scheduler_port))
+                        try:
+                            yield sock.connect((cluster.scheduler_ip_addr, cluster.scheduler_port))
+                            yield sock.sendall(cluster._scheduler_auth)
+                            yield sock.send_msg(b'PULSE:' + serialize(msg))
+                        except:
+                            pass
                         sock.close()
                 else:
                     dead_nodes = {}

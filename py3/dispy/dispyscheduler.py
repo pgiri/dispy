@@ -257,7 +257,6 @@ class _Scheduler(object, metaclass=Singleton):
 
     def udp_server(self, coro=None):
         # generator
-        assert coro is not None
         coro.set_daemon()
 
         Coro(self.broadcast_ping)
@@ -265,48 +264,7 @@ class _Scheduler(object, metaclass=Singleton):
 
         while 1:
             msg, addr = yield self.udp_sock.recvfrom(1000)
-            if msg.startswith(b'PULSE:'):
-                msg = msg[len(b'PULSE:'):]
-                try:
-                    info = deserialize(msg)
-                except:
-                    logger.warning('Ignoring pulse message from %s', addr[0])
-                    continue
-                if 'client_port' in info:
-                    for cluster in self._clusters.values():
-                        if cluster.client_ip_addr == addr[0] and \
-                           cluster.client_port == info['client_port']:
-                            cluster.last_pulse = time.time()
-                else:
-                    node = self._nodes.get(info['ip_addr'], None)
-                    if node:
-                        # assert 0 <= info['cpus'] <= node.cpus
-                        node.last_pulse = time.time()
-                        if info['avail_info']:
-                            node.avail_info = info['avail_info']
-                            for cid in node.clusters:
-                                cluster = self._clusters[cid]
-                                dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
-                                if not dispy_node:
-                                    continue
-                                dispy_node.avail_info = info['avail_info']
-                                dispy_node.update_time = node.last_pulse
-                                Coro(self.send_node_status, cluster, dispy_node, DispyNode.AvailInfo)
-                                if cluster.status_callback:
-                                    cluster.status_callback(DispyNode.AvailInfo, dispy_node, None)
-
-                        def _send_pulse(self, pulse_msg, addr, coro=None):
-                            sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
-                            sock.settimeout(MsgTimeout)
-                            try:
-                                yield sock.sendto(b'PULSE:' + serialize(pulse_msg), addr)
-                            except:
-                                pass
-                            sock.close()
-
-                        pulse_msg = {'ip_addr': info['scheduler_ip_addr'], 'port': self.port}
-                        Coro(_send_pulse, self, pulse_msg, (info['ip_addr'], info['port']))
-            elif msg.startswith(b'PING:'):
+            if msg.startswith(b'PING:'):
                 try:
                     info = deserialize(msg[len(b'PING:'):])
                     if info['version'] != _dispy_version:
@@ -383,6 +341,33 @@ class _Scheduler(object, metaclass=Singleton):
             else:
                 yield self.job_reply_process(info, conn, addr)
             conn.close()
+
+        elif msg.startswith(b'PULSE:'):
+            msg = msg[len(b'PULSE:'):]
+            try:
+                info = deserialize(msg)
+            except:
+                logger.warning('Ignoring pulse message from %s', addr[0])
+                conn.close()
+                raise StopIteration
+            node = self._nodes.get(info['ip_addr'], None)
+            if node:
+                # assert 0 <= info['cpus'] <= node.cpus
+                node.last_pulse = time.time()
+                yield conn.send_msg(b'PULSE')
+                if info['avail_info']:
+                    node.avail_info = info['avail_info']
+                    for cid in node.clusters:
+                        cluster = self._clusters[cid]
+                        dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
+                        if dispy_node:
+                            dispy_node.avail_info = info['avail_info']
+                            dispy_node.update_time = node.last_pulse
+                            Coro(self.send_node_status, cluster, dispy_node, DispyNode.AvailInfo)
+                            if cluster.status_callback:
+                                cluster.status_callback(DispyNode.AvailInfo, dispy_node, None)
+            conn.close()
+
         elif msg.startswith(b'PONG:'):
             conn.close()
             try:
@@ -392,6 +377,7 @@ class _Scheduler(object, metaclass=Singleton):
                 logger.warning('Ignoring node %s due to "secret" mismatch', addr[0])
             else:
                 self.add_node(info)
+
         elif msg.startswith(b'PING:'):
             conn.close()
             try:
@@ -423,6 +409,7 @@ class _Scheduler(object, metaclass=Singleton):
                 logger.debug(traceback.format_exc())
             finally:
                 sock.close()
+
         elif msg.startswith(b'FILEXFER:'):
             try:
                 xf = deserialize(msg[len(b'FILEXFER:'):])
@@ -432,6 +419,7 @@ class _Scheduler(object, metaclass=Singleton):
             except:
                 logger.debug(traceback.format_exc())
             conn.close()
+
         elif msg.startswith(b'TERMINATED:'):
             conn.close()
             try:
@@ -462,6 +450,7 @@ class _Scheduler(object, metaclass=Singleton):
             except:
                 # logger.debug(traceback.format_exc())
                 pass
+
         elif msg.startswith(b'NODE_CPUS:'):
             conn.close()
             try:
@@ -486,7 +475,7 @@ class _Scheduler(object, metaclass=Singleton):
             if cpus > node.avail_cpus:
                 node.avail_cpus = cpus
                 node_computations = []
-                for cid, cluster in self._clusters.iteritems():
+                for cid, cluster in self._clusters.items():
                     if cid in node.clusters:
                         continue
                     compute = cluster._compute
@@ -508,6 +497,7 @@ class _Scheduler(object, metaclass=Singleton):
                 dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
                 if dispy_node:
                     dispy_node.cpus = cpus
+
         else:
             logger.warning('invalid message from %s:%s ignored', addr[0], addr[1])
             conn.close()
@@ -805,9 +795,26 @@ class _Scheduler(object, metaclass=Singleton):
             else:
                 yield _job_request_task(self, cluster, node, _job)
             resp = None
+
+        elif msg.startswith(b'PULSE:'):
+            msg = msg[len(b'PULSE:'):]
+            try:
+                info = deserialize(msg)
+            except:
+                logger.warning('Ignoring pulse message from %s', addr[0])
+                conn.close()
+                raise StopIteration
+            if 'client_port' in info:
+                for cluster in self._clusters.values():
+                    if (cluster.client_ip_addr == addr[0] and
+                       cluster.client_port == info['client_port']):
+                        cluster.last_pulse = time.time()
+            conn.close()
+
         elif msg.startswith(b'COMPUTE:'):
             msg = msg[len(b'COMPUTE:'):]
             resp = _compute_task(self, msg)
+
         elif msg.startswith(b'SCHEDULE:'):
             msg = msg[len(b'SCHEDULE:'):]
             try:
@@ -824,6 +831,7 @@ class _Scheduler(object, metaclass=Singleton):
             else:
                 resp = 'ACK'.encode()
                 Coro(self.schedule_cluster)
+
         elif msg.startswith(b'CLOSE:'):
             msg = msg[len(b'CLOSE:'):]
             try:
@@ -840,12 +848,15 @@ class _Scheduler(object, metaclass=Singleton):
                 raise StopIteration
             cluster.zombie = True
             Coro(self.cleanup_computation, cluster)
+
         elif msg.startswith(b'FILEXFER:'):
             msg = msg[len(b'FILEXFER:'):]
             resp = yield xfer_from_client(self, msg)
+
         elif msg.startswith(b'SENDFILE:'):
             msg = msg[len(b'SENDFILE:'):]
             resp = yield send_file(self, msg)
+
         elif msg.startswith(b'NODE_JOBS:'):
             msg = msg[len(b'NODE_JOBS:'):]
             try:
@@ -860,6 +871,7 @@ class _Scheduler(object, metaclass=Singleton):
             except:
                 job_uids = []
             resp = serialize(job_uids)
+
         elif msg.startswith(b'TERMINATE_JOB:'):
             msg = msg[len(b'TERMINATE_JOB:'):]
             try:
@@ -872,6 +884,7 @@ class _Scheduler(object, metaclass=Singleton):
                 conn.close()
                 raise StopIteration
             self.cancel_job(cluster, uid)
+
         elif msg.startswith(b'RESEND_JOB_RESULTS:'):
             msg = msg[len(b'RESEND_JOB_RESULTS:'):]
             try:
@@ -895,6 +908,7 @@ class _Scheduler(object, metaclass=Singleton):
             if resp > 0:
                 yield self.resend_job_results(cluster, coro=coro)
             raise StopIteration
+
         elif msg.startswith(b'PENDING_JOBS:'):
             msg = msg[len(b'PENDING_JOBS:'):]
             reply = {'done': [], 'pending': 0}
@@ -928,9 +942,11 @@ class _Scheduler(object, metaclass=Singleton):
                     reply['done'] = done
                     reply['pending'] = cluster.pending_jobs
             resp = serialize(reply)
+
         elif msg.startswith(b'RETRIEVE_JOB:'):
             msg = msg[len(b'RETRIEVE_JOB:'):]
             yield self.retrieve_job_task(conn, msg)
+
         elif msg.startswith(b'ALLOCATE_NODE:'):
             req = msg[len(b'ALLOCATE_NODE:'):]
             try:
@@ -941,6 +957,7 @@ class _Scheduler(object, metaclass=Singleton):
                 resp = serialize(resp)
             except:
                 resp = serialize(-1)
+
         elif msg.startswith(b'SET_NODE_CPUS:'):
             req = msg[len(b'SET_NODE_CPUS:'):]
             cpus = -1
@@ -957,6 +974,7 @@ class _Scheduler(object, metaclass=Singleton):
             except:
                 logger.debug(traceback.format_exc())
             resp = serialize(cpus)
+
         else:
             logger.debug('Ignoring invalid command')
 
@@ -1994,7 +2012,7 @@ if __name__ == '__main__':
     config = vars(parser.parse_args(sys.argv[1:]))
     if config['loglevel']:
         logger.setLevel(logger.DEBUG)
-        asyncoro.logger.setLevel(logger.DEBUG)
+        asyncoro.logger.setLevel(asyncoro.logger.DEBUG)
     else:
         logger.setLevel(logger.INFO)
     del config['loglevel']
