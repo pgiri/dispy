@@ -11,7 +11,6 @@ import sys
 import time
 import socket
 import stat
-import logging
 import re
 import ssl
 import atexit
@@ -264,7 +263,7 @@ class _Scheduler(object):
         Coro(self.broadcast_ping)
         self.send_ping_cluster(self._node_allocs, set())
 
-        while True:
+        while 1:
             msg, addr = yield self.udp_sock.recvfrom(1000)
             if msg.startswith('PULSE:'):
                 msg = msg[len('PULSE:'):]
@@ -359,7 +358,7 @@ class _Scheduler(object):
         logger.debug('tcp server at %s:%s', ip_addr, self.port)
         sock.listen(32)
 
-        while True:
+        while 1:
             try:
                 conn, addr = yield sock.accept()
             except ssl.SSLError as err:
@@ -561,7 +560,7 @@ class _Scheduler(object):
             raise StopIteration
         logger.debug('scheduler at %s:%s', ip_addr, self.scheduler_port)
         sock.listen(32)
-        while True:
+        while 1:
             conn, addr = yield sock.accept()
             Coro(self.scheduler_task, conn, addr)
 
@@ -992,7 +991,7 @@ class _Scheduler(object):
         coro.set_daemon()
         reset = True
         last_ping_time = last_pulse_time = last_zombie_time = time.time()
-        while True:
+        while 1:
             if reset:
                 timeout = num_min(self.pulse_interval, self.ping_interval, self.zombie_interval)
 
@@ -1994,10 +1993,10 @@ if __name__ == '__main__':
 
     config = vars(parser.parse_args(sys.argv[1:]))
     if config['loglevel']:
-        logger.setLevel(logging.DEBUG)
-        asyncoro.logger.setLevel(logging.DEBUG)
+        logger.setLevel(logger.DEBUG)
+        asyncoro.logger.setLevel(asyncoro.logger.DEBUG)
     else:
-        logger.setLevel(logging.INFO)
+        logger.setLevel(logger.INFO)
     del config['loglevel']
 
     if config['zombie_interval']:
@@ -2039,7 +2038,7 @@ if __name__ == '__main__':
     if daemon:
         scheduler.scheduler_coro.value()
     else:
-        while True:
+        while 1:
             try:
                 cmd = raw_input('Enter "quit" or "exit" to terminate scheduler, '
                                 'anything else to get status: ')

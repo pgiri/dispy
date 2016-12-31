@@ -14,7 +14,6 @@ import multiprocessing
 import threading
 import subprocess
 import traceback
-import logging
 import marshal
 import tempfile
 import shutil
@@ -1671,10 +1670,10 @@ if __name__ == '__main__':
     del parser, cfg
 
     if _dispy_config['loglevel']:
-        _dispy_logger.setLevel(logging.DEBUG)
-        asyncoro.logger.setLevel(logging.DEBUG)
+        _dispy_logger.setLevel(_dispy_logger.DEBUG)
+        asyncoro.logger.setLevel(asyncoro.logger.DEBUG)
     else:
-        _dispy_logger.setLevel(logging.INFO)
+        _dispy_logger.setLevel(_dispy_logger.INFO)
     del _dispy_config['loglevel']
 
     cpus = multiprocessing.cpu_count()

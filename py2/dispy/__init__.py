@@ -13,7 +13,6 @@ import socket
 import inspect
 import stat
 import threading
-import logging
 import re
 import ssl
 import hashlib
@@ -696,7 +695,7 @@ class _Cluster(object):
         coro.set_daemon()
         udp_sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
         # udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        while True:
+        while 1:
             try:
                 udp_sock.bind(('', port))
             except:
@@ -707,7 +706,7 @@ class _Cluster(object):
         self.port = port
         port_bound_event.set()
         del port_bound_event
-        while True:
+        while 1:
             msg, addr = yield udp_sock.recvfrom(1000)
             if msg.startswith('PULSE:'):
                 msg = msg[len('PULSE:'):]
@@ -804,7 +803,7 @@ class _Cluster(object):
         if not self.shared:
             Coro(self.broadcast_ping)
 
-        while True:
+        while 1:
             try:
                 conn, addr = yield sock.accept()
             except ssl.SSLError as err:
@@ -1062,7 +1061,7 @@ class _Cluster(object):
         reset = True
         last_pulse_time = last_ping_time = last_poll_time = time.time()
         timeout = None
-        while True:
+        while 1:
             if reset:
                 timeout = num_min(self.pulse_interval, self.ping_interval, self.poll_interval)
 
@@ -1459,7 +1458,7 @@ class _Cluster(object):
 
     def worker(self):
         # used for user callbacks only
-        while True:
+        while 1:
             item = self.worker_Q.get(block=True)
             if item is None:
                 self.worker_Q.task_done()
@@ -1900,7 +1899,7 @@ class JobCluster(object):
 
     def __init__(self, computation, nodes=None, depends=[], callback=None, cluster_status=None,
                  ip_addr=None, port=None, node_port=None, ext_ip_addr=None,
-                 dest_path=None, loglevel=logging.INFO, setup=None, cleanup=True,
+                 dest_path=None, loglevel=logger.INFO, setup=None, cleanup=True,
                  ping_interval=None, pulse_interval=None, poll_interval=None,
                  reentrant=False, secret='', keyfile=None, certfile=None, recover_file=None):
         """Create an instance of cluster for a specific computation.
@@ -1968,7 +1967,7 @@ class JobCluster(object):
           @computation is a string, indicating a program, then that
           program is also transferred to @dest_path.
 
-        @loglevel indicates message priority for logging module.
+        @loglevel indicates message logging level.
 
         @cleanup indicates if the files transferred should be removed when
           shutting down.
@@ -2479,7 +2478,7 @@ class SharedJobCluster(JobCluster):
     """
     def __init__(self, computation, nodes=None, depends=[], callback=None, cluster_status=None,
                  ip_addr=None, port=51347, scheduler_node=None, scheduler_port=None,
-                 ext_ip_addr=None, loglevel=logging.INFO, setup=None, cleanup=True, dest_path=None,
+                 ext_ip_addr=None, loglevel=logger.INFO, setup=None, cleanup=True, dest_path=None,
                  poll_interval=None, reentrant=False, exclusive=False,
                  secret='', keyfile=None, certfile=None, recover_file=None):
 
@@ -2979,7 +2978,7 @@ def recover_jobs(recover_file, timeout=None, terminate_pending=False):
         sock.bind((ip_addr, cluster['port']))
         sock.listen(32)
 
-        while True:
+        while 1:
             if pending['timeout']:
                 timeout = pending['timeout'] - (time.time() - pending['start_time'])
                 if timeout <= 0:
@@ -3101,10 +3100,10 @@ if __name__ == '__main__':
     config = vars(parser.parse_args(sys.argv[1:]))
 
     if config['loglevel']:
-        logger.setLevel(logging.DEBUG)
-        asyncoro.logger.setLevel(logging.DEBUG)
+        logger.setLevel(logger.DEBUG)
+        asyncoro.logger.setLevel(logger.DEBUG)
     else:
-        logger.setLevel(logging.INFO)
+        logger.setLevel(logger.INFO)
     del config['loglevel']
 
     args = config.pop('args')
