@@ -1228,29 +1228,24 @@ class _Scheduler(object):
                         logger.warning('Could not remove "%s"', dirpath)
                         break
 
+        Coro(self.schedule_cluster)
+
         # remove cluster from all nodes before closing (which uses
         # yield); otherwise, scheduler may access removed cluster
         # through node.clusters
-        for ip_addr in cluster._dispy_nodes:
-            node = self._nodes.get(ip_addr, None)
+        close_nodes = []
+        for dispy_node in cluster._dispy_nodes.itervalues():
+            node = self._nodes.get(dispy_node.ip_addr, None)
             if not node:
                 continue
             node.clusters.discard(compute.id)
             if cluster.exclusive:
                 node.cpus = node.avail_cpus
-
-        Coro(self.schedule_cluster)
-
-        for ip_addr, dispy_node in cluster._dispy_nodes.items():
-            node = self._nodes.get(ip_addr, None)
-            if not node:
-                continue
-            try:
-                yield node.close(compute)
-            except:
-                logger.warning('Closing node %s failed', node.ip_addr)
+            close_nodes.append((Coro(node.close, compute), dispy_node))
+        cluster._dispy_nodes.clear()
+        for close_coro, dispy_node in close_nodes:
+            yield close_coro.finish()
             yield self.send_node_status(cluster, dispy_node, DispyNode.Closed)
-        cluster._dispy_nodes = {}
         if self.httpd:
             self.httpd.del_cluster(cluster)
 

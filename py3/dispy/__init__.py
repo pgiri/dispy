@@ -1334,16 +1334,16 @@ class _Cluster(object, metaclass=Singleton):
             # remove cluster from all nodes before closing (which uses
             # yield); otherwise, scheduler may access removed cluster
             # through node.clusters
+            close_nodes = []
             for dispy_node in cluster._dispy_nodes.values():
                 node = self._nodes.get(dispy_node.ip_addr, None)
                 if not node:
                     continue
                 node.clusters.discard(cluster._compute.id)
-            for dispy_node in list(cluster._dispy_nodes.values()):
-                node = self._nodes.get(dispy_node.ip_addr, None)
-                if not node:
-                    continue
-                yield node.close(cluster._compute, coro=coro)
+                close_nodes.append((Coro(node.close, cluster._compute), dispy_node))
+            cluster._dispy_nodes.clear()
+            for close_coro, dispy_node in close_nodes:
+                yield close_coro.finish()
                 dispy_node.update_time = time.time()
                 if cluster.status_callback:
                     self.worker_Q.put((cluster.status_callback,
