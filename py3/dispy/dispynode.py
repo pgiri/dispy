@@ -1362,35 +1362,50 @@ class _DispyNode(object):
 
         self.scheduler['auth'].discard(compute.auth)
 
-        if ((not self.computations) and (not self.scheduler['auth']) and
-           compute.scheduler_ip_addr == self.scheduler['ip_addr'] and
-           compute.scheduler_port == self.scheduler['port']):
-            self.scheduler['ip_addr'] = None
-            self.pulse_interval = None
-            self.timer_coro.resume(None)
-            if self.serve > 0:
-                self.serve -= 1
-            Coro(self.broadcast_ping_msg)
-
-        if compute.cleanup is False:
-            if self.serve == 0:
-                self.shutdown('terminate')
-            return
         os.chdir(self.dest_path_prefix)
-        if isinstance(compute.cleanup, _Function):
-            try:
-                localvars = {'_dispy_cleanup_args': compute.cleanup.args,
-                             '_dispy_cleanup_kwargs': compute.cleanup.kwargs}
-                if os.name == 'nt':
-                    globalvars = globals()
-                if self.client_shutdown:
-                    globalvars['dispynode_shutdown'] = lambda: setattr(self, 'serve', 0)
-                exec(marshal.loads(compute.code), globalvars, localvars)
-                exec('%s(*_dispy_cleanup_args, **_dispy_cleanup_kwargs)' %
-                     compute.cleanup.name, globalvars, localvars)
-            except:
-                _dispy_logger.debug('Cleanup "%s" failed', compute.cleanup.name)
-                _dispy_logger.debug(traceback.format_exc())
+        if compute.cleanup:
+            if isinstance(compute.cleanup, _Function):
+                try:
+                    localvars = {'_dispy_cleanup_args': compute.cleanup.args,
+                                 '_dispy_cleanup_kwargs': compute.cleanup.kwargs}
+                    if os.name == 'nt':
+                        globalvars = globals()
+                    if self.client_shutdown:
+                        globalvars['dispynode_shutdown'] = lambda: setattr(self, 'serve', 0)
+                    exec(marshal.loads(compute.code), globalvars, localvars)
+                    exec('%s(*_dispy_cleanup_args, **_dispy_cleanup_kwargs)' %
+                         compute.cleanup.name, globalvars, localvars)
+                except:
+                    _dispy_logger.debug('Cleanup "%s" failed', compute.cleanup.name)
+                    _dispy_logger.debug(traceback.format_exc())
+
+            for path, use_count in file_uses.items():
+                if use_count == 1:
+                    try:
+                        os.remove(path)
+                    except:
+                        _dispy_logger.warning('Could not remove "%s"', path)
+
+            if (os.path.isdir(compute.dest_path) and
+                compute.dest_path.startswith(self.dest_path_prefix)):
+                remove = True
+                for dirpath, dirnames, filenames in os.walk(compute.dest_path, topdown=False):
+                    for filename in filenames:
+                        path = os.path.join(dirpath, filename)
+                        use_count = file_uses.get(path, 1)
+                        if use_count == 1:
+                            try:
+                                os.remove(path)
+                            except:
+                                _dispy_logger.warning('Could not remove "%s"', path)
+                        else:
+                            remove = False
+                    if remove:
+                        try:
+                            shutil.rmtree(dirpath)
+                        except:
+                            _dispy_logger.warning('Could not remove "%s"', dirpath)
+                            break
 
         if os.name == 'nt':
             if self.client_shutdown:
@@ -1414,38 +1429,32 @@ class _DispyNode(object):
                 sys.modules.pop(module, None)
         sys.modules.update(self.__init_modules)
 
-        for path, use_count in file_uses.items():
-            if use_count == 1:
-                try:
-                    os.remove(path)
-                except:
-                    _dispy_logger.warning('Could not remove "%s"', path)
-
-        if (os.path.isdir(compute.dest_path) and
-            compute.dest_path.startswith(self.dest_path_prefix)):
-            remove = True
-            for dirpath, dirnames, filenames in os.walk(compute.dest_path, topdown=False):
-                for filename in filenames:
-                    path = os.path.join(dirpath, filename)
-                    use_count = file_uses.get(path, 1)
-                    if use_count == 1:
-                        try:
-                            os.remove(path)
-                        except:
-                            _dispy_logger.warning('Could not remove "%s"', path)
-                    else:
-                        remove = False
-                if remove:
-                    try:
-                        shutil.rmtree(dirpath)
-                    except:
-                        _dispy_logger.warning('Could not remove "%s"', dirpath)
-                        break
-
         _dispy_logger.debug('Computation "%s" from %s done',
                             compute.auth, compute.scheduler_ip_addr)
+        if self.serve > 0:
+            self.serve -= 1
         if self.serve == 0:
-            self.shutdown('terminate')
+            sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), blocking=True,
+                               keyfile=self.keyfile, certfile=self.certfile)
+            sock.settimeout(MsgTimeout)
+            _dispy_logger.debug('Sending TERMINATE to %s', compute.scheduler_ip_addr)
+            info = {'ip_addr': self.ext_ip_addr, 'port': self.port, 'sign': self.sign}
+            try:
+                sock.connect((compute.scheduler_ip_addr, compute.scheduler_port))
+                sock.send_msg('TERMINATED:'.encode() + serialize(info))
+            except:
+                pass
+            sock.close()
+            if self.avail_cpus:
+                self.shutdown('terminate')
+        else:
+            if ((not self.computations) and (not self.scheduler['auth']) and
+                compute.scheduler_ip_addr == self.scheduler['ip_addr'] and
+                compute.scheduler_port == self.scheduler['port']):
+                self.scheduler['ip_addr'] = None
+                self.pulse_interval = None
+                self.timer_coro.resume(None)
+                Coro(self.broadcast_ping_msg)
 
     def shutdown(self, how):
         def _shutdown(self, how, coro=None):
@@ -1458,11 +1467,11 @@ class _DispyNode(object):
                     raise StopIteration
                 how = 'terminate'
             job_infos, self.job_infos = self.job_infos, {}
-            self.scheduler['ip_addr'] = None
-            self.scheduler['auth'] = set()
             self.avail_cpus += len(job_infos)
             if self.avail_cpus != self.num_cpus:
                 _dispy_logger.warning('invalid cpus: %s / %s', self.avail_cpus, self.num_cpus)
+            self.avail_cpus = 0
+            self.serve = 0
             self.thread_lock.release()
             for job_info in job_infos.values():
                 proc, job_info.proc = job_info.proc, None
@@ -1478,17 +1487,6 @@ class _DispyNode(object):
                     elif isinstance(proc, subprocess.Popen):
                         proc.wait()
             for cid, compute in list(self.computations.items()):
-                sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
-                                   keyfile=self.keyfile, certfile=self.certfile)
-                sock.settimeout(MsgTimeout)
-                _dispy_logger.debug('Sending TERMINATE to %s', compute.scheduler_ip_addr)
-                info = {'ip_addr': self.ext_ip_addr, 'port': self.port, 'sign': self.sign}
-                try:
-                    yield sock.connect((compute.scheduler_ip_addr, compute.scheduler_port))
-                    yield sock.send_msg('TERMINATED:'.encode() + serialize(info))
-                except:
-                    pass
-                sock.close()
                 compute.pending_jobs = 0
                 compute.zombie = True
                 self.cleanup_computation(compute)
