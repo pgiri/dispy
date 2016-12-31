@@ -330,8 +330,8 @@ class _DispyNode(object):
         self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.udp_sock.bind(('', self.port))
-        _dispy_logger.info('serving %s cpus at %s:%s',
-                           self.num_cpus, self.ext_ip_addr, self.port)
+        _dispy_logger.info('"%s" serving %s cpus at %s:%s',
+                           self.name, self.num_cpus, self.ext_ip_addr, self.port)
         _dispy_logger.debug('tcp server at %s:%s', self.address[0], self.address[1])
         self.udp_sock = AsyncSocket(self.udp_sock)
 
@@ -715,6 +715,8 @@ class _DispyNode(object):
                     compute.globals[var] = globals()[var]
                 compute.globals.update(self.__init_modules)
             compute.globals['_DispyNode'] = None
+            compute.globals['dispy_node_name'] = self.name
+            compute.globals['dispy_node_ip_addr'] = self.ext_ip_addr
 
             try:
                 yield conn.send_msg(serialize(self.avail_cpus))
@@ -1421,8 +1423,8 @@ class _DispyNode(object):
 
         if (os.path.isdir(compute.dest_path) and
             compute.dest_path.startswith(self.dest_path_prefix)):
+            remove = True
             for dirpath, dirnames, filenames in os.walk(compute.dest_path, topdown=False):
-                remove = True
                 for filename in filenames:
                     path = os.path.join(dirpath, filename)
                     use_count = file_uses.get(path, 1)
