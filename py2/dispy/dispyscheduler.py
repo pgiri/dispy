@@ -1228,8 +1228,6 @@ class _Scheduler(object):
                         logger.warning('Could not remove "%s"', dirpath)
                         break
 
-        Coro(self.schedule_cluster)
-
         # remove cluster from all nodes before closing (which uses
         # yield); otherwise, scheduler may access removed cluster
         # through node.clusters
@@ -1248,6 +1246,7 @@ class _Scheduler(object):
             yield self.send_node_status(cluster, dispy_node, DispyNode.Closed)
         if self.httpd:
             self.httpd.del_cluster(cluster)
+        Coro(self.schedule_cluster)
 
     def setup_node(self, node, computes, coro=None):
         # generator
