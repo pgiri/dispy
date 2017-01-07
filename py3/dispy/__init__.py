@@ -864,8 +864,10 @@ class _Cluster(object, metaclass=Singleton):
                                    info['ip_addr'], info['version'], _dispy_version)
                     raise StopIteration
                 assert info['auth'] == self.auth
-            except:
-                logger.warning('Ignoring node %s ("secret" mismatch?)', addr[0])
+            except (AssertionError):
+                logger.warning('Ignoring node %s ("secret" mismatch)', addr[0])
+            except (Exception) as err:
+                logger.warning('Ignoring node %s (%s: %s)', addr[0], err.__class__.__name__, err)
             else:
                 self.add_node(info)
 
