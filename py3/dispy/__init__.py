@@ -3213,9 +3213,9 @@ if __name__ == '__main__':
                         help='IP address of this client')
     parser.add_argument('--secret', dest='secret', default='',
                         help='authentication secret for handshake with nodes')
-    parser.add_argument('--certfile', dest='certfile', default=None,
+    parser.add_argument('--certfile', dest='certfile', default='',
                         help='file containing SSL certificate')
-    parser.add_argument('--keyfile', dest='keyfile', default=None,
+    parser.add_argument('--keyfile', dest='keyfile', default='',
                         help='file containing SSL key')
     parser.add_argument('--scheduler_node', dest='scheduler_node', default=None,
                         help='name or IP address where dispyscheduler is running to which '
@@ -3229,6 +3229,15 @@ if __name__ == '__main__':
     else:
         logger.setLevel(logger.INFO)
     del config['loglevel']
+
+    if config['certfile']:
+        config['certfile'] = os.path.abspath(config['certfile'])
+    else:
+        config['certfile'] = None
+    if config['keyfile']:
+        config['keyfile'] = os.path.abspath(config['keyfile'])
+    else:
+        config['keyfile'] = None
 
     args = config.pop('args')
 
