@@ -20,6 +20,11 @@ import tempfile
 import shutil
 import glob
 import pickle
+import struct
+try:
+    import netifaces
+except:
+    netifaces = None
 
 # 'httpd' module may not be available at sys.path[0] as 'dispy.py' is
 # installed in same directory as this script is; prepend directory
@@ -32,9 +37,9 @@ del path
 
 import asyncoro
 from asyncoro import Coro, AsynCoro, AsyncSocket, Singleton, serialize, deserialize
-
+import dispy
 from dispy import _Compute, DispyJob, _DispyJob_, _Function, _Node, DispyNode, NodeAllocate, \
-    _JobReply, auth_code, num_min, _parse_node_allocs, _node_ipaddr, _XferFile, _dispy_version, \
+    _JobReply, auth_code, num_min, _parse_node_allocs, _XferFile, _dispy_version, \
     _same_file, MsgTimeout
 import dispy.httpd
 
@@ -121,15 +126,16 @@ class _Scheduler(object, metaclass=Singleton):
                  dest_path_prefix=None, clean=False, zombie_interval=60, http_server=False):
         if not hasattr(self, 'ip_addr'):
             self.ip_addrs = set()
+            self.addrinfo = None
             if ip_addr:
                 if not isinstance(ip_addr, list):
                     ip_addr = [ip_addr]
                 for node in ip_addr:
-                    addr = _node_ipaddr(node)
+                    addr = dispy.node_addrinfo(node)
                     if addr:
-                        self.ip_addrs.add(addr)
-                    else:
-                        logger.warning('ignoring invalid ip_addr "%s"', node)
+                        if not self.addrinfo:
+                            self.addrinfo = addr
+                        self.ip_addrs.add(addr[4][0])
             if not self.ip_addrs:
                 self.ip_addrs.add(None)
             self.ext_ip_addrs = set(self.ip_addrs)
@@ -137,11 +143,13 @@ class _Scheduler(object, metaclass=Singleton):
                 if not isinstance(ext_ip_addr, list):
                     ext_ip_addr = [ext_ip_addr]
                 for node in ext_ip_addr:
-                    addr = _node_ipaddr(node)
+                    addr = dispy.node_addrinfo(node)
                     if addr:
-                        self.ext_ip_addrs.add(addr)
-                    else:
-                        logger.warning('ignoring invalid ext_ip_addr "%s"', node)
+                        if not self.addrinfo:
+                            self.addrinfo = addr
+                        self.ext_ip_addrs.add(addr[4][0])
+            if not self.addrinfo:
+                self.addrinfo = dispy.node_addrinfo()
             if not port:
                 port = 51347
             if not node_port:
@@ -248,9 +256,35 @@ class _Scheduler(object, metaclass=Singleton):
                     }
                 pickle.dump(config, fd)
 
-            self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.udp_sock = socket.socket(self.addrinfo[0], socket.SOCK_DGRAM)
             self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.udp_sock.bind(('', self.port))
+            if self.addrinfo[0] == socket.AF_INET:
+                addr = ('', self.port)
+            else: # socket_family == socket.AF_INET6
+                addr = list(self.addrinfo[4])
+                addr[0] = ''
+                addr[1] = self.port
+                addr = tuple(addr)
+            self.udp_sock.bind(addr)
+
+            if self.addrinfo[0] == socket.AF_INET:
+                self._broadcast = '<broadcast>'
+                if netifaces:
+                    for iface in netifaces.interfaces():
+                        for link in netifaces.ifaddresses(iface).get(netifaces.AF_INET, []):
+                            if link['addr'] == self.addrinfo[4][0]:
+                                self._broadcast = link.get('broadcast', '<broadcast>')
+                                break
+                        else:
+                            continue
+                        break
+            else: # self.sock_family == socket.AF_INET6
+                self._broadcast = 'ff02::1'
+                addrinfo = socket.getaddrinfo(self._broadcast, None)[0]
+                mreq = socket.inet_pton(addrinfo[0], addrinfo[4][0])
+                mreq += struct.pack('@I', self.addrinfo[4][-1])
+                self.udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
+
             self.udp_sock = AsyncSocket(self.udp_sock)
             self.udp_coro = Coro(self.udp_server)
 
@@ -283,7 +317,7 @@ class _Scheduler(object, metaclass=Singleton):
                 if node:
                     if node.auth == auth:
                         continue
-                sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM),
                                    keyfile=self.node_keyfile, certfile=self.node_certfile)
                 sock.settimeout(MsgTimeout)
                 msg = {'port': self.port, 'sign': self.sign, 'version': _dispy_version}
@@ -302,13 +336,20 @@ class _Scheduler(object, metaclass=Singleton):
     def tcp_server(self, ip_addr, coro=None):
         # generator
         coro.set_daemon()
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock = socket.socket(self.addrinfo[0], socket.SOCK_STREAM)
         sock = AsyncSocket(sock, keyfile=self.node_keyfile, certfile=self.node_certfile)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         if not ip_addr:
             ip_addr = ''
+        if self.addrinfo[0] == socket.AF_INET:
+            addr = (ip_addr, self.port)
+        else: # socket_family == socket.AF_INET6
+            addr = list(self.addrinfo[4])
+            addr[0] = ip_addr
+            addr[1] = self.port
+            addr = tuple(addr)
         try:
-            sock.bind((ip_addr, self.port))
+            sock.bind(addr)
         except:
             if ip_addr == '':
                 ip_addr = None
@@ -397,7 +438,7 @@ class _Scheduler(object, metaclass=Singleton):
             if node:
                 if node.auth == auth:
                     raise StopIteration
-            sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+            sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM),
                                keyfile=self.node_keyfile, certfile=self.node_certfile)
             sock.settimeout(MsgTimeout)
             msg = {'port': self.port, 'sign': self.sign, 'version': _dispy_version}
@@ -514,7 +555,7 @@ class _Scheduler(object, metaclass=Singleton):
                         raise StopIteration
                     break
             self.unsched_clusters.pop(0)
-            reply_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            reply_sock = socket.socket(self.addrinfo[0], socket.SOCK_STREAM)
             reply_sock = AsyncSocket(reply_sock, keyfile=self.cluster_keyfile,
                                      certfile=self.cluster_certfile)
             reply_sock.settimeout(MsgTimeout)
@@ -537,13 +578,20 @@ class _Scheduler(object, metaclass=Singleton):
 
     def scheduler_server(self, ip_addr, coro=None):
         coro.set_daemon()
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock = socket.socket(self.addrinfo[0], socket.SOCK_STREAM)
         sock = AsyncSocket(sock, keyfile=self.cluster_keyfile, certfile=self.cluster_certfile)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         if not ip_addr:
             ip_addr = ''
+        if self.addrinfo[0] == socket.AF_INET:
+            addr = (ip_addr, self.scheduler_port)
+        else: # socket_family == socket.AF_INET6
+            addr = list(self.addrinfo[4])
+            addr[0] = ip_addr
+            addr[1] = self.scheduler_port
+            addr = tuple(addr)
         try:
-            sock.bind((ip_addr, self.scheduler_port))
+            sock.bind(addr)
         except:
             if ip_addr == '':
                 ip_addr = None
@@ -722,7 +770,7 @@ class _Scheduler(object, metaclass=Singleton):
                 else:
                     raise StopIteration(serialize(-1))
 
-            node_sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+            node_sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM),
                                     keyfile=self.node_keyfile, certfile=self.node_certfile)
             node_sock.settimeout(MsgTimeout)
             try:
@@ -1095,7 +1143,7 @@ class _Scheduler(object, metaclass=Singleton):
             yield conn.send_msg(serialize(-1))
             raise StopIteration
         node.last_pulse = time.time()
-        client_sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+        client_sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM),
                                   keyfile=self.cluster_keyfile, certfile=self.cluster_certfile)
         client_sock.settimeout(MsgTimeout)
         try:
@@ -1125,7 +1173,7 @@ class _Scheduler(object, metaclass=Singleton):
         ping_msg['ip_addrs'] = list(filter(lambda ip: bool(ip), self.ext_ip_addrs))
         if not port:
             port = self.node_port
-        tcp_sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+        tcp_sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM),
                                keyfile=self.node_keyfile, certfile=self.node_certfile)
         tcp_sock.settimeout(MsgTimeout)
         try:
@@ -1142,12 +1190,22 @@ class _Scheduler(object, metaclass=Singleton):
             port = self.node_port
         ping_msg = {'version': _dispy_version, 'sign': self.sign, 'port': self.port}
         ping_msg['ip_addrs'] = list(filter(lambda ip: bool(ip), self.ext_ip_addrs))
-        bc_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        bc_sock = AsyncSocket(bc_sock)
+        bc_sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_DGRAM))
         bc_sock.settimeout(MsgTimeout)
+        if self.addrinfo[0] == socket.AF_INET:
+            bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            addr = (self._broadcast, port)
+        else: # self.sock_family == socket.AF_INET6
+            bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS,
+                               struct.pack('@i', 1))
+            addr = list(self.addrinfo[4])
+            addr[1] = 0
+            bc_sock.bind(tuple(addr))
+            addr[0] = self._broadcast
+            addr[1] = port
+            addr = tuple(addr)
         try:
-            yield bc_sock.sendto(b'PING:' + serialize(ping_msg), ('<broadcast>', port))
+            yield bc_sock.sendto(b'PING:' + serialize(ping_msg), addr)
         except:
             pass
         bc_sock.close()
@@ -1280,7 +1338,6 @@ class _Scheduler(object, metaclass=Singleton):
         try:
             # assert info['version'] == _dispy_version
             assert info['port'] > 0 and info['cpus'] > 0
-            socket.inet_aton(info['ip_addr'])
             # TODO: check if it is one of ext_ip_addr?
         except:
             # logger.debug(traceback.format_exc())
@@ -1341,7 +1398,7 @@ class _Scheduler(object, metaclass=Singleton):
 
     def send_job_result(self, uid, cluster, result, resending=False, coro=None):
         # generator
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock = socket.socket(self.addrinfo[0], socket.SOCK_STREAM)
         sock = AsyncSocket(sock, keyfile=self.cluster_keyfile, certfile=self.cluster_certfile)
         sock.settimeout(MsgTimeout)
         try:
@@ -1396,7 +1453,7 @@ class _Scheduler(object, metaclass=Singleton):
                 dispy_node.busy += 1
                 dispy_node.update_time = time.time()
                 cluster.status_callback(_job.job.status, dispy_node, _job.job)
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock = socket.socket(self.addrinfo[0], socket.SOCK_STREAM)
         sock = AsyncSocket(sock, keyfile=self.cluster_keyfile, certfile=self.cluster_certfile)
         sock.settimeout(MsgTimeout)
         try:
@@ -1414,7 +1471,7 @@ class _Scheduler(object, metaclass=Singleton):
         if cluster.status_callback:
             dispy_node.update_time = time.time()
             cluster.status_callback(status, dispy_node, None)
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock = socket.socket(self.addrinfo[0], socket.SOCK_STREAM)
         sock = AsyncSocket(sock, keyfile=self.cluster_keyfile, certfile=self.cluster_certfile)
         sock.settimeout(MsgTimeout)
         status_info = {'compute_id': cluster._compute.id,
@@ -1840,7 +1897,7 @@ class _Scheduler(object, metaclass=Singleton):
         if not node or cluster._compute.id not in node.clusters:
             raise StopIteration([])
         if from_node:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock = socket.socket(self.addrinfo[0], socket.SOCK_STREAM)
             sock = AsyncSocket(sock, keyfile=self.node_keyfile, certfile=self.node_certfile)
             sock.settimeout(MsgTimeout)
             try:
@@ -1965,15 +2022,15 @@ if __name__ == '__main__':
                         help='port number for scheduler')
     parser.add_argument('--node_secret', dest='node_secret', default='',
                         help='authentication secret for handshake with dispy clients')
-    parser.add_argument('--node_keyfile', dest='node_keyfile', default=None,
+    parser.add_argument('--node_keyfile', dest='node_keyfile', default='',
                         help='file containing SSL key to be used with nodes')
-    parser.add_argument('--node_certfile', dest='node_certfile', default=None,
+    parser.add_argument('--node_certfile', dest='node_certfile', default='',
                         help='file containing SSL certificate to be used with nodes')
     parser.add_argument('--cluster_secret', dest='cluster_secret', default='',
                         help='file containing SSL certificate to be used with dispy clients')
-    parser.add_argument('--cluster_certfile', dest='cluster_certfile', default=None,
+    parser.add_argument('--cluster_certfile', dest='cluster_certfile', default='',
                         help='file containing SSL certificate to be used with dispy clients')
-    parser.add_argument('--cluster_keyfile', dest='cluster_keyfile', default=None,
+    parser.add_argument('--cluster_keyfile', dest='cluster_keyfile', default='',
                         help='file containing SSL key to be used with dispy clients')
     parser.add_argument('--pulse_interval', dest='pulse_interval', type=float, default=None,
                         help='number of seconds between pulse messages to indicate '
@@ -2042,6 +2099,24 @@ if __name__ == '__main__':
     else:
         raise Exception('max_file_size must be >= 0')
     del config['max_file_size']
+
+    if config['node_certfile']:
+        config['node_certfile'] = os.path.abspath(config['node_certfile'])
+    else:
+        config['node_certfile'] = None
+    if config['node_keyfile']:
+        config['node_keyfile'] = os.path.abspath(config['node_keyfile'])
+    else:
+        config['node_keyfile'] = None
+
+    if config['cluster_certfile']:
+        config['cluster_certfile'] = os.path.abspath(config['cluster_certfile'])
+    else:
+        config['cluster_certfile'] = None
+    if config['cluster_keyfile']:
+        config['cluster_keyfile'] = os.path.abspath(config['cluster_keyfile'])
+    else:
+        config['cluster_keyfile'] = None
 
     daemon = config.pop('daemon', False)
     if not daemon:

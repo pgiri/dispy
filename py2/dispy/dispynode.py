@@ -25,6 +25,7 @@ import cStringIO as io
 import signal
 import platform
 import copy
+import struct
 try:
     import psutil
 except ImportError:
@@ -35,9 +36,9 @@ except:
     netifaces = None
 
 import asyncoro
-
+import dispy
 from dispy import _JobReply, DispyJob, DispyNodeAvailInfo, _Function, _Compute, _XferFile, \
-     _node_ipaddr, _dispy_version, auth_code, num_min, _same_file, MsgTimeout
+     _dispy_version, auth_code, num_min, _same_file, MsgTimeout
 from asyncoro import Coro, AsynCoro, AsyncSocket, serialize, deserialize
 
 __author__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
@@ -75,7 +76,7 @@ def dispy_provisional_result(result, timeout=MsgTimeout):
     dispy_job_reply.status = DispyJob.ProvisionalResult
     dispy_job_reply.result = serialize(result)
     dispy_job_reply.end_time = time.time()
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock = socket.socket(dispy_sock_family, socket.SOCK_STREAM)
     sock = AsyncSocket(sock, blocking=True, keyfile=__dispy_job_keyfile,
                        certfile=__dispy_job_certfile)
     sock.settimeout(timeout)
@@ -128,7 +129,7 @@ def dispy_send_file(path, timeout=MsgTimeout):
     if MaxFileSize and xf.stat_buf.st_size > MaxFileSize:
         return -1
     dispy_job_reply = __dispy_job_info.job_reply
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock = socket.socket(dispy_sock_family, socket.SOCK_STREAM)
     sock = AsyncSocket(sock, blocking=True,
                        keyfile=__dispy_job_keyfile, certfile=__dispy_job_certfile)
     sock.settimeout(timeout)
@@ -215,28 +216,14 @@ class _DispyNode(object):
             self.name = name
         else:
             self.name = socket.gethostname()
-        if ip_addr:
-            ip_addr = _node_ipaddr(ip_addr)
-            if not ip_addr:
-                raise Exception('invalid ip_addr')
-        else:
-            if netifaces:
-                for iface in netifaces.interfaces():
-                    for link in netifaces.ifaddresses(iface).get(netifaces.AF_INET, []):
-                        if link.get('broadcast', None) and link.get('netmask', None):
-                            ip_addr = socket.gethostbyname(link.get('addr', ''))
-                            break
-                    else:
-                        continue
-                    break
-            if not ip_addr:
-                ip_addr = socket.gethostbyname(socket.gethostname())
-        if ip_addr.startswith('127.'):
+        self.addrinfo = dispy.node_addrinfo(ip_addr)
+        ip_addr = self.addrinfo[4][0]
+        if ip_addr.startswith('127.') or ip_addr.startswith('fe80'):
             _dispy_logger.warning('node IP address %s seems to be loopback address; '
                                   'this will prevent communication with clients on '
                                   'other machines. ', ip_addr)
         if ext_ip_addr:
-            ext_ip_addr = _node_ipaddr(ext_ip_addr)
+            ext_ip_addr = dispy._node_ipaddr(ext_ip_addr)
             if not ext_ip_addr:
                 raise Exception('invalid ext_ip_addr')
         else:
@@ -281,10 +268,17 @@ class _DispyNode(object):
 
         self.asyncoro = AsynCoro()
 
-        self.tcp_sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+        self.tcp_sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM),
                                     keyfile=keyfile, certfile=certfile)
         self.tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.tcp_sock.bind((ip_addr, node_port))
+        if self.addrinfo[0] == socket.AF_INET:
+            addr = (ip_addr, node_port)
+        else: # socket_family == socket.AF_INET6
+            addr = list(self.addrinfo[4])
+            addr[0] = ip_addr
+            addr[1] = node_port
+            addr = tuple(addr)
+        self.tcp_sock.bind(addr)
         self.address = self.tcp_sock.getsockname()
         self.port = self.address[1]
         self.tcp_sock.listen(30)
@@ -324,9 +318,34 @@ class _DispyNode(object):
         proc.join()
 
         self.thread_lock = threading.Lock()
-        self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.udp_sock = socket.socket(self.addrinfo[0], socket.SOCK_DGRAM)
         self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.udp_sock.bind(('', self.port))
+        if self.addrinfo[0] == socket.AF_INET:
+            addr = ('', self.port)
+        else: # socket_family == socket.AF_INET6
+            addr = list(self.addrinfo[4])
+            addr[0] = ''
+            addr[1] = self.port
+            addr = tuple(addr)
+        self.udp_sock.bind(addr)
+        if self.addrinfo[0] == socket.AF_INET:
+            self._broadcast = '<broadcast>'
+            if netifaces:
+                for iface in netifaces.interfaces():
+                    for link in netifaces.ifaddresses(iface).get(netifaces.AF_INET, []):
+                        if link['addr'] == self.addrinfo[4][0]:
+                            self._broadcast = link.get('broadcast', '<broadcast>')
+                            break
+                    else:
+                        continue
+                    break
+        else: # self.sock_family == socket.AF_INET6
+            self._broadcast = 'ff02::1'
+            addrinfo = socket.getaddrinfo(self._broadcast, None)[0]
+            mreq = socket.inet_pton(addrinfo[0], addrinfo[4][0])
+            mreq += struct.pack('@I', self.addrinfo[4][-1])
+            self.udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
+
         _dispy_logger.info('"%s" serving %s cpus at %s:%s',
                            self.name, self.num_cpus, self.ext_ip_addr, self.port)
         _dispy_logger.debug('tcp server at %s:%s', self.address[0], self.address[1])
@@ -358,7 +377,7 @@ class _DispyNode(object):
             self.__init_globals.pop('_dispy_config')
             self.__init_globals['_dispy_node'] = self
         self.tcp_coro = Coro(self.tcp_server)
-        self.udp_coro = Coro(self.udp_server, _node_ipaddr(scheduler_node), scheduler_port)
+        self.udp_coro = Coro(self.udp_server, dispy._node_ipaddr(scheduler_node), scheduler_port)
         if not daemon:
             self.cmd_coro = Coro(self.cmd_proc)
 
@@ -366,15 +385,23 @@ class _DispyNode(object):
         if (self.scheduler['ip_addr'] or self.job_infos or not self.avail_cpus or
            not self.service_available()):
             raise StopIteration
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        sock = AsyncSocket(sock)
+        sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_DGRAM))
         sock.settimeout(MsgTimeout)
+        if self.addrinfo[0] == socket.AF_INET:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            addr = (self._broadcast, self.scheduler['port'])
+        else: # self.sock_family == socket.AF_INET6
+            sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, struct.pack('@i', 1))
+            addr = list(self.addrinfo[4])
+            addr[1] = 0
+            sock.bind(tuple(addr))
+            addr[0] = self._broadcast
+            addr[1] = self.scheduler['port']
+            addr = tuple(addr)
         ping_msg = {'ip_addr': self.ext_ip_addr, 'port': self.port, 'sign': self.sign,
                     'version': _dispy_version, 'scheduler_ip_addr': None}
         try:
-            yield sock.sendto('PING:'.encode() + serialize(ping_msg),
-                              ('<broadcast>', self.scheduler['port']))
+            yield sock.sendto('PING:'.encode() + serialize(ping_msg), addr)
         except:
             _dispy_logger.debug(traceback.format_exc())
             pass
@@ -411,7 +438,7 @@ class _DispyNode(object):
             for scheduler_ip_addr in scheduler_ip_addrs:
                 addr = (scheduler_ip_addr, scheduler_port)
                 pong_msg['scheduler_ip_addr'] = scheduler_ip_addr
-                sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM),
                                    keyfile=self.keyfile, certfile=self.certfile)
                 sock.settimeout(MsgTimeout)
                 try:
@@ -422,12 +449,22 @@ class _DispyNode(object):
                 finally:
                     sock.close()
         else:
-            sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
+            sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_DGRAM))
             sock.settimeout(MsgTimeout)
             ping_msg = {'ip_addr': self.ext_ip_addr, 'port': self.port, 'sign': self.sign,
                         'version': _dispy_version}
             for scheduler_ip_addr in scheduler_ip_addrs:
-                addr = (scheduler_ip_addr, scheduler_port)
+                if self.addrinfo[0] == socket.AF_INET:
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                    addr = (scheduler_ip_addr, scheduler_port)
+                else: # self.sock_family == socket.AF_INET6
+                    sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, struct.pack('@i', 1))
+                    addr = list(self.addrinfo[4])
+                    addr[1] = 0
+                    sock.bind(tuple(addr))
+                    addr[0] = scheduler_ip_addr
+                    addr[1] = scheduler_port
+                    addr = tuple(addr)
                 ping_msg['scheduler_ip_addr'] = scheduler_ip_addr
                 try:
                     yield sock.sendto('PING:'.encode() + serialize(ping_msg), addr)
@@ -443,18 +480,30 @@ class _DispyNode(object):
                     'version': _dispy_version}
 
         def send_ping_msg(self, info, coro=None):
-            sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
+            sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_DGRAM))
             sock.settimeout(MsgTimeout)
-            addr = (info['ip_addr'], info['port'])
             info.update(ping_msg)
             info['scheduler_ip_addr'] = addr[0]
+
+            if self.addrinfo[0] == socket.AF_INET:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                addr = (info['ip_addr'], info['port'])
+            else: # self.sock_family == socket.AF_INET6
+                sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, struct.pack('@i', 1))
+                addr = list(self.addrinfo[4])
+                addr[1] = 0
+                sock.bind(tuple(addr))
+                addr[0] = info['ip_addr']
+                addr[1] = info['port']
+                addr = tuple(addr)
+
             try:
                 yield sock.sendto('PING:'.encode() + serialize(info), addr)
             except:
                 pass
             finally:
                 sock.close()
-            sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+            sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM),
                                keyfile=self.keyfile, certfile=self.certfile)
             sock.settimeout(MsgTimeout)
             try:
@@ -704,7 +753,7 @@ class _DispyNode(object):
             # add variables needed for 'dispy_provisional_result' and
             # 'dispy_send_file' to compute.globals; but in Windows
             # compute.globals can't be passed via multiprocessing.Process
-            if os.name == 'nt':
+            if os.name == 'nt' or compute.type == _Compute.prog_type:
                 compute.globals = {}
             else:
                 for var in ('AsyncSocket', 'DispyJob', 'serialize', 'deserialize', '_XferFile',
@@ -714,6 +763,7 @@ class _DispyNode(object):
             compute.globals['_DispyNode'] = None
             compute.globals['dispy_node_name'] = self.name
             compute.globals['dispy_node_ip_addr'] = self.ext_ip_addr
+            compute.globals['dispy_sock_family'] = self.addrinfo[0]
 
             try:
                 yield conn.send_msg(serialize(self.avail_cpus))
@@ -1114,7 +1164,7 @@ class _DispyNode(object):
                     else:
                         info['avail_info'] = None
 
-                    sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                    sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM),
                                        keyfile=self.keyfile, certfile=self.certfile)
                     sock.settimeout(MsgTimeout)
                     try:
@@ -1144,7 +1194,7 @@ class _DispyNode(object):
                     _dispy_logger.warning('Deleting zombie computation "%s"', compute.name)
                     self.cleanup_computation(compute)
                 for compute in zombies:
-                    sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                    sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM),
                                        keyfile=self.keyfile, certfile=self.certfile)
                     sock.settimeout(MsgTimeout)
                     _dispy_logger.debug('Sending TERMINATE to %s', compute.scheduler_ip_addr)
@@ -1180,7 +1230,7 @@ class _DispyNode(object):
                 now = int(time.time())
                 yield coro.sleep(self.service_stop - now)
                 _dispy_logger.debug('Stopping service')
-                sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM),
                                    keyfile=self.keyfile, certfile=self.certfile)
                 sock.settimeout(MsgTimeout)
                 try:
@@ -1222,6 +1272,11 @@ class _DispyNode(object):
             env = {}
             env.update(os.environ)
             env['PATH'] = compute.dest_path + os.pathsep + env['PATH']
+            for k, v in compute.globals.iteritems():
+                if isinstance(v, str):
+                    env[k] = v
+                elif isinstance(v, int):
+                    env[k] = repr(v)
             job_info.proc = subprocess.Popen(program, stdout=subprocess.PIPE,
                                              stderr=subprocess.PIPE, env=env)
             reply.stdout, reply.stderr = job_info.proc.communicate()
@@ -1283,7 +1338,7 @@ class _DispyNode(object):
             if compute:
                 compute.pending_jobs -= 1
 
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock = socket.socket(self.addrinfo[0], socket.SOCK_STREAM)
         sock = AsyncSocket(sock, keyfile=self.keyfile, certfile=self.certfile)
         sock.settimeout(MsgTimeout)
         try:
@@ -1446,7 +1501,7 @@ class _DispyNode(object):
         if self.serve > 0:
             self.serve -= 1
         if self.serve == 0:
-            sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), blocking=True,
+            sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM), blocking=True,
                                keyfile=self.keyfile, certfile=self.certfile)
             sock.settimeout(MsgTimeout)
             _dispy_logger.debug('Sending TERMINATE to %s', compute.scheduler_ip_addr)
@@ -1562,7 +1617,7 @@ class _DispyNode(object):
                 self.avail_cpus = cpus - len(self.job_infos)
 
                 if self.scheduler['ip_addr']:
-                    sock = AsyncSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                    sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM),
                                        keyfile=self.keyfile, certfile=self.certfile)
                     sock.settimeout(MsgTimeout)
                     try:
