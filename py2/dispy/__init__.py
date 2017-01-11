@@ -559,7 +559,7 @@ class _DispyJob_(object):
                         logger.warning('Invalid module "%s" - must be python source.', dep)
                         continue
                     if name.startswith(cwd):
-                        dst = os.path.dirname(name[len(cwd+os.sep):])
+                        dst = os.path.dirname(name[len(cwd):].lstrip(os.sep))
                     elif dep.__package__:
                         dst = dep.__package__.replace('.', os.sep)
                     else:
@@ -567,7 +567,7 @@ class _DispyJob_(object):
                 else:
                     name = os.path.abspath(dep)
                     if name.startswith(cwd):
-                        dst = os.path.dirname(name[len(cwd+os.sep):])
+                        dst = os.path.dirname(name[len(cwd):].lstrip(os.sep))
                     else:
                         dst = '.'
                 if name in depend_ids:
@@ -2289,7 +2289,7 @@ class JobCluster(object):
                         logger.warning('Invalid module "%s" - must be python source.', dep)
                         continue
                     if name.startswith(cwd):
-                        dst = os.path.dirname(name[len(cwd+os.sep):])
+                        dst = os.path.dirname(name[len(cwd):].lstrip(os.sep))
                     elif dep.__package__:
                         dst = dep.__package__.replace('.', os.sep)
                     else:
@@ -2307,7 +2307,7 @@ class JobCluster(object):
                     else:
                         raise Exception('Path "%s" is not valid' % dep)
                     if name.startswith(cwd):
-                        dst = os.path.dirname(name[len(cwd+os.sep):])
+                        dst = os.path.dirname(name[len(cwd):].lstrip(os.sep))
                     else:
                         dst = '.'
                 if name in depend_ids:
@@ -2475,7 +2475,7 @@ class JobCluster(object):
         cwd = self._cluster.dest_path
         path = os.path.abspath(path)
         if path.startswith(cwd):
-            dst = os.path.dirname(path[len(cwd+os.sep):])
+            dst = os.path.dirname(path[len(cwd):].lstrip(os.sep))
         else:
             dst = '.'
         xf = _XferFile(path, dst, self._compute.id)
@@ -2943,7 +2943,7 @@ class SharedJobCluster(JobCluster):
         cwd = self._cluster.dest_path
         path = os.path.abspath(path)
         if path.startswith(cwd):
-            dst = os.path.dirname(path[len(cwd+os.sep):])
+            dst = os.path.dirname(path[len(cwd):].lstrip(os.sep))
         else:
             dst = '.'
         xf = _XferFile(path, dst, self._compute.id)

@@ -122,7 +122,7 @@ def dispy_send_file(path, timeout=MsgTimeout):
     path = os.path.abspath(path)
     cwd = os.getcwd()
     if path.startswith(cwd):
-        dst = os.path.dirname(path[len(cwd+os.sep):])
+        dst = os.path.dirname(path[len(cwd):].lstrip(os.sep))
     else:
         dst = '.'
     xf = _XferFile(path, dst)
