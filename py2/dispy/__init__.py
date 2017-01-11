@@ -803,7 +803,10 @@ class _Cluster(object):
         port_bound_event.set()
         del port_bound_event
         while 1:
-            msg, addr = yield udp_sock.recvfrom(1000)
+            try:
+                msg, addr = yield udp_sock.recvfrom(1000)
+            except GeneratorExit:
+                break
             if msg.startswith('PING:'):
                 try:
                     info = deserialize(msg[len('PING:'):])
@@ -1167,7 +1170,10 @@ class _Cluster(object):
             if reset:
                 timeout = num_min(self.pulse_interval, self.ping_interval, self.poll_interval)
 
-            reset = yield coro.suspend(timeout)
+            try:
+                reset = yield coro.suspend(timeout)
+            except GeneratorExit:
+                break
             if reset:
                 continue
 
