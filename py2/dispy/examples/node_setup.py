@@ -19,7 +19,7 @@ def setup(data_file):
     # on the dispy node. But into function file paths are passed
     # as absolute paths on the master node. Thus we should add 
     # computation path to the master node path.
-    local_data_file = os.path.join(os.getcwd(), context_file.lstrip('/'))
+    local_data_file = os.path.join(os.getcwd(), context_file.lstrip(os.sep))
     
     data = open(local_data_file).read()  # read file in to memory; data_file can now be deleted
     if sys.version_info.major > 2:
