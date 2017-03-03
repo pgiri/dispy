@@ -13,7 +13,15 @@ def setup(data_file):
     global data, algorithms, hashlib
 
     import hashlib
-    data = open(data_file).read()  # read file in to memory; data_file can now be deleted
+
+    # Building path to the files on the dispy node. Passed files
+    # are stored under the computation path in the working dir
+    # on the dispy node. But into function file paths are passed
+    # as absolute paths on the master node. Thus we should add 
+    # computation path to the master node path.
+    local_data_file = os.path.join(os.getcwd(), context_file.lstrip(os.sep))
+    
+    data = open(local_data_file).read()  # read file in to memory; data_file can now be deleted
     if sys.version_info.major > 2:
         data = data.encode() # convert to bytes
         algorithms = list(hashlib.algorithms_guaranteed)
@@ -31,9 +39,22 @@ def setup(data_file):
 
 def cleanup():
     global data, algorithms, hashlib
-    del data, algorithms
+    
+    # If setup function is failed some of globals can be undefined
+    try:
+        del data
+    except NameError:
+        pass
+    try:
+        del algorithms
+    except NameError:
+        pass
+    
     if os.name != 'nt':
-        del hashlib
+        try:
+            del hashlib
+        except NameError:
+            pass
 
 def compute(n):
     global hashlib
