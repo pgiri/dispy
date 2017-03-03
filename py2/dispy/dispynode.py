@@ -1707,8 +1707,8 @@ if __name__ == '__main__':
     _dispy_config = vars(parser.parse_args(sys.argv[1:]))
 
     if _dispy_config['config']:
-        import configparser
-        cfg = configparser.ConfigParser()
+        import ConfigParser
+        cfg = ConfigParser.ConfigParser()
         cfg.read(_dispy_config['config'])
         cfg = dict(cfg.items('DEFAULT'))
         cfg['cpus'] = int(cfg['cpus'])
@@ -1729,8 +1729,8 @@ if __name__ == '__main__':
 
     cfg = _dispy_config.pop('save_config', None)
     if cfg:
-        import configparser
-        _dispy_config = configparser.ConfigParser(_dispy_config)
+        import ConfigParser
+        _dispy_config = ConfigParser.ConfigParser(_dispy_config)
         cfg = open(cfg, 'w')
         _dispy_config.write(cfg)
         cfg.close()
