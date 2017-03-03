@@ -14,12 +14,8 @@ def setup(data_file):
 
     import hashlib
 
-    # Building path to the files on the dispy node. Passed files
-    # are stored under the computation path in the working dir
-    # on the dispy node. But into function file paths are passed
-    # as absolute paths on the master node. Thus we should add 
-    # computation path to the master node path.
-    local_data_file = os.path.join(os.getcwd(), context_file.lstrip(os.sep))
+    # If data_file is passed as absolute path we should use only basename
+    local_data_file = os.path.join(os.getcwd(), os.path.basename(data_file))
     
     data = open(local_data_file).read()  # read file in to memory; data_file can now be deleted
     if sys.version_info.major > 2:
