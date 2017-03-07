@@ -413,6 +413,8 @@ class _DispyNode(object):
             _dispy_logger.debug('Busy (%s/%s); ignoring ping message from %s',
                                 self.avail_cpus, self.num_cpus, addr[0])
             raise StopIteration
+        if info.get('port', None) == self.port:
+            raise StopIteration
         try:
             scheduler_ip_addrs = info['ip_addrs']
             if not info.get('relay', None):
@@ -476,14 +478,11 @@ class _DispyNode(object):
     def udp_server(self, scheduler_ip, scheduler_port, coro=None):
         coro.set_daemon()
         yield self.broadcast_ping_msg(coro=coro)
-        ping_msg = {'ip_addr': self.ext_ip_addr, 'port': self.port, 'sign': self.sign,
-                    'version': _dispy_version}
 
         def send_ping_msg(self, info, coro=None):
             sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_DGRAM))
             sock.settimeout(MsgTimeout)
-            info.update(ping_msg)
-            info['scheduler_ip_addr'] = addr[0]
+            info['scheduler_ip_addr'] = info['ip_addr']
 
             if self.addrinfo[0] == socket.AF_INET:
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -497,6 +496,8 @@ class _DispyNode(object):
                 addr[1] = info['port']
                 addr = tuple(addr)
 
+            info['sign'] = self.sign
+            info['version'] = _dispy_version
             try:
                 yield sock.sendto('PING:'.encode() + serialize(info), addr)
             except:

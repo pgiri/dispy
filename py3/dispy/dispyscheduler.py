@@ -312,6 +312,8 @@ class _Scheduler(object, metaclass=Singleton):
                     logger.debug('Ignoring node %s', addr[0])
                     logger.debug(traceback.format_exc())
                     continue
+                if info['port'] == self.port:
+                    continue
                 auth = auth_code(self.node_secret, info['sign'])
                 node = self._nodes.get(info['ip_addr'], None)
                 if node:
@@ -433,24 +435,25 @@ class _Scheduler(object, metaclass=Singleton):
                 logger.debug('Ignoring node %s', addr[0])
                 logger.debug(traceback.format_exc())
                 raise StopIteration
-            auth = auth_code(self.node_secret, info['sign'])
-            node = self._nodes.get(info['ip_addr'], None)
-            if node:
-                if node.auth == auth:
-                    raise StopIteration
-            sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM),
-                               keyfile=self.node_keyfile, certfile=self.node_certfile)
-            sock.settimeout(MsgTimeout)
-            msg = {'port': self.port, 'sign': self.sign, 'version': _dispy_version}
-            msg['ip_addrs'] = list(filter(lambda ip: bool(ip), self.ext_ip_addrs))
-            try:
-                yield sock.connect((info['ip_addr'], info['port']))
-                yield sock.sendall(auth)
-                yield sock.send_msg(b'PING:' + serialize(msg))
-            except:
-                logger.debug(traceback.format_exc())
-            finally:
-                sock.close()
+            if info['port'] != self.port:
+                auth = auth_code(self.node_secret, info['sign'])
+                node = self._nodes.get(info['ip_addr'], None)
+                if node:
+                    if node.auth == auth:
+                        raise StopIteration
+                sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM),
+                                   keyfile=self.node_keyfile, certfile=self.node_certfile)
+                sock.settimeout(MsgTimeout)
+                msg = {'port': self.port, 'sign': self.sign, 'version': _dispy_version}
+                msg['ip_addrs'] = list(filter(lambda ip: bool(ip), self.ext_ip_addrs))
+                try:
+                    yield sock.connect((info['ip_addr'], info['port']))
+                    yield sock.sendall(auth)
+                    yield sock.send_msg(b'PING:' + serialize(msg))
+                except:
+                    logger.debug(traceback.format_exc())
+                finally:
+                    sock.close()
 
         elif msg.startswith(b'FILEXFER:'):
             try:
