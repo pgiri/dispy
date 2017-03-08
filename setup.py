@@ -11,7 +11,7 @@ else:
 
 setup(
     name='dispy',
-    version='4.7.1',
+    version='4.7.2',
     description='Distributed and Parallel Computing with/for Python.',
     long_description=open('README.rst').read(),
     keywords='distributed computing, parallel processing, mapreduce, hadoop, job scheduler',
