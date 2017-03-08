@@ -275,7 +275,7 @@ class _DispyNode(object):
         self.tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         if self.addrinfo[0] == socket.AF_INET:
             addr = (ip_addr, node_port)
-        else: # socket_family == socket.AF_INET6
+        else:  # socket_family == socket.AF_INET6
             addr = list(self.addrinfo[4])
             addr[0] = ip_addr
             addr[1] = node_port
@@ -324,7 +324,7 @@ class _DispyNode(object):
         self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         if self.addrinfo[0] == socket.AF_INET:
             addr = ('', self.port)
-        else: # socket_family == socket.AF_INET6
+        else:  # socket_family == socket.AF_INET6
             addr = list(self.addrinfo[4])
             addr[0] = ''
             addr[1] = self.port
@@ -341,7 +341,7 @@ class _DispyNode(object):
                     else:
                         continue
                     break
-        else: # self.sock_family == socket.AF_INET6
+        else:  # self.sock_family == socket.AF_INET6
             self._broadcast = 'ff02::1'
             addrinfo = socket.getaddrinfo(self._broadcast, None)[0]
             mreq = socket.inet_pton(addrinfo[0], addrinfo[4][0])
@@ -392,7 +392,7 @@ class _DispyNode(object):
         if self.addrinfo[0] == socket.AF_INET:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             addr = (self._broadcast, self.scheduler['port'])
-        else: # self.sock_family == socket.AF_INET6
+        else:  # self.sock_family == socket.AF_INET6
             sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, struct.pack('@i', 1))
             addr = list(self.addrinfo[4])
             addr[1] = 0
@@ -461,7 +461,7 @@ class _DispyNode(object):
                 if self.addrinfo[0] == socket.AF_INET:
                     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
                     addr = (scheduler_ip_addr, scheduler_port)
-                else: # self.sock_family == socket.AF_INET6
+                else:  # self.sock_family == socket.AF_INET6
                     sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, struct.pack('@i', 1))
                     addr = list(self.addrinfo[4])
                     addr[1] = 0
@@ -479,7 +479,7 @@ class _DispyNode(object):
 
     def udp_server(self, scheduler_ip, scheduler_port, coro=None):
         coro.set_daemon()
-        yield self.broadcast_ping_msg(coro=coro)
+        Coro(self.broadcast_ping_msg)
 
         def send_ping_msg(self, coro=None):
             sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_DGRAM))
@@ -490,7 +490,7 @@ class _DispyNode(object):
             if self.addrinfo[0] == socket.AF_INET:
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
                 addr = (scheduler_ip, scheduler_port)
-            else: # self.sock_family == socket.AF_INET6
+            else:  # self.sock_family == socket.AF_INET6
                 sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, struct.pack('@i', 1))
                 addr = list(self.addrinfo[4])
                 addr[1] = 0

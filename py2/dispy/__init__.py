@@ -768,7 +768,7 @@ class _Cluster(object):
         # udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         if self.addrinfo[0] == socket.AF_INET:
             addr = ('', port)
-        else: # socket_family == socket.AF_INET6
+        else:  # socket_family == socket.AF_INET6
             addr = list(self.addrinfo[4])
             addr[0] = ''
             addr[1] = port
@@ -792,7 +792,7 @@ class _Cluster(object):
                     else:
                         continue
                     break
-        else: # socket_family == socket.AF_INET6
+        else:  # socket_family == socket.AF_INET6
             self._broadcast = 'ff02::1'
             addrinfo = socket.getaddrinfo(self._broadcast, None)[0]
             mreq = socket.inet_pton(addrinfo[0], addrinfo[4][0])
@@ -854,7 +854,7 @@ class _Cluster(object):
             ip_addr = ''
         if self.addrinfo[0] == socket.AF_INET:
             addr = (ip_addr, port)
-        else: # socket_family == socket.AF_INET6
+        else:  # socket_family == socket.AF_INET6
             addr = list(self.addrinfo[4])
             addr[0] = ip_addr
             addr[1] = port
@@ -1290,7 +1290,7 @@ class _Cluster(object):
         if self.addrinfo[0] == socket.AF_INET:
             bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             addr = (self._broadcast, port)
-        else: # socket_family == socket.AF_INET6
+        else:  # socket_family == socket.AF_INET6
             bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS,
                                struct.pack('@i', 1))
             addr = list(self.addrinfo[4])
@@ -3095,8 +3095,8 @@ def recover_jobs(recover_file, timeout=None, terminate_pending=False):
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         if addrinfo[0] == socket.AF_INET:
             addr = (ip_addr, cluster['port'])
-        else: # socket_family == socket.AF_INET6
-            addr = list(self.addrinfo[4])
+        else:  # socket_family == socket.AF_INET6
+            addr = list(addrinfo[4])
             addr[0] = ip_addr
             addr[1] = cluster['port']
             addr = tuple(addr)

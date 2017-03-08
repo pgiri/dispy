@@ -37,10 +37,10 @@ del path
 import asyncoro
 from asyncoro import Coro, AsynCoro, AsyncSocket, Singleton, serialize, deserialize
 import dispy
+import dispy.httpd
 from dispy import _Compute, DispyJob, _DispyJob_, _Function, _Node, DispyNode, NodeAllocate, \
     _JobReply, auth_code, num_min, _parse_node_allocs, _XferFile, _dispy_version, \
-    _same_file, MsgTimeout
-import dispy.httpd
+    _same_file, MsgTimeout, _node_ipaddr
 
 __author__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __email__ = "pgiri@yahoo.com"
@@ -124,171 +124,171 @@ class _Scheduler(object):
                  node_secret='', node_keyfile=None, node_certfile=None,
                  cluster_secret='', cluster_keyfile=None, cluster_certfile=None,
                  dest_path_prefix=None, clean=False, zombie_interval=60, http_server=False):
-        if not hasattr(self, 'ip_addr'):
-            self.ip_addrs = set()
-            self.addrinfo = None
-            if ip_addr:
-                if not isinstance(ip_addr, list):
-                    ip_addr = [ip_addr]
-                for node in ip_addr:
-                    addr = dispy.node_addrinfo(node)
-                    if addr:
-                        if not self.addrinfo:
-                            self.addrinfo = addr
-                        self.ip_addrs.add(addr[4][0])
-            if not self.ip_addrs:
-                self.ip_addrs.add(None)
-            self.ext_ip_addrs = set(self.ip_addrs)
-            if ext_ip_addr:
-                if not isinstance(ext_ip_addr, list):
-                    ext_ip_addr = [ext_ip_addr]
-                for node in ext_ip_addr:
-                    addr = dispy.node_addrinfo(node)
-                    if addr:
-                        if not self.addrinfo:
-                            self.addrinfo = addr
-                        self.ext_ip_addrs.add(addr[4][0])
-            if not self.addrinfo:
-                self.addrinfo = dispy.node_addrinfo()
-            if not port:
-                port = 51347
-            if not node_port:
-                node_port = 51348
-            if not scheduler_port:
-                scheduler_port = 51349
-            if not nodes:
-                nodes = ['*']
+        self.ip_addrs = set()
+        ip_addrs = set()
+        self.addrinfo = None
+        if ip_addr:
+            if not isinstance(ip_addr, list):
+                ip_addr = [ip_addr]
+            for node in ip_addr:
+                addr = dispy.node_addrinfo(node)
+                if addr:
+                    if not self.addrinfo:
+                        self.addrinfo = addr
+                    ip_addrs.add(addr[4][0])
+        if not ip_addrs:
+            ip_addrs.add(None)
+        self.ext_ip_addrs = set(ip_addrs)
+        if ext_ip_addr:
+            if not isinstance(ext_ip_addr, list):
+                ext_ip_addr = [ext_ip_addr]
+            for node in ext_ip_addr:
+                addr = dispy.node_addrinfo(node)
+                if addr:
+                    if not self.addrinfo:
+                        self.addrinfo = addr
+                    self.ext_ip_addrs.add(addr[4][0])
+        if not self.addrinfo:
+            self.addrinfo = dispy.node_addrinfo()
+        if not port:
+            port = 51347
+        if not node_port:
+            node_port = 51348
+        if not scheduler_port:
+            scheduler_port = 51349
+        if not nodes:
+            nodes = ['*']
 
-            self.port = port
-            self.node_port = node_port
-            self.scheduler_port = scheduler_port
-            self._node_allocs = _parse_node_allocs(nodes)
-            self._nodes = {}
-            self.node_secret = node_secret
-            self.node_keyfile = node_keyfile
-            self.node_certfile = node_certfile
-            self.cluster_secret = cluster_secret
-            self.cluster_keyfile = cluster_keyfile
-            self.cluster_certfile = cluster_certfile
-            if not dest_path_prefix:
-                dest_path_prefix = os.path.join(tempfile.gettempdir(), 'dispy', 'scheduler')
-            self.dest_path_prefix = os.path.abspath(dest_path_prefix.strip()).rstrip(os.sep)
-            if clean:
-                shutil.rmtree(self.dest_path_prefix, ignore_errors=True)
-            if not os.path.isdir(self.dest_path_prefix):
-                os.makedirs(self.dest_path_prefix)
-                os.chmod(self.dest_path_prefix, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+        self.port = port
+        self.node_port = node_port
+        self.scheduler_port = scheduler_port
+        self._node_allocs = _parse_node_allocs(nodes)
+        self._nodes = {}
+        self.node_secret = node_secret
+        self.node_keyfile = node_keyfile
+        self.node_certfile = node_certfile
+        self.cluster_secret = cluster_secret
+        self.cluster_keyfile = cluster_keyfile
+        self.cluster_certfile = cluster_certfile
+        if not dest_path_prefix:
+            dest_path_prefix = os.path.join(tempfile.gettempdir(), 'dispy', 'scheduler')
+        self.dest_path_prefix = os.path.abspath(dest_path_prefix.strip()).rstrip(os.sep)
+        if clean:
+            shutil.rmtree(self.dest_path_prefix, ignore_errors=True)
+        if not os.path.isdir(self.dest_path_prefix):
+            os.makedirs(self.dest_path_prefix)
+            os.chmod(self.dest_path_prefix, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
 
-            self.cooperative = bool(cooperative)
-            self.cleanup_nodes = bool(cleanup_nodes)
-            if pulse_interval:
-                try:
-                    self.pulse_interval = float(pulse_interval)
-                    assert 1.0 <= self.pulse_interval <= 1000
-                except:
-                    raise Exception('Invalid pulse_interval; must be between 1 and 1000')
+        self.cooperative = bool(cooperative)
+        self.cleanup_nodes = bool(cleanup_nodes)
+        if pulse_interval:
+            try:
+                self.pulse_interval = float(pulse_interval)
+                assert 1.0 <= self.pulse_interval <= 1000
+            except:
+                raise Exception('Invalid pulse_interval; must be between 1 and 1000')
+        else:
+            self.pulse_interval = None
+
+        if ping_interval:
+            try:
+                self.ping_interval = float(ping_interval)
+                assert 1.0 <= self.ping_interval <= 1000
+            except:
+                raise Exception('Invalid ping_interval; must be between 1 and 1000')
+        else:
+            self.ping_interval = None
+
+        if zombie_interval:
+            self.zombie_interval = 60 * zombie_interval
+            if self.pulse_interval:
+                self.pulse_interval = min(self.pulse_interval, self.zombie_interval / 5.0)
             else:
-                self.pulse_interval = None
+                self.pulse_interval = self.zombie_interval / 5.0
+        else:
+            self.zombie_interval = None
 
-            if ping_interval:
-                try:
-                    self.ping_interval = float(ping_interval)
-                    assert 1.0 <= self.ping_interval <= 1000
-                except:
-                    raise Exception('Invalid ping_interval; must be between 1 and 1000')
-            else:
-                self.ping_interval = None
+        self.asyncoro = AsynCoro()
+        atexit.register(self.shutdown)
 
-            if zombie_interval:
-                self.zombie_interval = 60 * zombie_interval
-                if self.pulse_interval:
-                    self.pulse_interval = min(self.pulse_interval, self.zombie_interval / 5.0)
-                else:
-                    self.pulse_interval = self.zombie_interval / 5.0
-            else:
-                self.zombie_interval = None
+        self._clusters = {}
+        self.unsched_jobs = 0
+        self.unsched_clusters = []
+        self.pending_clusters = {}
+        self._sched_jobs = {}
+        self._sched_event = asyncoro.Event()
+        # once a _job is done (i.e., final result for it is
+        # received from node), it is added to done_jobs, so same
+        # object is not reused by Python (when a new job is
+        # submitted) until the result is sent back to client
+        # (otherwise, 'id' may be duplicate)
+        self.done_jobs = {}
+        self.terminate = False
+        self.sign = os.urandom(10).encode('hex')
+        self.cluster_auth = auth_code(self.cluster_secret, self.sign)
+        self.node_auth = auth_code(self.node_secret, self.sign)
 
-            self.asyncoro = AsynCoro()
-            atexit.register(self.shutdown)
+        if scheduler_alg == 'fair_cluster':
+            self.select_job_node_cluster = self.fair_cluster_schedule
+        elif scheduler_alg == 'fcfs_cluster':
+            self.select_job_node_cluster = self.fcfs_cluster_schedule
+        else:
+            self.select_job_node_cluster = self.fsfs_job_schedule
 
-            self._clusters = {}
-            self.unsched_jobs = 0
-            self.unsched_clusters = []
-            self.pending_clusters = {}
-            self._sched_jobs = {}
-            self._sched_event = asyncoro.Event()
-            # once a _job is done (i.e., final result for it is
-            # received from node), it is added to done_jobs, so same
-            # object is not reused by Python (when a new job is
-            # submitted) until the result is sent back to client
-            # (otherwise, 'id' may be duplicate)
-            self.done_jobs = {}
-            self.terminate = False
-            self.sign = os.urandom(10).encode('hex')
-            self.cluster_auth = auth_code(self.cluster_secret, self.sign)
-            self.node_auth = auth_code(self.node_secret, self.sign)
+        self.start_time = time.time()
+        if http_server:
+            self.httpd = dispy.httpd.DispyHTTPServer(None)
+        else:
+            self.httpd = None
 
-            if scheduler_alg == 'fair_cluster':
-                self.select_job_node_cluster = self.fair_cluster_schedule
-            elif scheduler_alg == 'fcfs_cluster':
-                self.select_job_node_cluster = self.fcfs_cluster_schedule
-            else:
-                self.select_job_node_cluster = self.fsfs_job_schedule
+        self.timer_coro = Coro(self.timer_task)
+        self.tcp_coros = []
+        self.scheduler_coros = []
+        for ip_addr in list(ip_addrs):
+            self.tcp_coros.append(Coro(self.tcp_server, ip_addr))
+            self.scheduler_coros.append(Coro(self.scheduler_server, ip_addr))
 
-            self.start_time = time.time()
-            if http_server:
-                self.httpd = dispy.httpd.DispyHTTPServer(None)
-            else:
-                self.httpd = None
+        with open(os.path.join(self.dest_path_prefix, 'config'), 'wb') as fd:
+            config = {
+                'port': self.port, 'sign': self.sign,
+                'cluster_secret': self.cluster_secret, 'cluster_auth': self.cluster_auth,
+                'node_secret': self.node_secret, 'node_auth': self.node_auth
+                }
+            pickle.dump(config, fd)
 
-            self.timer_coro = Coro(self.timer_task)
-            self.tcp_coros = []
-            self.scheduler_coros = []
-            for ip_addr in list(self.ip_addrs):
-                self.tcp_coros.append(Coro(self.tcp_server, ip_addr))
-                self.scheduler_coros.append(Coro(self.scheduler_server, ip_addr))
+        self.udp_sock = socket.socket(self.addrinfo[0], socket.SOCK_DGRAM)
+        self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if self.addrinfo[0] == socket.AF_INET:
+            addr = ('', self.port)
+        else:  # socket_family == socket.AF_INET6
+            addr = list(self.addrinfo[4])
+            addr[0] = ''
+            addr[1] = self.port
+            addr = tuple(addr)
+        self.udp_sock.bind(addr)
 
-            with open(os.path.join(self.dest_path_prefix, 'config'), 'wb') as fd:
-                config = {
-                    'port': self.port, 'sign': self.sign,
-                    'cluster_secret': self.cluster_secret, 'cluster_auth': self.cluster_auth,
-                    'node_secret': self.node_secret, 'node_auth': self.node_auth
-                    }
-                pickle.dump(config, fd)
+        if self.addrinfo[0] == socket.AF_INET:
+            self._broadcast = '<broadcast>'
+            if netifaces:
+                for iface in netifaces.interfaces():
+                    for link in netifaces.ifaddresses(iface).get(netifaces.AF_INET, []):
+                        if link['addr'] == self.addrinfo[4][0]:
+                            self._broadcast = link.get('broadcast', '<broadcast>')
+                            break
+                    else:
+                        continue
+                    break
+        else:  # self.sock_family == socket.AF_INET6
+            self._broadcast = 'ff02::1'
+            addrinfo = socket.getaddrinfo(self._broadcast, None)[0]
+            mreq = socket.inet_pton(addrinfo[0], addrinfo[4][0])
+            mreq += struct.pack('@I', self.addrinfo[4][-1])
+            self.udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
 
-            self.udp_sock = socket.socket(self.addrinfo[0], socket.SOCK_DGRAM)
-            self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            if self.addrinfo[0] == socket.AF_INET:
-                addr = ('', self.port)
-            else: # socket_family == socket.AF_INET6
-                addr = list(self.addrinfo[4])
-                addr[0] = ''
-                addr[1] = self.port
-                addr = tuple(addr)
-            self.udp_sock.bind(addr)
+        self.udp_sock = AsyncSocket(self.udp_sock)
+        self.udp_coro = Coro(self.udp_server)
 
-            if self.addrinfo[0] == socket.AF_INET:
-                self._broadcast = '<broadcast>'
-                if netifaces:
-                    for iface in netifaces.interfaces():
-                        for link in netifaces.ifaddresses(iface).get(netifaces.AF_INET, []):
-                            if link['addr'] == self.addrinfo[4][0]:
-                                self._broadcast = link.get('broadcast', '<broadcast>')
-                                break
-                        else:
-                            continue
-                        break
-            else: # self.sock_family == socket.AF_INET6
-                self._broadcast = 'ff02::1'
-                addrinfo = socket.getaddrinfo(self._broadcast, None)[0]
-                mreq = socket.inet_pton(addrinfo[0], addrinfo[4][0])
-                mreq += struct.pack('@I', self.addrinfo[4][-1])
-                self.udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
-
-            self.udp_sock = AsyncSocket(self.udp_sock)
-            self.udp_coro = Coro(self.udp_server)
-
-            self.scheduler_coro = Coro(self._schedule_jobs)
+        self.scheduler_coro = Coro(self._schedule_jobs)
 
     def udp_server(self, coro=None):
         # generator
@@ -345,7 +345,7 @@ class _Scheduler(object):
             ip_addr = ''
         if self.addrinfo[0] == socket.AF_INET:
             addr = (ip_addr, self.port)
-        else: # socket_family == socket.AF_INET6
+        else:  # socket_family == socket.AF_INET6
             addr = list(self.addrinfo[4])
             addr[0] = ip_addr
             addr[1] = self.port
@@ -355,8 +355,9 @@ class _Scheduler(object):
         except:
             if ip_addr == '':
                 ip_addr = None
-            self.ip_addrs.discard(ip_addr)
             raise StopIteration
+        ip_addr = sock.getsockname()[0]
+        self.ip_addrs.add(ip_addr)
         logger.debug('tcp server at %s:%s', ip_addr, self.port)
         sock.listen(32)
 
@@ -588,7 +589,7 @@ class _Scheduler(object):
             ip_addr = ''
         if self.addrinfo[0] == socket.AF_INET:
             addr = (ip_addr, self.scheduler_port)
-        else: # socket_family == socket.AF_INET6
+        else:  # socket_family == socket.AF_INET6
             addr = list(self.addrinfo[4])
             addr[0] = ip_addr
             addr[1] = self.scheduler_port
@@ -598,8 +599,8 @@ class _Scheduler(object):
         except:
             if ip_addr == '':
                 ip_addr = None
-            self.ip_addrs.discard(ip_addr)
             raise StopIteration
+        ip_addr = sock.getsockname()[0]
         logger.debug('scheduler at %s:%s', ip_addr, self.scheduler_port)
         sock.listen(32)
         while 1:
@@ -1198,7 +1199,7 @@ class _Scheduler(object):
         if self.addrinfo[0] == socket.AF_INET:
             bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             addr = (self._broadcast, port)
-        else: # self.sock_family == socket.AF_INET6
+        else:  # self.sock_family == socket.AF_INET6
             bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS,
                                struct.pack('@i', 1))
             addr = list(self.addrinfo[4])
