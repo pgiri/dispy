@@ -479,25 +479,24 @@ class _DispyNode(object):
         coro.set_daemon()
         yield self.broadcast_ping_msg(coro=coro)
 
-        def send_ping_msg(self, info, coro=None):
+        def send_ping_msg(self, coro=None):
             sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_DGRAM))
             sock.settimeout(MsgTimeout)
-            info['scheduler_ip_addr'] = info['ip_addr']
+            info = {'scheduler_ip_addr': scheduler_ip, 'ip_addr': self.ext_ip_addr,
+                    'port': self.port, 'sign': self.sign, 'version': _dispy_version}
 
             if self.addrinfo[0] == socket.AF_INET:
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                addr = (info['ip_addr'], info['port'])
+                addr = (scheduler_ip, scheduler_port)
             else: # self.sock_family == socket.AF_INET6
                 sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, struct.pack('@i', 1))
                 addr = list(self.addrinfo[4])
                 addr[1] = 0
                 sock.bind(tuple(addr))
-                addr[0] = info['ip_addr']
-                addr[1] = info['port']
+                addr[0] = scheduler_ip
+                addr[1] = scheduler_port
                 addr = tuple(addr)
 
-            info['sign'] = self.sign
-            info['version'] = _dispy_version
             try:
                 yield sock.sendto('PING:'.encode() + serialize(info), addr)
             except:
@@ -516,7 +515,7 @@ class _DispyNode(object):
                 sock.close()
 
         if scheduler_ip:
-            Coro(send_ping_msg, self, {'ip_addr': scheduler_ip, 'port': scheduler_port})
+            Coro(send_ping_msg, self)
 
         while 1:
             msg, addr = yield self.udp_sock.recvfrom(1000)
