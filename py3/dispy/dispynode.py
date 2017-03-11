@@ -210,8 +210,9 @@ class _DispyNode(object):
     def __init__(self, cpus, ip_addr=None, ext_ip_addr=None, node_port=None,
                  name='', scheduler_node=None, scheduler_port=None,
                  dest_path_prefix='', clean=False, secret='', keyfile=None, certfile=None,
-                 zombie_interval=60, service_start=None, service_stop=None, service_end=None,
-                 serve=-1, daemon=False, client_shutdown=False):
+                 zombie_interval=60, ping_interval=None, serve=-1,
+                 service_start=None, service_stop=None, service_end=None,
+                 daemon=False, client_shutdown=False):
         assert 0 < cpus <= multiprocessing.cpu_count()
         self.num_cpus = cpus
         if name:
@@ -241,7 +242,6 @@ class _DispyNode(object):
             node_port = 51348
 
         self.ext_ip_addr = ext_ip_addr
-        self.pulse_interval = None
         self.keyfile = keyfile
         self.certfile = certfile
         if self.keyfile:
@@ -293,10 +293,16 @@ class _DispyNode(object):
         self.secret = secret
         self.auth = auth_code(self.secret, self.sign)
         self.zombie_interval = 60 * zombie_interval
+        if ping_interval:
+            self.ping_interval = ping_interval
+        else:
+            self.ping_interval = None
+        self.pulse_interval = self.ping_interval
         if not scheduler_port:
             scheduler_port = 51347
 
-        self.scheduler = {'ip_addr': None, 'port': scheduler_port, 'auth': set()}
+        self.scheduler = {'ip_addr': dispy._node_ipaddr(scheduler_node) if scheduler_node else None,
+                          'port': scheduler_port, 'auth': set()}
         self.cpu_time = 0
         self.num_jobs = 0
         self.num_computations = 0
@@ -379,13 +385,13 @@ class _DispyNode(object):
             self.__init_globals.pop('_dispy_config')
             self.__init_globals['_dispy_node'] = self
         self.tcp_coro = Coro(self.tcp_server)
-        self.udp_coro = Coro(self.udp_server, dispy._node_ipaddr(scheduler_node), scheduler_port)
+        self.udp_coro = Coro(self.udp_server)
         if not daemon:
             self.cmd_coro = Coro(self.cmd_proc)
 
     def broadcast_ping_msg(self, coro=None):
-        if (self.scheduler['ip_addr'] or self.job_infos or not self.avail_cpus or
-           not self.service_available()):
+        if (self.scheduler['auth'] or self.job_infos or not self.avail_cpus or
+            not self.service_available()):
             raise StopIteration
         sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_DGRAM))
         sock.settimeout(MsgTimeout)
@@ -409,9 +415,44 @@ class _DispyNode(object):
             pass
         sock.close()
 
+        if self.scheduler['ip_addr']:
+            sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_DGRAM))
+            sock.settimeout(MsgTimeout)
+            ping_msg = {'scheduler_ip_addr': self.scheduler['ip_addr'], 'ip_addr': self.ext_ip_addr,
+                        'port': self.port, 'sign': self.sign, 'version': _dispy_version}
+
+            if self.addrinfo[0] == socket.AF_INET:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                addr = (self.scheduler['ip_addr'], self.scheduler['port'])
+            else:  # self.sock_family == socket.AF_INET6
+                sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS,
+                                struct.pack('@i', 1))
+                addr = list(self.addrinfo[4])
+                addr[1] = 0
+                sock.bind(tuple(addr))
+                addr[0], addr[1] = (self.scheduler['ip_addr'], self.scheduler['port'])
+                addr = tuple(addr)
+
+            try:
+                yield sock.sendto('PING:'.encode() + serialize(ping_msg), addr)
+            except:
+                pass
+            finally:
+                sock.close()
+            sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM),
+                               keyfile=self.keyfile, certfile=self.certfile)
+            sock.settimeout(MsgTimeout)
+            try:
+                yield sock.connect(addr)
+                yield sock.send_msg('PING:'.encode() + serialize(ping_msg))
+            except:
+                pass
+            finally:
+                sock.close()
+
     def send_pong_msg(self, info, addr, coro=None):
-        if (self.scheduler['ip_addr'] or self.job_infos or not self.num_cpus or
-           not self.service_available()):
+        if (self.scheduler['auth'] or self.job_infos or not self.num_cpus or
+            not self.service_available()):
             _dispy_logger.debug('Busy (%s/%s); ignoring ping message from %s',
                                 self.avail_cpus, self.num_cpus, addr[0])
             raise StopIteration
@@ -477,47 +518,9 @@ class _DispyNode(object):
                     pass
             sock.close()
 
-    def udp_server(self, scheduler_ip, scheduler_port, coro=None):
+    def udp_server(self, coro=None):
         coro.set_daemon()
         Coro(self.broadcast_ping_msg)
-
-        def send_ping_msg(self, coro=None):
-            sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_DGRAM))
-            sock.settimeout(MsgTimeout)
-            info = {'scheduler_ip_addr': scheduler_ip, 'ip_addr': self.ext_ip_addr,
-                    'port': self.port, 'sign': self.sign, 'version': _dispy_version}
-
-            if self.addrinfo[0] == socket.AF_INET:
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                addr = (scheduler_ip, scheduler_port)
-            else:  # self.sock_family == socket.AF_INET6
-                sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, struct.pack('@i', 1))
-                addr = list(self.addrinfo[4])
-                addr[1] = 0
-                sock.bind(tuple(addr))
-                addr[0] = scheduler_ip
-                addr[1] = scheduler_port
-                addr = tuple(addr)
-
-            try:
-                yield sock.sendto('PING:'.encode() + serialize(info), addr)
-            except:
-                pass
-            finally:
-                sock.close()
-            sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM),
-                               keyfile=self.keyfile, certfile=self.certfile)
-            sock.settimeout(MsgTimeout)
-            try:
-                yield sock.connect(addr)
-                yield sock.send_msg('PING:'.encode() + serialize(info))
-            except:
-                pass
-            finally:
-                sock.close()
-
-        if scheduler_ip:
-            Coro(send_ping_msg, self)
 
         while 1:
             msg, addr = yield self.udp_sock.recvfrom(1000)
@@ -656,7 +659,7 @@ class _DispyNode(object):
                 except:
                     pass
                 raise StopIteration
-            if not ((self.scheduler['ip_addr'] is None and not self.scheduler['auth']) or
+            if not ((not self.scheduler['auth']) or
                     (self.scheduler['ip_addr'] == compute.scheduler_ip_addr and
                      self.scheduler['port'] == compute.scheduler_port and
                      self.service_available())):
@@ -733,7 +736,7 @@ class _DispyNode(object):
             if compute.type == _Compute.prog_type:
                 compute.name = os.path.join(compute.dest_path, os.path.basename(compute.name))
 
-            if not ((self.scheduler['ip_addr'] is None) or
+            if not ((not self.scheduler['auth']) or
                     (self.scheduler['ip_addr'] == compute.scheduler_ip_addr and
                      self.scheduler['port'] == compute.scheduler_port)):
                 if os.path.isdir(compute.dest_path):
@@ -745,6 +748,7 @@ class _DispyNode(object):
                 raise StopIteration
 
             self.computations[compute.id] = compute
+            prev_scheduler = (self.scheduler['ip_addr'], self.scheduler['port'])
             self.scheduler['ip_addr'] = compute.scheduler_ip_addr
             self.scheduler['port'] = compute.scheduler_port
             self.scheduler['auth'].add(compute.auth)
@@ -772,7 +776,7 @@ class _DispyNode(object):
             except:
                 del self.computations[compute.id]
                 compute.globals = {}
-                self.scheduler['ip_addr'] = None
+                self.scheduler['ip_addr'], self.scheduler['port'] = prev_scheduler
                 self.scheduler['auth'].discard(compute.auth)
                 os.remove(compute_save)
                 if os.path.isdir(compute.dest_path):
@@ -1153,7 +1157,7 @@ class _DispyNode(object):
 
             now = time.time()
             if self.pulse_interval and (now - last_pulse_time) >= self.pulse_interval:
-                if self.scheduler['ip_addr']:
+                if self.scheduler['auth']:
                     last_pulse_time = now
                     info = {'ip_addr': self.ext_ip_addr, 'port': self.port,
                             'cpus': self.num_cpus - self.avail_cpus,
@@ -1208,9 +1212,11 @@ class _DispyNode(object):
                         pass
                     finally:
                         sock.close()
-                if (not self.scheduler['ip_addr'] and not self.job_infos and self.avail_cpus > 0):
-                    self.pulse_interval = None
+                if (not self.scheduler['auth']):
+                    self.pulse_interval = self.ping_interval
                     yield self.broadcast_ping_msg(coro=coro)
+            if self.ping_interval and (not self.scheduler['auth']):
+                yield self.broadcast_ping_msg(coro=coro)
 
     def service_available(self):
         if self.serve == 0:
@@ -1512,8 +1518,7 @@ class _DispyNode(object):
             if ((not self.computations) and (not self.scheduler['auth']) and
                 compute.scheduler_ip_addr == self.scheduler['ip_addr'] and
                 compute.scheduler_port == self.scheduler['port']):
-                self.scheduler['ip_addr'] = None
-                self.pulse_interval = None
+                self.pulse_interval = self.ping_interval
                 self.timer_coro.resume(None)
                 Coro(self.broadcast_ping_msg)
 
@@ -1521,7 +1526,7 @@ class _DispyNode(object):
         def _shutdown(self, how, coro=None):
             self.thread_lock.acquire()
             if how == 'exit':
-                if self.scheduler['ip_addr']:
+                if self.scheduler['auth']:
                     self.serve = 0
                     print('dispynode will shutdown when current computation closes.')
                     self.thread_lock.release()
@@ -1551,6 +1556,18 @@ class _DispyNode(object):
                 compute.pending_jobs = 0
                 compute.zombie = True
                 self.cleanup_computation(compute)
+            if self.scheduler['ip_addr']:
+                sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM),
+                                   keyfile=self.keyfile, certfile=self.certfile)
+                sock.settimeout(MsgTimeout)
+                _dispy_logger.debug('Sending TERMINATE to %s', self.scheduler['ip_addr'])
+                info = {'ip_addr': self.ext_ip_addr, 'port': self.port, 'sign': self.sign}
+                try:
+                    yield sock.connect((self.scheduler['ip_addr'], self.scheduler['port']))
+                    yield sock.send_msg('TERMINATED:'.encode() + serialize(info))
+                except:
+                    pass
+                sock.close()
             if how == 'quit' or how == 'terminate':
                 self.tcp_coro.terminate()
                 self.sign = ''
@@ -1610,7 +1627,7 @@ class _DispyNode(object):
 
                 self.avail_cpus = cpus - len(self.job_infos)
 
-                if self.scheduler['ip_addr']:
+                if self.scheduler['auth']:
                     sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM),
                                        keyfile=self.keyfile, certfile=self.certfile)
                     sock.settimeout(MsgTimeout)
@@ -1673,6 +1690,8 @@ if __name__ == '__main__':
                         help='maximum file size of any file transferred (use 0 for unlimited size)')
     parser.add_argument('--zombie_interval', dest='zombie_interval', type=float, default=60.0,
                         help='interval in minutes to presume unresponsive scheduler is zombie')
+    parser.add_argument('--ping_interval', dest='ping_interval', type=int, default=0,
+                        help='number of seconds between ping messages to discover scheduler')
     parser.add_argument('--service_start', dest='service_start', default='',
                         help='time of day in HH:MM format when to start service')
     parser.add_argument('--service_stop', dest='service_stop', default='',
@@ -1709,6 +1728,7 @@ if __name__ == '__main__':
         cfg['node_port'] = int(cfg['node_port'])
         cfg['scheduler_port'] = int(cfg['scheduler_port'])
         cfg['zombie_interval'] = float(cfg['zombie_interval'])
+        cfg['ping_interval'] = int(cfg['ping_interval']) if cfg['ping_interval'] else None
         cfg['msg_timeout'] = float(cfg['msg_timeout'])
         cfg['serve'] = int(cfg['serve'])
         cfg['loglevel'] = cfg['loglevel'] == 'True'
@@ -1755,6 +1775,12 @@ if __name__ == '__main__':
     if _dispy_config['zombie_interval']:
         if _dispy_config['zombie_interval'] < 1:
             raise Exception('zombie_interval must be at least 1')
+
+    if _dispy_config['ping_interval']:
+        if _dispy_config['ping_interval'] < 10:
+            raise Exception('ping_interval must be at least 10')
+    else:
+        _dispy_config['ping_interval'] = None
 
     MsgTimeout = _dispy_config['msg_timeout']
     del _dispy_config['msg_timeout']
