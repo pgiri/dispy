@@ -195,9 +195,9 @@ class DispyHTTPServer(object):
                     # so an object's __str__ or __repr__ is used if provided;
                     # TODO: check job is in _dispy_ctx's jobs?
                     jobs.extend([{'uid': id(job), 'job_id': str(job.id),
-                                  'args': ', '.join(str(arg) for arg in job.args),
+                                  'args': ', '.join(str(arg) for arg in job._args),
                                   'kwargs': ', '.join('%s=%s' % (key, val)
-                                                      for key, val in job.kwargs.items()),
+                                                      for key, val in job._kwargs.items()),
                                   'sched_time_ms': int(1000 * job.start_time),
                                   'cluster': name}
                                  for job in cluster_jobs])

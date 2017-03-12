@@ -1647,7 +1647,8 @@ class _Cluster(object):
         job.start_time = reply.start_time
         job.end_time = reply.end_time
         logger.debug('Received reply for job %s / %s from %s', job.id, _job.uid, job.ip_addr)
-        job._args = job._kwargs = None
+        job._args = ()
+        job._kwargs = {}
         if reply.status == DispyJob.ProvisionalResult:
             self.finish_job(cluster, _job, reply.status)
         else:
@@ -1758,8 +1759,9 @@ class _Cluster(object):
                 if cluster.status_callback:
                     self.worker_Q.put((cluster.status_callback,
                                        (DispyJob.Running, dispy_node, _job.job)))
-        if (not cluster._compute.reentrant) and _job.job:
-            _job.job._args = _job.job._kwargs = None
+        if (not cluster._compute.reentrant) and (not cluster.status_callback) and _job.job:
+            _job.job._args = ()
+            _job.job._kwargs = {}
 
     def load_balance_schedule(self):
         host = None
@@ -1846,7 +1848,7 @@ class _Cluster(object):
                                            (status, dispy_node, _job.job)))
                 node.pending_jobs = []
             cluster._jobs = []
-            cluster._pending_jobs = []
+            cluster._pending_jobs = 0
             yield self.del_cluster(cluster, coro=coro)
         self._clusters = {}
         self._nodes = {}
