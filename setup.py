@@ -23,7 +23,7 @@ setup(
     package_data = {
         'dispy' : ['data/*', 'examples/*', 'doc/*'],
     },
-    install_requires=['asyncoro >= 4.4.0'],
+    install_requires=['asyncoro >= 4.5.2'],
     scripts=[os.path.join(base_dir, 'dispy', script) for script in \
              ['dispynode.py', 'dispynetrelay.py', 'dispyscheduler.py']] + \
             [os.path.join(base_dir, script) for script in ['dispy.py']],
