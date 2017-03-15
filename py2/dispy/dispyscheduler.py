@@ -1996,9 +1996,12 @@ if __name__ == '__main__':
     import argparse
 
     logger = asyncoro.Logger('dispyscheduler')
-    logger.info('dispyscheduler version %s', _dispy_version)
 
     parser = argparse.ArgumentParser()
+    parser.add_argument('--config', dest='config', default='',
+                        help='use configuration in given file')
+    parser.add_argument('--save_config', dest='save_config', default='',
+                        help='save configuration in given file and exit')
     parser.add_argument('-d', '--debug', action='store_true', dest='loglevel', default=False,
                         help='if given, debug messages are printed')
     parser.add_argument('-n', '--nodes', action='append', dest='nodes', default=[],
@@ -2027,10 +2030,10 @@ if __name__ == '__main__':
                         help='file containing SSL certificate to be used with dispy clients')
     parser.add_argument('--cluster_keyfile', dest='cluster_keyfile', default='',
                         help='file containing SSL key to be used with dispy clients')
-    parser.add_argument('--pulse_interval', dest='pulse_interval', type=float, default=None,
+    parser.add_argument('--pulse_interval', dest='pulse_interval', type=float, default=0,
                         help='number of seconds between pulse messages to indicate '
                         'whether node is alive')
-    parser.add_argument('--ping_interval', dest='ping_interval', type=float, default=None,
+    parser.add_argument('--ping_interval', dest='ping_interval', type=float, default=0,
                         help='number of seconds between ping messages to discover nodes')
     parser.add_argument('--zombie_interval', dest='zombie_interval', default=60, type=float,
                         help='interval in minutes to presume unresponsive scheduler is zombie')
@@ -2061,6 +2064,38 @@ if __name__ == '__main__':
                         help='if given, input is not read from terminal')
 
     config = vars(parser.parse_args(sys.argv[1:]))
+
+    if config['config']:
+        import ConfigParser
+        cfg = ConfigParser.ConfigParser()
+        cfg.read(config['config'])
+        cfg = dict(cfg.items('DEFAULT'))
+        cfg['port'] = int(cfg['port'])
+        cfg['node_port'] = int(cfg['node_port'])
+        cfg['scheduler_port'] = int(cfg['scheduler_port'])
+        cfg['pulse_interval'] = float(cfg['pulse_interval'])
+        cfg['ping_interval'] = float(cfg['ping_interval'])
+        cfg['zombie_interval'] = float(cfg['zombie_interval'])
+        cfg['msg_timeout'] = float(cfg['msg_timeout'])
+        cfg['max_file_size'] = float(cfg['max_file_size'])
+        cfg['loglevel'] = cfg['loglevel'] == 'True'
+        cfg['clean'] = cfg['clean'] == 'True'
+        cfg['http_server'] = cfg['http_server'] == 'True'
+        cfg['cooperative'] = cfg['cooperative'] == 'True'
+        cfg['cleanup_nodes'] = cfg['cleanup_nodes'] == 'True'
+        cfg['daemon'] = cfg['daemon'] == 'True'
+    config.pop('config', None)
+
+    cfg = config.pop('save_config', None)
+    if cfg:
+        import ConfigParser
+        config = ConfigParser.ConfigParser(config)
+        cfg = open(cfg, 'w')
+        config.write(cfg)
+        cfg.close()
+        exit(0)
+    del parser, cfg
+
     if config['loglevel']:
         logger.setLevel(logger.DEBUG)
         asyncoro.logger.setLevel(asyncoro.logger.DEBUG)
@@ -2121,6 +2156,7 @@ if __name__ == '__main__':
         except:
             pass
 
+    logger.info('dispyscheduler version %s', _dispy_version)
     scheduler = _Scheduler(**config)
     if daemon:
         scheduler.scheduler_coro.value()
