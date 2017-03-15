@@ -212,7 +212,6 @@ class _Scheduler(object):
         atexit.register(self.shutdown)
 
         self._clusters = {}
-        self.unsched_jobs = 0
         self.unsched_clusters = []
         self.pending_clusters = {}
         self._sched_jobs = {}
@@ -358,7 +357,7 @@ class _Scheduler(object):
             raise StopIteration
         ip_addr = sock.getsockname()[0]
         self.ip_addrs.add(ip_addr)
-        logger.debug('tcp server at %s:%s', ip_addr, self.port)
+        logger.debug('TCP server at %s:%s', ip_addr, self.port)
         sock.listen(32)
 
         while 1:
@@ -382,7 +381,7 @@ class _Scheduler(object):
             try:
                 info = deserialize(msg[len('JOB_REPLY:'):])
             except:
-                logger.warning('invalid job reply from %s:%s ignored', addr[0], addr[1])
+                logger.warning('Invalid job reply from %s:%s ignored', addr[0], addr[1])
             else:
                 yield self.job_reply_process(info, conn, addr)
             conn.close()
@@ -545,7 +544,7 @@ class _Scheduler(object):
                     dispy_node.cpus = cpus
 
         else:
-            logger.warning('invalid message from %s:%s ignored', addr[0], addr[1])
+            logger.warning('Invalid message from %s:%s ignored', addr[0], addr[1])
             conn.close()
 
     def schedule_cluster(self, coro=None):
@@ -601,7 +600,7 @@ class _Scheduler(object):
                 ip_addr = None
             raise StopIteration
         ip_addr = sock.getsockname()[0]
-        logger.debug('scheduler at %s:%s', ip_addr, self.scheduler_port)
+        logger.debug('Scheduler at %s:%s', ip_addr, self.scheduler_port)
         sock.listen(32)
         while 1:
             conn, addr = yield sock.accept()
@@ -629,8 +628,7 @@ class _Scheduler(object):
                 node.pending_jobs.append(_job)
             else:
                 cluster._jobs.append(_job)
-            logger.debug('submitted job %s / %s', _job.uid, job.submit_time)
-            self.unsched_jobs += 1
+            logger.debug('Submitted job %s / %s', _job.uid, job.submit_time)
             cluster.pending_jobs += 1
             cluster.last_pulse = job.submit_time
             self._sched_event.set()
@@ -902,7 +900,8 @@ class _Scheduler(object):
                 conn.close()
                 raise StopIteration
             cluster.zombie = True
-            Coro(self.cleanup_computation, cluster)
+            terminate_pending = req.get('terminate_pending', False)
+            Coro(self.cleanup_computation, cluster, terminate_pending=bool(terminate_pending))
 
         elif msg.startswith('FILEXFER:'):
             msg = msg[len('FILEXFER:'):]
@@ -1251,22 +1250,21 @@ class _Scheduler(object):
         for node in compute_nodes:
             Coro(self.setup_node, node, [compute])
 
-    def cleanup_computation(self, cluster, coro=None):
+    def cleanup_computation(self, cluster, terminate_pending=False, coro=None):
         # generator
         if not cluster.zombie:
             raise StopIteration
-        if cluster.pending_jobs:
-            logger.debug('pedning jobs for "%s" / %s: %s',
-                         cluster._compute.name, cluster._compute.id, cluster.pending_jobs)
-            raise StopIteration
 
         compute = cluster._compute
-        if self._clusters.pop(compute.id, None) is None:
-            logger.warning('Invalid computation "%s" to cleanup ignored', compute.id)
+        cid = compute.id
+        if self._clusters.pop(cid, None) is None:
+            logger.warning('Invalid computation "%s" to cleanup ignored', cid)
             raise StopIteration
+        cluster._jobs = []
+        cluster.pending_jobs = 0
 
         pkl_path = os.path.join(self.dest_path_prefix,
-                                '%s_%s' % (compute.id, cluster.client_auth))
+                                '%s_%s' % (cid, cluster.client_auth))
         if cluster.pending_results == 0:
             try:
                 os.remove(pkl_path)
@@ -1301,10 +1299,15 @@ class _Scheduler(object):
             node = self._nodes.get(dispy_node.ip_addr, None)
             if not node:
                 continue
-            node.clusters.discard(compute.id)
+            drop_jobs = [i for i, _job in enumerate(node.pending_jobs)
+                         if _job.compute_id == cid]
+            for i in reversed(drop_jobs):
+                node.pending_jobs.remove(i)
+            node.clusters.discard(cid)
             if cluster.exclusive:
                 node.cpus = node.avail_cpus
-            close_nodes.append((Coro(node.close, compute), dispy_node))
+            close_nodes.append((Coro(node.close, compute, terminate_pending=terminate_pending),
+                                dispy_node))
         cluster._dispy_nodes.clear()
         for close_coro, dispy_node in close_nodes:
             yield close_coro.finish()
@@ -1363,10 +1366,10 @@ class _Scheduler(object):
                 node.avail_cpus = info['cpus']
                 node.cpus = min(node.cpus, node.avail_cpus)
             else:
-                logger.warning('invalid "cpus" %s from %s ignored', info['cpus'], info['ip_addr'])
+                logger.warning('Invalid "cpus" %s from %s ignored', info['cpus'], info['ip_addr'])
             if node.port == info['port'] and node.auth == auth:
                 return
-            logger.debug('node %s rediscovered', info['ip_addr'])
+            logger.debug('Node %s rediscovered', info['ip_addr'])
             node.port = info['port']
             if node.auth is not None:
                 dead_jobs = [_job for _job in self._sched_jobs.itervalues()
@@ -1496,7 +1499,7 @@ class _Scheduler(object):
 
     def job_reply_process(self, reply, sock, addr):
         _job = self._sched_jobs.get(reply.uid, None)
-        if _job is None:
+        if not _job or reply.hash != _job.hash:
             logger.warning('Ignoring invalid reply for job %s from %s', reply.uid, addr[0])
             yield sock.send_msg('ACK')
             raise StopIteration
@@ -1505,29 +1508,23 @@ class _Scheduler(object):
         node = self._nodes.get(reply.ip_addr, None)
         cluster = self._clusters.get(_job.compute_id, None)
         if cluster is None:
-            # job cancelled while closing computation?
-            if node:
-                assert node.busy > 0
+            # job cancelled while/after closing computation
+            if node and node.busy > 0:
                 node.busy -= 1
+                node.cpu_time += reply.end_time - reply.start_time
+                node.last_pulse = time.time()
+                self._sched_event.set()
             yield sock.send_msg('ACK')
             raise StopIteration
         if node is None:
             logger.warning('Ignoring invalid reply for job %s from %s', reply.uid, addr[0])
             yield sock.send_msg('ACK')
             raise StopIteration
-        node._jobs.discard(_job.uid)
+        # assert reply.ip_addr == node.ip_addr
         node.last_pulse = time.time()
         logger.debug('Received reply for job %s from %s', _job.uid, addr[0])
-        try:
-            assert reply.uid == _job.uid
-            assert reply.hash == _job.hash
-            # assert _job.job.status not in [DispyJob.Created, DispyJob.Finished]
-            setattr(reply, 'cpus', node.cpus)
-            # assert reply.ip_addr == node.ip_addr
-        except:
-            logger.warning('Invalid job result for %s from %s', _job.uid, addr[0])
-            yield sock.send_msg('ACK')
-            raise StopIteration
+        # assert _job.job.status not in [DispyJob.Created, DispyJob.Finished]
+        setattr(reply, 'cpus', node.cpus)
 
         yield sock.send_msg('ACK')
         job.start_time = reply.start_time
@@ -1568,13 +1565,11 @@ class _Scheduler(object):
         for _job in dead_jobs:
             cluster = self._clusters[_job.compute_id]
             del self._sched_jobs[_job.uid]
-            _job.node._jobs.discard(_job.uid)
             if cluster._compute.reentrant and not _job.pinned:
                 logger.debug('Rescheduling job %s from %s', _job.uid, _job.node.ip_addr)
                 _job.job.status = DispyJob.Created
                 _job.hash = os.urandom(10).encode('hex')
                 cluster._jobs.append(_job)
-                self.unsched_jobs += 1
             else:
                 logger.debug('Terminating job %s scheduled on %s', _job.uid, _job.node.ip_addr)
                 reply = _JobReply(_job, _job.node.ip_addr, status=DispyJob.Abandoned)
@@ -1596,7 +1591,7 @@ class _Scheduler(object):
                 continue
             if host.pending_jobs:
                 return host
-            if not any(self._clusters[cid].pending_jobs for cid in host.clusters):
+            if not any(self._clusters[cid]._jobs for cid in host.clusters):
                 continue
             if (host.busy / host.cpus) < load:
                 node = host
@@ -1693,7 +1688,6 @@ class _Scheduler(object):
         # generator
         # assert coro is not None
         node = _job.node
-        node._jobs.add(_job.uid)
         try:
             yield _job.run(coro=coro)
         except EnvironmentError:
@@ -1702,7 +1696,6 @@ class _Scheduler(object):
             node.clusters.discard(cluster._compute.id)
             # TODO: remove the node from all clusters and globally?
             # this job might have been deleted already due to timeout
-            node._jobs.discard(_job.uid)
             if node.pending_jobs:
                 for njob in node.pending_jobs:
                     if njob.compute_id == cluster._compute.id:
@@ -1715,7 +1708,6 @@ class _Scheduler(object):
             if self._sched_jobs.pop(_job.uid, None) == _job:
                 if not _job.pinned:
                     cluster._jobs.insert(0, _job)
-                    self.unsched_jobs += 1
                 node.busy -= 1
             self._sched_event.set()
         except:
@@ -1724,7 +1716,6 @@ class _Scheduler(object):
             # logger.debug(traceback.format_exc())
             # TODO: delay executing again for some time?
             # this job might have been deleted already due to timeout
-            node._jobs.discard(_job.uid)
             if self._sched_jobs.pop(_job.uid, None) == _job:
                 if cluster.status_callback:
                     if dispy_node:
@@ -1755,8 +1746,6 @@ class _Scheduler(object):
         assert coro is not None
         while not self.terminate:
             # n = sum(len(cluster._jobs) for cluster in self._clusters.itervalues())
-            # assert self.unsched_jobs == n, '%s != %s' % (self.unsched_jobs, n)
-            logger.debug('Pending jobs: %s', self.unsched_jobs)
             _job, node, cluster = self.select_job_node_cluster()
             if not _job:
                 self._sched_event.clear()
@@ -1765,15 +1754,15 @@ class _Scheduler(object):
             _job.node = node
             # assert node.busy < node.cpus
             self._sched_jobs[_job.uid] = _job
-            self.unsched_jobs -= 1
             node.busy += 1
             Coro(self.run_job, _job, cluster)
 
-        logger.debug('scheduler quitting (%s / %s)', len(self._sched_jobs), self.unsched_jobs)
+        logger.debug('Scheduler quitting: %s', len(self._sched_jobs))
         for uid, _job in self._sched_jobs.iteritems():
-            cluster = self._clusters[_job.compute_id]
-            reply = _JobReply(_job, cluster.ip_addr, status=DispyJob.Terminated)
-            Coro(self.send_job_result, _job.uid, cluster, reply, resending=False)
+            cluster = self._clusters.get(_job.compute_id, None)
+            if cluster:
+                reply = _JobReply(_job, cluster.ip_addr, status=DispyJob.Terminated)
+                Coro(self.send_job_result, _job.uid, cluster, reply, resending=False)
         for cid, cluster in self._clusters.iteritems():
             for _job in cluster._jobs:
                 reply = _JobReply(_job, cluster.ip_addr, status=DispyJob.Terminated)
@@ -1787,7 +1776,7 @@ class _Scheduler(object):
         self._clusters = {}
         self._sched_jobs = {}
         self.done_jobs = {}
-        logger.debug('scheduler quit')
+        logger.debug('Scheduler quit')
 
     def retrieve_job_task(self, conn, msg):
         # generator
@@ -1858,7 +1847,6 @@ class _Scheduler(object):
             for i, _job in enumerate(cluster._jobs):
                 if _job.uid == uid:
                     del cluster._jobs[i]
-                    self.unsched_jobs -= 1
                     self.done_jobs[_job.uid] = _job
                     cluster.pending_jobs -= 1
                     reply = _JobReply(_job, cluster.ip_addr, status=DispyJob.Cancelled)
@@ -1872,7 +1860,6 @@ class _Scheduler(object):
                 for i, _job in enumerate(node.pending_jobs):
                     if _job.uid == uid:
                         del node.pending_jobs[i]
-                        self.unsched_jobs -= 1
                         self.done_jobs[_job.uid] = _job
                         cluster.pending_jobs -= 1
                         reply = _JobReply(_job, cluster.ip_addr, status=DispyJob.Cancelled)
@@ -1914,16 +1901,20 @@ class _Scheduler(object):
                 logger.debug(traceback.format_exc())
                 uids = []
             sock.close()
+            if get_uids:
+                jobs = uids
+            else:
+                _jobs = [self._sched_jobs.get(uid, None) for uid in uids]
+                jobs = [_job.job for _job in _jobs if _job is not None
+                        and _job.compute_id == cluster._compute.id
+                        ]
         else:
-            uids = list(node._jobs)
+            _jobs = [_job for _job in self._sched_jobs.itervalues() if _job.node == node]
+            if get_uids:
+                jobs = [_job.uid for _job in _jobs]
+            else:
+                jobs = _jobs
 
-        if get_uids:
-            jobs = uids
-        else:
-            _jobs = [self._sched_jobs.get(uid, None) for uid in uids]
-            jobs = [_job.job for _job in _jobs if _job is not None
-                    and _job.compute_id == cluster._compute.id
-                    ]
         raise StopIteration(jobs)
 
     def set_node_cpus(self, node, cpus):
@@ -1953,7 +1944,7 @@ class _Scheduler(object):
     def shutdown(self, coro=None):
         if self.terminate:
             return
-        logger.debug('shutting down scheduler ...')
+        logger.debug('Shutting down scheduler ...')
         self.terminate = True
         for cluster in self.pending_clusters.values() + self.unsched_clusters:
             path = os.path.join(self.dest_path_prefix,

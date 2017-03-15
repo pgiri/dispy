@@ -1356,7 +1356,7 @@ class _DispyNode(object):
             assert ack == b'ACK'
         except:
             status = -1
-            if not resending:
+            if not resending and job_reply.status != DispyJob.Terminated:
                 # store job result so it can be sent when client is
                 # reachable or recovered by user
                 f = os.path.join(job_info.compute_dest_path, '_dispy_job_reply_%s' % job_reply.uid)
