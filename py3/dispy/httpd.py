@@ -198,7 +198,7 @@ class DispyHTTPServer(object):
                                   'args': ', '.join(str(arg) for arg in job._args),
                                   'kwargs': ', '.join('%s=%s' % (key, val)
                                                       for key, val in job._kwargs.items()),
-                                  'sched_time_ms': int(1000 * job.start_time),
+                                  'start_time_ms': int(1000 * job.start_time),
                                   'cluster': name}
                                  for job in cluster_jobs])
                 self.send_response(200)
