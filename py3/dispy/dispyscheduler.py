@@ -2070,6 +2070,12 @@ if __name__ == '__main__':
         cfg = configparser.ConfigParser()
         cfg.read(config['config'])
         cfg = dict(cfg.items('DEFAULT'))
+        cfg['nodes'] = [] if cfg['nodes'] == '[]' else \
+                       [_.strip() for _ in cfg['nodes'][1:-1].split(',')]
+        cfg['ip_addr'] =  [] if cfg['ip_addr'] == '[]' else \
+                             [_.strip() for _ in cfg['ip_addr'][1:-1].split(',')]
+        cfg['ext_ip_addr'] =  [] if cfg['ext_ip_addr'] == '[]' else \
+                             [_.strip() for _ in cfg['ext_ip_addr'][1:-1].split(',')]
         cfg['port'] = int(cfg['port'])
         cfg['node_port'] = int(cfg['node_port'])
         cfg['scheduler_port'] = int(cfg['scheduler_port'])
@@ -2077,13 +2083,17 @@ if __name__ == '__main__':
         cfg['ping_interval'] = float(cfg['ping_interval'])
         cfg['zombie_interval'] = float(cfg['zombie_interval'])
         cfg['msg_timeout'] = float(cfg['msg_timeout'])
-        cfg['max_file_size'] = float(cfg['max_file_size'])
         cfg['loglevel'] = cfg['loglevel'] == 'True'
         cfg['clean'] = cfg['clean'] == 'True'
         cfg['http_server'] = cfg['http_server'] == 'True'
         cfg['cooperative'] = cfg['cooperative'] == 'True'
         cfg['cleanup_nodes'] = cfg['cleanup_nodes'] == 'True'
         cfg['daemon'] = cfg['daemon'] == 'True'
+        if cfg['dest_path_prefix'] == 'None':
+            cfg['dest_path_prefix'] = None
+        if cfg['scheduler_alg'] == 'None':
+            cfg['scheduler_alg'] = None
+        config = cfg
     config.pop('config', None)
 
     cfg = config.pop('save_config', None)
