@@ -950,14 +950,17 @@ class _Scheduler(object):
             else:
                 cluster = self._clusters.get(compute_id, None)
                 if cluster is None or cluster.client_auth != auth:
-                    with open(os.path.join(self.dest_path_prefix,
-                                           '%s_%s' % (compute_id, auth)), 'wb') as fd:
-                        cluster = pickle.load(fd)
-                if cluster is None or cluster.client_auth != auth:
-                    resp = serialize(0)
+                    try:
+                        with open(os.path.join(self.dest_path_prefix,
+                                               '%s_%s' % (compute_id, auth)), 'rb') as fd:
+                            cluster = pickle.load(fd)
+                    except:
+                        pass
+                if cluster is None:
+                    resp = 0
                 else:
-                    resp = serialize(cluster.pending_results + cluster.pending_jobs)
-            yield conn.send_msg(resp)
+                    resp = cluster.pending_results + cluster.pending_jobs
+            yield conn.send_msg(serialize(resp))
             conn.close()
             if resp > 0:
                 yield self.resend_job_results(cluster, coro=coro)
@@ -976,7 +979,7 @@ class _Scheduler(object):
                 cluster = self._clusters.get(compute_id, None)
                 if cluster is None or cluster.client_auth != auth:
                     with open(os.path.join(self.dest_path_prefix,
-                                           '%s_%s' % (compute_id, auth)), 'wb') as fd:
+                                           '%s_%s' % (compute_id, auth)), 'rb') as fd:
                         cluster = pickle.load(fd)
                 if cluster is not None and cluster.client_auth == auth:
                     done = []
@@ -1257,14 +1260,19 @@ class _Scheduler(object):
 
         compute = cluster._compute
         cid = compute.id
+        pkl_path = os.path.join(self.dest_path_prefix,
+                                '%s_%s' % (cid, cluster.client_auth))
         if self._clusters.pop(cid, None) is None:
-            logger.warning('Invalid computation "%s" to cleanup ignored', cid)
+            if not cluster.pending_results:
+                try:
+                    os.remove(pkl_path)
+                except:
+                    logger.debug(traceback.format_exc())
+                    pass
             raise StopIteration
         cluster._jobs = []
         cluster.pending_jobs = 0
 
-        pkl_path = os.path.join(self.dest_path_prefix,
-                                '%s_%s' % (cid, cluster.client_auth))
         if cluster.pending_results == 0:
             try:
                 os.remove(pkl_path)
@@ -1272,7 +1280,7 @@ class _Scheduler(object):
                 logger.warning('Could not remove "%s"', pkl_path)
         else:
             with open(pkl_path, 'wb') as fd:
-                pickle.dump(compute, fd)
+                pickle.dump(cluster, fd)
 
         for path, use_count in cluster.file_uses.iteritems():
             if use_count == 1:
@@ -1429,6 +1437,7 @@ class _Scheduler(object):
                     logger.debug('Could not save reply for job %s', uid)
                 else:
                     cluster.pending_results += 1
+                    cluster.file_uses[f] = 2
         else:
             status = 0
             cluster.last_pulse = time.time()
@@ -1437,6 +1446,7 @@ class _Scheduler(object):
                     cluster.pending_results -= 1
                     f = os.path.join(cluster.dest_path, '_dispy_job_reply_%s' % uid)
                     if os.path.isfile(f):
+                        cluster.file_uses.pop(f, None)
                         try:
                             os.remove(f)
                         except:
@@ -1830,6 +1840,7 @@ class _Scheduler(object):
         except:
             pass
         else:
+            cluster.file_uses.pop(info_file, None)
             try:
                 os.remove(info_file)
             except:

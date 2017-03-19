@@ -41,7 +41,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "MIT"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.7.2"
+__version__ = "4.7.3"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
@@ -1388,7 +1388,8 @@ class _Cluster(object, metaclass=Singleton):
             info = {'name': compute.name, 'auth': compute.auth,
                     'nodes': [cluster.scheduler_ip_addr]}
             self.shelf['compute_%s' % compute.id] = info
-            info = {'port': cluster.scheduler_port, 'auth': cluster._scheduler_auth}
+            info = {'port': cluster.scheduler_port, 'auth': cluster._scheduler_auth,
+                    'scheduler': True}
             self.shelf['node_%s' % (cluster.scheduler_ip_addr)] = info
             self.shelf.sync()
             if cluster.poll_interval:
@@ -3055,6 +3056,8 @@ def recover_jobs(recover_file, timeout=None, terminate_pending=False):
         node = _Node(ip_addr, info['port'], 0, '', cluster['secret'], platform='',
                      keyfile=cluster['keyfile'], certfile=cluster['certfile'])
         node.auth = info['auth']
+        if info.get('scheduler'):
+            node.scheduler_ip_addr = ip_addr
         nodes[node.ip_addr] = node
 
     def tcp_task(conn, addr, pending, coro=None):
@@ -3171,6 +3174,8 @@ def recover_jobs(recover_file, timeout=None, terminate_pending=False):
         for ip_addr in compute['nodes']:
             node = nodes.get(ip_addr, None)
             if not node:
+                continue
+            if node.scheduler_ip_addr:
                 continue
             Coro(node.send, b'CLOSE:' + req, reply=True)
 

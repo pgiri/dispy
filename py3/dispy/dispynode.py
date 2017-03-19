@@ -962,6 +962,7 @@ class _DispyNode(object):
             except:
                 pass
             else:
+                compute.file_uses.pop(info_file, None)
                 try:
                     os.remove(info_file)
                 except:
@@ -1369,6 +1370,7 @@ class _DispyNode(object):
                     _dispy_logger.debug('Could not save reply for job %s', job_reply.uid)
                 else:
                     if compute is not None:
+                        compute.file_uses[f] = 2
                         compute.pending_results += 1
         else:
             status = 0
@@ -1404,14 +1406,14 @@ class _DispyNode(object):
         raise StopIteration(status)
 
     def cleanup_computation(self, compute):
-        if not compute.zombie or compute.pending_jobs > 0:
+        if not compute.zombie or compute.pending_jobs:
             return
-        if compute.pending_jobs != 0:
-            _dispy_logger.debug('pending jobs for computation "%s"/%s: %s',
-                                compute.name, compute.id, compute.pending_jobs)
 
         if self.computations.pop(compute.id, None) is None:
-            _dispy_logger.warning('Invalid computation "%s" to cleanup ignored', compute.id)
+            try:
+                os.rmdir(compute.dest_path)
+            except:
+                pass
             return
 
         self.num_computations += 1
