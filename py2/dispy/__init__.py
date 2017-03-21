@@ -302,7 +302,7 @@ def node_addrinfo(node=None, socket_family=None):
         if not socket_family:
             socket_family = socket.AF_INET
     if not socket_family:
-        socket_family = socket.getaddrinfo(socket.gethostbyname(socket.gethostname()), None)[0][0]
+        socket_family = socket.getaddrinfo(socket.gethostname(), None)[0][0]
     assert socket_family in (socket.AF_INET, socket.AF_INET6)
 
     ifn, addrinfo = 0, None
@@ -342,7 +342,7 @@ def node_addrinfo(node=None, socket_family=None):
         if not socket_family:
             socket_family = addrinfo[0]
     if not node:
-        node = socket.gethostbyname(socket.gethostname())
+        node = socket.gethostname()
 
     addrinfo = socket.getaddrinfo(node, None, socket_family, socket.SOCK_STREAM)[0]
     if socket_family == socket.AF_INET6:
