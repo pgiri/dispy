@@ -661,7 +661,7 @@ class _Scheduler(object):
                     os.mkdir(dest)
                 except:
                     return serialize(('Could not create destination directory').encode())
-            if compute.dest_path and isinstance(compute.dest_path, str):
+            if compute.dest_path and isinstance(compute.dest_path, basestring):
                 # TODO: get os.sep from client and convert (in case of mixed environments)?
                 if compute.dest_path.startswith(os.sep):
                     cluster.dest_path = compute.dest_path

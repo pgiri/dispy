@@ -550,7 +550,7 @@ class _DispyJob_(object):
         depend_ids = set()
         cwd = os.getcwd()
         for dep in job_deps:
-            if isinstance(dep, str) or inspect.ismodule(dep):
+            if isinstance(dep, basestring) or inspect.ismodule(dep):
                 if inspect.ismodule(dep):
                     name = dep.__file__
                     if name.endswith('.pyc'):
@@ -2286,7 +2286,7 @@ class JobCluster(object):
         depend_ids = {}
         cwd = self._cluster.dest_path
         for dep in depends:
-            if isinstance(dep, str) or inspect.ismodule(dep):
+            if isinstance(dep, basestring) or inspect.ismodule(dep):
                 if inspect.ismodule(dep):
                     name = dep.__file__
                     if name.endswith('.pyc'):
@@ -2349,7 +2349,7 @@ class JobCluster(object):
             code = compile(compute.code, '<string>', 'exec')
             del code
         if dest_path:
-            if not isinstance(dest_path, str):
+            if not isinstance(dest_path, basestring):
                 raise Exception('Invalid dest_path: it must be a string')
             dest_path = dest_path.strip()
             # we should check for absolute path in dispynode.py as well
