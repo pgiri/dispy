@@ -11,7 +11,7 @@ else:
 
 setup(
     name='dispy',
-    version='4.7.3',
+    version='4.7.4',
     description='Distributed and Parallel Computing with/for Python.',
     long_description=open('README.rst').read(),
     keywords='distributed computing, parallel processing, mapreduce, hadoop, job scheduler',
@@ -23,7 +23,7 @@ setup(
     package_data = {
         'dispy' : ['data/*', 'examples/*', 'doc/*'],
     },
-    install_requires=['asyncoro >= 4.5.2'],
+    install_requires=['asyncoro >= 4.5.3'],
     scripts=[os.path.join(base_dir, 'dispy', script) for script in \
              ['dispynode.py', 'dispynetrelay.py', 'dispyscheduler.py']] + \
             [os.path.join(base_dir, script) for script in ['dispy.py']],

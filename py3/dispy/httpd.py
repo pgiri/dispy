@@ -61,8 +61,8 @@ class DispyHTTPServer(object):
 
     class _HTTPRequestHandler(BaseHTTPRequestHandler):
         def __init__(self, ctx, DocumentRoot, *args):
-            self._dispy_ctx = ctx
-            self._dispy_ctx._http_handler = self
+            self._ctx = ctx
+            self._ctx._http_handler = self
             self.DocumentRoot = DocumentRoot
             BaseHTTPRequestHandler.__init__(self, *args)
 
@@ -80,43 +80,43 @@ class DispyHTTPServer(object):
 
         def do_GET(self):
             if self.path == '/cluster_updates':
-                self._dispy_ctx._cluster_lock.acquire()
+                self._ctx._cluster_lock.acquire()
                 clusters = [
                     {'name': name,
                      'jobs': {'submitted': cluster.jobs_submitted, 'done': cluster.jobs_done},
                      'nodes': self.__class__.json_encode_nodes(cluster.updates)
-                     } for name, cluster in dict_iter(self._dispy_ctx._clusters, 'items')
+                     } for name, cluster in dict_iter(self._ctx._clusters, 'items')
                     ]
-                for cluster in dict_iter(self._dispy_ctx._clusters, 'values'):
+                for cluster in dict_iter(self._ctx._clusters, 'values'):
                     cluster.updates.clear()
-                self._dispy_ctx._cluster_lock.release()
+                self._ctx._cluster_lock.release()
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
                 self.end_headers()
                 self.wfile.write(json.dumps(clusters).encode())
                 return
             elif self.path == '/cluster_status':
-                self._dispy_ctx._cluster_lock.acquire()
+                self._ctx._cluster_lock.acquire()
                 clusters = [
                     {'name': name,
                      'jobs': {'submitted': cluster.jobs_submitted, 'done': cluster.jobs_done},
                      'nodes': self.__class__.json_encode_nodes(cluster.status)
-                     } for name, cluster in dict_iter(self._dispy_ctx._clusters, 'items')
+                     } for name, cluster in dict_iter(self._ctx._clusters, 'items')
                     ]
-                self._dispy_ctx._cluster_lock.release()
+                self._ctx._cluster_lock.release()
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
                 self.end_headers()
                 self.wfile.write(json.dumps(clusters).encode())
                 return
             elif self.path == '/nodes':
-                self._dispy_ctx._cluster_lock.acquire()
+                self._ctx._cluster_lock.acquire()
                 nodes = [
                     {'name': name,
                      'nodes': self.__class__.json_encode_nodes(cluster.status)
-                     } for name, cluster in dict_iter(self._dispy_ctx._clusters, 'items')
+                     } for name, cluster in dict_iter(self._ctx._clusters, 'items')
                     ]
-                self._dispy_ctx._cluster_lock.release()
+                self._ctx._cluster_lock.release()
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
                 self.end_headers()
@@ -133,7 +133,9 @@ class DispyHTTPServer(object):
                         data = fd.read()
                     if path.endswith('.html'):
                         if path.endswith('monitor.html') or path.endswith('node.html'):
-                            data = data % {'TIMEOUT': str(self._dispy_ctx._poll_sec)}
+                            data = data % {'TIMEOUT': str(self._ctx._poll_sec),
+                                           'SHOW_JOB_ARGS': 'true' if self._ctx._show_args \
+                                                       else 'false'}
                         content_type = 'text/html'
                     elif path.endswith('.js'):
                         content_type = 'text/javascript'
@@ -170,16 +172,17 @@ class DispyHTTPServer(object):
                             ip_addr = item.value
                         else:
                             try:
-                                ip_addr = socket.gethostbyname(item.value)
+                                ip_addr = socket.getaddrinfo(item.value, None)[0][-1][0]
                             except:
                                 ip_addr = item.value
                         break
-                self._dispy_ctx._cluster_lock.acquire()
+                self._ctx._cluster_lock.acquire()
                 cluster_infos = [(name, cluster_info) for name, cluster_info in
-                                 self._dispy_ctx._clusters.items()]
-                self._dispy_ctx._cluster_lock.release()
+                                 self._ctx._clusters.items()]
+                self._ctx._cluster_lock.release()
                 jobs = []
                 node = None
+                show_args = self._ctx._show_args
                 for name, cluster_info in cluster_infos:
                     cluster_node = cluster_info.status.get(ip_addr, None)
                     if not cluster_node:
@@ -193,11 +196,13 @@ class DispyHTTPServer(object):
                     cluster_jobs = cluster_info.cluster.node_jobs(ip_addr)
                     # args and kwargs are sent as strings in Python,
                     # so an object's __str__ or __repr__ is used if provided;
-                    # TODO: check job is in _dispy_ctx's jobs?
+                    # TODO: check job is in _ctx's jobs?
                     jobs.extend([{'uid': id(job), 'job_id': str(job.id),
-                                  'args': ', '.join(str(arg) for arg in job._args),
+                                  'args': ', '.join(str(arg) for arg in job._args) \
+                                          if show_args else '',
                                   'kwargs': ', '.join('%s=%s' % (key, val)
-                                                      for key, val in job._kwargs.items()),
+                                                      for key, val in job._kwargs.items()) \
+                                            if show_args else '',
                                   'start_time_ms': int(1000 * job.start_time),
                                   'cluster': name}
                                  for job in cluster_jobs])
@@ -217,11 +222,11 @@ class DispyHTTPServer(object):
                         except ValueError:
                             logger.debug('Cancel job uid "%s" is invalid', item.value)
 
-                self._dispy_ctx._cluster_lock.acquire()
+                self._ctx._cluster_lock.acquire()
                 cluster_jobs = [(cluster_info.cluster, cluster_info.jobs.get(uid, None))
-                                for cluster_info in self._dispy_ctx._clusters.values()
+                                for cluster_info in self._ctx._clusters.values()
                                 for uid in uids]
-                self._dispy_ctx._cluster_lock.release()
+                self._ctx._cluster_lock.release()
                 cancelled = []
                 for cluster, job in cluster_jobs:
                     if not job:
@@ -252,11 +257,11 @@ class DispyHTTPServer(object):
                     elif item.name == 'id':
                         node_id = item.value
                 if node['host']:
-                    self._dispy_ctx._cluster_lock.acquire()
+                    self._ctx._cluster_lock.acquire()
                     clusters = [cluster_info.cluster for name, cluster_info in
-                                self._dispy_ctx._clusters.items()
+                                self._ctx._clusters.items()
                                 if name == node['cluster'] or not node['cluster']]
-                    self._dispy_ctx._cluster_lock.release()
+                    self._ctx._cluster_lock.release()
                     for cluster in clusters:
                         cluster.allocate_node(node)
                     self.send_response(200)
@@ -265,35 +270,39 @@ class DispyHTTPServer(object):
                     node['id'] = node_id
                     self.wfile.write(json.dumps(node).encode())
                     return
-            elif self.path == '/set_poll_sec':
+            elif self.path == '/update':
                 for item in form.list:
-                    if item.name != 'timeout':
-                        continue
-                    try:
-                        timeout = int(item.value)
-                        if timeout < 1:
-                            timeout = 0
-                    except:
-                        logger.warning('HTTP client %s: invalid timeout "%s" ignored',
-                                       self.client_address[0], item.value)
-                        timeout = 0
-                    self._dispy_ctx._poll_sec = timeout
-                    self.send_response(200)
-                    self.send_header('Content-Type', 'text/html')
-                    self.end_headers()
-                    return
+                    if item.name == 'timeout':
+                        try:
+                            timeout = int(item.value)
+                            if timeout < 1:
+                                timeout = 0
+                            self._ctx._poll_sec = timeout
+                        except:
+                            logger.warning('HTTP client %s: invalid timeout "%s" ignored',
+                                           self.client_address[0], item.value)
+                    elif item.name == 'show_job_args':
+                        if item.value == 'true':
+                            self._ctx._show_args = True
+                        else:
+                            self._ctx._show_args = False
+
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html')
+                self.end_headers()
+                return
             elif self.path == '/set_cpus':
                 node_cpus = {}
                 for item in form.list:
-                    self._dispy_ctx._cluster_lock.acquire()
-                    for cluster_info in self._dispy_ctx._clusters.values():
+                    self._ctx._cluster_lock.acquire()
+                    for cluster_info in self._ctx._clusters.values():
                         node = cluster_info.status.get(item.name, None)
                         if node:
                             node_cpus[item.name] = cluster_info.cluster.set_node_cpus(
                                 item.name, item.value)
                             if node_cpus[item.name] >= 0:
                                 break
-                    self._dispy_ctx._cluster_lock.release()
+                    self._ctx._cluster_lock.release()
 
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
@@ -306,7 +315,7 @@ class DispyHTTPServer(object):
             return
 
     def __init__(self, cluster, host='', port=8181, poll_sec=10, DocumentRoot=None,
-                 keyfile=None, certfile=None):
+                 keyfile=None, certfile=None, show_job_args=True):
         self._cluster_lock = threading.Lock()
         self._clusters = {}
         if cluster:
@@ -320,6 +329,7 @@ class DispyHTTPServer(object):
             logger.warning('invalid poll_sec value %s; it must be at least 1', poll_sec)
             poll_sec = 1
         self._poll_sec = poll_sec
+        self._show_args = bool(show_job_args)
         self._http_handler = None
         self._server = HTTPServer((host, port), lambda *args:
                                   self.__class__._HTTPRequestHandler(self, DocumentRoot, *args))

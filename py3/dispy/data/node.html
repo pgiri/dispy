@@ -116,22 +116,12 @@
           show_node(host);
         }
 	
-        $('#node-update').click(function() {
-          host = $('#host').val().trim();
-          // $(this).prop('disabled', true);
-          if (timer != null) {
-            clearTimeout(timer);
-            timer = null;
-          }
-          show_node(host);
-        });
-
-        $('#timeout-update').click(function() {
+        $('#update').click(function() {
           var update_sec = $('#timeout-value').val();
           if (!$.isNumeric(update_sec)) {
             $('#messages').append('<li>Invalid timeout value ignored.</li>');
             $('#timeout-value').val(timeout / 1000);
-            return false;
+            update_sec = timeout / 1000;
           }
           update_sec = parseInt(update_sec);
           if (timer != null) {
@@ -146,7 +136,7 @@
 
           if (timeout != (1000 * update_sec)) {
             $.ajax({
-              url: '/set_poll_sec',
+              url: '/update',
               method: 'POST',
               data: {timeout: update_sec},
               timeout: 1000
@@ -155,7 +145,15 @@
 
           $('#timeout-value').val(update_sec);
           timeout = 1000 * update_sec;
-          show_node(node_ip_addr);
+
+          host = $('#host').val().trim();
+          if (host != node_ip_addr) {
+            if (timer != null) {
+              clearTimeout(timer);
+              timer = null;
+            }
+          }
+          show_node(host);
         });
 
         $('#cancel-jobs').click(function() {
@@ -295,20 +293,19 @@
 
       <hr style="margin:10px;" />
 
-      <div id="timeout-div" style="margin:10px auto;">
-        <span class="border" style="padding:10px;display:inline-block;">
-          <strong>Update Interval Seconds:</strong>
-          <input style="width:3em;" maxlength="6" type="text" id="timeout-value" value="%(TIMEOUT)s" />
-          <button type="button" id="timeout-update" style="margin-left:5px;">Update</button>
-        </span>
-      </div>
-
-      <div style="margin:10px auto;">
-        <span class="border" style="padding:10px;display:inline-block;">
-          <strong>Name or IP of Node to Show : </strong>
-          <input style="width:10em;" maxlength="32" type="text" id="host" value="" />
-          <button type="button" id="node-update" style="margin-left:5px;">Update</button>
-        </span>
+      <table id="inputs" style="margin:10px auto;text-align:left;">
+	<tr>
+          <td><strong>Update Interval Seconds :</strong></td>
+          <td><input style="width:3em;" maxlength="6" type="text" id="timeout-value"
+		     value="%(TIMEOUT)s" /></td>
+	</tr>
+	<tr>
+          <td><strong>Name or IP of Node to Show : </strong></td>
+          <td><input style="width:10em;" maxlength="32" type="text" id="host" value="" /></td>
+	</tr>
+      </table>
+      <div style="text-align:center;">
+	<button style="margin:5px auto;" type="button" id="update">Update</button>
       </div>
 
       <hr style="margin:10px;" />

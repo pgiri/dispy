@@ -20,6 +20,10 @@
       var timeout = 1000 * %(TIMEOUT)s;
       var sort_key = 'ip_addr';
       var sorted_keys = [];
+      var show_job_args = false;
+      if (%(SHOW_JOB_ARGS)s == true) {
+        show_job_args = true;
+      }
 
       function show_cluster() {
         var cluster = clusters[cur_cluster_name];
@@ -169,7 +173,6 @@
           .fail(function(jqXHR, textStatus, errorThrown) {
             $('#messages').append('<li>Could not get status from dispy cluster; ' +
               'reload this page when cluster is ready</li>');
-            $('#timeout-div').hide();
             if (timer != null) {
               clearTimeout(timer);
               timer = null;
@@ -182,14 +185,15 @@
         $('#cluster-name').text('compute');
         cluster_status('cluster_status');
 
+        $('#show_job_args').prop('checked', show_job_args);
         $('select[name="sort-key"]').val(sort_key);
 
-        $('#timeout-update').click(function() {
+        $('#update').click(function() {
           var update_sec = $('#timeout-value').val();
           if (!$.isNumeric(update_sec)) {
             $('#messages').append('<li>Invalid timeout value ignored.</li>');
             $('#timeout-value').val(timeout / 1000);
-            return false;
+            update_sec = timeout / 1000;
           }
           update_sec = parseInt(update_sec);
           if (timer != null) {
@@ -201,24 +205,27 @@
             $('#messages').append('<li>Timed updates disabled.</li>');
           }
 
-          if (timeout != (1000 * update_sec)) {
+          if ((timeout != (1000 * update_sec)) ||
+              (show_job_args != $('#show_job_args').prop('checked'))
+             )
+            show_job_args = $('#show_job_args').prop('checked');
             $.ajax({
-              url: '/set_poll_sec',
+              url: '/update',
               method: 'POST',
-              data: {timeout: update_sec},
+              data: {timeout: update_sec, show_job_args: show_job_args},
               timeout: 1000
             });
-          }
 
           $('#timeout-value').val(update_sec);
           timeout = 1000 * update_sec;
           cluster_status('cluster_updates');
-        });
 
-        $('select[name="sort-key"]').change(function() {
-          sort_key = $(this).val();
-          sorted_keys = [];
-          show_cluster();
+          if (sort_key != $('#sort-key').val()) {
+            sort_key = $('#sort-key').val();
+            sorted_keys = [];
+            show_cluster();
+          };
+
         });
 
         $('#cluster-names-container').on('change', 'select[name="cluster-names"]', function() {
@@ -250,9 +257,11 @@
       <table class="border alt"
         style="background:transparent;margin:10px auto;font-weight:bold;text-align:right;">
         <tr>
-           <td>Jobs Submitted : </td><td id="jobs-submitted">0</td>
+           <td>Jobs Submitted : </td>
+	   <td id="jobs-submitted">0</td>
         </tr>
-        <tr><td style="border-top: 1px solid #bcd;">Jobs Done : </td>
+        <tr>
+	  <td style="border-top: 1px solid #bcd;">Jobs Done : </td>
           <td style="border-top: 1px solid #bcd;" id="jobs-done">0</td>
         </tr>
         <tr>
@@ -260,7 +269,7 @@
           <td style="border-top: 1px solid #bcd;" id="jobs-pending">0</td>
         </tr>
       </table>
-      <table class="fancy shadow alt" style="text-align:right;margin:10px auto;">
+      <table class="shadow alt" style="text-align:right;margin:10px auto;">
         <caption><span class="border" style="display:inline-block;">Nodes</span></caption>
         <thead>
           <tr>
@@ -281,26 +290,29 @@
 
       <hr style="margin:10px;" />
 
-      <div id="timeout-div" style="margin:10px auto;">
-        <span class="border" style="padding:10px;display:inline-block;">
-          <strong>Update Interval Seconds:</strong>
-          <input style="width:3em;" maxlength="6" type="text" id="timeout-value"
-            value="%(TIMEOUT)s" />
-          <button type="button" id="timeout-update" style="margin-left:5px;">Update</button>
-        </span>
-      </div>
-
-      <div style="margin:10px auto;">
-        <span class="border" style="padding:10px;display:inline-block;">
-          <strong>Sort Nodes by : </strong>
-          <select name="sort-key" style="margin-left:5px;">
-            <option value="ip_addr">IP Address</option>
-            <option value="name">Name</option>
-            <option value="cpu_time">CPU Time</option>
-            <option value="done">Jobs Done</option>
-            <option value="last_update">Last Update</option>
-          </select>
-        </span>
+      <table id="inputs" style="margin:10px auto;text-align:left;">
+	<tr>
+          <td><strong>Update Interval Seconds :</strong></td>
+          <td><input style="width:3em;" maxlength="6" type="text" id="timeout-value"
+		     value="%(TIMEOUT)s" /></td>
+	</tr>
+	<tr>
+          <td><strong>Show Job Aguments :</strong></td>
+          <td><input style="width:3em;" maxlength="6" type="checkbox" id="show_job_args" ></td>
+	</tr>
+	<tr>
+          <td><strong>Sort Nodes by : </strong></td>
+          <td><select name="sort-key" id="sort-key" style="margin-left:5px;">
+              <option value="ip_addr">IP Address</option>
+              <option value="name">Name</option>
+              <option value="cpu_time">CPU Time</option>
+              <option value="done">Jobs Done</option>
+              <option value="last_update">Last Update</option>
+            </select></td>
+	</tr>
+      </table>
+      <div style="text-align:center;">
+	<button style="margin:5px auto;" type="button" id="update">Update</button>
       </div>
 
       <hr style="margin:10px;" />
