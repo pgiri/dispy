@@ -78,7 +78,7 @@
           })
 
           .fail(function() {
-            $('#messages').append('<li>Failed to get nodes in cluster</li>');
+            $('#messages').append('<li style="color:red">Failed to get nodes in cluster.</li>');
           });
       }
 
@@ -97,12 +97,12 @@
               cpus[node.ip_addr] = n;
             } else {
               $('input[type="text"][name="cpus_' + node.ip_addr + '"]').val(node.cpus);
-              $('#messages').append('<li>Invalid CPUs ' + n + ' for ' + node.ip_addr +
-                                    ' ignored</li>');
+              $('#messages').append('<li style="color:red">Invalid CPUs ' + n + ' for ' +
+                                    node.ip_addr + ' ignored.</li>');
             }
           });
           if (Object.keys(cpus).length == 0) {
-            $('#messages').append('<li>No changes to cpus</li>');
+            $('#messages').append('<li>No changes made to cpus.</li>');
             return;
           }
           
@@ -123,12 +123,12 @@
                                               (node1.ip_addr > node2.ip_addr ? -1 : 0);
                                           });
                 cluster_nodes[cur_cluster_name][loc].cpus = n;
-                $('#messages').html('<li>CPUs for ' + ip_addr + ' changed to ' + n + '</li>');
+                $('#messages').html('<li>CPUs for ' + ip_addr + ' changed to ' + n + '.</li>');
               });
             })
 
             .fail(function() {
-              $('#messages').html('<li>Changing CPUs failed</li>');
+              $('#messages').html('<li style="color:red">Changing CPUs failed.</li>');
             });
         });
 
@@ -166,12 +166,12 @@
             })
 
               .done(function(node) {
-                $('#messages').append('<li>Node ' + node.id + ' with IP ' + node.host +
-                                      ' requested</li>');
+                $('#messages').append('<li>Node ' + node.id + ' "' + node.host + '"' +
+                                      ' requested.</li>');
               })
 
               .fail(function(jqXHR, textStatus, errorThrown) {
-                $('#messages').append('<li>node ' + i + ' is invalid</li>');
+                $('#messages').append('<li style="color:red">Node ' + i + ' is invalid.</li>');
               })
           }
         });

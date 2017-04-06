@@ -62,7 +62,6 @@ class DispyHTTPServer(object):
     class _HTTPRequestHandler(BaseHTTPRequestHandler):
         def __init__(self, ctx, DocumentRoot, *args):
             self._ctx = ctx
-            self._ctx._http_handler = self
             self.DocumentRoot = DocumentRoot
             BaseHTTPRequestHandler.__init__(self, *args)
 
@@ -330,7 +329,6 @@ class DispyHTTPServer(object):
             poll_sec = 1
         self._poll_sec = poll_sec
         self._show_args = bool(show_job_args)
-        self._http_handler = None
         self._server = HTTPServer((host, port), lambda *args:
                                   self.__class__._HTTPRequestHandler(self, DocumentRoot, *args))
         if certfile:

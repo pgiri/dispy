@@ -171,8 +171,9 @@
           })
 
           .fail(function(jqXHR, textStatus, errorThrown) {
-            $('#messages').append('<li>Could not get status from dispy cluster; ' +
-              'reload this page when cluster is ready</li>');
+            $('#messages').append('<li style="color:red">' +
+              'Could not get status from dispy cluster; ' +
+              'reload this page when cluster is ready.</li>');
             if (timer != null) {
               clearTimeout(timer);
               timer = null;
@@ -189,6 +190,23 @@
         $('select[name="sort-key"]').val(sort_key);
 
         $('#update').click(function() {
+          if (show_job_args != $('#show_job_args').prop('checked')) {
+            show_job_args = $('#show_job_args').prop('checked');
+            $.ajax({
+              url: '/update',
+              method: 'POST',
+              data: {timeout: update_sec, show_job_args: show_job_args},
+              timeout: 1000
+            })
+		.done(function() {
+		    $('#messages').html('<li>Configuration updated.</li>');
+		})
+		.fail(function() {
+		    $('#messages').html('<li style="color:red">' +
+                                        'Configuration update failed.</li>');
+		})
+	  }
+
           var update_sec = $('#timeout-value').val();
           if (!$.isNumeric(update_sec)) {
             $('#messages').append('<li>Invalid timeout value ignored.</li>');
@@ -196,35 +214,26 @@
             update_sec = timeout / 1000;
           }
           update_sec = parseInt(update_sec);
-          if (timer != null) {
-            clearTimeout(timer);
-            timer = null;
-          }
           if (update_sec < 1) {
             update_sec = 0;
             $('#messages').append('<li>Timed updates disabled.</li>');
           }
 
-          if ((timeout != (1000 * update_sec)) ||
-              (show_job_args != $('#show_job_args').prop('checked'))
-             )
-            show_job_args = $('#show_job_args').prop('checked');
-            $.ajax({
-              url: '/update',
-              method: 'POST',
-              data: {timeout: update_sec, show_job_args: show_job_args},
-              timeout: 1000
-            });
-
-          $('#timeout-value').val(update_sec);
-          timeout = 1000 * update_sec;
-          cluster_status('cluster_updates');
+          if (timeout != (1000 * update_sec)) {
+              $('#timeout-value').val(update_sec);
+              timeout = 1000 * update_sec;
+              if (timer != null) {
+		  clearTimeout(timer);
+		  timer = null;
+              }
+              cluster_status('cluster_updates');
+	  }
 
           if (sort_key != $('#sort-key').val()) {
             sort_key = $('#sort-key').val();
             sorted_keys = [];
             show_cluster();
-          };
+          }
 
         });
 

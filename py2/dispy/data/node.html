@@ -90,7 +90,8 @@
                 timer = setTimeout(function() { show_node(node.ip_addr) }, timeout);
               }
             } else {
-              $('#messages').append('<li>Failed to get information about "' + host + '"</li>');
+              $('#messages').append('<li style="color:red">' +
+                                    'Failed to get information about "' + host + '".</li>');
               $('#node').hide();
               $('#timeout-div').hide();
               $('#jobs').hide();
@@ -99,7 +100,7 @@
           })
 
           .fail(function(jqXHR, textStatus, errorThrown) {
-            $('#messages').append('<li>Node update failed</li>');
+            $('#messages').append('<li style="color:red">Node update failed.</li>');
             $('#jobs').hide();
           });
       }
@@ -119,7 +120,7 @@
         $('#update').click(function() {
           var update_sec = $('#timeout-value').val();
           if (!$.isNumeric(update_sec)) {
-            $('#messages').append('<li>Invalid timeout value ignored.</li>');
+            $('#messages').append('<li style="color:red">Invalid timeout value ignored.</li>');
             $('#timeout-value').val(timeout / 1000);
             update_sec = timeout / 1000;
           }
@@ -158,7 +159,7 @@
 
         $('#cancel-jobs').click(function() {
           if ($('select[name="cancel-confirm"]').val() != 'Yes') {
-            $('#messages').append('<li>Terminate jobs not confirmed</li>');
+            $('#messages').append('<li style="color:red">Terminate jobs not confirmed.</li>');
             return false;
           }
           var cancel_jobs = [];
@@ -202,7 +203,7 @@
 
             .fail(function() {
               $('#cancel-jobs').prop('disabled', false);
-              $('#messages').append('<li>Terminate jobs failed</li>');
+              $('#messages').append('<li style="color:red">Terminate jobs failed.</li>');
             });
 
         });
