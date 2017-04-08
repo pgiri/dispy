@@ -1920,11 +1920,10 @@ class _Scheduler(object):
                         and _job.compute_id == cluster._compute.id
                         ]
         else:
-            _jobs = [_job for _job in self._sched_jobs.itervalues() if _job.node == node]
             if get_uids:
-                jobs = [_job.uid for _job in _jobs]
+                jobs = [_job.uid for _job in self._sched_jobs.itervalues() if _job.node == node]
             else:
-                jobs = _jobs
+                jobs = [_job.job for _job in self._sched_jobs.itervalues() if _job.node == node]
 
         raise StopIteration(jobs)
 
