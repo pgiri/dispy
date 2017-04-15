@@ -1076,6 +1076,25 @@ class _DispyNode(object):
             except:
                 _dispy_logger.debug(traceback.format_exc())
             conn.close()
+
+        elif msg.startswith('JOBS:'):
+            msg = msg[len('JOBS:'):]
+            try:
+                info = deserialize(msg)
+                compute_id = info['compute_id']
+                auth = info['auth']
+            except:
+                pass
+            else:
+                compute = self.computations.get(compute_id, None)
+                if compute and compute.auth == auth:
+                    reply = [uid for uid, job_info in self.job_infos.iteritems()
+                             if job_info.compute_id == compute_id]
+                else:
+                    reply = []
+                yield conn.send_msg(serialize(reply))
+            conn.close()
+
         elif msg.startswith('PENDING_JOBS:'):
             msg = msg[len('PENDING_JOBS:'):]
             reply = {'done': [], 'pending': 0}

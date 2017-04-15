@@ -208,9 +208,10 @@ class DispyHTTPServer(object):
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
                 self.end_headers()
-                if node and node.avail_info:
-                    node.avail_info = node.avail_info.__dict__
-                self.wfile.write(json.dumps({'node': node.__dict__, 'jobs': jobs}).encode())
+                if node:
+                    if node.avail_info:
+                        node.avail_info = node.avail_info.__dict__
+                    self.wfile.write(json.dumps({'node': node.__dict__, 'jobs': jobs}).encode())
                 return
             elif self.path == '/cancel_jobs':
                 uids = []

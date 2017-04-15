@@ -41,7 +41,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "MIT"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.7.4"
+__version__ = "4.7.5"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
@@ -1977,18 +1977,17 @@ class _Cluster(object, metaclass=Singleton):
                 yield sock.sendall(node.auth)
                 req = {'compute_id': cluster._compute.id, 'auth': cluster._compute.auth}
                 yield sock.send_msg(b'JOBS:' + serialize(req))
-                msg = yield sock.recv_msg()
-                _jobs = [self._sched_jobs.get(info['uid'], None) for info in deserialize(msg)]
+                info = yield sock.recv_msg()
+                _jobs = [self._sched_jobs.get(uid, None) for uid in deserialize(info)]
+                jobs = [_job.job for _job in _jobs if _job]
             except:
                 logger.debug(traceback.format_exc())
-                _jobs = []
+                jobs = []
             sock.close()
         else:
-            _jobs = [_job for _job in self._sched_jobs.values() if _job.node == node]
+            jobs = [_job.job for _job in self._sched_jobs.values()
+                    if _job.node == node and _job.compute_id == cluster._compute.id]
 
-        jobs = [_job.job for _job in _jobs if _job is not None
-                and _job.compute_id == cluster._compute.id
-                ]
         raise StopIteration(jobs)
 
     def shutdown(self):

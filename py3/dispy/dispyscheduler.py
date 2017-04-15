@@ -921,7 +921,9 @@ class _Scheduler(object, metaclass=Singleton):
                 else:
                     node = req['node']
                     from_node = req['from_node']
-                    job_uids = yield self.node_jobs(cluster, node, from_node, coro=coro)
+                    # assert req['get_uids'] == True
+                    job_uids = yield self.node_jobs(cluster, node, from_node,
+                                                    get_uids=True, coro=coro)
             except:
                 job_uids = []
             resp = serialize(job_uids)
