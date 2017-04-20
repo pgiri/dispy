@@ -346,10 +346,10 @@ class _DispyNode(object):
                         continue
                     break
         else:  # self.sock_family == socket.AF_INET6
-            self._broadcast = 'ff02::1'
+            self._broadcast = 'ff05::1'
             addrinfo = socket.getaddrinfo(self._broadcast, None)[0]
             mreq = socket.inet_pton(addrinfo[0], addrinfo[4][0])
-            mreq += struct.pack('@I', self.addrinfo[4][-1])
+            mreq += struct.pack('@I', self.addrinfo[4][1])
             self.udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
 
         _dispy_logger.info('"%s" serving %s cpus at %s:%s',
@@ -397,8 +397,10 @@ class _DispyNode(object):
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             addr = (self._broadcast, self.scheduler['port'])
         else:  # self.sock_family == socket.AF_INET6
-            sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, struct.pack('@i', 1))
             addr = list(self.addrinfo[4])
+            sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS,
+                            struct.pack('@i', 1))
+            sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, addr[1])
             addr[1] = 0
             sock.bind(tuple(addr))
             addr[0] = self._broadcast
@@ -423,14 +425,15 @@ class _DispyNode(object):
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
                 addr = (self.scheduler['ip_addr'], self.scheduler['port'])
             else:  # self.sock_family == socket.AF_INET6
+                addr = list(self.addrinfo[4])
                 sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS,
                                 struct.pack('@i', 1))
-                addr = list(self.addrinfo[4])
+                sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, addr[1])
                 addr[1] = 0
                 sock.bind(tuple(addr))
-                addr[0], addr[1] = (self.scheduler['ip_addr'], self.scheduler['port'])
+                addr[0] = self.scheduler['ip_addr']
+                addr[1] = self.scheduler['port']
                 addr = tuple(addr)
-
             try:
                 yield sock.sendto('PING:'.encode() + serialize(ping_msg), addr)
             except:
@@ -501,8 +504,10 @@ class _DispyNode(object):
                     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
                     addr = (scheduler_ip_addr, scheduler_port)
                 else:  # self.sock_family == socket.AF_INET6
-                    sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, struct.pack('@i', 1))
                     addr = list(self.addrinfo[4])
+                    sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS,
+                                    struct.pack('@i', 1))
+                    sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, addr[1])
                     addr[1] = 0
                     sock.bind(tuple(addr))
                     addr[0] = scheduler_ip_addr
@@ -680,7 +685,10 @@ class _DispyNode(object):
                             pass
                         raise StopIteration
             compute.xfer_files = set()
-            dest = os.path.join(self.dest_path_prefix, compute.scheduler_ip_addr)
+            dest = compute.scheduler_ip_addr
+            if os.name == 'nt':
+                dest = dest.replace(':', '_')
+            dest = os.path.join(self.dest_path_prefix, dest)
             if not os.path.isdir(dest):
                 try:
                     os.mkdir(dest)

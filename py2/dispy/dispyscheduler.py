@@ -278,10 +278,10 @@ class _Scheduler(object):
                         continue
                     break
         else:  # self.sock_family == socket.AF_INET6
-            self._broadcast = 'ff02::1'
+            self._broadcast = 'ff05::1'
             addrinfo = socket.getaddrinfo(self._broadcast, None)[0]
             mreq = socket.inet_pton(addrinfo[0], addrinfo[4][0])
-            mreq += struct.pack('@I', self.addrinfo[4][-1])
+            mreq += struct.pack('@I', self.addrinfo[4][1])
             self.udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
 
         self.udp_sock = AsyncSocket(self.udp_sock)
@@ -655,7 +655,10 @@ class _Scheduler(object):
             cluster = _Cluster(compute, node_allocs, self)
             cluster.ip_addr = conn.getsockname()[0]
             cluster.exclusive = exclusive
-            dest = os.path.join(self.dest_path_prefix, compute.scheduler_ip_addr)
+            dest = compute.scheduler_ip_addr
+            if os.name == 'nt':
+                dest = dest.replace(':', '_')
+            dest = os.path.join(self.dest_path_prefix, dest)
             if not os.path.isdir(dest):
                 try:
                     os.mkdir(dest)
@@ -1204,9 +1207,10 @@ class _Scheduler(object):
             bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             addr = (self._broadcast, port)
         else:  # self.sock_family == socket.AF_INET6
+            addr = list(self.addrinfo[4])
             bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS,
                                struct.pack('@i', 1))
-            addr = list(self.addrinfo[4])
+            bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, addr[1])
             addr[1] = 0
             bc_sock.bind(tuple(addr))
             addr[0] = self._broadcast

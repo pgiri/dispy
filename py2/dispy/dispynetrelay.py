@@ -59,10 +59,10 @@ class DispyNetRelay(object):
                         continue
                     break
         else: # self.sock_family == socket.AF_INET6
-            self._broadcast = 'ff02::1'
+            self._broadcast = 'ff05::1'
             addrinfo = socket.getaddrinfo(self._broadcast, None)[0]
             self.mreq = socket.inet_pton(addrinfo[0], addrinfo[4][0])
-            self.mreq += struct.pack('@I', self.addrinfo[4][-1])
+            self.mreq += struct.pack('@I', self.addrinfo[4][1])
         logger.info('version %s started', dispy._dispy_version)
 
     def listen_udp_proc(self, coro=None):
@@ -72,8 +72,10 @@ class DispyNetRelay(object):
             bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             addr = (self._broadcast, self.node_port)
         else: # self.sock_family == socket.AF_INET6
-            bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, struct.pack('@i', 1))
             addr = list(self.addrinfo[4])
+            bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS,
+                               struct.pack('@i', 1))
+            bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, addr[1])
             addr[1] = 0
             bc_sock.bind(tuple(addr))
             addr[0] = self._broadcast
@@ -145,13 +147,15 @@ class DispyNetRelay(object):
             bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             node_addr = (self._broadcast, self.node_port)
         else: # self.sock_family == socket.AF_INET6
-            bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, struct.pack('@i', 1))
             node_addr = list(self.addrinfo[4])
+            bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS,
+                               struct.pack('@i', 1))
+            bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, addr[1])
             node_addr[1] = 0
             bc_sock.bind(tuple(node_addr))
             node_addr[0] = self._broadcast
             node_addr[1] = self.node_port
-            node_addr = tuple(node_addr)
+            nde_addr = tuple(node_addr)
 
         auth_len = len(dispy.auth_code('', ''))
 

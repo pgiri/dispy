@@ -265,7 +265,15 @@ def _node_ipaddr(node):
     if node.find('*') >= 0:
         return node
     try:
-        ip_addr = socket.getaddrinfo(node, None)[0][4][0]
+        ip_addr = socket.getaddrinfo(node, None)[0]
+        family = ip_addr[0]
+        ip_addr = ip_addr[4][0]
+        if family == socket.AF_INET6:
+            # canonicalize so different platforms resolve to same string
+            ip_addr = re.sub(r'^0*', '', ip_addr)
+            ip_addr = re.sub(r':0*', ':', ip_addr)
+            ip_addr = re.sub(r'::+', '::', ip_addr)
+            # TODO: handle dot notation in last 4 bytes?
         return ip_addr
     except:
         return None
@@ -335,6 +343,8 @@ def node_addrinfo(node=None, socket_family=None):
                             if addr[2] == socket.IPPROTO_TCP:
                                 addrinfo = addr
                                 break
+    elif socket_family == socket.AF_INET6:
+        logger.warning('IPv6 may not work without "netifaces" package!')
 
     if addrinfo:
         if not node:
@@ -347,8 +357,10 @@ def node_addrinfo(node=None, socket_family=None):
     addrinfo = socket.getaddrinfo(node, None, socket_family, socket.SOCK_STREAM)[0]
     if socket_family == socket.AF_INET6:
         addrinfo = list(addrinfo)
-        addrinfo[4] = addrinfo[4][:-1] + (ifn,)
-        addrinfo = tuple(addrinfo)
+        addrinfo[4] = list(addrinfo[4])
+        addrinfo[4][0] = _node_ipaddr(addrinfo[4][0])
+        addrinfo[4][1] = ifn
+        addrinfo[4] = tuple(addrinfo[4])
 
     return addrinfo
 
@@ -792,10 +804,10 @@ class _Cluster(object):
                         continue
                     break
         else:  # socket_family == socket.AF_INET6
-            self._broadcast = 'ff02::1'
+            self._broadcast = 'ff05::1'
             addrinfo = socket.getaddrinfo(self._broadcast, None)[0]
             mreq = socket.inet_pton(addrinfo[0], addrinfo[4][0])
-            mreq += struct.pack('@I', self.addrinfo[4][-1])
+            mreq += struct.pack('@I', self.addrinfo[4][1])
             udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
 
         self.port = port
@@ -1290,9 +1302,10 @@ class _Cluster(object):
             bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             addr = (self._broadcast, port)
         else:  # socket_family == socket.AF_INET6
+            addr = list(self.addrinfo[4])
             bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS,
                                struct.pack('@i', 1))
-            addr = list(self.addrinfo[4])
+            bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, addr[1])
             addr[1] = 0
             bc_sock.bind(tuple(addr))
             addr[0] = self._broadcast
@@ -1957,10 +1970,13 @@ class _Cluster(object):
 
     def node_jobs(self, cluster, node, from_node, coro=None):
         # generator
-        node = _node_ipaddr(node)
+        ip_addr = node
+        node = self._nodes.get(ip_addr, None)
         if not node:
-            raise StopIteration([])
-        node = self._nodes.get(node, None)
+            node = _node_ipaddr(ip_addr)
+            if node:
+                node = self._nodes.get(node, None)
+        node = self._nodes.get(ip_addr, None)
         if not node or cluster._compute.id not in node.clusters:
             raise StopIteration([])
         if from_node:

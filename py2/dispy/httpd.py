@@ -48,6 +48,8 @@ class DispyHTTPServer(object):
 
     class _ClusterInfo(object):
 
+        ip_re = re.compile(r'^(([0-9a-f:]+)|(\d+\.\d+\.\d+\.\d+))$')
+
         def __init__(self, cluster):
             self.cluster = cluster
             self.jobs_submitted = 0
@@ -167,13 +169,10 @@ class DispyHTTPServer(object):
                 for item in form.list:
                     if item.name == 'host':
                         # if it looks like IP address, skip resolving
-                        if re.match('^\d+[\.\d]+$', item.value):
+                        if re.match(DispyHTTPServer._ClusterInfo.ip_re, item.value):
                             ip_addr = item.value
                         else:
-                            try:
-                                ip_addr = socket.getaddrinfo(item.value, None)[0][-1][0]
-                            except:
-                                ip_addr = item.value
+                            ip_addr = dispy._node_ipaddr(item.value)
                         break
                 self._ctx._cluster_lock.acquire()
                 cluster_infos = [(name, cluster_info) for name, cluster_info in
