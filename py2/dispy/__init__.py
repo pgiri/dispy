@@ -41,7 +41,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "MIT"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.7.5"
+__version__ = "4.7.6"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
@@ -270,8 +270,8 @@ def _node_ipaddr(node):
         ip_addr = ip_addr[4][0]
         if family == socket.AF_INET6:
             # canonicalize so different platforms resolve to same string
-            ip_addr = re.sub(r'^0*', '', ip_addr)
-            ip_addr = re.sub(r':0*', ':', ip_addr)
+            ip_addr = re.sub(r'^0+', '', ip_addr)
+            ip_addr = re.sub(r':0+', ':', ip_addr)
             ip_addr = re.sub(r'::+', '::', ip_addr)
             # TODO: handle dot notation in last 4 bytes?
         return ip_addr
@@ -355,12 +355,8 @@ def node_addrinfo(node=None, socket_family=None):
         node = socket.gethostname()
 
     addrinfo = socket.getaddrinfo(node, None, socket_family, socket.SOCK_STREAM)[0]
-    if socket_family == socket.AF_INET6:
-        addrinfo = list(addrinfo)
-        addrinfo[4] = list(addrinfo[4])
-        addrinfo[4][0] = _node_ipaddr(addrinfo[4][0])
-        addrinfo[4][1] = ifn
-        addrinfo[4] = tuple(addrinfo[4])
+    info = collections.namedtuple('AddrInfo', ['family', 'ip', 'ifn'])
+    addrinfo = info(addrinfo[0], _node_ipaddr(addrinfo[4][0]), ifn)
 
     return addrinfo
 
@@ -421,7 +417,7 @@ class _Node(object):
     def __init__(self, ip_addr, port, cpus, sign, secret, platform='',
                  keyfile=None, certfile=None):
         self.ip_addr = ip_addr
-        self.sock_type = node_addrinfo(ip_addr)[0]
+        self.sock_type = node_addrinfo(ip_addr).family
         self.port = port
         self.name = None
         self.cpus = cpus
@@ -679,7 +675,7 @@ class _Cluster(object):
                     addr = node_addrinfo(node)
                     if not self.addrinfo:
                         self.addrinfo = addr
-                    self.ip_addrs.add(addr[4][0])
+                    self.ip_addrs.add(addr.ip)
             if not self.ip_addrs:
                 self.ip_addrs.add(None)
             self.ext_ip_addrs = set(self.ip_addrs)
@@ -688,9 +684,7 @@ class _Cluster(object):
                     ext_ip_addr = [ext_ip_addr]
                 for node in ext_ip_addr:
                     addr = node_addrinfo(node)
-                    if not self.addrinfo:
-                        self.addrinfo = addr
-                    self.ext_ip_addrs.add(addr[4][0])
+                    self.ext_ip_addrs.add(addr.ip)
             if not self.addrinfo:
                 self.addrinfo = node_addrinfo()
             if port:
@@ -775,39 +769,31 @@ class _Cluster(object):
     def udp_server(self, port, port_bound_event, coro=None):
         # generator
         coro.set_daemon()
-        udp_sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_DGRAM))
+        udp_sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_DGRAM))
         # udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        if self.addrinfo[0] == socket.AF_INET:
-            addr = ('', port)
-        else:  # socket_family == socket.AF_INET6
-            addr = list(self.addrinfo[4])
-            addr[0] = ''
-            addr[1] = port
-            addr = tuple(addr)
         while 1:
             try:
-                udp_sock.bind(addr)
+                udp_sock.bind(('', port))
             except:
                 logger.warning('Port %s seems to be used by another program', port)
                 yield coro.sleep(5)
             else:
                 break
-        if self.addrinfo[0] == socket.AF_INET:
+        if self.addrinfo.family == socket.AF_INET:
             self._broadcast = '<broadcast>'
             if netifaces:
                 for iface in netifaces.interfaces():
                     for link in netifaces.ifaddresses(iface).get(netifaces.AF_INET, []):
-                        if link['addr'] == self.addrinfo[4][0]:
+                        if link['addr'] == self.addrinfo.ip:
                             self._broadcast = link.get('broadcast', '<broadcast>')
                             break
                     else:
                         continue
                     break
-        else:  # socket_family == socket.AF_INET6
+        else:  # self.addrinfo.family == socket.AF_INET6
             self._broadcast = 'ff05::1'
-            addrinfo = socket.getaddrinfo(self._broadcast, None)[0]
-            mreq = socket.inet_pton(addrinfo[0], addrinfo[4][0])
-            mreq += struct.pack('@I', self.addrinfo[4][1])
+            mreq = socket.inet_pton(self.addrinfo.family, self._broadcast)
+            mreq += struct.pack('@I', self.addrinfo.ifn)
             udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
 
         self.port = port
@@ -835,7 +821,7 @@ class _Cluster(object):
                 node = self._nodes.get(info['ip_addr'], None)
                 if node and node.auth == auth:
                     continue
-                sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM),
+                sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM),
                                    keyfile=self.keyfile, certfile=self.certfile)
                 sock.settimeout(MsgTimeout)
                 msg = {'version': _dispy_version, 'port': self.port, 'sign': self.sign}
@@ -858,20 +844,13 @@ class _Cluster(object):
         if not self.shared:
             yield port_bound_event.wait()
         del port_bound_event
-        sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM),
+        sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM),
                            keyfile=self.keyfile, certfile=self.certfile)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         if not ip_addr:
             ip_addr = ''
-        if self.addrinfo[0] == socket.AF_INET:
-            addr = (ip_addr, port)
-        else:  # socket_family == socket.AF_INET6
-            addr = list(self.addrinfo[4])
-            addr[0] = ip_addr
-            addr[1] = port
-            addr = tuple(addr)
         try:
-            sock.bind(addr)
+            sock.bind((ip_addr, port))
         except:
             if ip_addr == '':
                 ip_addr = None
@@ -1002,7 +981,7 @@ class _Cluster(object):
             if node:
                 if node.auth == auth:
                     raise StopIteration
-            sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM),
+            sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM),
                                keyfile=self.keyfile, certfile=self.certfile)
             sock.settimeout(MsgTimeout)
             msg = {'version': _dispy_version, 'port': self.port, 'sign': self.sign}
@@ -1196,7 +1175,7 @@ class _Cluster(object):
                     for cluster in clusters:
                         msg = {'client_ip_addr': cluster._compute.scheduler_ip_addr,
                                'client_port': cluster._compute.job_result_port}
-                        sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM),
+                        sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM),
                                            keyfile=self.keyfile, certfile=self.certfile)
                         sock.settimeout(MsgTimeout)
                         try:
@@ -1279,7 +1258,7 @@ class _Cluster(object):
         ping_msg['ip_addrs'] = list(filter(lambda ip: bool(ip), self.ext_ip_addrs))
         if not port:
             port = self.node_port
-        tcp_sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM),
+        tcp_sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM),
                                keyfile=self.keyfile, certfile=self.certfile)
         tcp_sock.settimeout(MsgTimeout)
         try:
@@ -1296,23 +1275,17 @@ class _Cluster(object):
             port = self.node_port
         ping_msg = {'version': _dispy_version, 'sign': self.sign, 'port': self.port}
         ping_msg['ip_addrs'] = list(filter(lambda ip: bool(ip), self.ext_ip_addrs))
-        bc_sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_DGRAM))
+        bc_sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_DGRAM))
         bc_sock.settimeout(MsgTimeout)
-        if self.addrinfo[0] == socket.AF_INET:
+        if self.addrinfo.family == socket.AF_INET:
             bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            addr = (self._broadcast, port)
         else:  # socket_family == socket.AF_INET6
-            addr = list(self.addrinfo[4])
             bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS,
                                struct.pack('@i', 1))
-            bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, addr[1])
-            addr[1] = 0
-            bc_sock.bind(tuple(addr))
-            addr[0] = self._broadcast
-            addr[1] = port
-            addr = tuple(addr)
+            bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, self.addrinfo.ifn)
+        bc_sock.bind((self.addrinfo.ip, 0))
         try:
-            yield bc_sock.sendto('PING:' + serialize(ping_msg), addr)
+            yield bc_sock.sendto('PING:' + serialize(ping_msg), (self._broadcast, port))
         except:
             pass
         bc_sock.close()
@@ -1337,7 +1310,7 @@ class _Cluster(object):
             node = self._nodes.get(ip_addr, None)
             if not node or not node.port:
                 continue
-            sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM),
+            sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM),
                                keyfile=self.keyfile, certfile=self.certfile)
             sock.settimeout(MsgTimeout)
             try:
@@ -1354,7 +1327,7 @@ class _Cluster(object):
                 _job = self._sched_jobs.get(uid, None)
                 if _job is None:
                     continue
-                conn = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM),
+                conn = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM),
                                    keyfile=self.keyfile, certfile=self.certfile)
                 conn.settimeout(MsgTimeout)
                 try:
@@ -1450,7 +1423,7 @@ class _Cluster(object):
             raise StopIteration
 
         if self.shared:
-            sock = socket.socket(self.addrinfo[0], socket.SOCK_STREAM)
+            sock = socket.socket(self.addrinfo.family, socket.SOCK_STREAM)
             sock = AsyncSocket(sock, keyfile=self.keyfile, certfile=self.certfile)
             sock.settimeout(MsgTimeout)
             yield sock.connect((cluster.scheduler_ip_addr, cluster.scheduler_port))
@@ -1976,11 +1949,10 @@ class _Cluster(object):
             node = _node_ipaddr(ip_addr)
             if node:
                 node = self._nodes.get(node, None)
-        node = self._nodes.get(ip_addr, None)
         if not node or cluster._compute.id not in node.clusters:
             raise StopIteration([])
         if from_node:
-            sock = socket.socket(self.addrinfo[0], socket.SOCK_STREAM)
+            sock = socket.socket(self.addrinfo.family, socket.SOCK_STREAM)
             sock = AsyncSocket(sock, keyfile=self.keyfile, certfile=self.certfile)
             sock.settimeout(MsgTimeout)
             try:
@@ -2624,7 +2596,7 @@ class SharedJobCluster(JobCluster):
                  secret='', keyfile=None, certfile=None, recover_file=None):
 
         self.addrinfo = node_addrinfo(scheduler_node)
-        self.scheduler_ip_addr = self.addrinfo[4][0]
+        self.scheduler_ip_addr = self.addrinfo.ip
         if not nodes:
             nodes = ['*']
         elif not isinstance(nodes, list):
@@ -2637,7 +2609,7 @@ class SharedJobCluster(JobCluster):
             raise Exception('"nodes" argument is invalid')
         node_allocs = [(na.ip_addr, na.port, na.cpus) for na in node_allocs]
         if ext_ip_addr:
-            ext_ip_addr = node_addrinfo(ext_ip_addr)[4][0]
+            ext_ip_addr = node_addrinfo(ext_ip_addr).ip
 
         JobCluster.__init__(self, computation, depends=depends,
                             callback=callback, cluster_status=cluster_status,
@@ -2663,7 +2635,7 @@ class SharedJobCluster(JobCluster):
         while not self._cluster.port:
             time.sleep(0.1)
 
-        sock = socket.socket(self.addrinfo[0], socket.SOCK_STREAM)
+        sock = socket.socket(self.addrinfo.family, socket.SOCK_STREAM)
         sock = AsyncSocket(sock, blocking=True, keyfile=keyfile, certfile=certfile)
         sock.connect((self.scheduler_ip_addr, scheduler_port))
         sock.sendall(self._cluster.auth)
@@ -2684,7 +2656,7 @@ class SharedJobCluster(JobCluster):
         self._compute.scheduler_port = self._cluster.port
         self._compute.job_result_port = self._cluster.port
 
-        sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM), blocking=True,
+        sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM), blocking=True,
                            keyfile=keyfile, certfile=certfile)
         sock.settimeout(MsgTimeout)
         try:
@@ -2708,7 +2680,7 @@ class SharedJobCluster(JobCluster):
         for xf in self._compute.xfer_files:
             xf.compute_id = self._compute.id
             logger.debug('Sending file "%s"', xf.name)
-            sock = socket.socket(self.addrinfo[0], socket.SOCK_STREAM)
+            sock = socket.socket(self.addrinfo.family, socket.SOCK_STREAM)
             sock = AsyncSocket(sock, blocking=True, keyfile=keyfile, certfile=certfile)
             sock.settimeout(MsgTimeout)
             try:
@@ -2735,7 +2707,7 @@ class SharedJobCluster(JobCluster):
 
         Coro(self._cluster.add_cluster, self).value()
         self._scheduled_event = threading.Event()
-        sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM), blocking=True,
+        sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM), blocking=True,
                            keyfile=keyfile, certfile=certfile)
         sock.settimeout(MsgTimeout)
         sock.connect((self.scheduler_ip_addr, self.scheduler_port))
@@ -2791,7 +2763,8 @@ class SharedJobCluster(JobCluster):
         job = None
         try:
             for xf in _job.xfer_files:
-                sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM), blocking=True,
+                sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM),
+                                   blocking=True,
                                    keyfile=self._cluster.keyfile, certfile=self._cluster.certfile)
                 sock.settimeout(MsgTimeout)
                 sock.connect((self.scheduler_ip_addr, self.scheduler_port))
@@ -2812,7 +2785,8 @@ class SharedJobCluster(JobCluster):
                 assert recvd == xf.stat_buf.st_size
                 sock.close()
 
-            sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM), blocking=True,
+            sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM),
+                               blocking=True,
                                keyfile=self._cluster.keyfile, certfile=self._cluster.certfile)
             sock.settimeout(MsgTimeout)
             sock.connect((self.scheduler_ip_addr, self.scheduler_port))
@@ -2856,7 +2830,7 @@ class SharedJobCluster(JobCluster):
 
         job.status = DispyJob.Cancelled
         # assert self._pending_jobs >= 1
-        sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM), blocking=True,
+        sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM), blocking=True,
                            keyfile=self._cluster.keyfile, certfile=self._cluster.certfile)
         sock.settimeout(MsgTimeout)
         try:
@@ -2883,7 +2857,7 @@ class SharedJobCluster(JobCluster):
             return -1
         node_alloc = node_allocs[0]
 
-        sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM), blocking=True,
+        sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM), blocking=True,
                            keyfile=self._cluster.keyfile, certfile=self._cluster.certfile)
         sock.settimeout(MsgTimeout)
         try:
@@ -2907,7 +2881,7 @@ class SharedJobCluster(JobCluster):
         node = _node_ipaddr(node)
         if not node:
             return []
-        sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM), blocking=True,
+        sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM), blocking=True,
                            keyfile=self._cluster.keyfile, certfile=self._cluster.certfile)
         sock.settimeout(MsgTimeout)
         try:
@@ -2930,7 +2904,7 @@ class SharedJobCluster(JobCluster):
     def set_node_cpus(self, node, cpus):
         """Similar to 'set_node_cpus' of JobCluster.
         """
-        sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM), blocking=True,
+        sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM), blocking=True,
                            keyfile=self._cluster.keyfile, certfile=self._cluster.certfile)
         sock.settimeout(MsgTimeout)
         try:
@@ -2971,7 +2945,7 @@ class SharedJobCluster(JobCluster):
         else:
             dst = '.'
         xf = _XferFile(path, dst, self._compute.id)
-        sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM), blocking=True,
+        sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM), blocking=True,
                            keyfile=self._cluster.keyfile, certfile=self._cluster.certfile)
         sock.settimeout(MsgTimeout)
         try:
@@ -3102,17 +3076,10 @@ def recover_jobs(recover_file, timeout=None, terminate_pending=False):
     def tcp_server(ip_addr, pending, coro=None):
         coro.set_daemon()
         addrinfo = node_addrinfo(ip_addr)
-        sock = AsyncSocket(socket.socket(addrinfo[0], socket.SOCK_STREAM),
+        sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_STREAM),
                            keyfile=cluster['keyfile'], certfile=cluster['certfile'])
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        if addrinfo[0] == socket.AF_INET:
-            addr = (ip_addr, cluster['port'])
-        else:  # socket_family == socket.AF_INET6
-            addr = list(addrinfo[4])
-            addr[0] = ip_addr
-            addr[1] = cluster['port']
-            addr = tuple(addr)
-        sock.bind(addr)
+        sock.bind((ip_addr, cluster['port']))
         sock.listen(32)
 
         while 1:

@@ -135,7 +135,7 @@ class _Scheduler(object, metaclass=Singleton):
                 if addr:
                     if not self.addrinfo:
                         self.addrinfo = addr
-                    ip_addrs.add(addr[4][0])
+                    ip_addrs.add(addr.ip)
         if not ip_addrs:
             ip_addrs.add(None)
         self.ext_ip_addrs = set(ip_addrs)
@@ -145,9 +145,7 @@ class _Scheduler(object, metaclass=Singleton):
             for node in ext_ip_addr:
                 addr = dispy.node_addrinfo(node)
                 if addr:
-                    if not self.addrinfo:
-                        self.addrinfo = addr
-                    self.ext_ip_addrs.add(addr[4][0])
+                    self.ext_ip_addrs.add(addr.ip)
         if not self.addrinfo:
             self.addrinfo = dispy.node_addrinfo()
         if not port:
@@ -255,23 +253,16 @@ class _Scheduler(object, metaclass=Singleton):
                 }
             pickle.dump(config, fd)
 
-        self.udp_sock = socket.socket(self.addrinfo[0], socket.SOCK_DGRAM)
+        self.udp_sock = socket.socket(self.addrinfo.family, socket.SOCK_DGRAM)
         self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        if self.addrinfo[0] == socket.AF_INET:
-            addr = ('', self.port)
-        else:  # socket_family == socket.AF_INET6
-            addr = list(self.addrinfo[4])
-            addr[0] = ''
-            addr[1] = self.port
-            addr = tuple(addr)
-        self.udp_sock.bind(addr)
+        self.udp_sock.bind(('', self.port))
 
-        if self.addrinfo[0] == socket.AF_INET:
+        if self.addrinfo.family == socket.AF_INET:
             self._broadcast = '<broadcast>'
             if netifaces:
                 for iface in netifaces.interfaces():
                     for link in netifaces.ifaddresses(iface).get(netifaces.AF_INET, []):
-                        if link['addr'] == self.addrinfo[4][0]:
+                        if link['addr'] == self.addrinfo.ip:
                             self._broadcast = link.get('broadcast', '<broadcast>')
                             break
                     else:
@@ -279,9 +270,8 @@ class _Scheduler(object, metaclass=Singleton):
                     break
         else:  # self.sock_family == socket.AF_INET6
             self._broadcast = 'ff05::1'
-            addrinfo = socket.getaddrinfo(self._broadcast, None)[0]
-            mreq = socket.inet_pton(addrinfo[0], addrinfo[4][0])
-            mreq += struct.pack('@I', self.addrinfo[4][1])
+            mreq = socket.inet_pton(self.addrinfo.family, self._broadcast)
+            mreq += struct.pack('@I', self.addrinfo.ifn)
             self.udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
 
         self.udp_sock = AsyncSocket(self.udp_sock)
@@ -318,7 +308,7 @@ class _Scheduler(object, metaclass=Singleton):
                 if node:
                     if node.auth == auth:
                         continue
-                sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM),
+                sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM),
                                    keyfile=self.node_keyfile, certfile=self.node_certfile)
                 sock.settimeout(MsgTimeout)
                 msg = {'port': self.port, 'sign': self.sign, 'version': _dispy_version}
@@ -337,25 +327,18 @@ class _Scheduler(object, metaclass=Singleton):
     def tcp_server(self, ip_addr, coro=None):
         # generator
         coro.set_daemon()
-        sock = socket.socket(self.addrinfo[0], socket.SOCK_STREAM)
+        sock = socket.socket(self.addrinfo.family, socket.SOCK_STREAM)
         sock = AsyncSocket(sock, keyfile=self.node_keyfile, certfile=self.node_certfile)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         if not ip_addr:
             ip_addr = ''
-        if self.addrinfo[0] == socket.AF_INET:
-            addr = (ip_addr, self.port)
-        else:  # socket_family == socket.AF_INET6
-            addr = list(self.addrinfo[4])
-            addr[0] = ip_addr
-            addr[1] = self.port
-            addr = tuple(addr)
         try:
-            sock.bind(addr)
+            sock.bind((ip_addr, self.port))
         except:
             if ip_addr == '':
                 ip_addr = None
             raise StopIteration
-        ip_addr = sock.getsockname()[0]
+        ip_addr = _node_ipaddr(sock.getsockname()[0]).ip
         self.ip_addrs.add(ip_addr)
         logger.debug('TCP server at %s:%s', ip_addr, self.port)
         sock.listen(32)
@@ -441,7 +424,7 @@ class _Scheduler(object, metaclass=Singleton):
                 if node:
                     if node.auth == auth:
                         raise StopIteration
-                sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM),
+                sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM),
                                    keyfile=self.node_keyfile, certfile=self.node_certfile)
                 sock.settimeout(MsgTimeout)
                 msg = {'port': self.port, 'sign': self.sign, 'version': _dispy_version}
@@ -558,7 +541,7 @@ class _Scheduler(object, metaclass=Singleton):
                         raise StopIteration
                     break
             self.unsched_clusters.pop(0)
-            reply_sock = socket.socket(self.addrinfo[0], socket.SOCK_STREAM)
+            reply_sock = socket.socket(self.addrinfo.family, socket.SOCK_STREAM)
             reply_sock = AsyncSocket(reply_sock, keyfile=self.cluster_keyfile,
                                      certfile=self.cluster_certfile)
             reply_sock.settimeout(MsgTimeout)
@@ -581,25 +564,18 @@ class _Scheduler(object, metaclass=Singleton):
 
     def scheduler_server(self, ip_addr, coro=None):
         coro.set_daemon()
-        sock = socket.socket(self.addrinfo[0], socket.SOCK_STREAM)
+        sock = socket.socket(self.addrinfo.family, socket.SOCK_STREAM)
         sock = AsyncSocket(sock, keyfile=self.cluster_keyfile, certfile=self.cluster_certfile)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         if not ip_addr:
             ip_addr = ''
-        if self.addrinfo[0] == socket.AF_INET:
-            addr = (ip_addr, self.scheduler_port)
-        else:  # socket_family == socket.AF_INET6
-            addr = list(self.addrinfo[4])
-            addr[0] = ip_addr
-            addr[1] = self.scheduler_port
-            addr = tuple(addr)
         try:
-            sock.bind(addr)
+            sock.bind((ip_addr, self.scheduler_port))
         except:
             if ip_addr == '':
                 ip_addr = None
             raise StopIteration
-        ip_addr = sock.getsockname()[0]
+        ip_addr = _node_ipaddr(sock.getsockname()[0]).ip
         logger.debug('Scheduler at %s:%s', ip_addr, self.scheduler_port)
         sock.listen(32)
         while 1:
@@ -775,7 +751,7 @@ class _Scheduler(object, metaclass=Singleton):
                 else:
                     raise StopIteration(serialize(-1))
 
-            node_sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM),
+            node_sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM),
                                     keyfile=self.node_keyfile, certfile=self.node_certfile)
             node_sock.settimeout(MsgTimeout)
             try:
@@ -1154,7 +1130,7 @@ class _Scheduler(object, metaclass=Singleton):
             yield conn.send_msg(serialize(-1))
             raise StopIteration
         node.last_pulse = time.time()
-        client_sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM),
+        client_sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM),
                                   keyfile=self.cluster_keyfile, certfile=self.cluster_certfile)
         client_sock.settimeout(MsgTimeout)
         try:
@@ -1184,7 +1160,7 @@ class _Scheduler(object, metaclass=Singleton):
         ping_msg['ip_addrs'] = list(filter(lambda ip: bool(ip), self.ext_ip_addrs))
         if not port:
             port = self.node_port
-        tcp_sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_STREAM),
+        tcp_sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM),
                                keyfile=self.node_keyfile, certfile=self.node_certfile)
         tcp_sock.settimeout(MsgTimeout)
         try:
@@ -1201,23 +1177,17 @@ class _Scheduler(object, metaclass=Singleton):
             port = self.node_port
         ping_msg = {'version': _dispy_version, 'sign': self.sign, 'port': self.port}
         ping_msg['ip_addrs'] = list(filter(lambda ip: bool(ip), self.ext_ip_addrs))
-        bc_sock = AsyncSocket(socket.socket(self.addrinfo[0], socket.SOCK_DGRAM))
+        bc_sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_DGRAM))
         bc_sock.settimeout(MsgTimeout)
-        if self.addrinfo[0] == socket.AF_INET:
+        if self.addrinfo.family == socket.AF_INET:
             bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            addr = (self._broadcast, port)
         else:  # self.sock_family == socket.AF_INET6
-            addr = list(self.addrinfo[4])
             bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS,
                                struct.pack('@i', 1))
-            bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, addr[1])
-            addr[1] = 0
-            bc_sock.bind(tuple(addr))
-            addr[0] = self._broadcast
-            addr[1] = port
-            addr = tuple(addr)
+            bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, self.addrinfo.ifn)
+        bc_sock.bind((self.addrinfo.ip, 0))
         try:
-            yield bc_sock.sendto(b'PING:' + serialize(ping_msg), addr)
+            yield bc_sock.sendto(b'PING:' + serialize(ping_msg), (self._broadcast, port))
         except:
             pass
         bc_sock.close()
@@ -1419,7 +1389,7 @@ class _Scheduler(object, metaclass=Singleton):
 
     def send_job_result(self, uid, cluster, result, resending=False, coro=None):
         # generator
-        sock = socket.socket(self.addrinfo[0], socket.SOCK_STREAM)
+        sock = socket.socket(self.addrinfo.family, socket.SOCK_STREAM)
         sock = AsyncSocket(sock, keyfile=self.cluster_keyfile, certfile=self.cluster_certfile)
         sock.settimeout(MsgTimeout)
         try:
@@ -1476,7 +1446,7 @@ class _Scheduler(object, metaclass=Singleton):
                 dispy_node.busy += 1
                 dispy_node.update_time = time.time()
                 cluster.status_callback(_job.job.status, dispy_node, _job.job)
-        sock = socket.socket(self.addrinfo[0], socket.SOCK_STREAM)
+        sock = socket.socket(self.addrinfo.family, socket.SOCK_STREAM)
         sock = AsyncSocket(sock, keyfile=self.cluster_keyfile, certfile=self.cluster_certfile)
         sock.settimeout(MsgTimeout)
         try:
@@ -1494,7 +1464,7 @@ class _Scheduler(object, metaclass=Singleton):
         if cluster.status_callback:
             dispy_node.update_time = time.time()
             cluster.status_callback(status, dispy_node, None)
-        sock = socket.socket(self.addrinfo[0], socket.SOCK_STREAM)
+        sock = socket.socket(self.addrinfo.family, socket.SOCK_STREAM)
         sock = AsyncSocket(sock, keyfile=self.cluster_keyfile, certfile=self.cluster_certfile)
         sock.settimeout(MsgTimeout)
         status_info = {'compute_id': cluster._compute.id,
@@ -1905,7 +1875,7 @@ class _Scheduler(object, metaclass=Singleton):
         if not node or cluster._compute.id not in node.clusters:
             raise StopIteration([])
         if from_node:
-            sock = socket.socket(self.addrinfo[0], socket.SOCK_STREAM)
+            sock = socket.socket(self.addrinfo.family, socket.SOCK_STREAM)
             sock = AsyncSocket(sock, keyfile=self.node_keyfile, certfile=self.node_certfile)
             sock.settimeout(MsgTimeout)
             try:
