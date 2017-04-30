@@ -114,6 +114,7 @@
           $('#timeout-div').hide();
           $('#jobs').hide();
         } else {
+          $('#host').attr('size', Math.max($('#host').attr('size'), host.length));
           show_node(host);
         }
 	
@@ -302,7 +303,7 @@
 	</tr>
 	<tr>
           <td><strong>Name or IP of Node to Show : </strong></td>
-          <td><input style="width:10em;" maxlength="32" type="text" id="host" value="" /></td>
+          <td><input style="min-width:8em;" size="8" type="text" id="host" value="" /></td>
 	</tr>
       </table>
       <div style="text-align:center;">

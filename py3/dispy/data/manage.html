@@ -21,6 +21,14 @@
       function show_nodes() {
         var nodes = cluster_nodes[cur_cluster_name];
         if (nodes.length > 0) {
+          var ip_size = Math.max($('input[type="text"][name="host_1"]').attr('size'),
+                            Math.max.apply(null, $.map(nodes, function(node, name) {
+                                                           return node.ip_addr.length;
+                                                         })));
+          $('input[type="text"][name^="host_"]').each(function() {
+            $(this).attr('size', ip_size);
+          });
+
           var rows = '';
           $.each(nodes, function(i, node) {
             rows += '<tr><td>' + (i + 1) + '</td><td><a href="node.html?host=' +
@@ -84,6 +92,17 @@
 
       $(document).ready(function() {
 
+        var rows = '';
+
+        for (var i = 1; i <= new_node_count; i++) {
+          rows += '<tr><td>' + i + '</td>' +
+            '<td><input style="min-width:8em;" size="8" type="text" name="host_' + i + '" /></td>' +
+            '<td><input style="width:3em;" maxlength="6" type="text" name="cpus_' + i + '" /></td>' +
+            '<td><input style="width:4em;" maxlength="6" type="text" name="port_' + i + '" /></td>' +
+            '</tr>';
+        }
+        $('#new-nodes > tbody').html(rows);
+
         get_nodes();
 
         $('#update-cpus').click(function() {
@@ -131,17 +150,6 @@
               $('#messages').html('<li style="color:red">Changing CPUs failed.</li>');
             });
         });
-
-        var rows = '';
-
-        for (var i = 1; i <= new_node_count; i++) {
-          rows += '<tr><td>' + i + '</td>' +
-            '<td><input style="width:10em;" maxlength="32" type="text" name="host_' + i + '" /></td>' +
-            '<td><input style="width:3em;" maxlength="6" type="text" name="cpus_' + i + '" /></td>' +
-            '<td><input style="width:4em;" maxlength="6" type="text" name="port_' + i + '" /></td>' +
-            '</tr>';
-        }
-        $('#new-nodes > tbody').html(rows);
 
         $('#add-node').click(function() {
           $('#messages').html('');
