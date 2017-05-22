@@ -338,7 +338,7 @@ class _Scheduler(object, metaclass=Singleton):
             if ip_addr == '':
                 ip_addr = None
             raise StopIteration
-        ip_addr = _node_ipaddr(sock.getsockname()[0]).ip
+        ip_addr = _node_ipaddr(sock.getsockname()[0])
         self.ip_addrs.add(ip_addr)
         logger.debug('TCP server at %s:%s', ip_addr, self.port)
         sock.listen(32)
@@ -575,7 +575,7 @@ class _Scheduler(object, metaclass=Singleton):
             if ip_addr == '':
                 ip_addr = None
             raise StopIteration
-        ip_addr = _node_ipaddr(sock.getsockname()[0]).ip
+        ip_addr = _node_ipaddr(sock.getsockname()[0])
         logger.debug('Scheduler at %s:%s', ip_addr, self.scheduler_port)
         sock.listen(32)
         while 1:
