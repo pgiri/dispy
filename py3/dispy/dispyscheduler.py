@@ -35,8 +35,8 @@ for path in sys.path:
         break
 del path
 
-import asyncoro
-from asyncoro import Coro, AsynCoro, AsyncSocket, Singleton, serialize, deserialize
+import pycos
+from pycos import Task, Pycos, AsyncSocket, Singleton, serialize, deserialize
 import dispy
 import dispy.httpd
 from dispy import _Compute, DispyJob, _DispyJob_, _Function, _Node, DispyNode, NodeAllocate, \
@@ -94,8 +94,8 @@ class _Cluster(object):
             state.pop(var, None)
         return state
 
-    def node_jobs(self, node, from_node=False, coro=None):
-        jobs = Coro(self.scheduler.node_jobs, self, node, from_node, get_uids=False).value()
+    def node_jobs(self, node, from_node=False, task=None):
+        jobs = Task(self.scheduler.node_jobs, self, node, from_node, get_uids=False).value()
         return jobs
 
     def cancel(self, job):
@@ -105,10 +105,10 @@ class _Cluster(object):
         if not isinstance(node_alloc, list):
             node_alloc = [node_alloc]
         node_allocs = _parse_node_allocs(node_alloc)
-        Coro(self.scheduler.allocate_node, self, node_allocs)
+        Task(self.scheduler.allocate_node, self, node_allocs)
 
     def set_node_cpus(self, node, cpus):
-        return Coro(self.scheduler.set_node_cpus, node, cpus).value()
+        return Task(self.scheduler.set_node_cpus, node, cpus).value()
 
 
 class _Scheduler(object, metaclass=Singleton):
@@ -206,14 +206,14 @@ class _Scheduler(object, metaclass=Singleton):
         else:
             self.zombie_interval = None
 
-        self.asyncoro = AsynCoro()
+        self.pycos = Pycos()
         atexit.register(self.shutdown)
 
         self._clusters = {}
         self.unsched_clusters = []
         self.pending_clusters = {}
         self._sched_jobs = {}
-        self._sched_event = asyncoro.Event()
+        self._sched_event = pycos.Event()
         # once a _job is done (i.e., final result for it is
         # received from node), it is added to done_jobs, so same
         # object is not reused by Python (when a new job is
@@ -238,12 +238,12 @@ class _Scheduler(object, metaclass=Singleton):
         else:
             self.httpd = None
 
-        self.timer_coro = Coro(self.timer_task)
-        self.tcp_coros = []
-        self.scheduler_coros = []
+        self.timer_task = Task(self.timer_task)
+        self.tcp_tasks = []
+        self.scheduler_tasks = []
         for ip_addr in list(ip_addrs):
-            self.tcp_coros.append(Coro(self.tcp_server, ip_addr))
-            self.scheduler_coros.append(Coro(self.scheduler_server, ip_addr))
+            self.tcp_tasks.append(Task(self.tcp_server, ip_addr))
+            self.scheduler_tasks.append(Task(self.scheduler_server, ip_addr))
 
         with open(os.path.join(self.dest_path_prefix, 'config'), 'wb') as fd:
             config = {
@@ -275,15 +275,15 @@ class _Scheduler(object, metaclass=Singleton):
             self.udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
 
         self.udp_sock = AsyncSocket(self.udp_sock)
-        self.udp_coro = Coro(self.udp_server)
+        self.udp_task = Task(self.udp_server)
 
-        self.scheduler_coro = Coro(self._schedule_jobs)
+        self.scheduler_task = Task(self._schedule_jobs)
 
-    def udp_server(self, coro=None):
+    def udp_server(self, task=None):
         # generator
-        coro.set_daemon()
+        task.set_daemon()
 
-        Coro(self.broadcast_ping)
+        Task(self.broadcast_ping)
         self.send_ping_cluster(self._node_allocs, set())
 
         while 1:
@@ -324,9 +324,9 @@ class _Scheduler(object, metaclass=Singleton):
             else:
                 pass
 
-    def tcp_server(self, ip_addr, coro=None):
+    def tcp_server(self, ip_addr, task=None):
         # generator
-        coro.set_daemon()
+        task.set_daemon()
         sock = socket.socket(self.addrinfo.family, socket.SOCK_STREAM)
         sock = AsyncSocket(sock, keyfile=self.node_keyfile, certfile=self.node_certfile)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -354,9 +354,9 @@ class _Scheduler(object, metaclass=Singleton):
             except:
                 logger.debug(traceback.format_exc())
                 continue
-            Coro(self.tcp_task, conn, addr)
+            Task(self.tcp_task, conn, addr)
 
-    def tcp_task(self, conn, addr, coro=None):
+    def tcp_task(self, conn, addr, task=None):
         # generator
         conn.settimeout(MsgTimeout)
         msg = yield conn.recv_msg()
@@ -390,7 +390,7 @@ class _Scheduler(object, metaclass=Singleton):
                         if dispy_node:
                             dispy_node.avail_info = info['avail_info']
                             dispy_node.update_time = node.last_pulse
-                            Coro(self.send_node_status, cluster, dispy_node, DispyNode.AvailInfo)
+                            Task(self.send_node_status, cluster, dispy_node, DispyNode.AvailInfo)
                             if cluster.status_callback:
                                 cluster.status_callback(DispyNode.AvailInfo, dispy_node, None)
             conn.close()
@@ -473,7 +473,7 @@ class _Scheduler(object, metaclass=Singleton):
                         dispy_node = cluster._dispy_nodes.pop(node.ip_addr, None)
                         if not dispy_node:
                             continue
-                        Coro(self.send_node_status, cluster, dispy_node, DispyNode.Closed)
+                        Task(self.send_node_status, cluster, dispy_node, DispyNode.Closed)
                     self.reschedule_jobs(dead_jobs)
             except:
                 # logger.debug(traceback.format_exc())
@@ -516,7 +516,7 @@ class _Scheduler(object, metaclass=Singleton):
                         node_computations.append(compute)
                         break
                 if node_computations:
-                    Coro(self.setup_node, node, node_computations)
+                    Task(self.setup_node, node, node_computations)
                 yield self._sched_event.set()
             else:
                 node.avail_cpus = cpus
@@ -530,7 +530,7 @@ class _Scheduler(object, metaclass=Singleton):
             logger.warning('Invalid message from %s:%s ignored', addr[0], addr[1])
             conn.close()
 
-    def schedule_cluster(self, coro=None):
+    def schedule_cluster(self, task=None):
         while self.unsched_clusters:
             cluster = self.unsched_clusters[0]
             if self._clusters:
@@ -562,8 +562,8 @@ class _Scheduler(object, metaclass=Singleton):
             finally:
                 reply_sock.close()
 
-    def scheduler_server(self, ip_addr, coro=None):
-        coro.set_daemon()
+    def scheduler_server(self, ip_addr, task=None):
+        task.set_daemon()
         sock = socket.socket(self.addrinfo.family, socket.SOCK_STREAM)
         sock = AsyncSocket(sock, keyfile=self.cluster_keyfile, certfile=self.cluster_certfile)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -580,9 +580,9 @@ class _Scheduler(object, metaclass=Singleton):
         sock.listen(32)
         while 1:
             conn, addr = yield sock.accept()
-            Coro(self.scheduler_task, conn, addr)
+            Task(self.scheduler_task, conn, addr)
 
-    def scheduler_task(self, conn, addr, coro=None):
+    def scheduler_task(self, conn, addr, task=None):
         # generator
         def _job_request_task(self, cluster, node, _job):
             # generator
@@ -862,7 +862,7 @@ class _Scheduler(object, metaclass=Singleton):
                 resp = 'NAK'.encode()
             else:
                 resp = 'ACK'.encode()
-                Coro(self.schedule_cluster)
+                Task(self.schedule_cluster)
 
         elif msg.startswith(b'CLOSE:'):
             msg = msg[len(b'CLOSE:'):]
@@ -880,7 +880,7 @@ class _Scheduler(object, metaclass=Singleton):
                 raise StopIteration
             cluster.zombie = True
             terminate_pending = req.get('terminate_pending', False)
-            Coro(self.cleanup_computation, cluster, terminate_pending=bool(terminate_pending))
+            Task(self.cleanup_computation, cluster, terminate_pending=bool(terminate_pending))
 
         elif msg.startswith(b'FILEXFER:'):
             msg = msg[len(b'FILEXFER:'):]
@@ -902,7 +902,7 @@ class _Scheduler(object, metaclass=Singleton):
                     from_node = req['from_node']
                     # assert req['get_uids'] == True
                     job_uids = yield self.node_jobs(cluster, node, from_node,
-                                                    get_uids=True, coro=coro)
+                                                    get_uids=True, task=task)
             except:
                 job_uids = []
             resp = serialize(job_uids)
@@ -944,7 +944,7 @@ class _Scheduler(object, metaclass=Singleton):
             yield conn.send_msg(serialize(resp))
             conn.close()
             if resp > 0:
-                yield self.resend_job_results(cluster, coro=coro)
+                yield self.resend_job_results(cluster, task=task)
             raise StopIteration
 
         elif msg.startswith(b'PENDING_JOBS:'):
@@ -991,7 +991,7 @@ class _Scheduler(object, metaclass=Singleton):
                 req = deserialize(req)
                 cluster = self._clusters[req['compute_id']]
                 assert cluster.client_auth == req['auth']
-                resp = yield self.allocate_node(cluster, req['node_alloc'], coro=coro)
+                resp = yield self.allocate_node(cluster, req['node_alloc'], task=task)
                 resp = serialize(resp)
             except:
                 resp = serialize(-1)
@@ -1025,7 +1025,7 @@ class _Scheduler(object, metaclass=Singleton):
         conn.close()
         # end of scheduler_task
 
-    def resend_job_results(self, cluster, coro=None):
+    def resend_job_results(self, cluster, task=None):
         # TODO: limit number queued so as not to take up too much space/time
         result_files = [f for f in os.listdir(cluster.dest_path)
                         if f.startswith('_dispy_job_reply_')]
@@ -1039,19 +1039,19 @@ class _Scheduler(object, metaclass=Singleton):
                 logger.debug('Could not load "%s"', result_file)
             else:
                 status = yield self.send_job_result(
-                    result.uid, cluster, result, resending=True, coro=coro)
+                    result.uid, cluster, result, resending=True, task=task)
                 if status:
                     break
 
-    def timer_task(self, coro=None):
-        coro.set_daemon()
+    def timer_task(self, task=None):
+        task.set_daemon()
         reset = True
         last_ping_time = last_pulse_time = last_zombie_time = time.time()
         while 1:
             if reset:
                 timeout = num_min(self.pulse_interval, self.ping_interval, self.zombie_interval)
 
-            reset = yield coro.suspend(timeout)
+            reset = yield task.suspend(timeout)
             if reset:
                 continue
 
@@ -1075,7 +1075,7 @@ class _Scheduler(object, metaclass=Singleton):
                         dispy_node = cluster._dispy_nodes.pop(node.ip_addr, None)
                         if not dispy_node:
                             continue
-                        Coro(self.send_node_status, cluster, dispy_node, DispyNode.Closed)
+                        Task(self.send_node_status, cluster, dispy_node, DispyNode.Closed)
 
                 dead_jobs = [_job for _job in self._sched_jobs.values()
                              if _job.node is not None and _job.node.ip_addr in dead_nodes]
@@ -1083,7 +1083,7 @@ class _Scheduler(object, metaclass=Singleton):
                 resend = [resend_cluster for resend_cluster in self._clusters.values()
                           if resend_cluster.pending_results and not resend_cluster.zombie]
                 for cluster in resend:
-                    Coro(self.resend_job_results, cluster)
+                    Task(self.resend_job_results, cluster)
 
             if self.ping_interval and (now - last_ping_time) >= self.ping_interval:
                 last_ping_time = now
@@ -1099,7 +1099,7 @@ class _Scheduler(object, metaclass=Singleton):
                 for cluster in zombies:
                     logger.debug('Deleting zombie computation "%s" / %s',
                                  cluster._compute.name, cluster._compute.id)
-                    Coro(self.cleanup_computation, cluster)
+                    Task(self.cleanup_computation, cluster)
                 zombies = [cluster for cluster in self.pending_clusters.values()
                            if (now - cluster.last_pulse) > self.zombie_interval]
                 for cluster in zombies:
@@ -1155,7 +1155,7 @@ class _Scheduler(object, metaclass=Singleton):
             client_sock.close()
             conn.close()
 
-    def send_ping_node(self, ip_addr, port=None, coro=None):
+    def send_ping_node(self, ip_addr, port=None, task=None):
         ping_msg = {'version': _dispy_version, 'sign': self.sign, 'port': self.port}
         ping_msg['ip_addrs'] = list(filter(lambda ip: bool(ip), self.ext_ip_addrs))
         if not port:
@@ -1171,7 +1171,7 @@ class _Scheduler(object, metaclass=Singleton):
             pass
         tcp_sock.close()
 
-    def broadcast_ping(self, port=None, coro=None):
+    def broadcast_ping(self, port=None, task=None):
         # generator
         if not port:
             port = self.node_port
@@ -1192,20 +1192,20 @@ class _Scheduler(object, metaclass=Singleton):
             pass
         bc_sock.close()
 
-    def send_ping_cluster(self, node_allocs, present_ip_addrs, coro=None):
+    def send_ping_cluster(self, node_allocs, present_ip_addrs, task=None):
         for node_alloc in node_allocs:
             # TODO: we assume subnets are indicated by '*', instead of
             # subnet mask; this is a limitation, but specifying with
             # subnet mask a bit cumbersome.
             if node_alloc.ip_rex.find('*') >= 0:
                 if node_alloc.ip_rex != '.*':
-                    Coro(self.broadcast_ping, node_alloc.port)
+                    Task(self.broadcast_ping, node_alloc.port)
             else:
                 ip_addr = node_alloc.ip_addr
                 if ip_addr in present_ip_addrs:
                     continue
                 port = node_alloc.port
-                Coro(self.send_ping_node, ip_addr, port)
+                Task(self.send_ping_node, ip_addr, port)
 
     def add_cluster(self, cluster):
         compute = cluster._compute
@@ -1227,9 +1227,9 @@ class _Scheduler(object, metaclass=Singleton):
                     node.cpus = min(node.avail_cpus, cpus)
                 compute_nodes.append(node)
         for node in compute_nodes:
-            Coro(self.setup_node, node, [compute])
+            Task(self.setup_node, node, [compute])
 
-    def cleanup_computation(self, cluster, terminate_pending=False, coro=None):
+    def cleanup_computation(self, cluster, terminate_pending=False, task=None):
         # generator
         if not cluster.zombie:
             raise StopIteration
@@ -1290,19 +1290,19 @@ class _Scheduler(object, metaclass=Singleton):
             node.clusters.discard(cid)
             if cluster.exclusive:
                 node.cpus = node.avail_cpus
-            close_nodes.append((Coro(node.close, compute, terminate_pending=terminate_pending),
+            close_nodes.append((Task(node.close, compute, terminate_pending=terminate_pending),
                                 dispy_node))
         cluster._dispy_nodes.clear()
-        for close_coro, dispy_node in close_nodes:
-            yield close_coro.finish()
+        for close_task, dispy_node in close_nodes:
+            yield close_task.finish()
             yield self.send_node_status(cluster, dispy_node, DispyNode.Closed)
         if self.httpd:
             self.httpd.del_cluster(cluster)
-        Coro(self.schedule_cluster)
+        Task(self.schedule_cluster)
 
-    def setup_node(self, node, computes, coro=None):
+    def setup_node(self, node, computes, task=None):
         # generator
-        coro.set_daemon()
+        task.set_daemon()
         for compute in computes:
             # NB: to avoid computation being sent multiple times, we
             # add to cluster's _dispy_nodes before sending computation
@@ -1314,16 +1314,16 @@ class _Scheduler(object, metaclass=Singleton):
             dispy_node.avail_cpus = node.avail_cpus
             dispy_node.avail_info = node.avail_info
             cluster._dispy_nodes[node.ip_addr] = dispy_node
-            r = yield node.setup(compute, coro=coro)
+            r = yield node.setup(compute, task=task)
             if r or compute.id not in self._clusters:
                 cluster._dispy_nodes.pop(node.ip_addr, None)
                 logger.warning('Failed to setup %s for computation "%s"', node.ip_addr, compute.name)
-                Coro(node.close, compute)
+                Task(node.close, compute)
             else:
                 dispy_node.update_time = time.time()
                 node.clusters.add(compute.id)
                 self._sched_event.set()
-                Coro(self.send_node_status, cluster, dispy_node, DispyNode.Initialized)
+                Task(self.send_node_status, cluster, dispy_node, DispyNode.Initialized)
 
     def add_node(self, info):
         try:
@@ -1369,7 +1369,7 @@ class _Scheduler(object, metaclass=Singleton):
                     dispy_node = cluster._dispy_nodes.pop(node.ip_addr, None)
                     if not dispy_node:
                         continue
-                    Coro(self.send_node_status, cluster, dispy_node, DispyNode.Closed)
+                    Task(self.send_node_status, cluster, dispy_node, DispyNode.Closed)
                 self.reschedule_jobs(dead_jobs)
             node.auth = auth
         node_computations = []
@@ -1385,9 +1385,9 @@ class _Scheduler(object, metaclass=Singleton):
                     node_computations.append(compute)
                     break
         if node_computations:
-            Coro(self.setup_node, node, node_computations)
+            Task(self.setup_node, node, node_computations)
 
-    def send_job_result(self, uid, cluster, result, resending=False, coro=None):
+    def send_job_result(self, uid, cluster, result, resending=False, task=None):
         # generator
         sock = socket.socket(self.addrinfo.family, socket.SOCK_STREAM)
         sock = AsyncSocket(sock, keyfile=self.cluster_keyfile, certfile=self.cluster_certfile)
@@ -1430,15 +1430,15 @@ class _Scheduler(object, metaclass=Singleton):
                 else:
                     self.done_jobs.pop(uid, None)
                     if cluster.pending_results:
-                        Coro(self.resend_job_results, cluster)
+                        Task(self.resend_job_results, cluster)
             if cluster.pending_jobs == 0 and cluster.pending_results == 0 and cluster.zombie:
-                Coro(self.cleanup_computation, cluster)
+                Task(self.cleanup_computation, cluster)
         finally:
             sock.close()
 
         raise StopIteration(status)
 
-    def send_job_status(self, cluster, _job, coro=None):
+    def send_job_status(self, cluster, _job, task=None):
         if cluster.status_callback:
             dispy_node = cluster._dispy_nodes.get(_job.node.ip_addr, None)
             # assert _job.job.status == DispyJob.Running
@@ -1460,7 +1460,7 @@ class _Scheduler(object, metaclass=Singleton):
                            cluster.client_ip_addr, cluster.client_job_result_port)
         sock.close()
 
-    def send_node_status(self, cluster, dispy_node, status, coro=None):
+    def send_node_status(self, cluster, dispy_node, status, task=None):
         if cluster.status_callback:
             dispy_node.update_time = time.time()
             cluster.status_callback(status, dispy_node, None)
@@ -1533,7 +1533,7 @@ class _Scheduler(object, metaclass=Singleton):
             if cluster.pending_jobs == 0:
                 cluster.end_time = time.time()
                 if cluster.zombie:
-                    Coro(self.cleanup_computation, cluster)
+                    Task(self.cleanup_computation, cluster)
             self._sched_event.set()
             for xf in _job.xfer_files:
                 try:
@@ -1543,7 +1543,7 @@ class _Scheduler(object, metaclass=Singleton):
                         os.remove(xf.name)
                 except:
                     logger.warning('Could not remove "%s"', xf.name)
-        Coro(self.send_job_result, _job.uid, cluster, reply, resending=False)
+        Task(self.send_job_result, _job.uid, cluster, reply, resending=False)
 
     def reschedule_jobs(self, dead_jobs):
         if not dead_jobs:
@@ -1563,7 +1563,7 @@ class _Scheduler(object, metaclass=Singleton):
                 if cluster.pending_jobs == 0:
                     cluster.end_time = time.time()
                 self.done_jobs[_job.uid] = _job
-                Coro(self.send_job_result, _job.uid, cluster, reply, resending=False)
+                Task(self.send_job_result, _job.uid, cluster, reply, resending=False)
         self._sched_event.set()
 
     def load_balance_node(self):
@@ -1670,12 +1670,12 @@ class _Scheduler(object, metaclass=Singleton):
             cluster = self._clusters[_job.compute_id]
         return (_job, node, cluster)
 
-    def run_job(self, _job, cluster, coro=None):
+    def run_job(self, _job, cluster, task=None):
         # generator
-        # assert coro is not None
+        # assert task is not None
         node = _job.node
         try:
-            yield _job.run(coro=coro)
+            yield _job.run(task=task)
         except EnvironmentError:
             logger.warning('Failed to run job %s on %s for computation %s; removing this node',
                            _job.uid, node.ip_addr, cluster._compute.name)
@@ -1720,16 +1720,16 @@ class _Scheduler(object, metaclass=Singleton):
                 # TODO/Note: It is likely that this job status may arrive at
                 # the client before the job is done and the node's status
                 # arrives. Either use queing for messages (ideally with
-                # asyncoro's message passing) or tag messages with timestamps
+                # pycos's message passing) or tag messages with timestamps
                 # so recipient can use temporal ordering to ignore prior
                 # messages
-                Coro(self.send_job_status, cluster, _job)
+                Task(self.send_job_status, cluster, _job)
         if not cluster._compute.reentrant:
             _job._args = _job._kwargs = None
 
-    def _schedule_jobs(self, coro=None):
+    def _schedule_jobs(self, task=None):
         # generator
-        assert coro is not None
+        assert task is not None
         while not self.terminate:
             # n = sum(len(cluster._jobs) for cluster in self._clusters.values())
             _job, node, cluster = self.select_job_node_cluster()
@@ -1741,18 +1741,18 @@ class _Scheduler(object, metaclass=Singleton):
             # assert node.busy < node.cpus
             self._sched_jobs[_job.uid] = _job
             node.busy += 1
-            Coro(self.run_job, _job, cluster)
+            Task(self.run_job, _job, cluster)
 
         logger.debug('Scheduler quitting: %s', len(self._sched_jobs))
         for uid, _job in self._sched_jobs.items():
             cluster = self._clusters.get(_job.compute_id, None)
             if cluster:
                 reply = _JobReply(_job, cluster.ip_addr, status=DispyJob.Terminated)
-                Coro(self.send_job_result, _job.uid, cluster, reply, resending=False)
+                Task(self.send_job_result, _job.uid, cluster, reply, resending=False)
         for cid, cluster in self._clusters.items():
             for _job in cluster._jobs:
                 reply = _JobReply(_job, cluster.ip_addr, status=DispyJob.Terminated)
-                Coro(self.send_job_result, _job.uid, cluster, reply, resending=False)
+                Task(self.send_job_result, _job.uid, cluster, reply, resending=False)
             cluster._jobs = []
 
         for cluster in list(self._clusters.values()):
@@ -1828,7 +1828,7 @@ class _Scheduler(object, metaclass=Singleton):
         _job = self._sched_jobs.get(uid, None)
         if _job:
             _job.job.status = DispyJob.Cancelled
-            Coro(_job.node.send, b'TERMINATE_JOB:' + serialize(_job), reply=False)
+            Task(_job.node.send, b'TERMINATE_JOB:' + serialize(_job), reply=False)
             return 0
         else:
             for i, _job in enumerate(cluster._jobs):
@@ -1837,7 +1837,7 @@ class _Scheduler(object, metaclass=Singleton):
                     self.done_jobs[_job.uid] = _job
                     cluster.pending_jobs -= 1
                     reply = _JobReply(_job, cluster.ip_addr, status=DispyJob.Cancelled)
-                    Coro(self.send_job_result, _job.uid, cluster, reply, resending=False)
+                    Task(self.send_job_result, _job.uid, cluster, reply, resending=False)
                     return 0
 
             for ip_addr in cluster._dispy_nodes:
@@ -1850,12 +1850,12 @@ class _Scheduler(object, metaclass=Singleton):
                         self.done_jobs[_job.uid] = _job
                         cluster.pending_jobs -= 1
                         reply = _JobReply(_job, cluster.ip_addr, status=DispyJob.Cancelled)
-                        Coro(self.send_job_result, _job.uid, cluster, reply, resending=False)
+                        Task(self.send_job_result, _job.uid, cluster, reply, resending=False)
                         return 0
             logger.debug('Invalid job %s!', uid)
             return -1
 
-    def allocate_node(self, cluster, node_alloc, coro=None):
+    def allocate_node(self, cluster, node_alloc, task=None):
         # generator
         if not isinstance(node_alloc, list):
             node_alloc = [node_alloc]
@@ -1869,7 +1869,7 @@ class _Scheduler(object, metaclass=Singleton):
         self.add_cluster(cluster)
         yield 0
 
-    def node_jobs(self, cluster, ip_addr, from_node=False, get_uids=True, coro=None):
+    def node_jobs(self, cluster, ip_addr, from_node=False, get_uids=True, task=None):
         # generator
         node = self._nodes.get(ip_addr, None)
         if not node or cluster._compute.id not in node.clusters:
@@ -1927,7 +1927,7 @@ class _Scheduler(object, metaclass=Singleton):
             yield self._sched_event.set()
         raise StopIteration(cpus)
 
-    def shutdown(self, coro=None):
+    def shutdown(self, task=None):
         if self.terminate:
             return
         logger.debug('Shutting down scheduler ...')
@@ -1946,10 +1946,10 @@ class _Scheduler(object, metaclass=Singleton):
         self.unsched_clusters = []
         while (any(cluster.pending_jobs for cluster in self._clusters.values())):
             logger.warning('Waiting for %s clusters to finish', len(self._clusters))
-            yield coro.sleep(5)
+            yield task.sleep(5)
 
         self._sched_event.set()
-        yield self.scheduler_coro.finish()
+        yield self.scheduler_task.finish()
 
     def print_status(self):
         print('')
@@ -1981,7 +1981,7 @@ class _Scheduler(object, metaclass=Singleton):
 if __name__ == '__main__':
     import argparse
 
-    logger = asyncoro.Logger('dispyscheduler')
+    logger = pycos.Logger('dispyscheduler')
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', dest='config', default='',
@@ -2094,7 +2094,7 @@ if __name__ == '__main__':
 
     if config['loglevel']:
         logger.setLevel(logger.DEBUG)
-        asyncoro.logger.setLevel(asyncoro.logger.DEBUG)
+        pycos.logger.setLevel(pycos.logger.DEBUG)
     else:
         logger.setLevel(logger.INFO)
     del config['loglevel']
@@ -2155,7 +2155,7 @@ if __name__ == '__main__':
     logger.info('dispyscheduler version %s', _dispy_version)
     scheduler = _Scheduler(**config)
     if daemon:
-        scheduler.scheduler_coro.value()
+        scheduler.scheduler_task.value()
     else:
         while 1:
             try:
@@ -2170,7 +2170,7 @@ if __name__ == '__main__':
                 break
             except:
                 logger.debug(traceback.format_exc())
-            Coro(scheduler.print_status).value()
-        Coro(scheduler.shutdown).value()
-    Coro(scheduler.print_status).value()
+            Task(scheduler.print_status).value()
+        Task(scheduler.shutdown).value()
+    Task(scheduler.print_status).value()
     exit(0)

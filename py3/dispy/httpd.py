@@ -360,7 +360,7 @@ class DispyHTTPServer(object):
             cluster_info.jobs.pop(id(job), None)
             self._cluster_lock.release()
 
-        if node is not None:
+        if node:
             # even if node closed, keep it; let UI decide how to indicate status
             self._cluster_lock.acquire()
             cluster_info.status[node.ip_addr] = node

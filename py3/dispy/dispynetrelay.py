@@ -15,7 +15,7 @@ except:
     netifaces = None
 
 import dispy
-import asyncoro
+import pycos
 
 __author__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __email__ = "pgiri@yahoo.com"
@@ -28,8 +28,8 @@ __status__ = "Production"
 __version__ = dispy._dispy_version
 __all__ = []
 
-logger = asyncoro.Logger('dispynetrelay')
-from asyncoro import Coro, serialize, deserialize, AsyncSocket
+logger = pycos.Logger('dispynetrelay')
+from pycos import Task, serialize, deserialize, AsyncSocket
 
 class DispyNetRelay(object):
     """Internal use only.
@@ -45,9 +45,9 @@ class DispyNetRelay(object):
         self.scheduler_port = scheduler_port
         self.scheduler_ip_addrs = list(filter(lambda ip: bool(ip),
                                               [dispy._node_ipaddr(scheduler_node)]))
-        self.listen_udp_coro = Coro(self.listen_udp_proc)
-        self.listen_tcp_coro = Coro(self.listen_tcp_proc)
-        self.sched_udp_coro = Coro(self.sched_udp_proc)
+        self.listen_udp_task = Task(self.listen_udp_proc)
+        self.listen_tcp_task = Task(self.listen_tcp_proc)
+        self.sched_udp_task = Task(self.sched_udp_proc)
         if self.addrinfo.family == socket.AF_INET:
             self._broadcast = '<broadcast>'
             if netifaces:
@@ -65,8 +65,8 @@ class DispyNetRelay(object):
             self.mreq += struct.pack('@I', self.addrinfo.ifn)
         logger.info('version %s started', dispy._dispy_version)
 
-    def listen_udp_proc(self, coro=None):
-        coro.set_daemon()
+    def listen_udp_proc(self, task=None):
+        task.set_daemon()
         bc_sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_DGRAM))
         if self.addrinfo.family == socket.AF_INET:
             bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -116,8 +116,8 @@ class DispyNetRelay(object):
 
             yield bc_sock.sendto('PING:'.encode() + serialize(info), addr)
 
-    def listen_tcp_proc(self, coro=None):
-        coro.set_daemon()
+    def listen_tcp_proc(self, task=None):
+        task.set_daemon()
         tcp_sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM))
         tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         tcp_sock.bind(('', self.listen_port))
@@ -133,7 +133,7 @@ class DispyNetRelay(object):
         bc_sock.bind((self.addrinfo.ip, 0))
         auth_len = len(dispy.auth_code('', ''))
 
-        def tcp_task(conn, addr, coro=None):
+        def tcp_task(conn, addr, task=None):
             conn.settimeout(5)
             try:
                 msg = yield conn.recvall(auth_len)
@@ -171,10 +171,10 @@ class DispyNetRelay(object):
 
         while 1:
             conn, addr = yield tcp_sock.accept()
-            Coro(tcp_task, conn, addr)
+            Task(tcp_task, conn, addr)
 
-    def sched_udp_proc(self, coro=None):
-        coro.set_daemon()
+    def sched_udp_proc(self, task=None):
+        task.set_daemon()
         sched_sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_DGRAM))
         if self.addrinfo.family == socket.AF_INET:
             sched_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

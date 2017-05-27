@@ -35,11 +35,11 @@ try:
 except:
     netifaces = None
 
-import asyncoro
+import pycos
 import dispy
 from dispy import _JobReply, DispyJob, DispyNodeAvailInfo, _Function, _Compute, _XferFile, \
      _dispy_version, auth_code, num_min, _same_file, MsgTimeout
-from asyncoro import Coro, AsynCoro, AsyncSocket, serialize, deserialize
+from pycos import Task, Pycos, AsyncSocket, serialize, deserialize
 
 __author__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __email__ = "pgiri@yahoo.com"
@@ -266,7 +266,7 @@ class _DispyNode(object):
             os.makedirs(self.dest_path_prefix)
             os.chmod(self.dest_path_prefix, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
 
-        self.asyncoro = AsynCoro()
+        self.pycos = Pycos()
 
         self.tcp_sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM),
                                     keyfile=keyfile, certfile=certfile)
@@ -348,7 +348,7 @@ class _DispyNode(object):
         self.reply_Q_thread.start()
 
         self.serve = serve
-        self.timer_coro = Coro(self.timer_task)
+        self.timer_task = Task(self.timer_task)
         self.service_start = self.service_stop = self.service_end = None
         if isinstance(service_start, int) and (isinstance(service_stop, int) or
                                                isinstance(service_end, int)):
@@ -357,7 +357,7 @@ class _DispyNode(object):
                 self.service_stop = service_stop
             if isinstance(service_end, int):
                 self.service_end = service_end
-            Coro(self.service_schedule)
+            Task(self.service_schedule)
         self.client_shutdown = client_shutdown
 
         self.__init_code = ''.join(inspect.getsource(dispy_provisional_result))
@@ -367,12 +367,12 @@ class _DispyNode(object):
             self.__init_globals = dict(globals())
             self.__init_globals.pop('_dispy_config')
             self.__init_globals['_dispy_node'] = self
-        self.tcp_coro = Coro(self.tcp_server)
-        self.udp_coro = Coro(self.udp_server)
+        self.tcp_task = Task(self.tcp_server)
+        self.udp_task = Task(self.udp_server)
         if not daemon:
-            self.cmd_coro = Coro(self.cmd_proc)
+            self.cmd_task = Task(self.cmd_proc)
 
-    def broadcast_ping_msg(self, coro=None):
+    def broadcast_ping_msg(self, task=None):
         if (self.scheduler['auth'] or self.job_infos or not self.avail_cpus or
             not self.service_available()):
             raise StopIteration
@@ -426,7 +426,7 @@ class _DispyNode(object):
             finally:
                 sock.close()
 
-    def send_pong_msg(self, info, addr, coro=None):
+    def send_pong_msg(self, info, addr, task=None):
         if (self.scheduler['auth'] or self.job_infos or not self.num_cpus or
             not self.service_available()):
             _dispy_logger.debug('Busy (%s/%s); ignoring ping message from %s',
@@ -492,13 +492,13 @@ class _DispyNode(object):
                     pass
             sock.close()
 
-    def udp_server(self, coro=None):
-        coro.set_daemon()
-        Coro(self.broadcast_ping_msg)
+    def udp_server(self, task=None):
+        task.set_daemon()
+        Task(self.broadcast_ping_msg)
 
         while 1:
             msg, addr = yield self.udp_sock.recvfrom(1000)
-            # TODO: process each message as separate Coro, so
+            # TODO: process each message as separate Task, so
             # exceptions are contained?
             if msg.startswith('PING:'):
                 try:
@@ -509,7 +509,7 @@ class _DispyNode(object):
                 except:
                     _dispy_logger.debug('Ignoring ping message from %s (%s)', addr[0], addr[1])
                     continue
-                Coro(self.send_pong_msg, info, addr)
+                Task(self.send_pong_msg, info, addr)
             elif msg.startswith('PULSE:'):
                 try:
                     info = deserialize(msg[len('PULSE:'):])
@@ -532,9 +532,9 @@ class _DispyNode(object):
             except:
                 _dispy_logger.debug(traceback.format_exc())
                 continue
-            Coro(self.tcp_serve_task, conn, addr)
+            Task(self.tcp_serve_task, conn, addr)
 
-    def tcp_serve_task(self, conn, addr, coro=None):
+    def tcp_serve_task(self, conn, addr, task=None):
         def job_request_task(msg):
             try:
                 _job = deserialize(msg)
@@ -767,7 +767,7 @@ class _DispyNode(object):
                     self.pulse_interval = 10 * 60
                 if self.zombie_interval:
                     self.pulse_interval = num_min(self.pulse_interval, self.zombie_interval / 5.0)
-                self.timer_coro.resume(True)
+                self.timer_task.resume(True)
                 _dispy_logger.debug('New computation "%s" from %s',
                                     compute.auth, compute.scheduler_ip_addr)
 
@@ -877,7 +877,7 @@ class _DispyNode(object):
                         proc.kill()
                 else:
                     break
-                yield coro.sleep(0.1)
+                yield task.sleep(0.1)
             else:
                 _dispy_logger.warning('Could not kill process %s for job %s',
                                       proc.pid, job_info.job_reply.uid)
@@ -1046,12 +1046,12 @@ class _DispyNode(object):
             yield conn.send_msg(serialize(reply))
             conn.close()
             if reply > 0:
-                yield self.resend_job_results(compute, coro=coro)
+                yield self.resend_job_results(compute, task=task)
         elif msg.startswith('PING:'):
             try:
                 info = deserialize(msg[len('PING:'):])
                 if info['version'] == _dispy_version:
-                    Coro(self.send_pong_msg, info, addr)
+                    Task(self.send_pong_msg, info, addr)
             except:
                 _dispy_logger.debug(traceback.format_exc())
             conn.close()
@@ -1122,7 +1122,7 @@ class _DispyNode(object):
                 _dispy_logger.warning('Failed to send reply to %s', str(addr))
             conn.close()
 
-    def resend_job_results(self, compute, coro=None):
+    def resend_job_results(self, compute, task=None):
         # TODO: limit number queued so as not to take up too much space/time
         if not os.path.isdir(compute.dest_path):
             raise StopIteration
@@ -1144,11 +1144,11 @@ class _DispyNode(object):
             if status:
                 break
 
-    def timer_task(self, coro=None):
-        coro.set_daemon()
+    def timer_task(self, task=None):
+        task.set_daemon()
         last_pulse_time = last_zombie_time = time.time()
         while 1:
-            reset = yield coro.suspend(self.pulse_interval)
+            reset = yield task.suspend(self.pulse_interval)
             if reset:
                 continue
 
@@ -1183,7 +1183,7 @@ class _DispyNode(object):
                 resend = [compute for compute in self.computations.itervalues()
                           if compute.pending_results and not compute.zombie]
                 for compute in resend:
-                    Coro(self.resend_job_results, compute)
+                    Task(self.resend_job_results, compute)
 
             if self.zombie_interval and (now - last_zombie_time) >= self.zombie_interval:
                 last_zombie_time = now
@@ -1211,9 +1211,9 @@ class _DispyNode(object):
                         sock.close()
                 if (not self.scheduler['auth']):
                     self.pulse_interval = self.ping_interval
-                    yield self.broadcast_ping_msg(coro=coro)
+                    yield self.broadcast_ping_msg(task=task)
             if self.ping_interval and (not self.scheduler['auth']):
-                yield self.broadcast_ping_msg(coro=coro)
+                yield self.broadcast_ping_msg(task=task)
 
     def service_available(self):
         if self.serve == 0:
@@ -1228,12 +1228,12 @@ class _DispyNode(object):
             return True
         return False
 
-    def service_schedule(self, coro=None):
-        coro.set_daemon()
+    def service_schedule(self, task=None):
+        task.set_daemon()
         while 1:
             if self.service_stop:
                 now = int(time.time())
-                yield coro.sleep(self.service_stop - now)
+                yield task.sleep(self.service_stop - now)
                 _dispy_logger.debug('Stopping service')
                 sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM),
                                    keyfile=self.keyfile, certfile=self.certfile)
@@ -1249,7 +1249,7 @@ class _DispyNode(object):
 
             if self.service_end:
                 now = int(time.time())
-                yield coro.sleep(self.service_end - now)
+                yield task.sleep(self.service_end - now)
                 _dispy_logger.debug('Shutting down service')
                 self.shutdown('close')
 
@@ -1260,8 +1260,8 @@ class _DispyNode(object):
             if self.service_end:
                 self.service_end += 24 * 3600
             now = int(time.time())
-            yield coro.sleep(self.service_start - now)
-            yield self.broadcast_ping_msg(coro=coro)
+            yield task.sleep(self.service_start - now)
+            yield self.broadcast_ping_msg(task=task)
 
     def __job_program(self, _job, job_info):
         compute = self.computations[_job.compute_id]
@@ -1308,7 +1308,7 @@ class _DispyNode(object):
             job_info.job_reply = job_reply
             self.num_jobs += 1
             self.cpu_time += (job_reply.end_time - job_reply.start_time)
-            Coro(self._send_job_reply, job_info, resending=False)
+            Task(self._send_job_reply, job_info, resending=False)
             proc, job_info.proc = job_info.proc, None
             if proc:
                 if isinstance(proc, multiprocessing.Process):
@@ -1330,7 +1330,7 @@ class _DispyNode(object):
                     _dispy_logger.warning('invalid file "%s" ignored', path)
                     continue
 
-    def _send_job_reply(self, job_info, resending=False, coro=None):
+    def _send_job_reply(self, job_info, resending=False, task=None):
         """Internal use only.
         """
         job_reply = job_info.job_reply
@@ -1376,7 +1376,7 @@ class _DispyNode(object):
                 if resending:
                     compute.pending_results -= 1
                 elif compute.pending_results:
-                    Coro(self.resend_job_results, compute)
+                    Task(self.resend_job_results, compute)
 
             if resending:
                 f = os.path.join(job_info.compute_dest_path,
@@ -1526,11 +1526,11 @@ class _DispyNode(object):
                 compute.scheduler_ip_addr == self.scheduler['ip_addr'] and
                 compute.scheduler_port == self.scheduler['port']):
                 self.pulse_interval = self.ping_interval
-                self.timer_coro.resume(None)
-                Coro(self.broadcast_ping_msg)
+                self.timer_task.resume(None)
+                Task(self.broadcast_ping_msg)
 
     def shutdown(self, how):
-        def _shutdown(self, how, coro=None):
+        def _shutdown(self, how, task=None):
             self.thread_lock.acquire()
             if how == 'exit':
                 if self.scheduler['auth']:
@@ -1576,7 +1576,7 @@ class _DispyNode(object):
                     pass
                 sock.close()
             if how == 'quit' or how == 'terminate':
-                self.tcp_coro.terminate()
+                self.tcp_task.terminate()
                 self.sign = ''
                 cfg_file = os.path.join(self.dest_path_prefix, 'config')
                 try:
@@ -1588,15 +1588,15 @@ class _DispyNode(object):
                 if how == 'terminate':
                     # delay a bit for client to close node, in case shutdown
                     # is called by 'dispynode_shutdown'
-                    yield coro.sleep(0.1)
+                    yield task.sleep(0.1)
                     os.kill(os.getpid(), signal.SIGABRT)
 
         if self.sign:
-            Coro(_shutdown, self, how)
+            Task(_shutdown, self, how)
 
-    def cmd_proc(self, coro=None):
-        coro.set_daemon()
-        thread_pool = asyncoro.AsyncThreadPool(1)
+    def cmd_proc(self, task=None):
+        task.set_daemon()
+        thread_pool = pycos.AsyncThreadPool(1)
         if self.service_start:
             service_from = ' from %s' % time.strftime('%H:%M', time.localtime(self.service_start))
             if self.service_end:
@@ -1606,7 +1606,7 @@ class _DispyNode(object):
         else:
             service_from = service_to = ''
         while 1:
-            cmd = yield coro.receive()
+            cmd = yield task.receive()
             if cmd in ('quit', 'exit'):
                 break
             elif cmd in ('stop', 'start', 'cpus'):
@@ -1648,7 +1648,7 @@ class _DispyNode(object):
                         sock.close()
                 else:
                     if self.num_cpus > 0:
-                        Coro(self.broadcast_ping_msg)
+                        Task(self.broadcast_ping_msg)
             else:
                 print('\n  Serving %d CPUs%s%s%s' %
                       (self.avail_cpus + len(self.job_infos), service_from, service_to,
@@ -1667,7 +1667,7 @@ if __name__ == '__main__':
     import argparse
     import re
 
-    _dispy_logger = asyncoro.Logger('dispynode')
+    _dispy_logger = pycos.Logger('dispynode')
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', dest='config', default='',
@@ -1760,7 +1760,7 @@ if __name__ == '__main__':
 
     if _dispy_config['loglevel']:
         _dispy_logger.setLevel(_dispy_logger.DEBUG)
-        asyncoro.logger.setLevel(asyncoro.logger.DEBUG)
+        pycos.logger.setLevel(pycos.logger.DEBUG)
     else:
         _dispy_logger.setLevel(_dispy_logger.INFO)
     del _dispy_config['loglevel']
@@ -1908,6 +1908,6 @@ if __name__ == '__main__':
                     break
             else:
                 _dispy_cmd = _dispy_cmd.strip().lower()
-                _dispy_node.cmd_coro.send(_dispy_cmd)
+                _dispy_node.cmd_task.send(_dispy_cmd)
 
-    _dispy_node.asyncoro.finish()
+    _dispy_node.pycos.finish()
