@@ -9,27 +9,27 @@ dispy is well suited for data parallel (SIMD) paradigm where a
 computation is evaluated with different (large) datasets independently
 with no communication among computation tasks (except for computation
 tasks sending intermediate results to the client). If
-communication/cooperation among tasks is needed, `asyncoro
-<http://asyncoro.sourceforge.net>`_ framework could be used.
+communication/cooperation among tasks is needed, `pycos
+<https://pycos.sourceforge.io>`_ framework could be used.
 
 dispy works with Python versions 2.7+ and 3.1+. It has been tested
 with Linux, OS X and Windows; it may work on other platforms too.
 
 Features
 --------
-* dispy is implemented with asyncoro_, an independent framework for
+* dispy is implemented with pycos_, an independent framework for
   asynchronous, concurrent, distributed, network programming with
-  coroutines (without threads). asyncoro uses non-blocking sockets
+  tasks (without threads). pycos uses non-blocking sockets
   with I/O notification mechanisms epoll, kqueue and poll, and Windows
   I/O Completion Ports (IOCP) for high performance and scalability, so
   dispy works efficiently with a single node or large cluster(s) of
-  nodes. asyncoro itself has support for distributed/parallel
+  nodes. pycos itself has support for distributed/parallel
   computing, including transferring computations, files etc., and
   message passing (for communicating with client and other computation
   tasks).  While dispy can be used to schedule jobs of a computation
-  to get the results, asyncoro can be used to create `distributed
+  to get the results, pycos can be used to create `distributed
   communicating processes
-  <http://asyncoro.sourceforge.net/discoro.html>`_, for broad range
+  <https://pycos.sourceforge.io/dispycos.html>`_, for broad range
   of use cases.
 
 * Computations (Python functions or standalone programs) and their
@@ -74,8 +74,8 @@ Features
 Dependencies
 ------------
 
-dispy requires asyncoro_ for concurrent, asynchronous network
-programming with coroutines. asyncoro is automatically installed if
+dispy requires pycos_ for concurrent, asynchronous network
+programming with tasks. pycos is automatically installed if
 dispy is installed with pip. Under Windows efficient polling notifier
 I/O Completion Ports (IOCP) is supported only if `pywin32
 <http://sourceforge.net/projects/pywin32/files/pywin32/>`_ is
