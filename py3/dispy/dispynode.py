@@ -350,7 +350,7 @@ class _DispyNode(object):
         self.reply_Q_thread.start()
 
         self.serve = serve
-        self.timer_task = Task(self.timer_task)
+        self.timer_task = Task(self.timer_proc)
         self.service_start = self.service_stop = self.service_end = None
         if isinstance(service_start, int) and (isinstance(service_stop, int) or
                                                isinstance(service_end, int)):
@@ -534,10 +534,10 @@ class _DispyNode(object):
             except:
                 _dispy_logger.debug(traceback.format_exc())
                 continue
-            Task(self.tcp_serve_task, conn, addr)
+            Task(self.tcp_req, conn, addr)
 
-    def tcp_serve_task(self, conn, addr, task=None):
-        def job_request_task(msg):
+    def tcp_req(self, conn, addr, task=None):
+        def job_request(msg):
             try:
                 _job = deserialize(msg)
             except:
@@ -626,7 +626,7 @@ class _DispyNode(object):
                 prog_thread.start()
                 raise StopIteration
 
-        def add_computation_task(msg):
+        def add_computation(msg):
             try:
                 compute = deserialize(msg)
             except:
@@ -773,7 +773,7 @@ class _DispyNode(object):
                 _dispy_logger.debug('New computation "%s" from %s',
                                     compute.auth, compute.scheduler_ip_addr)
 
-        def xfer_file_task(msg):
+        def xfer_file_req(msg):
             try:
                 xf = deserialize(msg)
             except:
@@ -822,7 +822,7 @@ class _DispyNode(object):
                         compute.file_uses[tgt] += 1
                     else:
                         compute.file_uses[tgt] = 1
-            raise StopIteration  # xfer_file_task
+            raise StopIteration  # xfer_file_req
 
         def setup_computation(msg):
             try:
@@ -854,7 +854,7 @@ class _DispyNode(object):
                 self.cleanup_computation(compute)
             yield conn.send_msg(resp)
 
-        def terminate_job_task(compute, job_info):
+        def terminate_job(compute, job_info):
             proc = job_info.proc
             if proc and job_info.job_reply.status == DispyJob.Running:
                 _dispy_logger.debug('Terminating job %s of "%s" (%s)',
@@ -890,7 +890,7 @@ class _DispyNode(object):
             job_reply.end_time = time.time()
             self.reply_Q.put(job_reply)
 
-        def retrieve_job_task(msg):
+        def retrieve_job(msg):
             # generator
 
             def send_reply(reply):
@@ -949,7 +949,7 @@ class _DispyNode(object):
                 if compute.pending_results == 0:
                     self.cleanup_computation(compute)
 
-        # tcp_serve_task starts
+        # tcp_req starts
         try:
             req = yield conn.recvall(len(self.auth))
         except:
@@ -969,15 +969,15 @@ class _DispyNode(object):
             raise StopIteration
         if msg.startswith(b'JOB:'):
             msg = msg[len(b'JOB:'):]
-            yield job_request_task(msg)
+            yield job_request(msg)
             conn.close()
         elif msg.startswith(b'COMPUTE:'):
             msg = msg[len(b'COMPUTE:'):]
-            yield add_computation_task(msg)
+            yield add_computation(msg)
             conn.close()
         elif msg.startswith(b'FILEXFER:'):
             msg = msg[len(b'FILEXFER:'):]
-            yield xfer_file_task(msg)
+            yield xfer_file_req(msg)
             conn.close()
         elif msg.startswith(b'SETUP:'):
             msg = msg[len(b'SETUP:'):]
@@ -1004,7 +1004,7 @@ class _DispyNode(object):
                                      if job_info.compute_id == compute_id]
                         self.thread_lock.release()
                         for job_info in job_infos:
-                            yield terminate_job_task(compute, job_info)
+                            yield terminate_job(compute, job_info)
                     self.cleanup_computation(compute)
             yield conn.send_msg(b'ACK')
             conn.close()
@@ -1022,7 +1022,7 @@ class _DispyNode(object):
                 _dispy_logger.debug('Invalid terminate job request from %s, %s',
                                     addr[0], compute.scheduler_ip_addr)
             else:
-                yield terminate_job_task(compute, job_info)
+                yield terminate_job(compute, job_info)
             conn.close()
         elif msg.startswith(b'RESEND_JOB_RESULTS:'):
             msg = msg[len(b'RESEND_JOB_RESULTS:'):]
@@ -1112,7 +1112,7 @@ class _DispyNode(object):
             conn.close()
         elif msg.startswith(b'RETRIEVE_JOB:'):
             msg = msg[len(b'RETRIEVE_JOB:'):]
-            yield retrieve_job_task(msg)
+            yield retrieve_job(msg)
             conn.close()
         else:
             _dispy_logger.warning('Invalid request "%s" from %s',
@@ -1146,7 +1146,7 @@ class _DispyNode(object):
             if status:
                 break
 
-    def timer_task(self, task=None):
+    def timer_proc(self, task=None):
         task.set_daemon()
         last_pulse_time = last_zombie_time = time.time()
         while 1:

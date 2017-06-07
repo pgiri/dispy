@@ -31,6 +31,7 @@ __all__ = []
 logger = pycos.Logger('dispynetrelay')
 from pycos import Task, serialize, deserialize, AsyncSocket
 
+
 class DispyNetRelay(object):
     """Internal use only.
     """
@@ -133,7 +134,7 @@ class DispyNetRelay(object):
         bc_sock.bind((self.addrinfo.ip, 0))
         auth_len = len(dispy.auth_code('', ''))
 
-        def tcp_task(conn, addr, task=None):
+        def tcp_req(conn, addr, task=None):
             conn.settimeout(5)
             try:
                 msg = yield conn.recvall(auth_len)
@@ -171,7 +172,7 @@ class DispyNetRelay(object):
 
         while 1:
             conn, addr = yield tcp_sock.accept()
-            Task(tcp_task, conn, addr)
+            Task(tcp_req, conn, addr)
 
     def sched_udp_proc(self, task=None):
         task.set_daemon()

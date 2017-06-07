@@ -238,7 +238,7 @@ class _Scheduler(object):
         else:
             self.httpd = None
 
-        self.timer_task = Task(self.timer_task)
+        self.timer_task = Task(self.timer_proc)
         self.tcp_tasks = []
         self.scheduler_tasks = []
         for ip_addr in list(ip_addrs):
@@ -354,9 +354,9 @@ class _Scheduler(object):
             except:
                 logger.debug(traceback.format_exc())
                 continue
-            Task(self.tcp_task, conn, addr)
+            Task(self.tcp_req, conn, addr)
 
-    def tcp_task(self, conn, addr, task=None):
+    def tcp_req(self, conn, addr, task=None):
         # generator
         conn.settimeout(MsgTimeout)
         msg = yield conn.recv_msg()
@@ -580,11 +580,11 @@ class _Scheduler(object):
         sock.listen(32)
         while 1:
             conn, addr = yield sock.accept()
-            Task(self.scheduler_serve, conn, addr)
+            Task(self.scheduler_req, conn, addr)
 
-    def scheduler_serve(self, conn, addr, task=None):
+    def scheduler_req(self, conn, addr, task=None):
         # generator
-        def _job_request_task(self, cluster, node, _job):
+        def _job_request(self, cluster, node, _job):
             # generator
             _job.uid = id(_job)
             for xf in _job.xfer_files:
@@ -611,7 +611,7 @@ class _Scheduler(object):
             if cluster.status_callback:
                 cluster.status_callback(DispyJob.Created, None, job)
 
-        def _compute_task(self, msg):
+        def _compute_req(self, msg):
             # function
             try:
                 req = deserialize(msg)
@@ -777,7 +777,7 @@ class _Scheduler(object):
                 node_sock.close()
             raise StopIteration(serialize(recvd))
 
-        # scheduler_serve begins here
+        # scheduler_req begins here
         conn.settimeout(MsgTimeout)
         resp = None
         try:
@@ -825,7 +825,7 @@ class _Scheduler(object):
             except:
                 pass
             else:
-                yield _job_request_task(self, cluster, node, _job)
+                yield _job_request(self, cluster, node, _job)
             resp = None
 
         elif msg.startswith('PULSE:'):
@@ -845,7 +845,7 @@ class _Scheduler(object):
 
         elif msg.startswith('COMPUTE:'):
             msg = msg[len('COMPUTE:'):]
-            resp = _compute_task(self, msg)
+            resp = _compute_req(self, msg)
 
         elif msg.startswith('SCHEDULE:'):
             msg = msg[len('SCHEDULE:'):]
@@ -983,7 +983,7 @@ class _Scheduler(object):
 
         elif msg.startswith('RETRIEVE_JOB:'):
             msg = msg[len('RETRIEVE_JOB:'):]
-            yield self.retrieve_job_task(conn, msg)
+            yield self.retrieve_job_req(conn, msg)
 
         elif msg.startswith('ALLOCATE_NODE:'):
             req = msg[len('ALLOCATE_NODE:'):]
@@ -1023,7 +1023,7 @@ class _Scheduler(object):
                 logger.warning('Failed to send response to %s: %s',
                                str(addr), traceback.format_exc())
         conn.close()
-        # end of scheduler_serve
+        # end of scheduler_req
 
     def resend_job_results(self, cluster, task=None):
         # TODO: limit number queued so as not to take up too much space/time
@@ -1043,7 +1043,7 @@ class _Scheduler(object):
                 if status:
                     break
 
-    def timer_task(self, task=None):
+    def timer_proc(self, task=None):
         task.set_daemon()
         reset = True
         last_ping_time = last_pulse_time = last_zombie_time = time.time()
@@ -1764,7 +1764,7 @@ class _Scheduler(object):
         self.done_jobs = {}
         logger.debug('Scheduler quit')
 
-    def retrieve_job_task(self, conn, msg):
+    def retrieve_job_req(self, conn, msg):
         # generator
 
         def send_reply(reply):

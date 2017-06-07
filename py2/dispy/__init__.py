@@ -41,7 +41,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "MIT"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.8.0"
+__version__ = "4.8.1"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
@@ -727,7 +727,7 @@ class _Cluster(object):
                                     (now.year, now.month, now.day,
                                      now.hour, now.minute, now.second)
             atexit.register(self.shutdown)
-            self.timer_task = Task(self.timer_task)
+            self.timer_task = Task(self.timer_proc)
 
             port_bound_event = pycos.Event()
             if self.shared:
@@ -874,10 +874,10 @@ class _Cluster(object):
             except:
                 logger.debug(traceback.format_exc())
                 continue
-            Task(self.tcp_task, conn, addr)
+            Task(self.tcp_req, conn, addr)
         sock.close()
 
-    def tcp_task(self, conn, addr, task=None):
+    def tcp_req(self, conn, addr, task=None):
         # generator
         conn.settimeout(MsgTimeout)
         msg = yield conn.recv_msg()
@@ -1151,7 +1151,7 @@ class _Cluster(object):
             # logger.debug(traceback.format_exc())
             conn.close()
 
-    def timer_task(self, task=None):
+    def timer_proc(self, task=None):
         task.set_daemon()
         reset = True
         last_pulse_time = last_ping_time = last_poll_time = time.time()
@@ -3042,7 +3042,7 @@ def recover_jobs(recover_file, timeout=None, terminate_pending=False):
             node.scheduler_ip_addr = ip_addr
         nodes[node.ip_addr] = node
 
-    def tcp_task(conn, addr, pending, task=None):
+    def tcp_req(conn, addr, pending, task=None):
         # generator
         conn.settimeout(MsgTimeout)
         msg = yield conn.recv_msg()
@@ -3102,7 +3102,7 @@ def recover_jobs(recover_file, timeout=None, terminate_pending=False):
             except:
                 continue
             else:
-                Task(tcp_task, conn, addr, pending)
+                Task(tcp_req, conn, addr, pending)
         raise StopIteration
 
     def resend_requests(pending, task=None):
