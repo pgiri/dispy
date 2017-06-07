@@ -580,9 +580,9 @@ class _Scheduler(object):
         sock.listen(32)
         while 1:
             conn, addr = yield sock.accept()
-            Task(self.scheduler_task, conn, addr)
+            Task(self.scheduler_serve, conn, addr)
 
-    def scheduler_task(self, conn, addr, task=None):
+    def scheduler_serve(self, conn, addr, task=None):
         # generator
         def _job_request_task(self, cluster, node, _job):
             # generator
@@ -777,7 +777,7 @@ class _Scheduler(object):
                 node_sock.close()
             raise StopIteration(serialize(recvd))
 
-        # scheduler_task begins here
+        # scheduler_serve begins here
         conn.settimeout(MsgTimeout)
         resp = None
         try:
@@ -1023,7 +1023,7 @@ class _Scheduler(object):
                 logger.warning('Failed to send response to %s: %s',
                                str(addr), traceback.format_exc())
         conn.close()
-        # end of scheduler_task
+        # end of scheduler_serve
 
     def resend_job_results(self, cluster, task=None):
         # TODO: limit number queued so as not to take up too much space/time
