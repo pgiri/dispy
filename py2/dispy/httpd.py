@@ -30,7 +30,7 @@ __email__ = "pgiri@yahoo.com"
 __copyright__ = "Copyright 2015, Giridhar Pemmasani"
 __contributors__ = []
 __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
-__license__ = "MIT"
+__license__ = "Apache 2.0"
 __url__ = "http://dispy.sourceforge.net"
 
 __all__ = ['DispyHTTPServer']
