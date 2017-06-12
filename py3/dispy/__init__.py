@@ -300,7 +300,10 @@ def _parse_node_allocs(nodes):
 
 def node_addrinfo(node=None, socket_family=None):
     if node:
-        node = socket.getaddrinfo(node, None)[0]
+        try:
+            node = socket.getaddrinfo(node, None)[0]
+        except:
+            return None
         if not socket_family:
             socket_family = node[0]
         elif node[0] != socket_family:
@@ -313,7 +316,7 @@ def node_addrinfo(node=None, socket_family=None):
         socket_family = socket.getaddrinfo(socket.gethostname(), None)[0][0]
     assert socket_family in (socket.AF_INET, socket.AF_INET6)
 
-    ifn, addrinfo = 0, None
+    ifn, addrinfo, netmask, broadcast = 0, None, None, None
     if netifaces:
         for iface in netifaces.interfaces():
             if socket_family == socket.AF_INET:
@@ -322,8 +325,10 @@ def node_addrinfo(node=None, socket_family=None):
             elif socket_family == socket.AF_INET6:
                 if ifn and addrinfo:
                     break
-                ifn, addrinfo = 0, None
+                ifn, addrinfo, netmask = 0, None, None
             for link in netifaces.ifaddresses(iface).get(socket_family, []):
+                netmask = link.get('netmask', None)
+                broadcast = link.get('broadcast', None)
                 if socket_family == socket.AF_INET:
                     if link.get('broadcast', '').startswith(link['addr'].split('.')[0]):
                         if (not node) or (link['addr'] == node):
@@ -355,8 +360,28 @@ def node_addrinfo(node=None, socket_family=None):
         node = socket.gethostname()
 
     addrinfo = socket.getaddrinfo(node, None, socket_family, socket.SOCK_STREAM)[0]
-    info = collections.namedtuple('AddrInfo', ['family', 'ip', 'ifn'])
-    addrinfo = info(addrinfo[0], _node_ipaddr(addrinfo[4][0]), ifn)
+    ip_addr = addrinfo[4][0]
+    if addrinfo[0] == socket.AF_INET6:
+        # canonicalize so different platforms resolve to same string
+        ip_addr = re.sub(r'^0+', '', ip_addr)
+        ip_addr = re.sub(r':0+', ':', ip_addr)
+        ip_addr = re.sub(r'::+', '::', ip_addr)
+        if not broadcast:
+            broadcast = 'ff05::1'
+    else:
+        if not broadcast:
+            broadcast = '<broadcast>'
+
+    class AddrInfo(object):
+        def __init__(self, family, ip, ifn, broadcast, netmask):
+            self.family = family
+            self.ip = ip
+            self.ifn = ifn
+            self.broadcast = broadcast
+            self.netmask = netmask
+            self.ext_ip_addr = None
+
+    addrinfo = AddrInfo(addrinfo[0], _node_ipaddr(addrinfo[4][0]), ifn, broadcast, netmask)
 
     return addrinfo
 
@@ -387,6 +412,7 @@ class _Compute(object):
         self.cleanup = None
         self.scheduler_ip_addr = None
         self.scheduler_port = None
+        self.node_ip_addr = None
         self.auth = None
         self.job_result_port = None
         self.pulse_interval = None
@@ -412,12 +438,15 @@ class _Node(object):
     """
     __slots__ = ['ip_addr', 'port', 'name', 'cpus', 'avail_cpus', 'busy', 'cpu_time', 'clusters',
                  'auth', 'secret', 'keyfile', 'certfile', 'last_pulse', 'scheduler_ip_addr',
-                 '_jobs', 'pending_jobs', 'avail_info', 'platform', 'sock_type']
+                 '_jobs', 'pending_jobs', 'avail_info', 'platform', 'sock_family']
 
     def __init__(self, ip_addr, port, cpus, sign, secret, platform='',
                  keyfile=None, certfile=None):
         self.ip_addr = ip_addr
-        self.sock_type = node_addrinfo(ip_addr).family
+        if re.match('\d+\.', ip_addr):
+            self.sock_family = socket.AF_INET
+        else:
+            self.sock_family = socket.AF_INET6
         self.port = port
         self.name = None
         self.cpus = cpus
@@ -438,14 +467,13 @@ class _Node(object):
     def setup(self, compute, task=None):
         # generator
         compute.scheduler_ip_addr = self.scheduler_ip_addr
-        cpus = yield self.send(b'COMPUTE:' + serialize(compute), task=task)
+        compute.node_ip_addr = self.ip_addr
+        reply = yield self.send(b'COMPUTE:' + serialize(compute), task=task)
         try:
-            cpus = deserialize(cpus)
+            cpus = deserialize(reply)
+            assert isinstance(cpus, int) and cpus > 0
         except:
-            pass
-        if not isinstance(cpus, int) or cpus < 0:
-            logger.warning('Transfer of computation "%s" to %s failed: %s',
-                           compute.name, self.ip_addr, cpus)
+            logger.warning('Transfer of computation "%s" to %s failed', compute.name, self.ip_addr)
             raise StopIteration(-1)
         if not self.cpus:
             self.cpus = cpus
@@ -467,7 +495,7 @@ class _Node(object):
 
     def send(self, msg, reply=True, timeout=MsgTimeout, task=None):
         # generator
-        sock = socket.socket(self.sock_type, socket.SOCK_STREAM)
+        sock = socket.socket(self.sock_family, socket.SOCK_STREAM)
         sock = AsyncSocket(sock, keyfile=self.keyfile, certfile=self.certfile)
         sock.settimeout(timeout)
         try:
@@ -492,7 +520,7 @@ class _Node(object):
 
     def xfer_file(self, xf, task=None):
         # generator
-        sock = socket.socket(self.sock_type, socket.SOCK_STREAM)
+        sock = socket.socket(self.sock_family, socket.SOCK_STREAM)
         sock = AsyncSocket(sock, keyfile=self.keyfile, certfile=self.certfile)
         sock.settimeout(MsgTimeout)
         try:
@@ -526,7 +554,7 @@ class _Node(object):
     def close(self, compute, terminate_pending=False, task=None):
         # generator
         logger.debug('Closing node %s for %s / %s', self.ip_addr, compute.name, compute.id)
-        req = {'compute_id': compute.id, 'auth': compute.auth,
+        req = {'compute_id': compute.id, 'auth': compute.auth, 'node_ip_addr': self.ip_addr,
                'terminate_pending': terminate_pending}
         try:
             yield self.send(b'CLOSE:' + serialize(req), reply=True, task=task)
@@ -665,27 +693,39 @@ class _Cluster(object, metaclass=Singleton):
         if not hasattr(self, 'pycos'):
             self.pycos = Pycos()
             logger.info('dispy client version: %s', __version__)
-            self.ip_addrs = set()
-            self.addrinfo = None
-            if ip_addr:
-                if not isinstance(ip_addr, list):
-                    ip_addr = [ip_addr]
-                for node in ip_addr:
-                    addr = node_addrinfo(node)
-                    if not self.addrinfo:
-                        self.addrinfo = addr
-                    self.ip_addrs.add(addr.ip)
-            if not self.ip_addrs:
-                self.ip_addrs.add(None)
-            self.ext_ip_addrs = set(self.ip_addrs)
-            if ext_ip_addr:
-                if not isinstance(ext_ip_addr, list):
-                    ext_ip_addr = [ext_ip_addr]
-                for node in ext_ip_addr:
-                    addr = node_addrinfo(node)
-                    self.ext_ip_addrs.add(addr.ip)
-            if not self.addrinfo:
-                self.addrinfo = node_addrinfo()
+            self.addrinfos = {}
+            if isinstance(ip_addr, list):
+                ip_addrs = ip_addr
+            else:
+                ip_addrs = [ip_addr]
+            if isinstance(ext_ip_addr, list):
+                ext_ip_addrs = ext_ip_addr
+            else:
+                ext_ip_addrs = [ext_ip_addr]
+
+            for i in range(len(ip_addrs)):
+                ip_addr = ip_addrs[i]
+                if i < len(ext_ip_addrs):
+                    ext_ip_addr = ext_ip_addrs[i]
+                else:
+                    ext_ip_addr = None
+                addrinfo = node_addrinfo(ip_addr)
+                if not addrinfo:
+                    logger.warning('Ignoring invalid ip_addr %s', ip_addr)
+                    continue
+                if ext_ip_addr:
+                    ext_ip_addr = node_addrinfo(ext_ip_addr)
+                    if ext_ip_addr:
+                        ext_ip_addr = ext_ip_addr.ip
+                    else:
+                        _dispy_logger.warning('Ignoring invalid ext_ip_addr %s', ext_ip_addrs[i])
+                if not ext_ip_addr:
+                    ext_ip_addr = addrinfo.ip
+                addrinfo.ext_ip_addr = ext_ip_addr
+                self.addrinfos[addrinfo.ext_ip_addr] = addrinfo
+            if not self.addrinfos:
+                raise Exception('No valid IP address found')
+
             if port:
                 port = int(port)
             else:
@@ -693,12 +733,11 @@ class _Cluster(object, metaclass=Singleton):
                     port = 0
                 else:
                     port = 51347
+            self.port = port
             if node_port:
                 node_port = int(node_port)
             else:
                 node_port = 51348
-
-            self.port = None
             self.node_port = node_port
             self._nodes = {}
             self.secret = secret
@@ -714,9 +753,11 @@ class _Cluster(object, metaclass=Singleton):
             self._sched_jobs = {}
             self._sched_event = pycos.Event()
             self.terminate = False
-            self.sign = ''.join(hex(_)[2:] for _ in os.urandom(10))
+            self.sign = hashlib.sha1(os.urandom(20))
+            for ext_ip_addr in self.addrinfos:
+                self.sign.update(ext_ip_addr.encode())
+            self.sign = self.sign.hexdigest()
             self.auth = auth_code(self.secret, self.sign)
-            self._broadcast = None
 
             if isinstance(recover_file, str):
                 self.recover_file = recover_file
@@ -728,26 +769,11 @@ class _Cluster(object, metaclass=Singleton):
             atexit.register(self.shutdown)
             self.timer_task = Task(self.timer_proc)
 
-            port_bound_event = pycos.Event()
-            if self.shared:
-                self.udp_task = None
-                port_bound_event.set()
-            else:
-                self.udp_task = Task(self.udp_server, port, port_bound_event)
-
-                def port_bound(self, task=None):
-                    yield port_bound_event.wait()
-                Task(port_bound, self).value()
-
-            self.tcp_tasks = []
-            for ip_addr in list(self.ip_addrs):
-                self.tcp_tasks.append(Task(self.tcp_server, ip_addr, port, port_bound_event))
-
             try:
                 self.shelf = shelve.open(self.recover_file, flag='c', writeback=True)
-                self.shelf['_cluster'] = {'ip_addrs': self.ip_addrs, 'port': self.port,
-                                          'sign': self.sign, 'secret': self.secret,
-                                          'auth': self.auth,
+                self.shelf['_cluster'] = {'ip_addrs': ip_addrs, 'ext_ip_addrs': ext_ip_addrs,
+                                          'port': self.port, 'sign': self.sign,
+                                          'secret': self.secret, 'auth': self.auth,
                                           'keyfile': self.keyfile, 'certfile': self.certfile}
                 self.shelf.sync()
             except:
@@ -764,6 +790,18 @@ class _Cluster(object, metaclass=Singleton):
             self.worker_thread = threading.Thread(target=self.worker)
             self.worker_thread.daemon = True
             self.worker_thread.start()
+
+            if self.shared:
+                port_bound_event = None
+            else:
+                port_bound_event = pycos.Event()
+            self.tcp_tasks = []
+            self.udp_tasks = []
+            for addrinfo in self.addrinfos.values():
+                self.tcp_tasks.append(Task(self.tcp_server, addrinfo, port_bound_event))
+                if not self.shared:
+                    self.udp_tasks.append(Task(self.udp_server, addrinfo, port_bound_event))
+
             # Under Windows dispynode may send objects with
             # '__mp_main__' scope, so make an alias to '__main__'.
             # TODO: Make alias even if client is not Windows? It is
@@ -771,37 +809,24 @@ class _Cluster(object, metaclass=Singleton):
             if os.name == 'nt' and '__mp_main__' not in sys.modules:
                 sys.modules['__mp_main__'] = sys.modules['__main__']
 
-    def udp_server(self, port, port_bound_event, task=None):
+    def udp_server(self, addrinfo, port_bound_event, task=None):
         # generator
         task.set_daemon()
-        udp_sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_DGRAM))
+        udp_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
         # udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         while 1:
             try:
-                udp_sock.bind(('', port))
+                udp_sock.bind((addrinfo.ip, self.port))
             except:
-                logger.warning('Port %s seems to be used by another program', port)
+                logger.warning('Port %s seems to be used by another program', self.port)
                 yield task.sleep(5)
             else:
                 break
-        if self.addrinfo.family == socket.AF_INET:
-            self._broadcast = '<broadcast>'
-            if netifaces:
-                for iface in netifaces.interfaces():
-                    for link in netifaces.ifaddresses(iface).get(netifaces.AF_INET, []):
-                        if link['addr'] == self.addrinfo.ip:
-                            self._broadcast = link.get('broadcast', '<broadcast>')
-                            break
-                    else:
-                        continue
-                    break
-        else:  # self.addrinfo.family == socket.AF_INET6
-            self._broadcast = 'ff05::1'
-            mreq = socket.inet_pton(self.addrinfo.family, self._broadcast)
-            mreq += struct.pack('@I', self.addrinfo.ifn)
+        if addrinfo.family == socket.AF_INET6:
+            mreq = socket.inet_pton(addrinfo.family, addrinfo.broadcast)
+            mreq += struct.pack('@I', addrinfo.ifn)
             udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
 
-        self.port = port
         port_bound_event.set()
         del port_bound_event
         while 1:
@@ -826,11 +851,12 @@ class _Cluster(object, metaclass=Singleton):
                 node = self._nodes.get(info['ip_addr'], None)
                 if node and node.auth == auth:
                     continue
-                sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM),
+                sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_STREAM),
                                    keyfile=self.keyfile, certfile=self.certfile)
                 sock.settimeout(MsgTimeout)
-                msg = {'version': _dispy_version, 'port': self.port, 'sign': self.sign}
-                msg['ip_addrs'] = list(filter(lambda ip: bool(ip), self.ext_ip_addrs))
+                msg = {'version': _dispy_version, 'port': self.port, 'sign': self.sign,
+                       'node_ip_addr': info['ip_addr']}
+                msg['ip_addrs'] = [addrinfo.ext_ip_addr for addrinfo in self.addrinfos.values()]
                 try:
                     yield sock.connect((info['ip_addr'], info['port']))
                     yield sock.sendall(auth)
@@ -843,30 +869,27 @@ class _Cluster(object, metaclass=Singleton):
                 pass
         udp_sock.close()
 
-    def tcp_server(self, ip_addr, port, port_bound_event, task=None):
+    def tcp_server(self, addrinfo, port_bound_event, task=None):
         # generator
         task.set_daemon()
-        if not self.shared:
+        if port_bound_event:
             yield port_bound_event.wait()
         del port_bound_event
-        sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM),
+        sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_STREAM),
                            keyfile=self.keyfile, certfile=self.certfile)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        if not ip_addr:
-            ip_addr = ''
         try:
-            sock.bind((ip_addr, port))
+            sock.bind((addrinfo.ip, self.port))
         except:
-            if ip_addr == '':
-                ip_addr = None
-            self.ip_addrs.discard(ip_addr)
+            logger.warning('Could not bind TCP server to %s:%s', addrinfo.ip, self.port)
             raise StopIteration
-        self.port = sock.getsockname()[1]
-        logger.debug('dispy client at %s:%s', ip_addr, self.port)
+        if not self.port:
+            self.port = sock.getsockname()[1]
+        logger.debug('dispy client at %s:%s', addrinfo.ip, self.port)
         sock.listen(128)
 
         if not self.shared:
-            Task(self.broadcast_ping)
+            Task(self.broadcast_ping, [addrinfo])
 
         while 1:
             try:
@@ -968,6 +991,7 @@ class _Cluster(object, metaclass=Singleton):
                 self.add_node(info)
 
         elif msg.startswith(b'PING:'):
+            sock_family = conn.family
             conn.close()
             try:
                 info = deserialize(msg[len(b'PING:'):])
@@ -986,11 +1010,12 @@ class _Cluster(object, metaclass=Singleton):
             if node:
                 if node.auth == auth:
                     raise StopIteration
-            sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM),
+            sock = AsyncSocket(socket.socket(sock_family, socket.SOCK_STREAM),
                                keyfile=self.keyfile, certfile=self.certfile)
             sock.settimeout(MsgTimeout)
-            msg = {'version': _dispy_version, 'port': self.port, 'sign': self.sign}
-            msg['ip_addrs'] = list(filter(lambda ip: bool(ip), self.ext_ip_addrs))
+            msg = {'version': _dispy_version, 'port': self.port, 'sign': self.sign,
+                   'node_ip_addr': info['ip_addr']}
+            msg['ip_addrs'] = [addrinfo.ext_ip_addr for addrinfo in self.addrinfos.values()]
             try:
                 yield sock.connect((info['ip_addr'], info['port']))
                 yield sock.sendall(auth)
@@ -1259,11 +1284,16 @@ class _Cluster(object, metaclass=Singleton):
         os.chmod(tgt, stat.S_IMODE(xf.stat_buf.st_mode))
 
     def send_ping_node(self, ip_addr, port=None, task=None):
-        ping_msg = {'version': _dispy_version, 'sign': self.sign, 'port': self.port}
-        ping_msg['ip_addrs'] = list(filter(lambda ip: bool(ip), self.ext_ip_addrs))
+        ping_msg = {'version': _dispy_version, 'sign': self.sign, 'port': self.port,
+                    'node_ip_addr': ip_addr}
+        ping_msg['ip_addrs'] = [addrinfo.ext_ip_addr for addrinfo in self.addrinfos.values()]
         if not port:
             port = self.node_port
-        tcp_sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM),
+        if re.match('\d+\.', ip_addr):
+            sock_family = socket.AF_INET
+        else:
+            sock_family = socket.AF_INET6
+        tcp_sock = AsyncSocket(socket.socket(sock_family, socket.SOCK_STREAM),
                                keyfile=self.keyfile, certfile=self.certfile)
         tcp_sock.settimeout(MsgTimeout)
         try:
@@ -1274,26 +1304,29 @@ class _Cluster(object, metaclass=Singleton):
             pass
         tcp_sock.close()
 
-    def broadcast_ping(self, port=None, task=None):
+    def broadcast_ping(self, addrinfos=[], port=None, task=None):
         # generator
         if not port:
             port = self.node_port
         ping_msg = {'version': _dispy_version, 'sign': self.sign, 'port': self.port}
-        ping_msg['ip_addrs'] = list(filter(lambda ip: bool(ip), self.ext_ip_addrs))
-        bc_sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_DGRAM))
-        bc_sock.settimeout(MsgTimeout)
-        if self.addrinfo.family == socket.AF_INET:
-            bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        else:  # self.addrinfo.family == socket.AF_INET6
-            bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS,
-                               struct.pack('@i', 1))
-            bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, self.addrinfo.ifn)
-        bc_sock.bind((self.addrinfo.ip, 0))
-        try:
-            yield bc_sock.sendto(b'PING:' + serialize(ping_msg), (self._broadcast, port))
-        except:
-            pass
-        bc_sock.close()
+        ping_msg['ip_addrs'] = [addrinfo.ext_ip_addr for addrinfo in self.addrinfos.values()]
+        if not addrinfos:
+            addrinfos = self.addrinfos.values()
+        for addrinfo in addrinfos:
+            bc_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
+            bc_sock.settimeout(MsgTimeout)
+            if addrinfo.family == socket.AF_INET:
+                bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            else:  # addrinfo.family == socket.AF_INET6
+                bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS,
+                                   struct.pack('@i', 1))
+                bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, addrinfo.ifn)
+            bc_sock.bind((addrinfo.ip, 0))
+            try:
+                yield bc_sock.sendto(b'PING:' + serialize(ping_msg), (addrinfo.broadcast, port))
+            except:
+                pass
+            bc_sock.close()
 
     def send_ping_cluster(self, cluster, task=None):
         for node_alloc in cluster._node_allocs:
@@ -1301,7 +1334,7 @@ class _Cluster(object, metaclass=Singleton):
             # subnet mask; this is a limitation, but specifying with
             # subnet mask a bit cumbersome.
             if node_alloc.ip_rex.find('*') >= 0:
-                Task(self.broadcast_ping, node_alloc.port)
+                Task(self.broadcast_ping, port=node_alloc.port)
             else:
                 ip_addr = node_alloc.ip_addr
                 if ip_addr in cluster._dispy_nodes:
@@ -1315,7 +1348,7 @@ class _Cluster(object, metaclass=Singleton):
             node = self._nodes.get(ip_addr, None)
             if not node or not node.port:
                 continue
-            sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM),
+            sock = AsyncSocket(socket.socket(node.sock_family, socket.SOCK_STREAM),
                                keyfile=self.keyfile, certfile=self.certfile)
             sock.settimeout(MsgTimeout)
             try:
@@ -1332,7 +1365,7 @@ class _Cluster(object, metaclass=Singleton):
                 _job = self._sched_jobs.get(uid, None)
                 if _job is None:
                     continue
-                conn = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM),
+                conn = AsyncSocket(socket.socket(node.sock_family, socket.SOCK_STREAM),
                                    keyfile=self.keyfile, certfile=self.certfile)
                 conn.settimeout(MsgTimeout)
                 try:
@@ -1957,7 +1990,7 @@ class _Cluster(object, metaclass=Singleton):
         if not node or cluster._compute.id not in node.clusters:
             raise StopIteration([])
         if from_node:
-            sock = socket.socket(self.addrinfo.family, socket.SOCK_STREAM)
+            sock = socket.socket(node.sock_family, socket.SOCK_STREAM)
             sock = AsyncSocket(sock, keyfile=self.keyfile, certfile=self.certfile)
             sock.settimeout(MsgTimeout)
             try:
@@ -2351,7 +2384,7 @@ class JobCluster(object):
             compute.dest_path = dest_path
 
         compute.scheduler_port = self._cluster.port
-        compute.auth = ''.join(hex(_)[2:] for _ in os.urandom(10))
+        compute.auth = hashlib.sha1(os.urandom(20)).hexdigest()
         compute.job_result_port = self._cluster.port
         compute.reentrant = reentrant
         compute.pulse_interval = pulse_interval

@@ -19,6 +19,7 @@ import tempfile
 import shutil
 import glob
 import cPickle as pickle
+import hashlib
 import struct
 try:
     import netifaces
@@ -81,6 +82,7 @@ class _Cluster(object):
         self.last_pulse = time.time()
         self.client_ip_addr = None
         self.client_port = None
+        self.client_sock_family = None
         self.client_job_result_port = None
         self.client_auth = None
         self.ip_addr = None
@@ -118,36 +120,37 @@ class _Scheduler(object):
     __metaclass__ = Singleton
     _instance = None
 
-    def __init__(self, nodes=[], ip_addr=None, ext_ip_addr=None,
-                 port=None, node_port=None, scheduler_port=None, scheduler_alg=None,
-                 pulse_interval=None, ping_interval=None, cooperative=False, cleanup_nodes=False,
-                 node_secret='', node_keyfile=None, node_certfile=None,
-                 cluster_secret='', cluster_keyfile=None, cluster_certfile=None,
+    def __init__(self, nodes=[], ip_addrs=[], ext_ip_addrs=[], port=None, node_port=None,
+                 scheduler_port=None, scheduler_alg=None, pulse_interval=None, ping_interval=None,
+                 cooperative=False, cleanup_nodes=False, node_secret='', cluster_secret='',
+                 node_keyfile=None, node_certfile=None, cluster_keyfile=None, cluster_certfile=None,
                  dest_path_prefix=None, clean=False, zombie_interval=60, http_server=False):
-        self.ip_addrs = set()
-        ip_addrs = set()
-        self.addrinfo = None
-        if ip_addr:
-            if not isinstance(ip_addr, list):
-                ip_addr = [ip_addr]
-            for node in ip_addr:
-                addr = dispy.node_addrinfo(node)
-                if addr:
-                    if not self.addrinfo:
-                        self.addrinfo = addr
-                    ip_addrs.add(addr.ip)
+        self.addrinfos = {}
         if not ip_addrs:
-            ip_addrs.add(None)
-        self.ext_ip_addrs = set(ip_addrs)
-        if ext_ip_addr:
-            if not isinstance(ext_ip_addr, list):
-                ext_ip_addr = [ext_ip_addr]
-            for node in ext_ip_addr:
-                addr = dispy.node_addrinfo(node)
-                if addr:
-                    self.ext_ip_addrs.add(addr.ip)
-        if not self.addrinfo:
-            self.addrinfo = dispy.node_addrinfo()
+            ip_addrs = [None]
+        for i in range(len(ip_addrs)):
+            ip_addr = ip_addrs[i]
+            if i < len(ext_ip_addrs):
+                ext_ip_addr = ext_ip_addrs[i]
+            else:
+                ext_ip_addr = None
+            addrinfo = dispy.node_addrinfo(ip_addr)
+            if not addrinfo:
+                logger.warning('Ignoring invalid ip_addr %s', ip_addr)
+                continue
+            if ext_ip_addr:
+                ext_ip_addr = dispy.node_addrinfo(ext_ip_addr)
+                if ext_ip_addr:
+                    ext_ip_addr = ext_ip_addr.ip
+                else:
+                    _dispy_logger.warning('Ignoring invalid ext_ip_addr %s', ext_ip_addrs[i])
+            if not ext_ip_addr:
+                ext_ip_addr = addrinfo.ip
+            addrinfo.ext_ip_addr = ext_ip_addr
+            self.addrinfos[addrinfo.ext_ip_addr] = addrinfo
+        if not self.addrinfos:
+            raise Exception('No valid IP address found')
+
         if not port:
             port = 51347
         if not node_port:
@@ -221,9 +224,22 @@ class _Scheduler(object):
         # (otherwise, 'id' may be duplicate)
         self.done_jobs = {}
         self.terminate = False
-        self.sign = os.urandom(10).encode('hex')
+        self.sign = hashlib.sha1(os.urandom(20))
+        for ext_ip_addr in self.addrinfos:
+            self.sign.update(ext_ip_addr.encode())
+        self.sign = self.sign.hexdigest()
         self.cluster_auth = auth_code(self.cluster_secret, self.sign)
         self.node_auth = auth_code(self.node_secret, self.sign)
+
+        with open(os.path.join(self.dest_path_prefix, 'config'), 'wb') as fd:
+            config = {
+                'ip_addrs': [addrinfo.ip for addrinfo in self.addrinfos.values()],
+                'ext_ip_addrs': [addrinfo.ext_ip_addr for addrinfo in self.addrinfos.values()],
+                'port': self.port, 'sign': self.sign,
+                'cluster_secret': self.cluster_secret, 'cluster_auth': self.cluster_auth,
+                'node_secret': self.node_secret, 'node_auth': self.node_auth
+                }
+            pickle.dump(config, fd)
 
         if scheduler_alg == 'fair_cluster':
             self.select_job_node_cluster = self.fair_cluster_schedule
@@ -239,55 +255,54 @@ class _Scheduler(object):
             self.httpd = None
 
         self.timer_task = Task(self.timer_proc)
+
+        self.job_scheduler_task = Task(self._schedule_jobs)
+
         self.tcp_tasks = []
+        self.udp_tasks = []
         self.scheduler_tasks = []
-        for ip_addr in list(ip_addrs):
-            self.tcp_tasks.append(Task(self.tcp_server, ip_addr))
-            self.scheduler_tasks.append(Task(self.scheduler_server, ip_addr))
+        for addrinfo in self.addrinfos.values():
+            self.tcp_tasks.append(Task(self.tcp_server, addrinfo))
+            self.scheduler_tasks.append(Task(self.scheduler_server, addrinfo))
 
-        with open(os.path.join(self.dest_path_prefix, 'config'), 'wb') as fd:
-            config = {
-                'port': self.port, 'sign': self.sign,
-                'cluster_secret': self.cluster_secret, 'cluster_auth': self.cluster_auth,
-                'node_secret': self.node_secret, 'node_auth': self.node_auth
-                }
-            pickle.dump(config, fd)
+        udp_addrinfos = {}
+        for addrinfo in self.addrinfos.values():
+            Task(self.tcp_server, addrinfo)
+            if addrinfo.broadcast == '<broadcast>':
+                udp_addrinfos.clear()
+                bind_addr = ''
+            elif '' in udp_addrinfos:
+                continue
+            else:
+                bind_addr = addrinfo.broadcast
+            udp_addrinfos[bind_addr] = addrinfo
+        for bind_addr, addrinfo in udp_addrinfos.items():
+            Task(self.udp_server, bind_addr, addrinfo)
+        del udp_addrinfos
 
-        self.udp_sock = socket.socket(self.addrinfo.family, socket.SOCK_DGRAM)
-        self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.udp_sock.bind(('', self.port))
-
-        if self.addrinfo.family == socket.AF_INET:
-            self._broadcast = '<broadcast>'
-            if netifaces:
-                for iface in netifaces.interfaces():
-                    for link in netifaces.ifaddresses(iface).get(netifaces.AF_INET, []):
-                        if link['addr'] == self.addrinfo.ip:
-                            self._broadcast = link.get('broadcast', '<broadcast>')
-                            break
-                    else:
-                        continue
-                    break
-        else:  # self.sock_family == socket.AF_INET6
-            self._broadcast = 'ff05::1'
-            mreq = socket.inet_pton(self.addrinfo.family, self._broadcast)
-            mreq += struct.pack('@I', self.addrinfo.ifn)
-            self.udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
-
-        self.udp_sock = AsyncSocket(self.udp_sock)
-        self.udp_task = Task(self.udp_server)
-
-        self.scheduler_task = Task(self._schedule_jobs)
-
-    def udp_server(self, task=None):
+    def udp_server(self, bind_addr, addrinfo, task=None):
         # generator
         task.set_daemon()
 
-        Task(self.broadcast_ping)
+        udp_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
+        if hasattr(socket, 'SO_REUSEADDR'):
+            udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if hasattr(socket, 'SO_REUSEPORT'):
+            udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        else:  # addrinfo.family == socket.AF_INET6
+            mreq = socket.inet_pton(addrinfo.family, addrinfo.broadcast)
+            mreq += struct.pack('@I', addrinfo.ifn)
+            udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
+            udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+
+        while not self.port:
+            yield task.sleep(0.2)
+        udp_sock.bind((bind_addr, self.port))
+        Task(self.broadcast_ping, addrinfos=[addrinfo])
         self.send_ping_cluster(self._node_allocs, set())
 
         while 1:
-            msg, addr = yield self.udp_sock.recvfrom(1000)
+            msg, addr = yield udp_sock.recvfrom(1000)
             if msg.startswith('PING:'):
                 try:
                     info = deserialize(msg[len('PING:'):])
@@ -308,11 +323,11 @@ class _Scheduler(object):
                 if node:
                     if node.auth == auth:
                         continue
-                sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM),
+                sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_STREAM),
                                    keyfile=self.node_keyfile, certfile=self.node_certfile)
                 sock.settimeout(MsgTimeout)
                 msg = {'port': self.port, 'sign': self.sign, 'version': _dispy_version}
-                msg['ip_addrs'] = list(filter(lambda ip: bool(ip), self.ext_ip_addrs))
+                msg['ip_addrs'] = [addrinfo.ext_ip_addr for addrinfo in self.addrinfos.values()]
                 try:
                     yield sock.connect((info['ip_addr'], info['port']))
                     yield sock.sendall(auth)
@@ -324,23 +339,18 @@ class _Scheduler(object):
             else:
                 pass
 
-    def tcp_server(self, ip_addr, task=None):
+    def tcp_server(self, addrinfo, task=None):
         # generator
         task.set_daemon()
-        sock = socket.socket(self.addrinfo.family, socket.SOCK_STREAM)
+        sock = socket.socket(addrinfo.family, socket.SOCK_STREAM)
         sock = AsyncSocket(sock, keyfile=self.node_keyfile, certfile=self.node_certfile)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        if not ip_addr:
-            ip_addr = ''
         try:
-            sock.bind((ip_addr, self.port))
+            sock.bind((addrinfo.ip, self.port))
         except:
-            if ip_addr == '':
-                ip_addr = None
+            logger.debug('Could not bind TCP to %s:%s', addrinfo.ip, self.port)
             raise StopIteration
-        ip_addr = _node_ipaddr(sock.getsockname()[0])
-        self.ip_addrs.add(ip_addr)
-        logger.debug('TCP server at %s:%s', ip_addr, self.port)
+        logger.debug('TCP server at %s:%s', addrinfo.ip, self.port)
         sock.listen(32)
 
         while 1:
@@ -406,6 +416,7 @@ class _Scheduler(object):
                 self.add_node(info)
 
         elif msg.startswith('PING:'):
+            sock_family = conn.family
             conn.close()
             try:
                 info = deserialize(msg[len('PING:'):])
@@ -424,11 +435,11 @@ class _Scheduler(object):
                 if node:
                     if node.auth == auth:
                         raise StopIteration
-                sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM),
+                sock = AsyncSocket(socket.socket(sock_family, socket.SOCK_STREAM),
                                    keyfile=self.node_keyfile, certfile=self.node_certfile)
                 sock.settimeout(MsgTimeout)
                 msg = {'port': self.port, 'sign': self.sign, 'version': _dispy_version}
-                msg['ip_addrs'] = list(filter(lambda ip: bool(ip), self.ext_ip_addrs))
+                msg['ip_addrs'] = [addrinfo.ext_ip_addr for addrinfo in self.addrinfos.values()]
                 try:
                     yield sock.connect((info['ip_addr'], info['port']))
                     yield sock.sendall(auth)
@@ -541,7 +552,7 @@ class _Scheduler(object):
                         raise StopIteration
                     break
             self.unsched_clusters.pop(0)
-            reply_sock = socket.socket(self.addrinfo.family, socket.SOCK_STREAM)
+            reply_sock = socket.socket(cluster.client_sock_family, socket.SOCK_STREAM)
             reply_sock = AsyncSocket(reply_sock, keyfile=self.cluster_keyfile,
                                      certfile=self.cluster_certfile)
             reply_sock.settimeout(MsgTimeout)
@@ -562,21 +573,18 @@ class _Scheduler(object):
             finally:
                 reply_sock.close()
 
-    def scheduler_server(self, ip_addr, task=None):
+    def scheduler_server(self, addrinfo, task=None):
         task.set_daemon()
-        sock = socket.socket(self.addrinfo.family, socket.SOCK_STREAM)
+        sock = socket.socket(addrinfo.family, socket.SOCK_STREAM)
         sock = AsyncSocket(sock, keyfile=self.cluster_keyfile, certfile=self.cluster_certfile)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        if not ip_addr:
-            ip_addr = ''
         try:
-            sock.bind((ip_addr, self.scheduler_port))
+            sock.bind((addrinfo.ip, self.scheduler_port))
         except:
-            if ip_addr == '':
-                ip_addr = None
+            logger.warning('Could not bind scheduler server to %s:%s',
+                           addrinfo.ip, self.scheduler_port)
             raise StopIteration
-        ip_addr = _node_ipaddr(sock.getsockname()[0])
-        logger.debug('Scheduler at %s:%s', ip_addr, self.scheduler_port)
+        logger.debug('Scheduler at %s:%s', addrinfo.ip, self.scheduler_port)
         sock.listen(32)
         while 1:
             conn, addr = yield sock.accept()
@@ -658,10 +666,11 @@ class _Scheduler(object):
             cluster.client_job_result_port = compute.job_result_port
             cluster.client_ip_addr = compute.scheduler_ip_addr
             cluster.client_port = compute.scheduler_port
+            cluster.client_sock_family = conn.family
             cluster.client_auth = compute.auth
             compute.job_result_port = self.port
             compute.scheduler_port = self.port
-            compute.auth = os.urandom(10).encode('hex')
+            compute.auth = hashlib.sha1(os.urandom(10)).hexdigest()
             cluster.last_pulse = time.time()
             for xf in compute.xfer_files:
                 xf.compute_id = compute.id
@@ -751,7 +760,7 @@ class _Scheduler(object):
                 else:
                     raise StopIteration(serialize(-1))
 
-            node_sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM),
+            node_sock = AsyncSocket(socket.socket(node.sock_family, socket.SOCK_STREAM),
                                     keyfile=self.node_keyfile, certfile=self.node_certfile)
             node_sock.settimeout(MsgTimeout)
             try:
@@ -1088,7 +1097,10 @@ class _Scheduler(object):
             if self.ping_interval and (now - last_ping_time) >= self.ping_interval:
                 last_ping_time = now
                 for cluster in self._clusters.itervalues():
-                    self.send_ping_cluster(cluster._node_allocs, set(cluster._dispy_nodes.iterkeys()))
+                    self.send_ping_cluster(cluster._node_allocs,
+                                           set(cluster._dispy_nodes.iterkeys()))
+                self.send_ping_cluster(self._node_allocs, set())
+
             if self.zombie_interval and (now - last_zombie_time) >= self.zombie_interval:
                 last_zombie_time = now
                 for cluster in self._clusters.itervalues():
@@ -1130,7 +1142,7 @@ class _Scheduler(object):
             yield conn.send_msg(serialize(-1))
             raise StopIteration
         node.last_pulse = time.time()
-        client_sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM),
+        client_sock = AsyncSocket(socket.socket(node.sock_family, socket.SOCK_STREAM),
                                   keyfile=self.cluster_keyfile, certfile=self.cluster_certfile)
         client_sock.settimeout(MsgTimeout)
         try:
@@ -1156,11 +1168,16 @@ class _Scheduler(object):
             conn.close()
 
     def send_ping_node(self, ip_addr, port=None, task=None):
-        ping_msg = {'version': _dispy_version, 'sign': self.sign, 'port': self.port}
-        ping_msg['ip_addrs'] = list(filter(lambda ip: bool(ip), self.ext_ip_addrs))
+        ping_msg = {'version': _dispy_version, 'sign': self.sign, 'port': self.port,
+                    'node_ip_addr': ip_addr}
+        ping_msg['ip_addrs'] = [addrinfo.ext_ip_addr for addrinfo in self.addrinfos.values()]
         if not port:
             port = self.node_port
-        tcp_sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM),
+        if re.match('\d+\.', ip_addr):
+            sock_family = socket.AF_INET
+        else:
+            sock_family = socket.AF_INET6
+        tcp_sock = AsyncSocket(socket.socket(sock_family, socket.SOCK_STREAM),
                                keyfile=self.node_keyfile, certfile=self.node_certfile)
         tcp_sock.settimeout(MsgTimeout)
         try:
@@ -1171,26 +1188,29 @@ class _Scheduler(object):
             pass
         tcp_sock.close()
 
-    def broadcast_ping(self, port=None, task=None):
+    def broadcast_ping(self, addrinfos=[], port=None, task=None):
         # generator
         if not port:
             port = self.node_port
         ping_msg = {'version': _dispy_version, 'sign': self.sign, 'port': self.port}
-        ping_msg['ip_addrs'] = list(filter(lambda ip: bool(ip), self.ext_ip_addrs))
-        bc_sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_DGRAM))
-        bc_sock.settimeout(MsgTimeout)
-        if self.addrinfo.family == socket.AF_INET:
-            bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        else:  # self.sock_family == socket.AF_INET6
-            bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS,
-                               struct.pack('@i', 1))
-            bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, self.addrinfo.ifn)
-        bc_sock.bind((self.addrinfo.ip, 0))
-        try:
-            yield bc_sock.sendto('PING:' + serialize(ping_msg), (self._broadcast, port))
-        except:
-            pass
-        bc_sock.close()
+        ping_msg['ip_addrs'] = [addrinfo.ext_ip_addr for addrinfo in self.addrinfos.values()]
+        if not addrinfos:
+            addrinfos = self.addrinfos.values()
+        for addrinfo in addrinfos:
+            bc_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
+            bc_sock.settimeout(MsgTimeout)
+            if addrinfo.family == socket.AF_INET:
+                bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            else:  # addrinfo.family == socket.AF_INET6
+                bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS,
+                                   struct.pack('@i', 1))
+                bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, addrinfo.ifn)
+            bc_sock.bind((addrinfo.ip, 0))
+            try:
+                yield bc_sock.sendto('PING:' + serialize(ping_msg), (addrinfo.broadcast, port))
+            except:
+                pass
+            bc_sock.close()
 
     def send_ping_cluster(self, node_allocs, present_ip_addrs, task=None):
         for node_alloc in node_allocs:
@@ -1198,8 +1218,7 @@ class _Scheduler(object):
             # subnet mask; this is a limitation, but specifying with
             # subnet mask a bit cumbersome.
             if node_alloc.ip_rex.find('*') >= 0:
-                if node_alloc.ip_rex != '.*':
-                    Task(self.broadcast_ping, node_alloc.port)
+                Task(self.broadcast_ping, addrinfos=[], port=node_alloc.port)
             else:
                 ip_addr = node_alloc.ip_addr
                 if ip_addr in present_ip_addrs:
@@ -1389,7 +1408,7 @@ class _Scheduler(object):
 
     def send_job_result(self, uid, cluster, result, resending=False, task=None):
         # generator
-        sock = socket.socket(self.addrinfo.family, socket.SOCK_STREAM)
+        sock = socket.socket(cluster.client_sock_family, socket.SOCK_STREAM)
         sock = AsyncSocket(sock, keyfile=self.cluster_keyfile, certfile=self.cluster_certfile)
         sock.settimeout(MsgTimeout)
         try:
@@ -1446,7 +1465,7 @@ class _Scheduler(object):
                 dispy_node.busy += 1
                 dispy_node.update_time = time.time()
                 cluster.status_callback(_job.job.status, dispy_node, _job.job)
-        sock = socket.socket(self.addrinfo.family, socket.SOCK_STREAM)
+        sock = socket.socket(cluster.client_sock_family, socket.SOCK_STREAM)
         sock = AsyncSocket(sock, keyfile=self.cluster_keyfile, certfile=self.cluster_certfile)
         sock.settimeout(MsgTimeout)
         try:
@@ -1464,7 +1483,7 @@ class _Scheduler(object):
         if cluster.status_callback:
             dispy_node.update_time = time.time()
             cluster.status_callback(status, dispy_node, None)
-        sock = socket.socket(self.addrinfo.family, socket.SOCK_STREAM)
+        sock = socket.socket(cluster.client_sock_family, socket.SOCK_STREAM)
         sock = AsyncSocket(sock, keyfile=self.cluster_keyfile, certfile=self.cluster_certfile)
         sock.settimeout(MsgTimeout)
         status_info = {'compute_id': cluster._compute.id,
@@ -1875,7 +1894,7 @@ class _Scheduler(object):
         if not node or cluster._compute.id not in node.clusters:
             raise StopIteration([])
         if from_node:
-            sock = socket.socket(self.addrinfo.family, socket.SOCK_STREAM)
+            sock = socket.socket(node.sock_family, socket.SOCK_STREAM)
             sock = AsyncSocket(sock, keyfile=self.node_keyfile, certfile=self.node_certfile)
             sock.settimeout(MsgTimeout)
             try:
@@ -1949,7 +1968,7 @@ class _Scheduler(object):
             yield task.sleep(5)
 
         self._sched_event.set()
-        yield self.scheduler_task.finish()
+        yield self.job_scheduler_task.finish()
 
     def print_status(self):
         print('')
@@ -1993,9 +2012,9 @@ if __name__ == '__main__':
     parser.add_argument('-n', '--nodes', action='append', dest='nodes', default=[],
                         help='name or IP address used for all computations; '
                         'repeat for multiple nodes')
-    parser.add_argument('-i', '--ip_addr', action='append', dest='ip_addr', default=[],
+    parser.add_argument('-i', '--ip_addr', action='append', dest='ip_addrs', default=[],
                         help='IP address to use; repeat for multiple interfaces')
-    parser.add_argument('--ext_ip_addr', action='append', dest='ext_ip_addr', default=[],
+    parser.add_argument('--ext_ip_addr', action='append', dest='ext_ip_addrs', default=[],
                         help='External IP address to use (needed in case of NAT firewall/gateway);'
                         ' repeat for multiple interfaces')
     parser.add_argument('-p', '--port', dest='port', type=int, default=51347,
