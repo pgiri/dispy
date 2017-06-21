@@ -358,8 +358,7 @@ class _DispyNode(object):
         udp_addrinfos = {}
         for addrinfo in self.addrinfos.values():
             Task(self.tcp_server, addrinfo)
-            print('  Addrinfo: %s / %s / %s' % (addrinfo.family, addrinfo.ip, addrinfo.broadcast))
-            if addrinfo.broadcast == '<broadcast>': # or addrinfo.broadcast == 'ff05::1'
+            if addrinfo.broadcast == '<broadcast>':  # or addrinfo.broadcast == 'ff05::1'
                 bind_addr = ''
             else:
                 bind_addr = addrinfo.broadcast
@@ -421,14 +420,13 @@ class _DispyNode(object):
                                    keyfile=self.keyfile, certfile=self.certfile)
                 sock.settimeout(MsgTimeout)
                 try:
-                    yield sock.connect(addr)
+                    yield sock.connect((self.scheduler['ip_addr'], self.scheduler['port']))
                     yield sock.send_msg('PING:'.encode() + serialize(ping_msg))
                 except:
                     pass
                 sock.close()
 
     def send_pong_msg(self, info, addr, task=None):
-        _dispy_logger.debug('  PONG req from %s: %s', str(info), str(addr))
         if (self.scheduler['auth'] or self.job_infos or not self.num_cpus or
             not self.service_available()):
             _dispy_logger.debug('Busy (%s/%s); ignoring ping message from %s',
@@ -488,15 +486,15 @@ class _DispyNode(object):
             udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         if hasattr(socket, 'SO_REUSEPORT'):
             udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-        else:  # addrinfo.family == socket.AF_INET6
+        if addrinfo.family == socket.AF_INET6:
             mreq = socket.inet_pton(addrinfo.family, addrinfo.broadcast)
             mreq += struct.pack('@I', addrinfo.ifn)
             udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
             udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
-            
+
         while not self.port:
             yield task.sleep(0.2)
-        _dispy_logger.debug('  UDP listen: "%s"', bind_addr)
+
         udp_sock.bind((bind_addr, self.port))
         if not bind_addr:
             Task(self.broadcast_ping_msg)
@@ -539,7 +537,6 @@ class _DispyNode(object):
                 tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             if hasattr(socket, 'SO_REUSEPORT'):
                 tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-        print('  TCP %s: %s:%s' % (addrinfo.family, addrinfo.ip, self.port))
         tcp_sock.bind((addrinfo.ip, self.port))
         if not self.port:
             self.port = tcp_sock.getsockname()[1]
@@ -1082,7 +1079,6 @@ class _DispyNode(object):
             try:
                 info = deserialize(msg[len('PING:'):])
                 if info['version'] == _dispy_version:
-                    addrinfo = self.addrinfos.get(info.get('node_ip_addr', None), None)
                     Task(self.send_pong_msg, info, addr)
             except:
                 _dispy_logger.debug(traceback.format_exc())
@@ -1704,7 +1700,6 @@ class _DispyNode(object):
 
 if __name__ == '__main__':
     import argparse
-    import re
 
     _dispy_logger = pycos.Logger('dispynode')
 

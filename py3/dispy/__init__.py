@@ -627,8 +627,8 @@ class _DispyJob_(object):
     def __getstate__(self):
         state = {'uid': self.uid, 'hash': self.hash, 'compute_id': self.compute_id,
                  '_args': self._args if isinstance(self._args, bytes) else serialize(self._args),
-                 '_kwargs': self._kwargs if isinstance(self._kwargs, bytes) \
-                     else serialize(self._kwargs),
+                 '_kwargs': self._kwargs if isinstance(self._kwargs, bytes)
+                                         else serialize(self._kwargs),
                  'xfer_files': self.xfer_files, 'code': self.code}
         return state
 
@@ -718,7 +718,7 @@ class _Cluster(object, metaclass=Singleton):
                     if ext_ip_addr:
                         ext_ip_addr = ext_ip_addr.ip
                     else:
-                        _dispy_logger.warning('Ignoring invalid ext_ip_addr %s', ext_ip_addrs[i])
+                        logger.warning('Ignoring invalid ext_ip_addr %s', ext_ip_addrs[i])
                 if not ext_ip_addr:
                     ext_ip_addr = addrinfo.ip
                 addrinfo.ext_ip_addr = ext_ip_addr
@@ -797,11 +797,18 @@ class _Cluster(object, metaclass=Singleton):
                 port_bound_event = pycos.Event()
             self.tcp_tasks = []
             self.udp_tasks = []
+            udp_addrinfos = {}
             for addrinfo in self.addrinfos.values():
                 self.tcp_tasks.append(Task(self.tcp_server, addrinfo, port_bound_event))
                 if not self.shared:
-                    self.udp_tasks.append(Task(self.udp_server, addrinfo, port_bound_event))
-
+                    if addrinfo.broadcast == '<broadcast>':  # or addrinfo.broadcast == 'ff05::1'
+                        bind_addr = ''
+                    else:
+                        bind_addr = addrinfo.broadcast
+                    udp_addrinfos[bind_addr] = addrinfo
+            for bind_addr, addrinfo in udp_addrinfos.items():
+                self.udp_tasks.append(Task(self.udp_server, addrinfo, port_bound_event))
+            del udp_addrinfos
             # Under Windows dispynode may send objects with
             # '__mp_main__' scope, so make an alias to '__main__'.
             # TODO: Make alias even if client is not Windows? It is
@@ -856,7 +863,7 @@ class _Cluster(object, metaclass=Singleton):
                 sock.settimeout(MsgTimeout)
                 msg = {'version': _dispy_version, 'port': self.port, 'sign': self.sign,
                        'node_ip_addr': info['ip_addr']}
-                msg['ip_addrs'] = [addrinfo.ext_ip_addr for addrinfo in self.addrinfos.values()]
+                msg['ip_addrs'] = [ai.ext_ip_addr for ai in self.addrinfos.values()]
                 try:
                     yield sock.connect((info['ip_addr'], info['port']))
                     yield sock.sendall(auth)
@@ -1205,8 +1212,8 @@ class _Cluster(object, metaclass=Singleton):
                     for cluster in clusters:
                         msg = {'client_ip_addr': cluster._compute.scheduler_ip_addr,
                                'client_port': cluster._compute.job_result_port}
-                        sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM),
-                                           keyfile=self.keyfile, certfile=self.certfile)
+                        sock = socket.socket(cluster.addrinfo.family, socket.SOCK_STREAM)
+                        sock = AsyncSocket(sock, keyfile=self.keyfile, certfile=self.certfile)
                         sock.settimeout(MsgTimeout)
                         try:
                             yield sock.connect((cluster.scheduler_ip_addr, cluster.scheduler_port))

@@ -26,6 +26,8 @@ import signal
 import platform
 import copy
 import struct
+import hashlib
+import re
 try:
     import psutil
 except ImportError:
@@ -238,7 +240,7 @@ class _DispyNode(object):
                                       'this will prevent communication with clients on '
                                       'other machines. ', addrinfo.ip)
             if ext_ip_addr:
-                ext_ip_addr = Pycos.node_addrinfo(ext_ip_addr)
+                ext_ip_addr = dispy.node_addrinfo(ext_ip_addr)
                 if ext_ip_addr:
                     ext_ip_addr = ext_ip_addr[1]
                 else:
@@ -355,9 +357,17 @@ class _DispyNode(object):
             self.__init_globals.pop('_dispy_config')
             self.__init_globals['_dispy_node'] = self
 
+        udp_addrinfos = {}
         for addrinfo in self.addrinfos.values():
             Task(self.tcp_server, addrinfo)
-            Task(self.udp_server, addrinfo)
+            if addrinfo.broadcast == '<broadcast>':  # or addrinfo.broadcast == 'ff05::1'
+                bind_addr = ''
+            else:
+                bind_addr = addrinfo.broadcast
+            udp_addrinfos[bind_addr] = addrinfo
+        for bind_addr, addrinfo in udp_addrinfos.items():
+            Task(self.udp_server, bind_addr, addrinfo)
+        del udp_addrinfos
         if not daemon:
             self.cmd_task = Task(self.cmd_proc)
         _dispy_logger.info('"%s" serving %s cpus', self.name, self.num_cpus)
@@ -412,13 +422,13 @@ class _DispyNode(object):
                                    keyfile=self.keyfile, certfile=self.certfile)
                 sock.settimeout(MsgTimeout)
                 try:
-                    yield sock.connect(addr)
+                    yield sock.connect((self.scheduler['ip_addr'], self.scheduler['port']))
                     yield sock.send_msg('PING:'.encode() + serialize(ping_msg))
                 except:
                     pass
                 sock.close()
 
-    def send_pong_msg(self, info, addr, addrinfo, task=None):
+    def send_pong_msg(self, info, addr, task=None):
         if (self.scheduler['auth'] or self.job_infos or not self.num_cpus or
             not self.service_available()):
             _dispy_logger.debug('Busy (%s/%s); ignoring ping message from %s',
@@ -435,11 +445,14 @@ class _DispyNode(object):
             _dispy_logger.debug(traceback.format_exc())
             raise StopIteration
 
-        if info.get('sign', None):
+        # TODO: pick appropriate addrinfo based on netmask if available
+        addrinfos = list(self.addrinfos.values())
+
+        for addrinfo in addrinfos:
             pong_msg = {'ip_addr': addrinfo.ext_ip_addr, 'port': self.port, 'sign': self.sign,
                         'version': _dispy_version, 'name': self.name, 'cpus': self.avail_cpus,
                         'platform': platform.platform(),
-                        'auth': auth_code(self.secret, info['sign'])}
+                        'auth': auth_code(self.secret, info.get('sign', ''))}
             if psutil:
                 pong_msg['avail_info'] = DispyNodeAvailInfo(
                     100.0 - psutil.cpu_percent(), psutil.virtual_memory().available,
@@ -449,41 +462,25 @@ class _DispyNode(object):
                 pong_msg['avail_info'] = None
 
             for scheduler_ip_addr in scheduler_ip_addrs:
-                addr = (scheduler_ip_addr, scheduler_port)
+                if re.match('\d+\.', scheduler_ip_addr):
+                    sock_family = socket.AF_INET
+                else:
+                    sock_family = socket.AF_INET6
+                if sock_family != addrinfo.family:
+                    continue
                 pong_msg['scheduler_ip_addr'] = scheduler_ip_addr
                 sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_STREAM),
                                    keyfile=self.keyfile, certfile=self.certfile)
                 sock.settimeout(MsgTimeout)
                 try:
-                    yield sock.connect(addr)
+                    yield sock.connect((scheduler_ip_addr, scheduler_port))
                     yield sock.send_msg('PONG:'.encode() + serialize(pong_msg))
                 except:
-                    _dispy_logger.debug('Could not connect to %s:%s', addr[0], addr[1])
+                    pass
                 finally:
                     sock.close()
-        else:
-            sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
-            sock.settimeout(MsgTimeout)
-            ping_msg = {'ip_addr': addrinfo.ext_ip_addr, 'port': self.port, 'sign': self.sign,
-                        'version': _dispy_version}
-            for scheduler_ip_addr in scheduler_ip_addrs:
-                ping_msg['scheduler_ip_addr'] = scheduler_ip_addr
-                if addrinfo.family == socket.AF_INET:
-                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                else:  # self.sock_family == socket.AF_INET6
-                    sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS,
-                                    struct.pack('@i', 1))
-                    sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, addrinfo.ifn)
-                sock.bind((addrinfo.ip, 0))
-                try:
-                    yield sock.sendto('PING:'.encode() + serialize(ping_msg),
-                                      (scheduler_ip_addr, scheduler_port))
-                except:
-                    _dispy_logger.debug(traceback.format_exc())
-                    pass
-            sock.close()
 
-    def udp_server(self, addrinfo, task=None):
+    def udp_server(self, bind_addr, addrinfo, task=None):
         task.set_daemon()
 
         udp_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
@@ -492,20 +489,23 @@ class _DispyNode(object):
         if hasattr(socket, 'SO_REUSEPORT'):
             udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
         if addrinfo.family == socket.AF_INET6:
-            print('family: %s, bc: %s' % (addrinfo.family, addrinfo.broadcast))
             mreq = socket.inet_pton(addrinfo.family, addrinfo.broadcast)
             mreq += struct.pack('@I', addrinfo.ifn)
             udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
+            udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+
         while not self.port:
             yield task.sleep(0.2)
-        udp_sock.bind((addrinfo.ip, self.port))
 
-        Task(self.broadcast_ping_msg, [addrinfo])
+        udp_sock.bind((bind_addr, self.port))
+        if not bind_addr:
+            Task(self.broadcast_ping_msg)
+            addrinfo = None
+        else:
+            Task(self.broadcast_ping_msg, [addrinfo])
 
         while 1:
             msg, addr = yield udp_sock.recvfrom(1000)
-            # TODO: process each message as separate Task, so
-            # exceptions are contained?
             if msg.startswith(b'PING:'):
                 try:
                     info = deserialize(msg[len(b'PING:'):])
@@ -515,7 +515,7 @@ class _DispyNode(object):
                 except:
                     _dispy_logger.debug('Ignoring ping message from %s (%s)', addr[0], addr[1])
                     continue
-                Task(self.send_pong_msg, info, addr, addrinfo)
+                Task(self.send_pong_msg, info, addr)
             elif msg.startswith(b'PULSE:'):
                 try:
                     info = deserialize(msg[len(b'PULSE:'):])
@@ -542,6 +542,7 @@ class _DispyNode(object):
         tcp_sock.bind((addrinfo.ip, self.port))
         if not self.port:
             self.port = tcp_sock.getsockname()[1]
+        _dispy_logger.debug('TCP server at %s:%s', addrinfo.ip, self.port)
         tcp_sock.listen(30)
 
         while 1:
@@ -1080,8 +1081,7 @@ class _DispyNode(object):
             try:
                 info = deserialize(msg[len(b'PING:'):])
                 if info['version'] == _dispy_version:
-                    addrinfo = self.addrinfos[info['node_ip_addr']]
-                    Task(self.send_pong_msg, info, addr, addrinfo)
+                    Task(self.send_pong_msg, info, addr)
             except:
                 _dispy_logger.debug(traceback.format_exc())
             conn.close()
@@ -1694,7 +1694,6 @@ class _DispyNode(object):
 
 if __name__ == '__main__':
     import argparse
-    import re
 
     _dispy_logger = pycos.Logger('dispynode')
 

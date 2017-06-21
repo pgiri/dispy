@@ -143,7 +143,7 @@ class _Scheduler(object):
                 if ext_ip_addr:
                     ext_ip_addr = ext_ip_addr.ip
                 else:
-                    _dispy_logger.warning('Ignoring invalid ext_ip_addr %s', ext_ip_addrs[i])
+                    logger.warning('Ignoring invalid ext_ip_addr %s', ext_ip_addrs[i])
             if not ext_ip_addr:
                 ext_ip_addr = addrinfo.ip
             addrinfo.ext_ip_addr = ext_ip_addr
@@ -233,8 +233,8 @@ class _Scheduler(object):
 
         with open(os.path.join(self.dest_path_prefix, 'config'), 'wb') as fd:
             config = {
-                'ip_addrs': [addrinfo.ip for addrinfo in self.addrinfos.values()],
-                'ext_ip_addrs': [addrinfo.ext_ip_addr for addrinfo in self.addrinfos.values()],
+                'ip_addrs': [ai.ip for ai in self.addrinfos.values()],
+                'ext_ip_addrs': [ai.ext_ip_addr for ai in self.addrinfos.values()],
                 'port': self.port, 'sign': self.sign,
                 'cluster_secret': self.cluster_secret, 'cluster_auth': self.cluster_auth,
                 'node_secret': self.node_secret, 'node_auth': self.node_auth
@@ -255,19 +255,15 @@ class _Scheduler(object):
             self.httpd = None
 
         self.timer_task = Task(self.timer_proc)
-
         self.job_scheduler_task = Task(self._schedule_jobs)
 
         self.tcp_tasks = []
         self.udp_tasks = []
         self.scheduler_tasks = []
+        udp_addrinfos = {}
         for addrinfo in self.addrinfos.values():
             self.tcp_tasks.append(Task(self.tcp_server, addrinfo))
             self.scheduler_tasks.append(Task(self.scheduler_server, addrinfo))
-
-        udp_addrinfos = {}
-        for addrinfo in self.addrinfos.values():
-            Task(self.tcp_server, addrinfo)
             if addrinfo.broadcast == '<broadcast>':
                 udp_addrinfos.clear()
                 bind_addr = ''
@@ -277,11 +273,10 @@ class _Scheduler(object):
                 bind_addr = addrinfo.broadcast
             udp_addrinfos[bind_addr] = addrinfo
         for bind_addr, addrinfo in udp_addrinfos.items():
-            Task(self.udp_server, bind_addr, addrinfo)
+            self.udp_tasks.append(Task(self.udp_server, bind_addr, addrinfo))
         del udp_addrinfos
 
     def udp_server(self, bind_addr, addrinfo, task=None):
-        # generator
         task.set_daemon()
 
         udp_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
@@ -289,7 +284,7 @@ class _Scheduler(object):
             udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         if hasattr(socket, 'SO_REUSEPORT'):
             udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-        else:  # addrinfo.family == socket.AF_INET6
+        if addrinfo.family == socket.AF_INET6:
             mreq = socket.inet_pton(addrinfo.family, addrinfo.broadcast)
             mreq += struct.pack('@I', addrinfo.ifn)
             udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
@@ -327,7 +322,7 @@ class _Scheduler(object):
                                    keyfile=self.node_keyfile, certfile=self.node_certfile)
                 sock.settimeout(MsgTimeout)
                 msg = {'port': self.port, 'sign': self.sign, 'version': _dispy_version}
-                msg['ip_addrs'] = [addrinfo.ext_ip_addr for addrinfo in self.addrinfos.values()]
+                msg['ip_addrs'] = [ai.ext_ip_addr for ai in self.addrinfos.values()]
                 try:
                     yield sock.connect((info['ip_addr'], info['port']))
                     yield sock.sendall(auth)
@@ -2077,9 +2072,9 @@ if __name__ == '__main__':
         cfg = dict(cfg.items('DEFAULT'))
         cfg['nodes'] = [] if cfg['nodes'] == '[]' else \
                        [_.strip() for _ in cfg['nodes'][1:-1].split(',')]
-        cfg['ip_addr'] =  [] if cfg['ip_addr'] == '[]' else \
-                             [_.strip() for _ in cfg['ip_addr'][1:-1].split(',')]
-        cfg['ext_ip_addr'] =  [] if cfg['ext_ip_addr'] == '[]' else \
+        cfg['ip_addr'] = [] if cfg['ip_addr'] == '[]' else \
+                         [_.strip() for _ in cfg['ip_addr'][1:-1].split(',')]
+        cfg['ext_ip_addr'] = [] if cfg['ext_ip_addr'] == '[]' else \
                              [_.strip() for _ in cfg['ext_ip_addr'][1:-1].split(',')]
         cfg['port'] = int(cfg['port'])
         cfg['node_port'] = int(cfg['node_port'])
