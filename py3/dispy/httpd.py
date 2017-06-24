@@ -48,7 +48,7 @@ class DispyHTTPServer(object):
 
     class _ClusterInfo(object):
 
-        ip_re = re.compile(r'^(([0-9a-f:]+)|(\d+\.\d+\.\d+\.\d+))$')
+        ip_re = re.compile(r'^((\d+\.\d+\.\d+\.\d+)|([0-9a-f:]+))$')
 
         def __init__(self, cluster):
             self.cluster = cluster

@@ -810,17 +810,17 @@ class _Cluster(object):
                         bind_addr = addrinfo.broadcast
                     udp_addrinfos[bind_addr] = addrinfo
             for bind_addr, addrinfo in udp_addrinfos.items():
-                self.udp_tasks.append(Task(self.udp_server, addrinfo, port_bound_event))
+                self.udp_tasks.append(Task(self.udp_server, bind_addr, addrinfo, port_bound_event))
             del udp_addrinfos
 
-    def udp_server(self, addrinfo, port_bound_event, task=None):
+    def udp_server(self, bind_addr, addrinfo, port_bound_event, task=None):
         # generator
         task.set_daemon()
         udp_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
         # udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         while 1:
             try:
-                udp_sock.bind((addrinfo.ip, self.port))
+                udp_sock.bind((bind_addr, self.port))
             except:
                 logger.warning('Port %s seems to be used by another program', self.port)
                 yield task.sleep(5)
@@ -830,6 +830,7 @@ class _Cluster(object):
             mreq = socket.inet_pton(addrinfo.family, addrinfo.broadcast)
             mreq += struct.pack('@I', addrinfo.ifn)
             udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
+            udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
 
         port_bound_event.set()
         del port_bound_event
