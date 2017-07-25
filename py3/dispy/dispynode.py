@@ -242,7 +242,7 @@ class _DispyNode(object):
             if ext_ip_addr:
                 ext_ip_addr = dispy.node_addrinfo(ext_ip_addr)
                 if ext_ip_addr:
-                    ext_ip_addr = ext_ip_addr[1]
+                    ext_ip_addr = ext_ip_addr.ip
                 else:
                     _dispy_logger.warning('Ignoring invalid ext_ip_addr %s', ext_ip_addrs[i])
             if not ext_ip_addr:
@@ -1158,7 +1158,8 @@ class _DispyNode(object):
             raise StopIteration
         result_files = [f for f in os.listdir(compute.dest_path)
                         if f.startswith('_dispy_job_reply_')]
-        result_files = result_files[:min(len(result_files), 64)]
+        if len(result_files) > 64:
+            result_files = result_files[:64]
         for result_file in result_files:
             result_file = os.path.join(compute.dest_path, result_file)
             try:
