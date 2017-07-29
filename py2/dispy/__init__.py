@@ -3015,7 +3015,7 @@ class SharedJobCluster(JobCluster):
             return 0
 
 
-def recover_jobs(recover_file, timeout=None, terminate_pending=False):
+def recover_jobs(recover_file=None, timeout=None, terminate_pending=False):
     """
     If dispy client crashes or loses connection to nodes, the nodes
     will continue to execute scheduled jobs. This 'recover_jobs'
@@ -3046,6 +3046,15 @@ def recover_jobs(recover_file, timeout=None, terminate_pending=False):
     closed (so they can serve new clients), 'recover_file' is removed
     and the jobs are returned.
     """
+
+   if not recover_file:
+       import glob
+       recover_file = sorted(glob.glob('_dispy_*'))
+       if recover_file:
+           recover_file = recover_file[-1]
+       else:
+           print('Could not find recover file of the form "_dispy_*"')
+           return []
 
     shelf_nodes = {}
     computes = {}
