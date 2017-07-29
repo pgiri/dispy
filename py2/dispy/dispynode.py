@@ -482,10 +482,6 @@ class _DispyNode(object):
         task.set_daemon()
 
         udp_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
-        if hasattr(socket, 'SO_REUSEADDR'):
-            udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        if hasattr(socket, 'SO_REUSEPORT'):
-            udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
         if addrinfo.family == socket.AF_INET6:
             mreq = socket.inet_pton(addrinfo.family, addrinfo.broadcast)
             mreq += struct.pack('@I', addrinfo.ifn)
@@ -532,11 +528,6 @@ class _DispyNode(object):
 
         tcp_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_STREAM),
                                keyfile=self.keyfile, certfile=self.certfile)
-        if self.port:
-            if hasattr(socket, 'SO_REUSEADDR'):
-                tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            if hasattr(socket, 'SO_REUSEPORT'):
-                tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
         tcp_sock.bind((addrinfo.ip, self.port))
         if not self.port:
             self.port = tcp_sock.getsockname()[1]
