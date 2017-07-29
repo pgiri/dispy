@@ -3156,12 +3156,12 @@ def recover_jobs(recover_file, timeout=None, terminate_pending=False):
             if pending['timeout'] and \
                ((time.time() - pending['start_time']) > pending['timeout']):
                 break
-            req = serialize({'compute_id': compute_id, 'auth': compute['auth']})
+            req = {'compute_id': compute_id, 'auth': compute['auth']}
             for ip_addr in compute['nodes']:
                 node = nodes.get(ip_addr, None)
                 if not node:
                     continue
-                reply = yield node.send(b'RESEND_JOB_RESULTS:' + req)
+                reply = yield node.send(b'RESEND_JOB_RESULTS:' + serialize(req))
                 try:
                     reply = deserialize(reply)
                     assert isinstance(reply, int)
@@ -3171,7 +3171,8 @@ def recover_jobs(recover_file, timeout=None, terminate_pending=False):
                 logger.debug('Pending jobs from %s for %s: %s',
                              node.ip_addr, compute['name'], reply)
                 if reply == 0:
-                    yield node.send(b'CLOSE:' + req, reply=True, task=task)
+                    req['node_ip_addr'] = ip_addr
+                    yield node.send(b'CLOSE:' + serialize(req), reply=True, task=task)
                 else:
                     pending['count'] += reply
         pending['resend_req_done'] = True
@@ -3190,15 +3191,16 @@ def recover_jobs(recover_file, timeout=None, terminate_pending=False):
     pending['complete'].wait()
 
     for compute_id, compute in computes.items():
-        req = serialize({'compute_id': compute_id, 'auth': compute['auth'],
-                         'terminate_pending': terminate_pending})
+        req = {'compute_id': compute_id, 'auth': compute['auth'],
+               'terminate_pending': terminate_pending}
         for ip_addr in compute['nodes']:
             node = nodes.get(ip_addr, None)
             if not node:
                 continue
             if node.scheduler_ip_addr:
                 continue
-            Task(node.send, b'CLOSE:' + req, reply=True)
+            req['node_ip_addr'] = ip_addr
+            Task(node.send, b'CLOSE:' + serialize(req), reply=True)
 
     if terminate_pending:
         # wait a bit to get cancelled job results
