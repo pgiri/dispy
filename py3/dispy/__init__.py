@@ -3049,14 +3049,14 @@ def recover_jobs(recover_file=None, timeout=None, terminate_pending=False):
     and the jobs are returned.
     """
 
-   if not recover_file:
-       import glob
-       recover_file = sorted(glob.glob('_dispy_*'))
-       if recover_file:
-           recover_file = recover_file[-1]
-       else:
-           print('Could not find recover file of the form "_dispy_*"')
-           return []
+    if not recover_file:
+        import glob
+        recover_file = sorted(glob.glob('_dispy_*'))
+        if recover_file:
+            recover_file = recover_file[-1]
+        else:
+            print('Could not find recover file of the form "_dispy_*"')
+            return []
 
     shelf_nodes = {}
     computes = {}
