@@ -693,7 +693,7 @@ class _DispyNode(object):
                 except:
                     yield conn.send_msg(('Could not create destination path').encode())
                     raise StopIteration
-            if compute.dest_path and isinstance(compute.dest_path, str):
+            if compute.dest_path and isinstance(compute.dest_path, basestring):
                 # TODO: get os.sep from client and convert (in case of mixed environments)?
                 if not compute.dest_path.startswith(os.sep):
                     compute.dest_path = os.path.join(dest, compute.dest_path)
