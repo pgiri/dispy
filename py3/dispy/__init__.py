@@ -1469,7 +1469,7 @@ class _Cluster(object, metaclass=Singleton):
             raise StopIteration
 
         if self.shared:
-            sock = socket.socket(self.addrinfo.family, socket.SOCK_STREAM)
+            sock = socket.socket(cluster.addrinfo.family, socket.SOCK_STREAM)
             sock = AsyncSocket(sock, keyfile=self.keyfile, certfile=self.certfile)
             sock.settimeout(MsgTimeout)
             yield sock.connect((cluster.scheduler_ip_addr, cluster.scheduler_port))
