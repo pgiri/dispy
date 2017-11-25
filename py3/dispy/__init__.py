@@ -869,6 +869,8 @@ class _Cluster(object, metaclass=Singleton):
                     yield sock.connect((info['ip_addr'], info['port']))
                     yield sock.sendall(auth)
                     yield sock.send_msg(b'PING:' + serialize(msg))
+                except GeneratorExit:
+                    break
                 except:
                     logger.debug(traceback.format_exc())
                 finally:
