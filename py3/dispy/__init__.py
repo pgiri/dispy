@@ -25,6 +25,7 @@ import queue
 import numbers
 import collections
 import struct
+import errno
 try:
     import netifaces
 except:
@@ -824,8 +825,14 @@ class _Cluster(object, metaclass=Singleton):
         while 1:
             try:
                 udp_sock.bind((bind_addr, self.port))
+            except socket.error as exc:
+                if exc.errno == errno.EADDRINUSE:
+                    logger.warning('Port %s seems to be used by another program ...', self.port)
+                else:
+                    logger.warning('Error binding to port %s: %s ...', self.port, exc.errno)
+                yield task.sleep(5)
             except:
-                logger.warning('Port %s seems to be used by another program', self.port)
+                logger.warning('Could not bind to port %s: %s', self.port, traceback.format_exc())
                 yield task.sleep(5)
             else:
                 break

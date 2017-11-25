@@ -25,6 +25,7 @@ import Queue as queue
 import numbers
 import collections
 import struct
+import errno
 try:
     import netifaces
 except:
@@ -821,8 +822,14 @@ class _Cluster(object):
         while 1:
             try:
                 udp_sock.bind((bind_addr, self.port))
+            except socket.error as exc:
+                if exc.errno == errno.EADDRINUSE:
+                    logger.warning('Port %s seems to be used by another program ...', self.port)
+                else:
+                    logger.warning('Error binding to port %s: %s ...', self.port, exc.errno)
+                yield task.sleep(5)
             except:
-                logger.warning('Port %s seems to be used by another program', self.port)
+                logger.warning('Could not bind to port %s: %s', self.port, traceback.format_exc())
                 yield task.sleep(5)
             else:
                 break
@@ -1208,7 +1215,6 @@ class _Cluster(object):
             if self.pulse_interval and (now - last_pulse_time) >= self.pulse_interval:
                 last_pulse_time = now
                 if self.shared:
-                    node = None
                     clusters = self._clusters.values()
                     for cluster in clusters:
                         msg = {'client_ip_addr': cluster._compute.scheduler_ip_addr,
