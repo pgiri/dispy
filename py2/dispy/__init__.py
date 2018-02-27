@@ -1714,10 +1714,11 @@ class _Cluster(object):
                 pass
             else:
                 logger.warning('Invalid reply status: %s for job %s', reply.status, _job.uid)
+            dispy_job = _job.job
+            self.finish_job(cluster, _job, reply.status)
             if cluster.status_callback:
                 self.worker_Q.put((cluster.status_callback,
-                                   (reply.status, dispy_node, _job.job)))
-            self.finish_job(cluster, _job, reply.status)
+                                   (reply.status, dispy_node, dispy_job)))
             self._sched_event.set()
         yield sock.send_msg('ACK')
 
@@ -1741,10 +1742,11 @@ class _Cluster(object):
                 logger.debug('Job %s scheduled on %s abandoned', _job.uid, _job.node.ip_addr)
                 # TODO: it is likely node finishes this job and sends
                 # reply later; keep this in _abandoned_jobs and process reply?
+                dispy_job = _job.job
+                self.finish_job(cluster, _job, DispyJob.Abandoned)
                 if cluster.status_callback and dispy_node:
                     self.worker_Q.put((cluster.status_callback,
-                                       (DispyJob.Abandoned, dispy_node, _job.job)))
-                self.finish_job(cluster, _job, DispyJob.Abandoned)
+                                       (DispyJob.Abandoned, dispy_node, dispy_job)))
         self._sched_event.set()
 
     def run_job(self, _job, cluster, task=None):
@@ -1763,11 +1765,12 @@ class _Cluster(object):
             if node.pending_jobs:
                 for njob in node.pending_jobs:
                     if njob.compute_id == cluster._compute.id:
+                        dispy_job = njob.job
                         self.finish_job(cluster, njob, DispyJob.Cancelled)
                         if cluster.status_callback and dispy_node:
                             dispy_node.update_time = time.time()
                             self.worker_Q.put((cluster.status_callback,
-                                               (DispyJob.Cancelled, dispy_node, njob.job)))
+                                               (DispyJob.Cancelled, dispy_node, dispy_job)))
                 node.pending_jobs = [njob for njob in node.pending_jobs
                                      if njob.compute_id != cluster._compute.id]
             if self._sched_jobs.pop(_job.uid, None) == _job:
@@ -1782,11 +1785,12 @@ class _Cluster(object):
             # TODO: delay executing again for some time?
             # this job might have been deleted already due to timeout
             if self._sched_jobs.pop(_job.uid, None) == _job:
+                dispy_job = _job.job
                 self.finish_job(cluster, _job, DispyJob.Cancelled)
                 if cluster.status_callback and dispy_node:
                     dispy_node.update_time = time.time()
                     self.worker_Q.put((cluster.status_callback,
-                                       (DispyJob.Cancelled, dispy_node, _job.job)))
+                                       (DispyJob.Cancelled, dispy_node, dispy_job)))
                 node.busy -= 1
             self._sched_event.set()
         else:
@@ -1862,13 +1866,14 @@ class _Cluster(object):
                     status = DispyJob.Terminated
                 else:
                     status = DispyJob.Cancelled
+                dispy_job = _job.job
                 self.finish_job(cluster, _job, status)
                 if cluster.status_callback:
                     dispy_node = cluster._dispy_nodes.get(_job.node.ip_addr, None)
                     if dispy_node:
                         dispy_node.update_time = time.time()
                         self.worker_Q.put((cluster.status_callback,
-                                           (status, dispy_node, _job.job)))
+                                           (status, dispy_node, dispy_job)))
             for dispy_node in cluster._dispy_nodes.itervalues():
                 node = self._nodes.get(dispy_node.ip_addr, None)
                 if not node:
@@ -1879,11 +1884,12 @@ class _Cluster(object):
                         status = DispyJob.Terminated
                     else:
                         status = DispyJob.Cancelled
+                    dispy_job = _job.job
                     self.finish_job(cluster, _job, status)
                     if cluster.status_callback:
                         dispy_node.update_time = time.time()
                         self.worker_Q.put((cluster.status_callback,
-                                           (status, dispy_node, _job.job)))
+                                           (status, dispy_node, dispy_job)))
                 node.pending_jobs = []
             cluster._jobs = []
             cluster._pending_jobs = 0
@@ -1927,9 +1933,10 @@ class _Cluster(object):
                 _job.pinned.pending_jobs.remove(_job)
             else:
                 cluster._jobs.remove(_job)
-            if cluster.status_callback:
-                self.worker_Q.put((cluster.status_callback, (DispyJob.Cancelled, None, _job.job)))
+            dispy_job = _job.job
             self.finish_job(cluster, _job, DispyJob.Cancelled)
+            if cluster.status_callback:
+                self.worker_Q.put((cluster.status_callback, (DispyJob.Cancelled, None, dispy_job)))
             logger.debug('Cancelled (removed) job %s', _job.uid)
             raise StopIteration(0)
         elif not (_job.job.status == DispyJob.Running or
