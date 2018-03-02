@@ -1,7 +1,7 @@
 dispy
 ######
 
-`dispy <http://dispy.sourceforge.net>`_ is a comprehensive, yet
+`dispy <https://pgiri.github.io/dispy/index.html>`_ is a comprehensive, yet
 easy to use framework for creating and using compute clusters to
 execute computations in parallel across multiple processors in a
 single machine (SMP), among many machines in a cluster, grid or cloud.
@@ -10,7 +10,7 @@ computation is evaluated with different (large) datasets independently
 with no communication among computation tasks (except for computation
 tasks sending intermediate results to the client). If
 communication/cooperation among tasks is needed, `pycos
-<https://pycos.sourceforge.io>`_ framework could be used.
+<https://pgiri.github.io/pycos/index.html>`_ framework could be used.
 
 dispy works with Python versions 2.7+ and 3.1+. It has been tested
 with Linux, OS X and Windows; it may work on other platforms too.
@@ -29,7 +29,7 @@ Features
   tasks).  While dispy can be used to schedule jobs of a computation
   to get the results, pycos can be used to create `distributed
   communicating processes
-  <https://pycos.sourceforge.io/dispycos.html>`_, for broad range
+  <https://pgiri.github.io/pycos/dispycos.html>`_, for broad range
   of use cases.
 
 * Computations (Python functions or standalone programs) and their
@@ -69,7 +69,7 @@ Features
   ``SharedJobCluster`` and *dispyscheduler* program).
 
 * Cluster can be `monitored and managed
-  <http://dispy.sourceforge.net/httpd.html>`_ with web browser.
+  <https:/pgiri.github.io/dispy/httpd.html>`_ with web browser.
 
 Dependencies
 ------------
@@ -93,7 +93,6 @@ Authors
 
 Links
 -----
-* `Project page <http://dispy.sourceforge.net>`_.
-* `Examples <http://dispy.sourceforge.net/examples.html>`_.
-* `Changes <https://sourceforge.net/p/dispy/news/>`_.
+* `Project page <https://pgiri.github.io/dispy/index.html>`_.
+* `Examples <https://pgiri.github.io/dispy/examples.html>`_.
 * `Source <https://github.com/pgiri/dispy>`_.
