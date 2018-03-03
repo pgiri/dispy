@@ -1,16 +1,17 @@
 dispy
 ######
 
-`dispy <https://pgiri.github.io/dispy/index.html>`_ is a comprehensive, yet
-easy to use framework for creating and using compute clusters to
-execute computations in parallel across multiple processors in a
-single machine (SMP), among many machines in a cluster, grid or cloud.
-dispy is well suited for data parallel (SIMD) paradigm where a
-computation is evaluated with different (large) datasets independently
-with no communication among computation tasks (except for computation
-tasks sending intermediate results to the client). If
-communication/cooperation among tasks is needed, `pycos
-<https://pgiri.github.io/pycos/index.html>`_ framework could be used.
+.. note:: This project used to be hosted at sourceforge.net; however,
+sourceforge has been unreliable for the past few weeks, so (for now)
+documentation has been uploaded to github at dispy_ as well.
+
+`dispy <https://pgiri.github.io/dispy/index.html>`_ is a comprehensive, yet easy
+to use framework for creating and using compute clusters to execute computations
+in parallel across multiple processors in a single machine (SMP), among many
+machines in a cluster, grid or cloud.  dispy is well suited for data parallel
+(SIMD) paradigm where a computation is evaluated with different (large) datasets
+independently with no communication among computation tasks (except for
+computation tasks sending intermediate results to the client).
 
 dispy works with Python versions 2.7+ and 3.1+. It has been tested
 with Linux, OS X and Windows; it may work on other platforms too.
