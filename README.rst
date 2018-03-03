@@ -5,7 +5,7 @@ Note::
 
     This project used to be hosted at sourceforge.net; however,
     sourceforge has been unreliable for the past few weeks, so (for now)
-    documentation has been uploaded to github at dispy_ as well.
+    documentation has been uploaded to github as well.
 
 `dispy <https://pgiri.github.io/dispy/index.html>`_ is a comprehensive, yet easy
 to use framework for creating and using compute clusters to execute computations
