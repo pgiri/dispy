@@ -20,20 +20,18 @@ with Linux, OS X and Windows; it may work on other platforms too.
 
 Features
 --------
-* dispy is implemented with pycos_, an independent framework for
-  asynchronous, concurrent, distributed, network programming with
-  tasks (without threads). pycos uses non-blocking sockets
-  with I/O notification mechanisms epoll, kqueue and poll, and Windows
-  I/O Completion Ports (IOCP) for high performance and scalability, so
-  dispy works efficiently with a single node or large cluster(s) of
-  nodes. pycos itself has support for distributed/parallel
-  computing, including transferring computations, files etc., and
-  message passing (for communicating with client and other computation
-  tasks).  While dispy can be used to schedule jobs of a computation
-  to get the results, pycos can be used to create `distributed
-  communicating processes
-  <https://pgiri.github.io/pycos/dispycos.html>`_, for broad range
-  of use cases.
+
+* dispy is implemented with `pycos <https://pgiri.github.io/pycos/index.html>`_,
+  an independent framework for asynchronous, concurrent, distributed, network
+  programming with tasks (without threads). pycos uses non-blocking sockets with
+  I/O notification mechanisms epoll, kqueue and poll, and Windows I/O Completion
+  Ports (IOCP) for high performance and scalability, so dispy works efficiently
+  with a single node or large cluster(s) of nodes. pycos itself has support for
+  distributed/parallel computing, including transferring computations, files
+  etc., and message passing (for communicating with client and other computation
+  tasks).  While dispy can be used to schedule jobs of a computation to get the
+  results, pycos can be used to create `distributed communicating processes
+  <https://pgiri.github.io/pycos/dispycos.html>`_, for broad range of use cases.
 
 * Computations (Python functions or standalone programs) and their
   dependencies (files, Python functions, classes, modules) are
