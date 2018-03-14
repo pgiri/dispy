@@ -357,17 +357,9 @@ class _DispyNode(object):
             self.__init_globals.pop('_dispy_config')
             self.__init_globals['_dispy_node'] = self
 
-        udp_addrinfos = {}
         for addrinfo in self.addrinfos.values():
             Task(self.tcp_server, addrinfo)
-            if addrinfo.broadcast == '<broadcast>':  # or addrinfo.broadcast == 'ff05::1'
-                bind_addr = ''
-            else:
-                bind_addr = addrinfo.broadcast
-            udp_addrinfos[bind_addr] = addrinfo
-        for bind_addr, addrinfo in udp_addrinfos.items():
-            Task(self.udp_server, bind_addr, addrinfo)
-        del udp_addrinfos
+            Task(self.udp_server, addrinfo.ip, addrinfo)
         if not daemon:
             self.cmd_task = Task(self.cmd_proc)
         _dispy_logger.info('"%s" serving %s cpus', self.name, self.num_cpus)

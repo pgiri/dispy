@@ -798,18 +798,9 @@ class _Cluster(object, metaclass=Singleton):
                 port_bound_event = pycos.Event()
             self.tcp_tasks = []
             self.udp_tasks = []
-            udp_addrinfos = {}
             for addrinfo in self.addrinfos.values():
                 self.tcp_tasks.append(Task(self.tcp_server, addrinfo, port_bound_event))
-                if not self.shared:
-                    if addrinfo.broadcast == '<broadcast>':  # or addrinfo.broadcast == 'ff05::1'
-                        bind_addr = ''
-                    else:
-                        bind_addr = addrinfo.broadcast
-                    udp_addrinfos[bind_addr] = addrinfo
-            for bind_addr, addrinfo in udp_addrinfos.items():
-                self.udp_tasks.append(Task(self.udp_server, bind_addr, addrinfo, port_bound_event))
-            del udp_addrinfos
+                self.udp_tasks.append(Task(self.udp_server, addrinfo.ip, addrinfo, port_bound_event))
             # Under Windows dispynode may send objects with
             # '__mp_main__' scope, so make an alias to '__main__'.
             # TODO: Make alias even if client is not Windows? It is
