@@ -1594,6 +1594,7 @@ class _Cluster(object, metaclass=Singleton):
             if node.auth is not None:
                 dead_jobs = [_job for _job in self._sched_jobs.values()
                              if _job.node is not None and _job.node.ip_addr == node.ip_addr]
+                self.reschedule_jobs(dead_jobs)
                 node.busy = 0
                 node.auth = auth
                 cids = list(node.clusters)
@@ -1602,13 +1603,10 @@ class _Cluster(object, metaclass=Singleton):
                     cluster = self._clusters.get(cid, None)
                     if not cluster:
                         continue
-                    dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
-                    if not dispy_node:
-                        continue
-                    if cluster.status_callback:
+                    dispy_node = cluster._dispy_nodes.pop(node.ip_addr, None)
+                    if dispy_node and cluster.status_callback:
                         self.worker_Q.put((cluster.status_callback,
                                            (DispyNode.Closed, dispy_node, None)))
-                self.reschedule_jobs(dead_jobs)
             node.auth = auth
         node_computations = []
         node.name = info['name']
@@ -1739,6 +1737,7 @@ class _Cluster(object, metaclass=Singleton):
             if cluster._compute.reentrant and not _job.pinned:
                 logger.debug('Rescheduling job %s from %s', _job.uid, _job.node.ip_addr)
                 _job.job.status = DispyJob.Created
+                # TODO: call 'status_callback'?
                 # _job.hash = ''.join(hex(x)[2:] for x in os.urandom(10))
                 cluster._jobs.append(_job)
             else:
