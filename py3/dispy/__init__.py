@@ -42,7 +42,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "Apache 2.0"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.8.3"
+__version__ = "4.8.5"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
@@ -800,7 +800,20 @@ class _Cluster(object, metaclass=Singleton):
             self.udp_tasks = []
             for addrinfo in self.addrinfos.values():
                 self.tcp_tasks.append(Task(self.tcp_server, addrinfo, port_bound_event))
-                self.udp_tasks.append(Task(self.udp_server, addrinfo.ip, addrinfo, port_bound_event))
+                if self.shared:
+                    continue
+
+                if os.name == 'nt':
+                    # Windows does not allow binding to a broadcast address
+                    bind_addr = addrinfo.ip
+                else:
+                    if addrinfo.broadcast == '<broadcast>':  # or addrinfo.broadcast == 'ff05::1'
+                        bind_addr = ''
+                    else:
+                        bind_addr = addrinfo.broadcast
+
+                self.udp_tasks.append(Task(self.udp_server, bind_addr, addrinfo, port_bound_event))
+
             # Under Windows dispynode may send objects with
             # '__mp_main__' scope, so make an alias to '__main__'.
             # TODO: Make alias even if client is not Windows? It is

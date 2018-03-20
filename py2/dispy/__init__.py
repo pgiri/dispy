@@ -803,7 +803,19 @@ class _Cluster(object):
             self.udp_tasks = []
             for addrinfo in self.addrinfos.values():
                 self.tcp_tasks.append(Task(self.tcp_server, addrinfo, port_bound_event))
-                self.udp_tasks.append(Task(self.udp_server, addrinfo.ip, addrinfo, port_bound_event))
+                if self.shared:
+                    continue
+
+                if os.name == 'nt':
+                    # Windows does not allow binding to a broadcast address
+                    bind_addr = addrinfo.ip
+                else:
+                    if addrinfo.broadcast == '<broadcast>':  # or addrinfo.broadcast == 'ff05::1'
+                        bind_addr = ''
+                    else:
+                        bind_addr = addrinfo.broadcast
+
+                self.udp_tasks.append(Task(self.udp_server, bind_addr, addrinfo, port_bound_event))
 
     def udp_server(self, bind_addr, addrinfo, port_bound_event, task=None):
         # generator
