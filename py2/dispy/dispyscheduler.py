@@ -2169,7 +2169,7 @@ if __name__ == '__main__':
     logger.info('dispyscheduler version %s', _dispy_version)
     scheduler = _Scheduler(**config)
     if daemon:
-        scheduler.scheduler_task.value()
+        scheduler.job_scheduler_task.value()
     else:
         while 1:
             try:
