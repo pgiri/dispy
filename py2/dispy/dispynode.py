@@ -357,7 +357,18 @@ class _DispyNode(object):
 
         for addrinfo in self.addrinfos.values():
             Task(self.tcp_server, addrinfo)
-            Task(self.udp_server, addrinfo.ip, addrinfo)
+
+            if os.name == 'nt':
+                # Windows does not allow binding to a broadcast address
+                bind_addr = addrinfo.ip
+            else:
+                if addrinfo.broadcast == '<broadcast>':  # or addrinfo.broadcast == 'ff05::1'
+                    bind_addr = ''
+                else:
+                    bind_addr = addrinfo.broadcast
+
+            Task(self.udp_server, bind_addr, addrinfo)
+
         if not daemon:
             self.cmd_task = Task(self.cmd_proc)
         _dispy_logger.info('"%s" serving %s cpus', self.name, self.num_cpus)
