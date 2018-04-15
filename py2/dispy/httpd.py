@@ -393,13 +393,14 @@ class DispyHTTPServer(object):
         through chaining).
         """
         if status == DispyJob.Created:
+            return
+        if status == DispyJob.Running:
             self._cluster_lock.acquire()
             cluster_info.jobs_submitted += 1
             cluster_info.jobs[id(job)] = job
             self._cluster_lock.release()
-            return
-        if (status == DispyJob.Finished or status == DispyJob.Terminated or
-            status == DispyJob.Cancelled or status == DispyJob.Abandoned):
+        elif (status == DispyJob.Finished or status == DispyJob.Terminated or
+              status == DispyJob.Cancelled or status == DispyJob.Abandoned):
             self._cluster_lock.acquire()
             cluster_info.jobs_done += 1
             cluster_info.jobs.pop(id(job), None)
