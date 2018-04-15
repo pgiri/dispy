@@ -1945,7 +1945,8 @@ class _Scheduler(object):
             try:
                 yield sock.connect((node.ip_addr, node.port))
                 yield sock.sendall(node.auth)
-                yield sock.send_msg('JOBS:')
+                req = {'compute_id': cluster._compute.id, 'auth': cluster._compute.auth}
+                yield sock.send_msg('JOBS:' + serialize(req))
                 msg = yield sock.recv_msg()
                 uids = [info['uid'] for info in deserialize(msg)]
             except:
@@ -1961,9 +1962,11 @@ class _Scheduler(object):
                         ]
         else:
             if get_uids:
-                jobs = [_job.uid for _job in self._sched_jobs.itervalues() if _job.node == node]
+                jobs = [_job.uid for _job in self._sched_jobs.itervalues() if _job.node == node
+                        and _job.compute_id == cluster._compute.id]
             else:
-                jobs = [_job.job for _job in self._sched_jobs.itervalues() if _job.node == node]
+                jobs = [_job.job for _job in self._sched_jobs.itervalues() if _job.node == node
+                        and _job.compute_id == cluster._compute.id]
 
         raise StopIteration(jobs)
 
