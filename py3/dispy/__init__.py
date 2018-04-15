@@ -1741,6 +1741,8 @@ class _Cluster(object, metaclass=Singleton):
             if cluster._compute.reentrant and not _job.pinned:
                 logger.debug('Rescheduling job %s from %s', _job.uid, _job.node.ip_addr)
                 _job.job.status = DispyJob.Created
+                _job.job.ip_addr = None
+                _job.node = None
                 # TODO: call 'status_callback'?
                 # _job.hash = ''.join(hex(x)[2:] for x in os.urandom(10))
                 cluster._jobs.append(_job)
@@ -1750,9 +1752,10 @@ class _Cluster(object, metaclass=Singleton):
                 # reply later; keep this in _abandoned_jobs and process reply?
                 dispy_job = _job.job
                 self.finish_job(cluster, _job, DispyJob.Abandoned)
-                if cluster.status_callback and dispy_node:
-                    self.worker_Q.put((cluster.status_callback,
-                                       (DispyJob.Abandoned, dispy_node, dispy_job)))
+
+            if cluster.status_callback:
+                self.worker_Q.put((cluster.status_callback,
+                                   (DispyJob.Abandoned, dispy_node, dispy_job)))
         self._sched_event.set()
 
     def run_job(self, _job, cluster, task=None):
@@ -1802,6 +1805,7 @@ class _Cluster(object, metaclass=Singleton):
         else:
             # job may have already finished (in which case _job.job would be None)
             if _job.job:
+                _job.job.ip_addr = node.ip_addr
                 logger.debug('Running job %s / %s on %s (busy: %d / %d)',
                              _job.job.id, _job.uid, node.ip_addr, node.busy, node.cpus)
                 _job.job.status = DispyJob.Running
