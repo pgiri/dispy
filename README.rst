@@ -1,11 +1,9 @@
 dispy
 ######
 
-Note::
-
-    This project used to be hosted at sourceforge.net; however,
-    sourceforge has been unreliable for the past few weeks, so (for now)
-    documentation has been uploaded to github as well.
+    This project is hosted at `Sourceforge <http://dispy.sourceforge.net>`_;
+    however, sourceforge is sometimes unreliable, so documentation has been
+    uploaded to `github <https://pgiri.github.io/dispy/index.html>`_ as well.
 
 `dispy <https://pgiri.github.io/dispy/index.html>`_ is a comprehensive, yet easy
 to use framework for creating and using compute clusters to execute computations

@@ -1,9 +1,9 @@
 #!/usr/bin/python3
 
 """
-dispy: Distribute computations among CPUs/cores on a single machine or
-machines in cluster(s), grid, cloud etc. for parallel execution.
-See http://dispy.sourceforge.net for details.
+dispy: Distribute computations among CPUs/cores on a single machine or machines
+in cluster(s), grid, cloud etc. for parallel execution.  See
+http://dispy.sourceforge.net or https://pgiri.github.com/dispy for details.
 """
 
 import os
@@ -42,7 +42,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "Apache 2.0"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.8.5"
+__version__ = "4.8.6"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
@@ -1965,6 +1965,17 @@ class _Cluster(object, metaclass=Singleton):
         node_allocs = _parse_node_allocs(node_alloc)
         if not node_allocs:
             raise StopIteration(-1)
+        for i in range(len(node_allocs)-1, -1, -1):
+            node = self._nodes.get(node_allocs[i].ip_addr, None)
+            if node:
+                dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
+                if dispy_node:
+                    node.clusters.add(cluster._compute.id)
+                    self._sched_event.set()
+                    del node_allocs[i]
+                    continue
+        if not node_allocs:
+            raise StopIteration(0)
         cluster._node_allocs.extend(node_allocs)
         cluster._node_allocs = sorted(cluster._node_allocs,
                                       key=lambda node_alloc: node_alloc.ip_rex, reverse=True)
@@ -1975,6 +1986,33 @@ class _Cluster(object, metaclass=Singleton):
         yield self.add_cluster(cluster, task=task)
         yield self._sched_event.set()
         raise StopIteration(0)
+
+    def deallocate_node(self, cluster, node, task=None):
+        # generator
+        node = _node_ipaddr(node)
+        node = self._nodes.get(node, None)
+        if node is None:
+            raise StopIteration(-1)
+        node.clusters.discard(cluster._compute.id)
+        yield 0
+
+    def close_node(self, cluster, node, terminate_pending, task=None):
+        # generator
+        node = _node_ipaddr(node)
+        node = self._nodes.get(node, None)
+        if node is None:
+            raise StopIteration(-1)
+        node.clusters.discard(cluster._compute.id)
+        jobs = [_job for _job in node.pending_jobs if _job.compute_id == cluster._compute.id]
+        if cluster.status_callback:
+            dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
+            for _job in jobs:
+                self.worker_Q.put((cluster.status_callback,
+                                   (DispyJob.Cancelled, dispy_node, _job.job)))
+        if jobs:
+            node.pending_jobs = [_job for _job in node.pending_jobs
+                                 if _job.compute_id != cluster._compute.id]
+        yield node.close(cluster._compute, terminate_pending=terminate_pending)
 
     def set_node_cpus(self, node, cpus, task=None):
         # generator
@@ -2498,6 +2536,18 @@ class JobCluster(object):
         """
         return Task(self._cluster.allocate_node, self, node).value()
 
+    def deallocate_node(self, node):
+        """Deallocate given node for this cluster. 'node' may be host name or IP
+        address, or an instance of NodeAllocate.
+        """
+        return Task(self._cluster.deallocate_node, self, node).value()
+
+    def close_node(self, node, terminate_pending=False):
+        """Close given node for this cluster. 'node' may be host name or IP
+        address, or an instance of NodeAllocate.
+        """
+        return Task(self._cluster.close_node, self, node, terminate_pending).value()
+
     def node_jobs(self, node, from_node=False):
         """Returns list of jobs currently running on given node, given
         as host name or IP address.
@@ -2940,12 +2990,68 @@ class SharedJobCluster(JobCluster):
             sock.close()
         return reply
 
+    def deallocate_node(self, node):
+        """Similar to 'allocate_node' of JobCluster.
+        """
+        if isinstance(node, DispyNode):
+            node = node.ip_addr
+        else:
+            node = _node_ipaddr(node)
+            if not node:
+                return -1
+        sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM), blocking=True,
+                           keyfile=self._cluster.keyfile, certfile=self._cluster.certfile)
+        sock.settimeout(MsgTimeout)
+        try:
+            sock.connect((self.scheduler_ip_addr, self.scheduler_port))
+            sock.sendall(self._scheduler_auth)
+            req = {'compute_id': self._compute.id, 'auth': self._compute.auth, 'node': node}
+            sock.send_msg(b'DEALLOCATE_NODE:' + serialize(req))
+            reply = sock.recv_msg()
+            reply = deserialize(reply)
+        except:
+            logger.warning('Could not connect to scheduler to add node')
+            reply = -1
+        finally:
+            sock.close()
+        return reply
+
+    def close_node(self, node, terminate_pending=False):
+        """Similar to 'cloe_node' of JobCluster.
+        """
+        if isinstance(node, DispyNode):
+            node = node.ip_addr
+        else:
+            node = _node_ipaddr(node)
+            if not node:
+                return -1
+        sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM), blocking=True,
+                           keyfile=self._cluster.keyfile, certfile=self._cluster.certfile)
+        sock.settimeout(MsgTimeout)
+        try:
+            sock.connect((self.scheduler_ip_addr, self.scheduler_port))
+            sock.sendall(self._scheduler_auth)
+            req = {'compute_id': self._compute.id, 'auth': self._compute.auth, 'node': node,
+                   'terminate_pending': terminate_pending}
+            sock.send_msg(b'CLOSE_NODE:' + serialize(req))
+            reply = sock.recv_msg()
+            reply = deserialize(reply)
+        except:
+            logger.warning('Could not connect to scheduler to add node')
+            reply = -1
+        finally:
+            sock.close()
+        return reply
+
     def node_jobs(self, node, from_node=False):
         """Similar to 'node_jobs' of JobCluster.
         """
-        node = _node_ipaddr(node)
-        if not node:
-            return []
+        if isinstance(node, DispyNode):
+            node = node.ip_addr
+        else:
+            node = _node_ipaddr(node)
+            if not node:
+                return []
         sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM), blocking=True,
                            keyfile=self._cluster.keyfile, certfile=self._cluster.certfile)
         sock.settimeout(MsgTimeout)

@@ -18,6 +18,7 @@
       var cur_cluster_name = null;
       var timer = null;
       var timeout = 1000 * %(TIMEOUT)s;
+      timeout = 1000 * 50;
       var sort_key = 'ip_addr';
       var sorted_keys = [];
       var show_job_args = false;
@@ -44,7 +45,8 @@
         var rows = '';
         $.each(cluster.sorted_keys, function(i, key) {
           var node = cluster.nodes[key];
-          rows += '<tr><td>' + (i + 1) + '</td>' +
+          rows += '<tr>' +
+            '<td><input type="checkbox" name="node_select" value="' + node.ip_addr + '" /></td>' +
             '<td><a href="node.html?host=' + node.ip_addr + '" ' + 'title="View jobs on ' +
             node.ip_addr + '">' + node.ip_addr + '</a></td><td>' + node.name + '</td><td>' +
             node.cpus + '</td><td>' + node.busy + '</td>';
@@ -87,7 +89,7 @@
             if (changed) {
               var combined = false;
               if (status_data.length > 1) {
-                clusters[''] = {name: '* Combined'};
+                clusters[''] = {name: '* (All)'};
                 combined = clusters[''];
               }
               if (combined) {
@@ -183,7 +185,7 @@
 
       $(document).ready(function() {
 
-        $('#cluster-name').text('compute');
+        $('#cluster-name').text('');
         cluster_status('cluster_status');
 
         $('#show_job_args').prop('checked', show_job_args);
@@ -234,6 +236,39 @@
             sorted_keys = [];
             show_cluster();
           }
+
+        });
+
+        $('#node-execute').click(function() {
+          $('#messages').html('');
+          var node_action = $('select[name="node-action"]').val();
+          var nodes = [];
+          $('input[type="checkbox"][name="node_select"]').each(function(i) {
+            if ($(this).prop('checked')) {
+              nodes.push($(this).val().trim());
+            }
+          });
+          if (nodes.length == 0) {
+            return false;
+          }
+
+          $.ajax({
+            url: '/' + node_action,
+            method: 'POST',
+            data: {cluster: cur_cluster_name, nodes: JSON.stringify(nodes)},
+            dataType: 'json',
+            timeout: 5000
+          })
+          .done(function(status) {
+            if (status == 0) {
+              $('#messages').html('Node execute success. : ' + status);
+	    } else {
+              $('#messages').html('Node execute failed. : ' + status);
+	    }
+          })
+          .fail(function(jqXHR, textStatus, errorThrown) {
+            $('#messages').html('Node execute request failed.' + textStatus);
+          });
 
         });
 
@@ -325,6 +360,20 @@
       </div>
 
       <hr style="margin:10px;" />
+
+      <div style="margin:10px auto;">
+        <span class="border" style="display:inline-block;">
+	  <strong>Selected Nodes : </strong>
+          <select name="node-action" style="margin-left:5px;">
+            <option value="" selected="selected">Select</option>
+            <option value="allocate_node">Allocate to Cluster</option>
+            <option value="deallocate_node">Deallocate from Cluster</option>
+            <option value="close_node">Close for Cluster</option>
+          </select>
+          <button type="button" id="node-execute" style="margin-left:5px;">Execute</button>
+        </span>
+      </div>
+
       <div>
         <ul id="messages" style="margin:1em auto;display:inline-block;"></ul>
       </div>

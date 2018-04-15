@@ -14,6 +14,8 @@
 
       jQuery.ajaxSettings.traditional = true;
 
+      var cluster_jobs = {};
+      var cur_cluster_name = '*';
       var node_ip_addr = null;
       var timer = null;
       var timeout = 1000 * %(TIMEOUT)s;
@@ -27,9 +29,9 @@
 
       function show_node(host) {
         $.ajax({
-          url: '/node_jobs',
+          url: '/node_info',
           method: 'POST',
-          data: {'host':host},
+          data: {'host': host},
           dataType: 'json',
           timeout: Math.min(5000, timeout)
         })
@@ -58,26 +60,47 @@
                 $('#timeout-div').show();
               }
 
-              var jobs = data.jobs;
-              var rows = '';
-              $.each(jobs, function(i, job) {
-                var args = job.args;
-                if (job.kwargs.length > 0) {
-                  if (args.length > 0) {
-                    args += ', ';
+              var cluster_names = '<strong>Cluster : </strong>';
+              cluster_names += '<select name="cluster-names" style="margin-left:5px;">';
+              cluster_names += '<option ' +
+                (cur_cluster_name == '*' ? 'selected="selected" ' : '') +
+                ' value="*">* (All)</option>';
+
+              cluster_jobs['*'] = '';
+              $.each(data.cluster_jobs, function(name, jobs) {
+                cluster_names += '<option ' +
+                  (cur_cluster_name == name ? 'selected="selected" ' : '') +
+                  ' value="' + name + '">' + name + '</option>';
+
+                var rows = '';
+                $.each(jobs, function(i, job) {
+                  var args = job.args;
+                  if (job.kwargs.length > 0) {
+                    if (args.length > 0) {
+                      args += ', ';
+                    }
+                    args += job.kwargs;
                   }
-	          args += job.kwargs;
+                  rows += '<tr>' +
+                    '<td><input type="checkbox" name="job" value="' + job.uid + '" /></td>' +
+                    '<td>' + job.cluster + '</td><td>' + job.job_id + '</td><td>' + args + '</td>' +
+                    '<td>' + (new Date(job.start_time_ms)).toLocaleTimeString() + '</td></tr>';
+                });
+                cluster_jobs[name] = rows;
+                if (rows.length > 0) {
+                  cluster_jobs['*'] = cluster_jobs['*'].concat(rows);
                 }
-                rows += '<tr>' +
-                  '<td><input type="checkbox" name="job" value="' + job.uid + '_' + i + '" /></td>' +
-                  '<td>' + job.cluster + '</td><td>' + job.job_id + '</td><td>' + args + '</td>' +
-	          '<td>' + (new Date(job.start_time_ms)).toLocaleTimeString() + '</td></tr>';
               });
+
+              cluster_names += '</select>';
+              $('#cluster-names-container').html(cluster_names);
+
+              jobs = cluster_jobs[cur_cluster_name];
               if (jobs.length > 0) {
                 if ($('#jobs').is(':hidden')) {
                   $('#jobs').show();
                 }
-                $('#jobs-table tbody').html(rows);
+                $('#jobs-table tbody').html(jobs);
               } else {
                 $('#jobs').hide();
                 $('#messages').append('<li style="margin:10px 0;"><span class="border">' +
@@ -167,7 +190,6 @@
           $('input[type="checkbox"][name="job"]').each(function(i) {
             if ($(this).prop('checked')) {
               var uid = $(this).val();
-              uid = uid.substring(0, uid.lastIndexOf('_'));
               cancel_jobs.push(uid);
             }
           });
@@ -177,36 +199,84 @@
 
           $(this).prop('disabled', true);
           $('select[name="cancel-confirm"] > option[value=""]').prop('selected', true);
+	  $('#all-jobs').prop('checked', false);
 
           $.ajax({
             url: '/cancel_jobs',
             method: 'POST',
-            data: {uid:cancel_jobs},
+            data: {uid: cancel_jobs},
             dataType: 'json',
             timeout: 5000
           })
 
             .done(function(data) {
               $.each(data, function(i, uid) {
-                var row = $('input[type="checkbox"][name="job"][value^="' + uid + '_"]').val();
-                if (row) {
-                  row = row.substring(row.lastIndexOf('_') + 1);
-                  $('#jobs-table > tbody > tr:eq(' + row + ') td').each(function(i) {
-                    $(this).css('color', 'Gray');
-                    if (i == 3) {
-                      $(this).text('Terminated');
-                    }
-                  });
+                var elem = $('input[type="checkbox"][name="job"][value^="' + uid + '"]');
+                if (elem) {
+		  elem = elem.parent().parent().children();
+		  elem.css('color', 'Gray');
+		  $(elem[3]).text('Terminated');
                 }
               });
-              $('#cancel-jobs').prop('disabled', false);
             })
 
             .fail(function() {
-              $('#cancel-jobs').prop('disabled', false);
               $('#messages').append('<li style="color:red">Terminate jobs failed.</li>');
             });
 
+          $('#cancel-jobs').prop('disabled', false);
+        });
+
+        $('#all-jobs').click(function() {
+	  var check = $(this).prop('checked') == true;
+          $('input[type="checkbox"][name="job"]').each(function(i) {
+            $(this).prop('checked', check);
+          });
+	});
+
+        $('#node-execute').click(function() {
+          $('#messages').html('');
+          var node_action = $('select[name="node-action"]').val();
+          if (node_action == '') {
+            $('#messages').append('<li style="color:red">Node action not confirmed.</li>');
+            return false;
+          }
+
+          $.ajax({
+            url: '/' + node_action,
+            method: 'POST',
+            data: {cluster: cur_cluster_name, nodes: JSON.stringify([node_ip_addr])},
+            dataType: 'json',
+            timeout: 5000
+          })
+          .done(function(status) {
+            if (status == 0) {
+              $('#messages').html('Node execute success. : ' + status);
+	    } else {
+              $('#messages').html('Node execute failed. : ' + status);
+	    }
+          })
+          .fail(function(jqXHR, textStatus, errorThrown) {
+            $('#messages').html('Node execute request failed.' + textStatus);
+          });
+
+	  $('select[name="node-action"]').val("");
+        });
+
+        $('#cluster-names-container').on('change', 'select[name="cluster-names"]', function() {
+	  $('#messages').html('');
+          cur_cluster_name = $(this).val();
+          var jobs = cluster_jobs[cur_cluster_name];
+          if (jobs && jobs.length > 0) {
+            if ($('#jobs').is(':hidden')) {
+              $('#jobs').show();
+            }
+            $('#jobs-table tbody').html(jobs);
+          } else {
+            $('#jobs').hide();
+            $('#messages').append('<li style="margin:10px 0;"><span class="border">' +
+                                  'No jobs running on this node.</span></li>');
+          }
         });
 
       });
@@ -228,6 +298,9 @@
       </nav>
 
       <h1 style="margin:2em 0;"><span class="title">dispy: Node Information</span></h1>
+
+      <div id="cluster-names-container" class="border" style="padding:10px;display:inline-block;">
+      </div>
 
       <table id="node" class="fancy shadow alt" style="margin:10px auto;text-align:left;font-weight:bold;">
         <tbody>
@@ -272,7 +345,7 @@
         <table class="fancy shadow alt" style="margin:20px auto;" id="jobs-table">
           <caption><span class="border" style="display:inline-block;">Jobs Running</span></caption>
           <thead>
-            <tr><th>Select</th><th>Cluster</th><th>Job ID</th>
+            <tr><th><input type="checkbox" id="all-jobs" /></th><th>Cluster</th><th>Job ID</th>
               <th>Arguments</th><th>Started At</th></tr>
           </thead>
           <tbody>
@@ -311,6 +384,19 @@
       </div>
 
       <hr style="margin:10px;" />
+
+      <div style="margin:10px auto;">
+        <span class="border" style="display:inline-block;">
+          <strong>Node Action : </strong>
+          <select name="node-action" style="margin-left:5px;">
+            <option value="" selected="selected">Select</option>
+            <option value="allocate_node">Allocate to Cluster</option>
+            <option value="deallocate_node">Deallocate from Cluster</option>
+            <option value="close_node">Close for Cluster</option>
+          </select>
+          <button type="button" id="node-execute" style="margin-left:5px;">Execute</button>
+        </span>
+      </div>
 
       <div>
         <ul id="messages" style="margin:1em auto;display:inline-block;"></ul>

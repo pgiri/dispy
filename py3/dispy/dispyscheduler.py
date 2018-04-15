@@ -1001,6 +1001,29 @@ class _Scheduler(object, metaclass=Singleton):
             except:
                 resp = serialize(-1)
 
+        elif msg.startswith(b'DEALLOCATE_NODE:'):
+            req = msg[len(b'DEALLOCATE_NODE:'):]
+            try:
+                req = deserialize(req)
+                cluster = self._clusters[req['compute_id']]
+                assert cluster.client_auth == req['auth']
+                resp = yield self.deallocate_node(cluster, req['node'], task=task)
+                resp = serialize(resp)
+            except:
+                resp = serialize(-1)
+
+        elif msg.startswith(b'CLOSE_NODE:'):
+            req = msg[len(b'CLOSE_NODE:'):]
+            try:
+                req = deserialize(req)
+                cluster = self._clusters[req['compute_id']]
+                assert cluster.client_auth == req['auth']
+                resp = yield self.close_node(cluster, req['node'],
+                                             terminate_pending=req['terminate_pending'], task=task)
+                resp = serialize(resp)
+            except:
+                resp = serialize(-1)
+
         elif msg.startswith(b'SET_NODE_CPUS:'):
             req = msg[len(b'SET_NODE_CPUS:'):]
             cpus = -1
@@ -1874,6 +1897,17 @@ class _Scheduler(object, metaclass=Singleton):
         # generator
         if not isinstance(node_alloc, list):
             node_alloc = [node_alloc]
+        for i in range(len(node_allocs)-1, -1, -1):
+            node = self._nodes.get(node_allocs[i].ip_addr, None)
+            if node:
+                dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
+                if dispy_node:
+                    node.clusters.add(cluster._compute.id)
+                    self._sched_event.set()
+                    del node_allocs[i]
+                    continue
+        if not node_allocs:
+            raise StopIteration(0)
         cluster._node_allocs.extend(node_alloc)
         cluster._node_allocs = sorted(cluster._node_allocs,
                                       key=lambda node_alloc: node_alloc.ip_rex, reverse=True)
@@ -1883,6 +1917,22 @@ class _Scheduler(object, metaclass=Singleton):
         del present
         self.add_cluster(cluster)
         yield 0
+
+    def deallocate_node(self, cluster, node, task=None):
+        # generator
+        node = self._nodes.get(node, None)
+        if node is None:
+            raise StopIteration(-1)
+        node.clusters.discard(cluster._compute.id)
+        yield 0
+
+    def close_node(self, cluster, node, terminate_pending, task=None):
+        # generator
+        node = self._nodes.get(node, None)
+        if node is None:
+            raise StopIteration(-1)
+        node.clusters.discard(cluster._compute.id)
+        yield node.close(cluster._compute, terminate_pending=terminate_pending)
 
     def node_jobs(self, cluster, ip_addr, from_node=False, get_uids=True, task=None):
         # generator
