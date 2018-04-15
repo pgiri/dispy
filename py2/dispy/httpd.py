@@ -198,7 +198,9 @@ class DispyHTTPServer(object):
                         node.update_time = max(node.update_time, cluster_node.update_time)
                     else:
                         node = copy.copy(cluster_node)
-                    jobs = cluster_info.cluster.node_jobs(ip_addr)
+                    # jobs = cluster_info.cluster.node_jobs(ip_addr)
+                    jobs = [job for job in dict_iter(cluster_info.jobs, 'values')
+                            if job.ip_addr == ip_addr]
                     # args and kwargs are sent as strings in Python,
                     # so an object's __str__ or __repr__ is used if provided;
                     # TODO: check job is in _ctx's jobs?
