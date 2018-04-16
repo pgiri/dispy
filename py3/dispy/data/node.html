@@ -251,9 +251,9 @@
           })
           .done(function(status) {
             if (status == 0) {
-              $('#messages').html('Node execute success. : ' + status);
+              $('#messages').html('Node action successful.');
 	    } else {
-              $('#messages').html('Node execute failed. : ' + status);
+              $('#messages').html('Node action failed : ' + status);
 	    }
           })
           .fail(function(jqXHR, textStatus, errorThrown) {
