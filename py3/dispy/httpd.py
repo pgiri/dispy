@@ -295,7 +295,7 @@ class DispyHTTPServer(object):
                             cluster_infos = list(self._ctx._clusters.values())
                         else:
                             cluster_infos = [self._ctx._clusters.get(item.value, None)]
-                            if not cluster_infos[1]:
+                            if not cluster_infos[0]:
                                 cluster_infos = []
                         self._ctx._cluster_lock.release()
                     elif item.name == 'nodes':
