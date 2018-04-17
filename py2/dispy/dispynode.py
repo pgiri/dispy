@@ -1635,6 +1635,39 @@ class _DispyNode(object):
             Task(_shutdown, self, how)
 
     def cmd_proc(self, task=None):
+
+        def release(task=None):
+            if self.scheduler['auth']:
+                addrinfo = self.scheduler['addrinfo']
+                info = {'ip_addr': addrinfo.ext_ip_addr, 'port': self.port,
+                        'cpus': self.num_cpus - self.avail_cpus,
+                        'scheduler_ip_addr': self.scheduler['ip_addr']}
+                if psutil:
+                    info['avail_info'] = DispyNodeAvailInfo(
+                        100.0 - psutil.cpu_percent(), psutil.virtual_memory().available,
+                        psutil.disk_usage(self.dest_path_prefix).free,
+                        100.0 - psutil.swap_memory().percent)
+                else:
+                    info['avail_info'] = None
+
+                sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_STREAM),
+                                   keyfile=self.keyfile, certfile=self.certfile)
+                sock.settimeout(MsgTimeout)
+                try:
+                    yield sock.connect((self.scheduler['ip_addr'], self.scheduler['port']))
+                    yield sock.send_msg('PULSE:' + serialize(info))
+                    assert (yield sock.recv_msg()) == 'PULSE'
+                except:
+                    for compute in self.computations.values():
+                        if compute.pending_jobs == 0:
+                            compute.zombie = True
+                            self.cleanup_computation(compute)
+                else:
+                    print('   Scheduler (client) at %s is active, so computations are not closed' %
+                          self.scheduler['ip_addr'])
+                finally:
+                    sock.close()
+
         task.set_daemon()
         thread_pool = pycos.AsyncThreadPool(1)
         if self.service_start:
@@ -1690,6 +1723,8 @@ class _DispyNode(object):
                 else:
                     if self.num_cpus > 0:
                         Task(self.broadcast_ping_msg)
+            elif cmd == 'release':
+                Task(release)
             else:
                 print('\n  Serving %d CPUs%s%s%s' %
                       (self.avail_cpus + len(self.job_infos), service_from, service_to,
@@ -1940,6 +1975,7 @@ if __name__ == '__main__':
                 _dispy_cmd = raw_input(
                     '\nEnter "quit" or "exit" to terminate dispynode,\n'
                     '  "stop" to stop service, "start" to restart service,\n'
+                    '  "release" to check and close computation,\n'
                     '  "cpus" to change CPUs used, anything else to get status: ')
             except:
                 if os.path.isfile(os.path.join(_dispy_node.dest_path_prefix, 'config')):
