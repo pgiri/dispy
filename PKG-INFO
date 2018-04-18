@@ -1,0 +1,30 @@
+Metadata-Version: 1.0
+Name: dispy
+Version: 4.8.6
+Summary: Distributed and parallel computing with/for Python.
+Home-page: http://dispy.sourceforge.net
+Author: Giridhar Pemmasani
+Author-email: pgiri@yahoo.com
+License: Apache 2.0 License: https://www.apache.org/licenses/LICENSE-2.0
+Description: dispy is a comprehensive, yet easy to use framework for
+       creating and using compute clusters to execute computations in
+       parallel across multiple processors in a single machine (SMP),
+       among many machines in a cluster, grid or cloud.
+       dispy is well suited for data parallel (SIMD) paradigm where
+       a computation (Python function or standalone program) is
+       evaluated with different (large) datasets independently.
+        
+       See http://dispy.sourceforge.net for details.
+
+Requires-Dist: pycos (>=4.6.5)
+Platform: any
+Classifier: Intended Audience :: Developers
+Classifier: Intended Audience :: Science/Research
+Classifier: License :: OSI Approved :: Apache Software License
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python :: 2
+Classifier: Programming Language :: Python :: 2.7
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.1
+Classifier: Topic :: Scientific/Engineering
+Classifier: Topic :: Software Development
