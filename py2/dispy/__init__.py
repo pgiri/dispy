@@ -2078,20 +2078,21 @@ class _Cluster(object):
 
     def shutdown(self):
         # non-generator
-        if self.terminate:
-            return
-        if any(cluster._pending_jobs for cluster in self._clusters.itervalues()):
-            return
-        logger.debug('Shutting down scheduler ...')
-        self.terminate = True
+        if not self.shared:
+            if self.terminate:
+                return
+            if any(cluster._pending_jobs for cluster in self._clusters.itervalues()):
+                return
+            logger.debug('Shutting down scheduler ...')
+            self.terminate = True
 
-        def _terminate_scheduler(self, task=None):
-            yield self._sched_event.set()
+            def _terminate_scheduler(self, task=None):
+                yield self._sched_event.set()
 
-        Task(_terminate_scheduler, self).value()
-        self.worker_Q.put(None)
-        self._scheduler.value()
-        self.worker_Q.join()
+            Task(_terminate_scheduler, self).value()
+            self.worker_Q.put(None)
+            self._scheduler.value()
+            self.worker_Q.join()
         if self.shelf:
             # TODO: need to check all clusters are deleted?
             self.shelf.close()
