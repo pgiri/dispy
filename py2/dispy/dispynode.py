@@ -493,8 +493,6 @@ class _DispyNode(object):
             mreq = socket.inet_pton(addrinfo.family, addrinfo.broadcast)
             mreq += struct.pack('@I', addrinfo.ifn)
             udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
-            if hasattr(socket, 'IPV6_V6ONLY'):
-                udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
 
         while not self.port:
             yield task.sleep(0.2)
@@ -505,6 +503,12 @@ class _DispyNode(object):
             addrinfo = None
         else:
             Task(self.broadcast_ping_msg, [addrinfo])
+
+        if addrinfo.family == socket.AF_INET6:
+            try:
+                udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            except:
+                pass
 
         while 1:
             msg, addr = yield udp_sock.recvfrom(1000)

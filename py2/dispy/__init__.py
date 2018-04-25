@@ -822,6 +822,11 @@ class _Cluster(object):
         task.set_daemon()
         udp_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
         # udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if addrinfo.family == socket.AF_INET6:
+            mreq = socket.inet_pton(addrinfo.family, addrinfo.broadcast)
+            mreq += struct.pack('@I', addrinfo.ifn)
+            udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
+
         while 1:
             try:
                 udp_sock.bind((bind_addr, self.port))
@@ -836,13 +841,12 @@ class _Cluster(object):
                 yield task.sleep(5)
             else:
                 break
-        if addrinfo.family == socket.AF_INET6:
-            mreq = socket.inet_pton(addrinfo.family, addrinfo.broadcast)
-            mreq += struct.pack('@I', addrinfo.ifn)
-            udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
-            if hasattr(socket, 'IPV6_V6ONLY'):
-                udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
 
+        if addrinfo.family == socket.AF_INET6:
+            try:
+                udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            except:
+                pass
         port_bound_event.set()
         del port_bound_event
         while 1:
