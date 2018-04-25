@@ -230,7 +230,7 @@ class _DispyNode(object):
             else:
                 ext_ip_addr = None
             addrinfo = dispy.node_addrinfo(ip_addr)
-            if not addrinfo.ip:
+            if not addrinfo or not addrinfo.ip:
                 _dispy_logger.warning('Ignoring invalid ip_addr %s', ip_addr)
                 continue
             if addrinfo.ip.startswith('127.') or addrinfo.ip.startswith('fe80'):
