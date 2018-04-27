@@ -1820,7 +1820,7 @@ if __name__ == '__main__':
             cfg['ip_addrs'] = eval(cfg['ip_addrs'])
         cfg['ext_ip_addrs'] = cfg['ext_ip_addrs'].strip()
         if cfg['ext_ip_addrs']:
-            cfg['ip_addrs'] = eval(cfg['ext_ip_addrs'])
+            cfg['ext_ip_addrs'] = eval(cfg['ext_ip_addrs'])
         for key, value in _dispy_config.items():
             if _dispy_config[key] != parser.get_default(key) or key not in cfg:
                 cfg[key] = _dispy_config[key]
