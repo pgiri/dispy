@@ -498,17 +498,17 @@ class _DispyNode(object):
             yield task.sleep(0.2)
 
         udp_sock.bind((bind_addr, self.port))
-        if not bind_addr:
-            Task(self.broadcast_ping_msg)
-            addrinfo = None
-        else:
-            Task(self.broadcast_ping_msg, [addrinfo])
-
         if addrinfo.family == socket.AF_INET6:
             try:
                 udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
             except:
                 pass
+
+        if not bind_addr:
+            Task(self.broadcast_ping_msg)
+            addrinfo = None
+        else:
+            Task(self.broadcast_ping_msg, [addrinfo])
 
         while 1:
             msg, addr = yield udp_sock.recvfrom(1000)
