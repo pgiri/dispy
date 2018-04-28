@@ -1360,7 +1360,8 @@ class _Scheduler(object, metaclass=Singleton):
             r = yield node.setup(compute, task=task)
             if r or compute.id not in self._clusters:
                 cluster._dispy_nodes.pop(node.ip_addr, None)
-                logger.warning('Failed to setup %s for computation "%s"', node.ip_addr, compute.name)
+                logger.warning('Failed to setup %s for computation "%s": %s',
+                               node.ip_addr, compute.name, r)
                 Task(node.close, compute)
             else:
                 dispy_node.update_time = time.time()
