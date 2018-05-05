@@ -356,6 +356,8 @@ class _DispyNode(object):
             self.__init_globals = dict(globals())
             self.__init_globals.pop('_dispy_config')
             self.__init_globals['_dispy_node'] = self
+        self.__init_environ = dict(os.environ)
+        self.__exclusive = True
 
         for addrinfo in self.addrinfos.values():
             Task(self.tcp_server, addrinfo)
@@ -807,6 +809,7 @@ class _DispyNode(object):
                 if self.zombie_interval:
                     self.pulse_interval = num_min(self.pulse_interval, self.zombie_interval / 5.0)
                 self.timer_task.resume(True)
+                self.__exclusive = compute.exclusive
                 _dispy_logger.debug('New computation "%s" from %s',
                                     compute.auth, compute.scheduler_ip_addr)
 
@@ -884,6 +887,11 @@ class _DispyNode(object):
                 resp = traceback.format_exc().encode()
             else:
                 resp = b'ACK'
+            if not self.__exclusive:
+                os.environ.update(self.__init_environ)
+                for var in list(os.environ.keys()):
+                    if var not in self.__init_environ:
+                        os.environ.pop(var, None)
             if resp != b'ACK':
                 if not compute.cleanup:
                     compute.cleanup = True
@@ -1487,6 +1495,11 @@ class _DispyNode(object):
                     exec(marshal.loads(compute.code), globalvars, localvars)
                     exec('%s(*_dispy_cleanup_args, **_dispy_cleanup_kwargs)' %
                          compute.cleanup.name, globalvars, localvars)
+                    if not self.__exclusive:
+                        os.environ.update(self.__init_environ)
+                        for var in list(os.environ.keys()):
+                            if var not in self.__init_environ:
+                                os.environ.pop(var, None)
                 except:
                     _dispy_logger.debug('Cleanup "%s" failed', compute.cleanup.name)
                     _dispy_logger.debug(traceback.format_exc())
@@ -1564,6 +1577,11 @@ class _DispyNode(object):
             if ((not self.computations) and (not self.scheduler['auth']) and
                 compute.scheduler_ip_addr == self.scheduler['ip_addr'] and
                 compute.scheduler_port == self.scheduler['port']):
+                os.environ.update(self.__init_environ)
+                for var in list(os.environ.keys()):
+                    if var not in self.__init_environ:
+                        os.environ.pop(var, None)
+                self.__exclusive = True
                 self.pulse_interval = self.ping_interval
                 self.timer_task.resume(None)
                 Task(self.broadcast_ping_msg)

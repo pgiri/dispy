@@ -42,7 +42,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "Apache 2.0"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.8.6"
+__version__ = "4.8.7"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
@@ -409,6 +409,7 @@ class _Compute(object):
         self.dest_path = None
         self.xfer_files = set()
         self.reentrant = False
+        self.exclusive = True
         self.setup = None
         self.cleanup = None
         self.scheduler_ip_addr = None
@@ -465,10 +466,11 @@ class _Node(object):
         self.avail_info = None
         self.platform = platform
 
-    def setup(self, compute, task=None):
+    def setup(self, compute, exclusive=True, task=None):
         # generator
         compute.scheduler_ip_addr = self.scheduler_ip_addr
         compute.node_ip_addr = self.ip_addr
+        compute.exclusive = exclusive
         reply = yield self.send(b'COMPUTE:' + serialize(compute), task=task)
         try:
             cpus = deserialize(reply)
@@ -1547,7 +1549,7 @@ class _Cluster(object, metaclass=Singleton):
             shelf_compute['nodes'].append(node.ip_addr)
             self.shelf['compute_%s' % compute.id] = shelf_compute
             self.shelf.sync()
-            r = yield node.setup(compute, task=task)
+            r = yield node.setup(compute, exclusive=True, task=task)
             if r or compute.id not in self._clusters:
                 cluster._dispy_nodes.pop(node.ip_addr, None)
                 logger.warning('Failed to setup %s for compute "%s": %s',

@@ -1357,7 +1357,7 @@ class _Scheduler(object, metaclass=Singleton):
             dispy_node.avail_cpus = node.avail_cpus
             dispy_node.avail_info = node.avail_info
             cluster._dispy_nodes[node.ip_addr] = dispy_node
-            r = yield node.setup(compute, task=task)
+            r = yield node.setup(compute, exclusive=cluster.exclusive, task=task)
             if r or compute.id not in self._clusters:
                 cluster._dispy_nodes.pop(node.ip_addr, None)
                 logger.warning('Failed to setup %s for computation "%s": %s',
