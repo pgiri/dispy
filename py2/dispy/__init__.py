@@ -3284,6 +3284,7 @@ def recover_jobs(recover_file=None, timeout=None, terminate_pending=False):
                 logger.debug('SSL connection failed: %s', str(err))
                 continue
             except GeneratorExit:
+                sock.close()
                 break
             except socket.timeout:
                 continue
