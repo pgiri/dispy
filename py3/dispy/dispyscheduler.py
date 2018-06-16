@@ -2000,29 +2000,37 @@ class _Scheduler(object, metaclass=Singleton):
             yield self._sched_event.set()
         raise StopIteration(cpus)
 
-    def shutdown(self, task=None):
+    def shutdown(self):
+        def _shutdown(self, task=None):
+            logger.debug('Shutting down scheduler ...')
+            for cluster in list(self.pending_clusters.values()) + self.unsched_clusters:
+                path = os.path.join(self.dest_path_prefix,
+                                    '%s_%s' % (cluster._compute.id, cluster.client_auth))
+                if os.path.isfile(path):
+                    os.remove(path)
+                try:
+                    shutil.rmtree(cluster.dest_path)
+                except:
+                    logger.debug(traceback.format_exc())
+                # TODO: inform cluster
+            self.pending_clusters.clear()
+            self.unsched_clusters = []
+            while (any(cluster.pending_jobs for cluster in self._clusters.values())):
+                logger.warning('Waiting for %s clusters to finish', len(self._clusters))
+                yield task.sleep(5)
+
+            self._sched_event.set()
+            yield self.job_scheduler_task.finish()
+            yield self.print_status()
+
         if self.terminate:
             return
-        logger.debug('Shutting down scheduler ...')
         self.terminate = True
-        for cluster in list(self.pending_clusters.values()) + self.unsched_clusters:
-            path = os.path.join(self.dest_path_prefix,
-                                '%s_%s' % (cluster._compute.id, cluster.client_auth))
-            if os.path.isfile(path):
-                os.remove(path)
-            try:
-                shutil.rmtree(cluster.dest_path)
-            except:
-                logger.debug(traceback.format_exc())
-            # TODO: inform cluster
-        self.pending_clusters.clear()
-        self.unsched_clusters = []
-        while (any(cluster.pending_jobs for cluster in self._clusters.values())):
-            logger.warning('Waiting for %s clusters to finish', len(self._clusters))
-            yield task.sleep(5)
-
-        self._sched_event.set()
-        yield self.job_scheduler_task.finish()
+        Task(_shutdown, self).value()
+        if self.pycos:
+            self.pycos.finish()
+            self.pycos = None
+        Singleton.empty(self.__class__)
 
     def print_status(self):
         print('')
@@ -2243,7 +2251,5 @@ if __name__ == '__main__':
                 break
             except:
                 logger.debug(traceback.format_exc())
-            Task(scheduler.print_status).value()
-        Task(scheduler.shutdown).value()
-    Task(scheduler.print_status).value()
+    scheduler.shutdown()
     exit(0)
