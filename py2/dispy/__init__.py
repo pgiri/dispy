@@ -690,7 +690,6 @@ class _Cluster(object):
     """Internal use only.
     """
     __metaclass__ = Singleton
-    _instance = None
 
     def __init__(self, ip_addr=None, ext_ip_addr=None, port=None, node_port=None,
                  shared=False, secret='', keyfile=None, certfile=None, recover_file=None):
@@ -3271,7 +3270,7 @@ def recover_jobs(recover_file=None, timeout=None, terminate_pending=False):
         sock.listen(32)
 
         while 1:
-            if pending['timeout']:
+            if pending['timeout'] is not None:
                 timeout = pending['timeout'] - (time.time() - pending['start_time'])
                 if timeout <= 0:
                     pending['complete'].set()
@@ -3284,6 +3283,7 @@ def recover_jobs(recover_file=None, timeout=None, terminate_pending=False):
                 logger.debug('SSL connection failed: %s', str(err))
                 continue
             except GeneratorExit:
+                sock.close()
                 break
             except socket.timeout:
                 continue
@@ -3295,7 +3295,7 @@ def recover_jobs(recover_file=None, timeout=None, terminate_pending=False):
 
     def resend_requests(pending, task=None):
         for compute_id, compute in computes.items():
-            if pending['timeout'] and \
+            if pending['timeout'] is not None and \
                ((time.time() - pending['start_time']) > pending['timeout']):
                 break
             req = {'compute_id': compute_id, 'auth': compute['auth']}

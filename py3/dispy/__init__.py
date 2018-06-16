@@ -689,7 +689,6 @@ class _JobReply(object):
 class _Cluster(object, metaclass=Singleton):
     """Internal use only.
     """
-    _instance = None
 
     def __init__(self, ip_addr=None, ext_ip_addr=None, port=None, node_port=None,
                  shared=False, secret='', keyfile=None, certfile=None, recover_file=None):

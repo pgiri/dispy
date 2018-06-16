@@ -118,7 +118,6 @@ class _Scheduler(object, metaclass=Singleton):
 
     See dispy's JobCluster and SharedJobCluster for documentation.
     """
-    _instance = None
 
     def __init__(self, nodes=[], ip_addrs=[], ext_ip_addrs=[], port=None, node_port=None,
                  scheduler_port=None, scheduler_alg=None, pulse_interval=None, ping_interval=None,
