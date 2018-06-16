@@ -42,7 +42,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "Apache 2.0"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.8.7"
+__version__ = "4.8.8"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
@@ -2109,6 +2109,10 @@ class _Cluster(object):
                         os.remove(self.recover_file + ext)
                     except:
                         pass
+        if self.pycos:
+            self.pycos.finish()
+            self.pycos = None
+        Singleton.empty(self.__class__)
 
 
 class JobCluster(object):
