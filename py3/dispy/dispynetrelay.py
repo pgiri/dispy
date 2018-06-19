@@ -72,13 +72,13 @@ class DispyNetRelay(object):
             mreq += struct.pack('@I', addrinfo.ifn)
 
         bc_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
+        bc_sock.bind((addrinfo.ip, 0))
         if addrinfo.family == socket.AF_INET:
             bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         else: # addrinfo.family == socket.AF_INET6
             bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS,
                                struct.pack('@i', 1))
             bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, addrinfo.ifn)
-        bc_sock.bind((addrinfo.ip, 0))
         if self.scheduler_ip_addrs and self.scheduler_port:
             relay_request = {'ip_addrs': self.scheduler_ip_addrs, 'port': self.scheduler_port,
                              'version': __version__, 'sign': None}
@@ -128,13 +128,13 @@ class DispyNetRelay(object):
         tcp_sock.listen(8)
 
         bc_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
+        bc_sock.bind((addrinfo.ip, 0))
         if addrinfo.family == socket.AF_INET:
             bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         else: # addrinfo.sock_family == socket.AF_INET6
             bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS,
                                struct.pack('@i', 1))
             bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, addrinfo.ifn)
-        bc_sock.bind((addrinfo.ip, 0))
         auth_len = len(dispy.auth_code('', ''))
 
         def tcp_req(conn, addr, task=None):

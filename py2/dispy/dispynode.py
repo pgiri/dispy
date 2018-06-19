@@ -384,13 +384,13 @@ class _DispyNode(object):
         for addrinfo in addrinfos:
             sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
             sock.settimeout(MsgTimeout)
+            sock.bind((addrinfo.ip, 0))
             if addrinfo.family == socket.AF_INET:
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             else:  # addrinfo.family == socket.AF_INET6
                 sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS,
                                 struct.pack('@i', 1))
                 sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, addrinfo.ifn)
-            sock.bind((addrinfo.ip, 0))
             ping_msg = {'ip_addr': addrinfo.ext_ip_addr, 'port': self.port, 'sign': self.sign,
                         'version': _dispy_version, 'scheduler_ip_addr': None}
             try:
@@ -407,13 +407,13 @@ class _DispyNode(object):
                             'ip_addr': addrinfo.ext_ip_addr, 'port': self.port,
                             'sign': self.sign, 'version': _dispy_version}
 
+                sock.bind((addrinfo.ip, 0))
                 if addrinfo.family == socket.AF_INET:
                     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
                 else:  # addrinfo.family == socket.AF_INET6
                     sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS,
                                     struct.pack('@i', 1))
                     sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, addrinfo.ifn)
-                sock.bind((addrinfo.ip, 0))
                 try:
                     yield sock.sendto('PING:'.encode() + serialize(ping_msg),
                                       (self.scheduler['ip_addr'], self.scheduler['port']))

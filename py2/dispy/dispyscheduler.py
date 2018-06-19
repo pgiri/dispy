@@ -1221,13 +1221,13 @@ class _Scheduler(object):
         for addrinfo in addrinfos:
             bc_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
             bc_sock.settimeout(MsgTimeout)
+            bc_sock.bind((addrinfo.ip, 0))
             if addrinfo.family == socket.AF_INET:
                 bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             else:  # addrinfo.family == socket.AF_INET6
                 bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS,
                                    struct.pack('@i', 1))
                 bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, addrinfo.ifn)
-            bc_sock.bind((addrinfo.ip, 0))
             try:
                 yield bc_sock.sendto('PING:' + serialize(ping_msg), (addrinfo.broadcast, port))
             except:
