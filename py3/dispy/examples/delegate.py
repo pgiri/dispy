@@ -23,9 +23,9 @@ def func2(n):
 
 if __name__ == '__main__':
     import dispy, random, time
-    # above functions can be sent with 'depends' so they are availabe for jobs
+    # above functions can be sent with 'depends' so they are available for jobs
     # always; instead, here, requird function is sent with 'dispy_job_depends'
-    # to illusrate how to send functions with 'submit' (dynamically)
+    # to illustrate how to send functions with 'submit' (dynamically)
     cluster = dispy.JobCluster(delegate, loglevel=dispy.logger.DEBUG)
     jobs = []
     for i in range(4):
