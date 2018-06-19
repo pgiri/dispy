@@ -296,6 +296,10 @@ def _parse_node_allocs(nodes):
             node_allocs.append(NodeAllocate(*node))
         elif isinstance(node, list):
             node_allocs.append(NodeAllocate(*tuple(node)))
+        elif isinstance(node, DispyNode):
+            node_allocs.append(NodeAllocate(node.ip_addr))
+        else:
+            logger.warning('Ignoring node specification %s', type(node))
     return [node_alloc for node_alloc in node_allocs if node_alloc.ip_addr]
 
 
