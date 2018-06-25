@@ -58,18 +58,14 @@ class DispyNetRelay(object):
                                               [dispy._node_ipaddr(scheduler_node)]))
 
         for addrinfo in addrinfos:
-            self.listen_udp_task = Task(self.listen_udp_proc, addrinfo)
-            self.listen_tcp_task = Task(self.listen_tcp_proc, addrinfo)
-            self.sched_udp_task = Task(self.sched_udp_proc, addrinfo)
+            Task(self.listen_tcp_proc, addrinfo)
+            Task(self.listen_udp_proc, addrinfo)
+            Task(self.sched_udp_proc, addrinfo)
 
         logger.info('version %s started', dispy._dispy_version)
 
     def listen_udp_proc(self, addrinfo, task=None):
         task.set_daemon()
-
-        if addrinfo.family == socket.AF_INET6:
-            mreq = socket.inet_pton(addrinfo.family, addrinfo.broadcast)
-            mreq += struct.pack('@I', addrinfo.ifn)
 
         bc_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
         bc_sock.bind((addrinfo.ip, 0))
@@ -77,7 +73,7 @@ class DispyNetRelay(object):
             bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         else: # addrinfo.family == socket.AF_INET6
             bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS,
-                               struct.pack('@i', 1))
+                               struct.pack('@i', 2))
             bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, addrinfo.ifn)
         if self.scheduler_ip_addrs and self.scheduler_port:
             relay_request = {'ip_addrs': self.scheduler_ip_addrs, 'port': self.scheduler_port,
@@ -86,11 +82,13 @@ class DispyNetRelay(object):
                            (self._broadcast, self.node_port))
 
         listen_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
-        if addrinfo.family == socket.AF_INET:
-            listen_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        else: # addrinfo.family == socket.AF_INET6
-            listen_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
+        listen_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         listen_sock.bind((addrinfo.ip, self.listen_port))
+
+        if addrinfo.family == socket.AF_INET6:
+            mreq = socket.inet_pton(addrinfo.family, addrinfo.broadcast)
+            mreq += struct.pack('@I', addrinfo.ifn)
+            listen_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
 
         while 1:
             msg, addr = yield listen_sock.recvfrom(1024)
@@ -133,7 +131,7 @@ class DispyNetRelay(object):
             bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         else: # addrinfo.sock_family == socket.AF_INET6
             bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS,
-                               struct.pack('@i', 1))
+                               struct.pack('@i', 2))
             bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, addrinfo.ifn)
         auth_len = len(dispy.auth_code('', ''))
 
@@ -181,14 +179,13 @@ class DispyNetRelay(object):
         task.set_daemon()
 
         sched_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
-        if addrinfo.family == socket.AF_INET:
-            sched_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        else: # addrinfo.family == socket.AF_INET6
+        sched_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+        sched_sock.bind((addrinfo.ip, self.scheduler_port))
+        if addrinfo.family == socket.AF_INET6:
             mreq = socket.inet_pton(addrinfo.family, addrinfo.broadcast)
             mreq += struct.pack('@I', addrinfo.ifn)
             sched_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
-
-        sched_sock.bind((addrinfo.ip, self.scheduler_port))
 
         while 1:
             msg, addr = yield sched_sock.recvfrom(1024)

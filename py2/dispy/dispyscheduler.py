@@ -120,10 +120,11 @@ class _Scheduler(object):
     __metaclass__ = Singleton
 
     def __init__(self, nodes=[], ip_addrs=[], ext_ip_addrs=[], port=None, node_port=None,
-                 scheduler_port=None, scheduler_alg=None, pulse_interval=None, ping_interval=None,
-                 cooperative=False, cleanup_nodes=False, node_secret='', cluster_secret='',
-                 node_keyfile=None, node_certfile=None, cluster_keyfile=None, cluster_certfile=None,
-                 dest_path_prefix=None, clean=False, zombie_interval=60, http_server=False):
+                 scheduler_port=None, ipv4_udp_multicast=False, scheduler_alg=None,
+                 pulse_interval=None, ping_interval=None, cooperative=False, cleanup_nodes=False,
+                 node_secret='', cluster_secret='', node_keyfile=None, node_certfile=None,
+                 cluster_keyfile=None, cluster_certfile=None, dest_path_prefix=None, clean=False,
+                 zombie_interval=60, http_server=False):
         self.addrinfos = {}
         if not ip_addrs:
             ip_addrs = [None]
@@ -259,21 +260,23 @@ class _Scheduler(object):
         self.tcp_tasks = []
         self.udp_tasks = []
         self.scheduler_tasks = []
+        self.ipv4_udp_multicast = bool(ipv4_udp_multicast)
         udp_addrinfos = {}
         for addrinfo in self.addrinfos.values():
+            if addrinfo.family == socket.AF_INET and self.ipv4_udp_multicast:
+                addrinfo.broadcast = dispy.IPV4_MULTICAST_GROUP
             self.tcp_tasks.append(Task(self.tcp_server, addrinfo))
             self.scheduler_tasks.append(Task(self.scheduler_server, addrinfo))
-            if addrinfo.broadcast == '<broadcast>':
-                udp_addrinfos.clear()
+            if os.name == 'nt':
+                bind_addr = addrinfo.ip
+            elif sys.platform == 'darwin':
                 bind_addr = ''
-            elif '' in udp_addrinfos:
-                continue
             else:
                 bind_addr = addrinfo.broadcast
             udp_addrinfos[bind_addr] = addrinfo
+
         for bind_addr, addrinfo in udp_addrinfos.items():
             self.udp_tasks.append(Task(self.udp_server, bind_addr, addrinfo))
-        del udp_addrinfos
 
     def udp_server(self, bind_addr, addrinfo, task=None):
         task.set_daemon()
@@ -283,15 +286,18 @@ class _Scheduler(object):
             udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         if hasattr(socket, 'SO_REUSEPORT'):
             udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-        if addrinfo.family == socket.AF_INET6:
-            mreq = socket.inet_pton(addrinfo.family, addrinfo.broadcast)
-            mreq += struct.pack('@I', addrinfo.ifn)
-            udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
 
         while not self.port:
             yield task.sleep(0.2)
         udp_sock.bind((bind_addr, self.port))
-        if addrinfo.family == socket.AF_INET6:
+        if addrinfo.family == socket.AF_INET:
+            if self.ipv4_udp_multicast:
+                mreq = socket.inet_aton(addrinfo.broadcast) + socket.inet_aton(addrinfo.ip)
+                udp_sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+        else:  # addrinfo.family == socket.AF_INET6:
+            mreq = socket.inet_pton(addrinfo.family, addrinfo.broadcast)
+            mreq += struct.pack('@I', addrinfo.ifn)
+            udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
             try:
                 udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
             except:
@@ -1221,12 +1227,14 @@ class _Scheduler(object):
         for addrinfo in addrinfos:
             bc_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
             bc_sock.settimeout(MsgTimeout)
-            bc_sock.bind((addrinfo.ip, 0))
+            ttl_bin = struct.pack('@i', 1)
             if addrinfo.family == socket.AF_INET:
-                bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                if self.ipv4_udp_multicast:
+                    bc_sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, ttl_bin)
+                else:
+                    bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             else:  # addrinfo.family == socket.AF_INET6
-                bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS,
-                                   struct.pack('@i', 1))
+                bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, ttl_bin)
                 bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, addrinfo.ifn)
             try:
                 yield bc_sock.sendto('PING:' + serialize(ping_msg), (addrinfo.broadcast, port))
@@ -2084,6 +2092,8 @@ if __name__ == '__main__':
                         help='port number used by nodes')
     parser.add_argument('--scheduler_port', dest='scheduler_port', type=int, default=51349,
                         help='port number for scheduler')
+    parser.add_argument('--ipv4_udp_multicast', dest='ipv4_udp_multicast', action='store_true',
+                        default=False, help='use multicast for IPv4 UDP instead of broadcast')
     parser.add_argument('--node_secret', dest='node_secret', default='',
                         help='authentication secret for handshake with dispy clients')
     parser.add_argument('--node_keyfile', dest='node_keyfile', default='',

@@ -211,7 +211,7 @@ class _DispyNode(object):
     """
 
     def __init__(self, cpus, ip_addrs=[], ext_ip_addrs=[], node_port=None,
-                 name='', scheduler_node=None, scheduler_port=None,
+                 name='', scheduler_node=None, scheduler_port=None, ipv4_udp_multicast=False,
                  dest_path_prefix='', clean=False, secret='', keyfile=None, certfile=None,
                  zombie_interval=60, ping_interval=None, serve=-1,
                  service_start=None, service_stop=None, service_end=None,
@@ -359,18 +359,22 @@ class _DispyNode(object):
         self.__init_environ = dict(os.environ)
         self.__exclusive = True
 
+        self.ipv4_udp_multicast = bool(ipv4_udp_multicast)
+        udp_addrinfos = {}
         for addrinfo in self.addrinfos.values():
+            if addrinfo.family == socket.AF_INET and self.ipv4_udp_multicast:
+                addrinfo.broadcast = dispy.IPV4_MULTICAST_GROUP
             Task(self.tcp_server, addrinfo)
 
             if os.name == 'nt':
-                # Windows does not allow binding to a broadcast address
                 bind_addr = addrinfo.ip
+            elif sys.platform == 'darwin':
+                bind_addr = ''
             else:
-                if addrinfo.broadcast == '<broadcast>':  # or addrinfo.broadcast == 'ff05::1'
-                    bind_addr = ''
-                else:
-                    bind_addr = addrinfo.broadcast
+                bind_addr = addrinfo.broadcast
+            udp_addrinfos[bind_addr] = addrinfo
 
+        for bind_addr, addrinfo in udp_addrinfos.items():
             Task(self.udp_server, bind_addr, addrinfo)
 
         if not daemon:
@@ -386,12 +390,14 @@ class _DispyNode(object):
         for addrinfo in addrinfos:
             sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
             sock.settimeout(MsgTimeout)
-            sock.bind((addrinfo.ip, 0))
+            ttl_bin = struct.pack('@i', 1)
             if addrinfo.family == socket.AF_INET:
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                if self.ipv4_udp_multicast:
+                    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, ttl_bin)
+                else:
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             else:  # addrinfo.family == socket.AF_INET6
-                sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS,
-                                struct.pack('@i', 1))
+                sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, ttl_bin)
                 sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, addrinfo.ifn)
             ping_msg = {'ip_addr': addrinfo.ext_ip_addr, 'port': self.port, 'sign': self.sign,
                         'version': _dispy_version, 'scheduler_ip_addr': None}
@@ -408,14 +414,6 @@ class _DispyNode(object):
                 ping_msg = {'scheduler_ip_addr': self.scheduler['ip_addr'],
                             'ip_addr': addrinfo.ext_ip_addr, 'port': self.port,
                             'sign': self.sign, 'version': _dispy_version}
-
-                sock.bind((addrinfo.ip, 0))
-                if addrinfo.family == socket.AF_INET:
-                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                else:  # addrinfo.family == socket.AF_INET6
-                    sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS,
-                                    struct.pack('@i', 1))
-                    sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, addrinfo.ifn)
                 try:
                     yield sock.sendto('PING:'.encode() + serialize(ping_msg),
                                       (self.scheduler['ip_addr'], self.scheduler['port']))
@@ -443,7 +441,8 @@ class _DispyNode(object):
             raise StopIteration
         try:
             scheduler_ip_addrs = info['ip_addrs']
-            if not info.get('relay', None):
+            if (not info.get('relay', None) and isinstance(addr, tuple) and
+                isinstance(addr[0], str)):
                 scheduler_ip_addrs.append(addr[0])
             scheduler_port = info['port']
         except:
@@ -489,20 +488,22 @@ class _DispyNode(object):
         task.set_daemon()
 
         udp_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
-        if hasattr(socket, 'SO_REUSEADDR'):
-            udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         if hasattr(socket, 'SO_REUSEPORT'):
             udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-        if addrinfo.family == socket.AF_INET6:
-            mreq = socket.inet_pton(addrinfo.family, addrinfo.broadcast)
-            mreq += struct.pack('@I', addrinfo.ifn)
-            udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
 
         while not self.port:
             yield task.sleep(0.2)
 
         udp_sock.bind((bind_addr, self.port))
-        if addrinfo.family == socket.AF_INET6:
+        if addrinfo.family == socket.AF_INET:
+            if self.ipv4_udp_multicast:
+                mreq = socket.inet_aton(addrinfo.broadcast) + socket.inet_aton(addrinfo.ip)
+                udp_sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+        else:  # addrinfo.family == socket.AF_INET6:
+            mreq = socket.inet_pton(addrinfo.family, addrinfo.broadcast)
+            mreq += struct.pack('@I', addrinfo.ifn)
+            udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
             try:
                 udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
             except:
@@ -545,10 +546,7 @@ class _DispyNode(object):
         tcp_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_STREAM),
                                keyfile=self.keyfile, certfile=self.certfile)
         if self.port:
-            if hasattr(socket, 'SO_REUSEADDR'):
-                tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            if hasattr(socket, 'SO_REUSEPORT'):
-                tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         tcp_sock.bind((addrinfo.ip, self.port))
         if not self.port:
             self.port = tcp_sock.getsockname()[1]
@@ -564,7 +562,6 @@ class _DispyNode(object):
                 _dispy_logger.debug(traceback.format_exc())
                 continue
             Task(self.tcp_req, conn, addr)
-        tcp_sock.shutdown(socket.SHUT_RDWR)
         tcp_sock.close()
 
     def tcp_req(self, conn, addr, task=None):
@@ -793,8 +790,8 @@ class _DispyNode(object):
             except:
                 del self.computations[compute.id]
                 compute.globals = {}
-                self.scheduler['ip_addr'], self.scheduler['port'] = prev_scheduler
                 self.scheduler['auth'].discard(compute.auth)
+                self.scheduler['ip_addr'], self.scheduler['port'] = prev_scheduler
                 self.scheduler['addrinfo'] = None
                 os.remove(compute_save)
                 if os.path.isdir(compute.dest_path):
@@ -1777,6 +1774,8 @@ if __name__ == '__main__':
                         help='External IP address to use (needed in case of NAT firewall/gateway)')
     parser.add_argument('-p', '--node_port', dest='node_port', type=int, default=51348,
                         help='port number to use')
+    parser.add_argument('--ipv4_udp_multicast', dest='ipv4_udp_multicast', action='store_true',
+                        default=False, help='use multicast for IPv4 UDP instead of broadcast')
     parser.add_argument('--name', dest='name', default='',
                         help='name asscoiated to this node; default is obtained with gethostname()')
     parser.add_argument('--dest_path_prefix', dest='dest_path_prefix', default='',

@@ -48,6 +48,8 @@ __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'Sha
 
 _dispy_version = __version__
 MsgTimeout = 10
+IPV6_MULTICAST_GROUP = 'ff05::1'
+IPV4_MULTICAST_GROUP = '239.255.51.34'
 
 
 class DispyJob(object):
@@ -304,78 +306,6 @@ def _parse_node_allocs(nodes):
 
 
 def node_addrinfo(node=None, socket_family=None):
-    if node:
-        try:
-            node = socket.getaddrinfo(node, None)[0]
-        except:
-            return None
-        if not socket_family:
-            socket_family = node[0]
-        elif node[0] != socket_family:
-            node = None
-        if node:
-            node = node[4][0]
-        if not socket_family:
-            socket_family = socket.AF_INET
-    if not socket_family:
-        socket_family = socket.getaddrinfo(socket.gethostname(), None)[0][0]
-    assert socket_family in (socket.AF_INET, socket.AF_INET6)
-
-    ifn, addrinfo, netmask, broadcast = 0, None, None, None
-    if netifaces:
-        for iface in netifaces.interfaces():
-            if socket_family == socket.AF_INET:
-                if addrinfo:
-                    break
-            elif socket_family == socket.AF_INET6:
-                if ifn and addrinfo:
-                    break
-                ifn, addrinfo, netmask = 0, None, None
-            for link in netifaces.ifaddresses(iface).get(socket_family, []):
-                netmask = link.get('netmask', None)
-                broadcast = link.get('broadcast', None)
-                if socket_family == socket.AF_INET:
-                    if link.get('broadcast', '').startswith(link['addr'].split('.')[0]):
-                        if (not node) or (link['addr'] == node):
-                            addrinfo = socket.getaddrinfo(link['addr'], None)[0]
-                            break
-                elif socket_family == socket.AF_INET6:
-                    if link['addr'].startswith('fe80:'):
-                        addr = link['addr']
-                        if '%' not in addr.split(':')[-1]:
-                            addr = addr + '%' + interface
-                        for addr in socket.getaddrinfo(addr, None):
-                            if addr[2] == socket.IPPROTO_TCP:
-                                ifn = addr[4][-1]
-                                break
-                    elif link['addr'].startswith('fd'):
-                        for addr in socket.getaddrinfo(link['addr'], None):
-                            if addr[2] == socket.IPPROTO_TCP:
-                                addrinfo = addr
-                                break
-    elif socket_family == socket.AF_INET6:
-        logger.warning('IPv6 may not work without "netifaces" package!')
-
-    if addrinfo:
-        if not node:
-            node = addrinfo[4][0]
-        if not socket_family:
-            socket_family = addrinfo[0]
-    if not node:
-        node = socket.gethostname()
-
-    addrinfo = socket.getaddrinfo(node, None, socket_family, socket.SOCK_STREAM)[0]
-    ip_addr = addrinfo[4][0]
-    if addrinfo[0] == socket.AF_INET6:
-        # canonicalize so different platforms resolve to same string
-        ip_addr = re.sub(r'^0+', '', ip_addr)
-        ip_addr = re.sub(r':0+', ':', ip_addr)
-        ip_addr = re.sub(r'::+', '::', ip_addr)
-        if not broadcast:
-            broadcast = 'ff05::1'
-    else:
-        if not broadcast:
-            broadcast = '<broadcast>'
 
     class AddrInfo(object):
         def __init__(self, family, ip, ifn, broadcast, netmask):
@@ -386,9 +316,141 @@ def node_addrinfo(node=None, socket_family=None):
             self.netmask = netmask
             self.ext_ip_addr = None
 
-    addrinfo = AddrInfo(addrinfo[0], _node_ipaddr(addrinfo[4][0]), ifn, broadcast, netmask)
+    def canonical_ipv6(ip_addr):
+        # canonicalize so different platforms resolve to same string
+        ip_addr = ip_addr.split('%')[0]
+        ip_addr = re.sub(r'^0+', '', ip_addr)
+        ip_addr = re.sub(r':0+', ':', ip_addr)
+        ip_addr = re.sub(r'::+', '::', ip_addr)
+        return ip_addr
 
-    return addrinfo
+    nodes = []
+    if node:
+        best = None
+        for addr in socket.getaddrinfo(node, None):
+            if socket_family and addr[0] != socket_family:
+                continue
+            if not best or addr[0] == socket.AF_INET:
+                best = addr
+        if best:
+            socket_family = best[0]
+            if best[0] == socket.AF_INET6:
+                addr = canonical_ipv6(best[4][0])
+            else:
+                addr = best[4][0]
+            nodes.append(addr)
+        else:
+            return None
+
+    if socket_family:
+        sock_families = [socket_family]
+    else:
+        sock_families = [socket.AF_INET, socket.AF_INET6]
+
+    sf_addrinfos = {}
+    for sock_family in sock_families:
+        sf_addrinfos[sock_family] = []
+
+    if netifaces:
+        for iface in netifaces.interfaces():
+            for sock_family in sock_families:
+                for link in netifaces.ifaddresses(iface).get(sock_family, []):
+                    netmask = link.get('netmask', None)
+                    if sock_family == socket.AF_INET:
+                        addr = str(link['addr'])
+                        broadcast = link.get('broadcast', '<broadcast>')
+                        # Windows seems to have broadcast same as addr
+                        if broadcast.startswith(addr):
+                            broadcast = '<broadcast>'
+                        if nodes and addr not in nodes:
+                            continue
+                        try:
+                            addrs = socket.getaddrinfo(addr, None, sock_family,
+                                                       socket.SOCK_STREAM)
+                        except Exception:
+                            addrs = []
+                        for addr in addrs:
+                            addrinfo = AddrInfo(sock_family, addr[4][0], 0, broadcast, netmask)
+                            sf_addrinfos[sock_family].append(addrinfo)
+                    else:  # sock_family == socket.AF_INET6
+                        addr = str(link['addr'])
+                        broadcast = link.get('broadcast', IPV6_MULTICAST_GROUP)
+                        # Windows seems to have broadcast same as addr
+                        if broadcast.startswith(addr):
+                            broadcast = IPV6_MULTICAST_GROUP
+                        scope_sfx = []
+                        if '%' not in addr.split(':')[-1]:
+                            scope_sfx.append('%' + iface)
+                        scope_sfx.append('')
+                        for sfx in scope_sfx:
+                            try:
+                                addrs = socket.getaddrinfo(addr + sfx, None, sock_family,
+                                                           socket.SOCK_STREAM)
+                            except Exception:
+                                continue
+                            for addr in addrs:
+                                ifn = addr[4][-1]
+                                if not ifn and sfx != scope_sfx[-1]:
+                                    continue
+                                addr = canonical_ipv6(addr[4][0])
+                                if nodes and addr not in nodes:
+                                    continue
+                                addrinfo = AddrInfo(sock_family, addr, ifn, broadcast, netmask)
+                                sf_addrinfos[sock_family].append(addrinfo)
+
+    else:
+        if not node:
+            node = socket.gethostname()
+        netmask = None
+        for sock_family in sock_families:
+            for addrinfo in socket.getaddrinfo(node, None):
+                if addrinfo[0] != sock_family or addrinfo[1] != socket.SOCK_STREAM:
+                    continue
+                ifn = addrinfo[4][-1]
+                if sock_family == socket.AF_INET6:
+                    addr = canonical_ipv6(addrinfo[4][0])
+                    if nodes and addr not in nodes:
+                        continue
+                    broadcast = IPV6_MULTICAST_GROUP
+                    logger.warning('IPv6 may not work without "netifaces" package!')
+                else:
+                    addr = addrinfo[4][0]
+                    if nodes and addr not in nodes:
+                        continue
+                    broadcast = '<broadcast>'
+                addrinfo = AddrInfo(sock_family, addr, ifn, broadcast, netmask)
+                sf_addrinfos[sock_family].append(addrinfo)
+
+    for sock_family in sock_families:
+        addrinfos = sf_addrinfos.get(sock_family, [])
+        if node:
+            for addrinfo in addrinfos:
+                if addrinfo.ip == node:
+                    return addrinfo
+        if sock_family == socket.AF_INET:
+            best = None
+            for addrinfo in addrinfos:
+                if not best or (len(best.ip) < len(addrinfo.ip)) or best.ip.startswith('127'):
+                    best = addrinfo
+            if best:
+                return best
+        else:
+            best = None
+            for addrinfo in addrinfos:
+                if addrinfo.ip.startswith('fd'):
+                    # TODO: How to detect / avoid temporary addresses (privacy extensions)?
+                    if addrinfo.ifn:
+                        return addrinfo
+                if not best or (len(best.ip) < len(addrinfo.ip)) or best.ip.startswith('fe80'):
+                    best = addrinfo
+            if best:
+                return best
+            for addrinfo in addrinfos:
+                if not best or (len(best.ip) < len(addrinfo.ip)):
+                    best = addrinfo
+            if best:
+                return best
+    return None
 
 
 # This tuple stores information about partial functions; for
@@ -695,7 +757,8 @@ class _Cluster(object, metaclass=Singleton):
     """
 
     def __init__(self, ip_addr=None, ext_ip_addr=None, port=None, node_port=None,
-                 shared=False, secret='', keyfile=None, certfile=None, recover_file=None):
+                 ipv4_udp_multicast=False, shared=False, secret='', keyfile=None, certfile=None,
+                 recover_file=None):
         if not hasattr(self, 'pycos'):
             self.pycos = Pycos()
             logger.info('dispy client version: %s', __version__)
@@ -796,6 +859,7 @@ class _Cluster(object, metaclass=Singleton):
             self.worker_thread = threading.Thread(target=self.worker)
             self.worker_thread.daemon = True
             self.worker_thread.start()
+            self.ipv4_udp_multicast = bool(ipv4_udp_multicast)
 
             if self.shared:
                 port_bound_event = None
@@ -803,20 +867,23 @@ class _Cluster(object, metaclass=Singleton):
                 port_bound_event = pycos.Event()
             self.tcp_tasks = []
             self.udp_tasks = []
+            udp_addrinfos = {}
             for addrinfo in self.addrinfos.values():
+                if addrinfo.family == socket.AF_INET and self.ipv4_udp_multicast:
+                    addrinfo.broadcast = IPV4_MULTICAST_GROUP
                 self.tcp_tasks.append(Task(self.tcp_server, addrinfo, port_bound_event))
                 if self.shared:
                     continue
 
                 if os.name == 'nt':
-                    # Windows does not allow binding to a broadcast address
                     bind_addr = addrinfo.ip
+                elif sys.platform == 'darwin':
+                    bind_addr = ''
                 else:
-                    if addrinfo.broadcast == '<broadcast>':  # or addrinfo.broadcast == 'ff05::1'
-                        bind_addr = ''
-                    else:
-                        bind_addr = addrinfo.broadcast
+                    bind_addr = addrinfo.broadcast
+                udp_addrinfos[bind_addr] = addrinfo
 
+            for bind_addr, addrinfo in udp_addrinfos.items():
                 self.udp_tasks.append(Task(self.udp_server, bind_addr, addrinfo, port_bound_event))
 
             # Under Windows dispynode may send objects with
@@ -831,10 +898,6 @@ class _Cluster(object, metaclass=Singleton):
         task.set_daemon()
         udp_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
         # udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        if addrinfo.family == socket.AF_INET6:
-            mreq = socket.inet_pton(addrinfo.family, addrinfo.broadcast)
-            mreq += struct.pack('@I', addrinfo.ifn)
-            udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
 
         while 1:
             try:
@@ -851,7 +914,14 @@ class _Cluster(object, metaclass=Singleton):
             else:
                 break
 
-        if addrinfo.family == socket.AF_INET6:
+        if addrinfo.family == socket.AF_INET:
+            if self.ipv4_udp_multicast:
+                mreq = socket.inet_aton(addrinfo.broadcast) + socket.inet_aton(addrinfo.ip)
+                udp_sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+        else:  # addrinfo.family == socket.AF_INET6
+            mreq = socket.inet_pton(addrinfo.family, addrinfo.broadcast)
+            mreq += struct.pack('@I', addrinfo.ifn)
+            udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
             try:
                 udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
             except:
@@ -1346,12 +1416,14 @@ class _Cluster(object, metaclass=Singleton):
         for addrinfo in addrinfos:
             bc_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
             bc_sock.settimeout(MsgTimeout)
-            bc_sock.bind((addrinfo.ip, 0))
+            ttl_bin = struct.pack('@i', 1)
             if addrinfo.family == socket.AF_INET:
-                bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                if self.ipv4_udp_multicast:
+                    bc_sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, ttl_bin)
+                else:
+                    bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             else:  # addrinfo.family == socket.AF_INET6
-                bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS,
-                                   struct.pack('@i', 1))
+                bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, ttl_bin)
                 bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, addrinfo.ifn)
             try:
                 yield bc_sock.sendto(b'PING:' + serialize(ping_msg), (addrinfo.broadcast, port))
@@ -1876,6 +1948,8 @@ class _Cluster(object, metaclass=Singleton):
 
         logger.debug('Scheduler quitting: %s', len(self._sched_jobs))
         self._sched_jobs = {}
+        for udp_task in self.udp_tasks:
+            udp_task.terminate()
         for cid in list(self._clusters.keys()):
             cluster = self._clusters[cid]
             if not hasattr(cluster, '_compute'):
@@ -2129,9 +2203,10 @@ class JobCluster(object):
 
     def __init__(self, computation, nodes=None, depends=[], callback=None, cluster_status=None,
                  ip_addr=None, port=None, node_port=None, ext_ip_addr=None,
-                 dest_path=None, loglevel=logger.INFO, setup=None, cleanup=True,
-                 ping_interval=None, pulse_interval=None, poll_interval=None,
-                 reentrant=False, secret='', keyfile=None, certfile=None, recover_file=None):
+                 ipv4_udp_multicast=False, dest_path=None, loglevel=logger.INFO,
+                 setup=None, cleanup=True, ping_interval=None, pulse_interval=None,
+                 poll_interval=None, reentrant=False, secret='', keyfile=None, certfile=None,
+                 recover_file=None):
         """Create an instance of cluster for a specific computation.
 
         @computation is either a string (which is name of program, possibly
@@ -2387,8 +2462,8 @@ class JobCluster(object):
             raise Exception('"cleanup" must be Python (partial) function')
 
         self._cluster = _Cluster(ip_addr=ip_addr, port=port, node_port=node_port,
-                                 ext_ip_addr=ext_ip_addr, shared=shared,
-                                 secret=secret, keyfile=keyfile, certfile=certfile,
+                                 ext_ip_addr=ext_ip_addr, ipv4_udp_multicast=ipv4_udp_multicast,
+                                 shared=shared, secret=secret, keyfile=keyfile, certfile=certfile,
                                  recover_file=recover_file)
         atexit.register(self.shutdown)
 
