@@ -83,6 +83,8 @@ class DispyNetRelay(object):
 
         listen_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
         listen_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if hasattr(socket, 'SO_REUSEPORT'):
+            liten_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
         listen_sock.bind((addrinfo.ip, self.listen_port))
 
         if addrinfo.family == socket.AF_INET6:
@@ -180,7 +182,8 @@ class DispyNetRelay(object):
 
         sched_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
         sched_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-
+        if hasattr(socket, 'SO_REUSEPORT'):
+            sched_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
         sched_sock.bind((addrinfo.ip, self.scheduler_port))
         if addrinfo.family == socket.AF_INET6:
             mreq = socket.inet_pton(addrinfo.family, addrinfo.broadcast)
