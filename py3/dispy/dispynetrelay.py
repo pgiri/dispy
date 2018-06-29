@@ -43,7 +43,7 @@ class DispyNetRelay(object):
             ip_addrs = [None]
         for i in range(len(ip_addrs)):
             ip_addr = ip_addrs[i]
-            addrinfo = dispy.node_addrinfo(ip_addr)
+            addrinfo = dispy.host_addrinfo(host=ip_addr)
             if not addrinfo:
                 logger.warning('Ignoring invalid ip_addr %s', ip_addr)
                 continue
@@ -84,7 +84,7 @@ class DispyNetRelay(object):
         listen_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
         listen_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         if hasattr(socket, 'SO_REUSEPORT'):
-            liten_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            listen_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
         listen_sock.bind((addrinfo.ip, self.listen_port))
 
         if addrinfo.family == socket.AF_INET6:

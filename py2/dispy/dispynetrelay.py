@@ -43,7 +43,7 @@ class DispyNetRelay(object):
             ip_addrs = [None]
         for i in range(len(ip_addrs)):
             ip_addr = ip_addrs[i]
-            addrinfo = dispy.node_addrinfo(ip_addr)
+            addrinfo = dispy.host_addrinfo(host=ip_addr)
             if not addrinfo:
                 logger.warning('Ignoring invalid ip_addr %s', ip_addr)
                 continue

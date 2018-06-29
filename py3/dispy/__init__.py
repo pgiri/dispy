@@ -305,7 +305,13 @@ def _parse_node_allocs(nodes):
     return [node_alloc for node_alloc in node_allocs if node_alloc.ip_addr]
 
 
-def node_addrinfo(node=None, socket_family=None):
+def host_addrinfo(host=None, socket_family=None):
+    """If 'host' is given (as either host name or IP address), resolve it and
+    fill AddrInfo structure. If 'host' is not given, netifaces module is used to
+    find appropriate IP address. If 'socket_family' is given, IP address with that
+    'socket_family' is used. It should be either 'socket.AF_INET' (for IPv4) or
+    'socket.AF_INET6' (for IPv6).
+    """
 
     class AddrInfo(object):
         def __init__(self, family, ip, ifn, broadcast, netmask):
@@ -327,10 +333,10 @@ def node_addrinfo(node=None, socket_family=None):
     if socket_family:
         if socket_family not in (socket.AF_INET, socket.AF_INET6):
             return None
-    nodes = []
-    if node:
+    hosts = []
+    if host:
         best = None
-        for addr in socket.getaddrinfo(node, None):
+        for addr in socket.getaddrinfo(host, None):
             if socket_family and addr[0] != socket_family:
                 continue
             if not best or addr[0] == socket.AF_INET:
@@ -341,7 +347,7 @@ def node_addrinfo(node=None, socket_family=None):
                 addr = canonical_ipv6(best[-1][0])
             else:
                 addr = best[-1][0]
-            nodes.append(addr)
+            hosts.append(addr)
         else:
             return None
 
@@ -369,7 +375,7 @@ def node_addrinfo(node=None, socket_family=None):
                         except Exception:
                             addrs = []
                         for addr in addrs:
-                            if nodes and addr[-1][0] not in nodes:
+                            if hosts and addr[-1][0] not in hosts:
                                 continue
                             addrinfo = AddrInfo(sock_family, addr[-1][0], addr[-1][-1],
                                                 broadcast, netmask)
@@ -399,7 +405,7 @@ def node_addrinfo(node=None, socket_family=None):
                                 if sfx:
                                     continue
                                 addr = canonical_ipv6(addr[-1][0])
-                                if nodes and addr not in nodes:
+                                if hosts and addr not in hosts:
                                     continue
                                 addrinfo = AddrInfo(sock_family, addr, ifn, broadcast, netmask)
                                 iface_infos.append(addrinfo)
@@ -410,11 +416,11 @@ def node_addrinfo(node=None, socket_family=None):
             addrinfos.extend(iface_infos)
 
     else:
-        if not node:
-            node = socket.gethostname()
+        if not host:
+            host = socket.gethostname()
         netmask = None
         for sock_family in socket_families:
-            for addr in socket.getaddrinfo(node, None):
+            for addr in socket.getaddrinfo(host, None):
                 if addr[0] != sock_family or addr[1] != socket.SOCK_STREAM:
                     continue
                 ifn = addr[-1][-1]
@@ -426,8 +432,8 @@ def node_addrinfo(node=None, socket_family=None):
                     broadcast = IPV6_MULTICAST_GROUP
                     logger.warning('IPv6 may not work without "netifaces" package!')
                 addrinfo = AddrInfo(sock_family, addr, ifn, broadcast, netmask)
-                if nodes:
-                    if addrinfo.ip in nodes:
+                if hosts:
+                    if addrinfo.ip in hosts:
                         return addrinfo
                     else:
                         continue
@@ -436,7 +442,7 @@ def node_addrinfo(node=None, socket_family=None):
     best = None
     for sock_family in socket_families:
         for addrinfo in addrinfos:
-            if addrinfo.ip in nodes:
+            if addrinfo.ip in hosts:
                 return addrinfo
             if addrinfo.family != sock_family:
                 continue
@@ -780,12 +786,12 @@ class _Cluster(object, metaclass=Singleton):
                     ext_ip_addr = ext_ip_addrs[i]
                 else:
                     ext_ip_addr = None
-                addrinfo = node_addrinfo(ip_addr)
+                addrinfo = host_addrinfo(host=ip_addr)
                 if not addrinfo:
                     logger.warning('Ignoring invalid ip_addr %s', ip_addr)
                     continue
                 if ext_ip_addr:
-                    ext_ip_addr = node_addrinfo(ext_ip_addr)
+                    ext_ip_addr = host_addrinfo(host=ext_ip_addr)
                     if ext_ip_addr:
                         ext_ip_addr = ext_ip_addr.ip
                     else:
@@ -2806,7 +2812,7 @@ class SharedJobCluster(JobCluster):
                  poll_interval=None, reentrant=False, exclusive=False,
                  secret='', keyfile=None, certfile=None, recover_file=None):
 
-        self.addrinfo = node_addrinfo(scheduler_node)
+        self.addrinfo = host_addrinfo(host=scheduler_node)
         self.scheduler_ip_addr = self.addrinfo.ip
         if not nodes:
             nodes = ['*']
@@ -2820,7 +2826,7 @@ class SharedJobCluster(JobCluster):
             raise Exception('"nodes" argument is invalid')
         node_allocs = [(na.ip_addr, na.port, na.cpus) for na in node_allocs]
         if ext_ip_addr:
-            ext_ip_addr = node_addrinfo(ext_ip_addr).ip
+            ext_ip_addr = host_addrinfo(host=ext_ip_addr).ip
 
         JobCluster.__init__(self, computation, depends=depends,
                             callback=callback, cluster_status=cluster_status,
@@ -3351,7 +3357,7 @@ def recover_jobs(recover_file=None, timeout=None, terminate_pending=False):
 
     def tcp_server(ip_addr, pending, task=None):
         task.set_daemon()
-        addrinfo = node_addrinfo(ip_addr)
+        addrinfo = host_addrinfo(host=ip_addr)
         sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_STREAM),
                            keyfile=cluster['keyfile'], certfile=cluster['certfile'])
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
