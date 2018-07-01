@@ -368,8 +368,6 @@ class _DispyNode(object):
 
             if os.name == 'nt':
                 bind_addr = addrinfo.ip
-            elif sys.platform == 'darwin':
-                bind_addr = ''
             else:
                 bind_addr = addrinfo.broadcast
             udp_addrinfos[bind_addr] = addrinfo

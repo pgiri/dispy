@@ -269,8 +269,6 @@ class _Scheduler(object):
             self.scheduler_tasks.append(Task(self.scheduler_server, addrinfo))
             if os.name == 'nt':
                 bind_addr = addrinfo.ip
-            elif sys.platform == 'darwin':
-                bind_addr = ''
             else:
                 bind_addr = addrinfo.broadcast
             udp_addrinfos[bind_addr] = addrinfo
