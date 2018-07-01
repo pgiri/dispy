@@ -48,7 +48,7 @@ __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'Sha
 
 _dispy_version = __version__
 MsgTimeout = 10
-IPV6_MULTICAST_GROUP = 'ff05::1'
+IPV6_MULTICAST_GROUP = 'ff05::b409:3171:9705:6159:5134:70'
 IPV4_MULTICAST_GROUP = '239.255.51.34'
 
 
