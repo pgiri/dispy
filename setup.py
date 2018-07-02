@@ -22,7 +22,7 @@ setup(
     package_data = {
         'dispy' : ['data/*', 'examples/*', 'doc/*'],
     },
-    install_requires=['pycos >= 4.7.1'],
+    install_requires=['pycos >= 4.7.2'],
     scripts=[os.path.join(base_dir, 'dispy', script) for script in \
              ['dispynode.py', 'dispynetrelay.py', 'dispyscheduler.py']] + \
             [os.path.join(base_dir, script) for script in ['dispy.py']],
