@@ -791,6 +791,9 @@ class _Cluster(object):
                 if not addrinfo:
                     logger.warning('Ignoring invalid ip_addr %s', ip_addr)
                     continue
+                if addrinfo.family == socket.AF_INET6 and not hasattr(socket, 'inet_pton'):
+                    if os.name == 'nt':
+                        raise Exception('"win_inet_pton" module is required for IPv6')
                 if ext_ip_addr:
                     ext_ip_addr = host_addrinfo(host=ext_ip_addr)
                     if ext_ip_addr:
