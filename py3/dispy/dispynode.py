@@ -1823,6 +1823,7 @@ if __name__ == '__main__':
         cfg['cpus'] = int(cfg['cpus'])
         cfg['node_port'] = int(cfg['node_port'])
         cfg['scheduler_port'] = int(cfg['scheduler_port'])
+        cfg['ipv4_udp_multicast'] = cfg['ipv4_udp_multicast'] == 'True'
         cfg['zombie_interval'] = float(cfg['zombie_interval'])
         cfg['ping_interval'] = int(cfg['ping_interval']) if cfg['ping_interval'] else None
         cfg['msg_timeout'] = float(cfg['msg_timeout'])

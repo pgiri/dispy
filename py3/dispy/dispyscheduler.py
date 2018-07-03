@@ -2145,13 +2145,14 @@ if __name__ == '__main__':
         cfg = dict(cfg.items('DEFAULT'))
         cfg['nodes'] = [] if cfg['nodes'] == '[]' else \
                        [_.strip() for _ in cfg['nodes'][1:-1].split(',')]
-        cfg['ip_addr'] = [] if cfg['ip_addr'] == '[]' else \
-                         [_.strip() for _ in cfg['ip_addr'][1:-1].split(',')]
-        cfg['ext_ip_addr'] = [] if cfg['ext_ip_addr'] == '[]' else \
-                             [_.strip() for _ in cfg['ext_ip_addr'][1:-1].split(',')]
+        cfg['ip_addrs'] = [] if cfg['ip_addrs'] == '[]' else \
+                         [_.strip() for _ in cfg['ip_addrs'][1:-1].split(',')]
+        cfg['ext_ip_addrs'] = [] if cfg['ext_ip_addrs'] == '[]' else \
+                             [_.strip() for _ in cfg['ext_ip_addrs'][1:-1].split(',')]
         cfg['port'] = int(cfg['port'])
         cfg['node_port'] = int(cfg['node_port'])
         cfg['scheduler_port'] = int(cfg['scheduler_port'])
+        cfg['ipv4_udp_multicast'] = cfg['ipv4_udp_multicast'] == 'True'
         cfg['pulse_interval'] = float(cfg['pulse_interval'])
         cfg['ping_interval'] = float(cfg['ping_interval'])
         cfg['zombie_interval'] = float(cfg['zombie_interval'])
