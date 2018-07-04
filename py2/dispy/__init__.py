@@ -891,6 +891,11 @@ class _Cluster(object):
 
                 if os.name == 'nt':
                     bind_addr = addrinfo.ip
+                elif sys.platform == 'darwin':
+                    if addrinfo.family == socket.AF_INET and (not self.ipv4_udp_multicast):
+                        bind_addr = ''
+                    else:
+                        bind_addr = addrinfo.broadcast
                 else:
                     bind_addr = addrinfo.broadcast
                 udp_addrinfos[bind_addr] = addrinfo
