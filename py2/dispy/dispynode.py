@@ -238,10 +238,8 @@ class _DispyNode(object):
                                       'this will prevent communication with clients on '
                                       'other machines. ', addrinfo.ip)
             if ext_ip_addr:
-                ext_ip_addr = dispy.host_addrinfo(host=ext_ip_addr)
-                if ext_ip_addr:
-                    ext_ip_addr = ext_ip_addr.ip
-                else:
+                ext_ip_addr = dispy._node_ipaddr(ext_ip_addr)
+                if not ext_ip_addr:
                     _dispy_logger.warning('Ignoring invalid ext_ip_addr %s', ext_ip_addrs[i])
             if not ext_ip_addr:
                 ext_ip_addr = addrinfo.ip

@@ -42,7 +42,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "Apache 2.0"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.8.8"
+__version__ = "4.8.9"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
@@ -268,18 +268,18 @@ def _node_ipaddr(node):
     if node.find('*') >= 0:
         return node
     try:
-        ip_addr = socket.getaddrinfo(node, None)[0]
-        family = ip_addr[0]
-        ip_addr = ip_addr[-1][0]
-        if family == socket.AF_INET6:
-            # canonicalize so different platforms resolve to same string
-            ip_addr = re.sub(r'^0+', '', ip_addr)
-            ip_addr = re.sub(r':0+', ':', ip_addr)
-            ip_addr = re.sub(r'::+', '::', ip_addr)
-            # TODO: handle dot notation in last 4 bytes?
-        return ip_addr
+        info = socket.getaddrinfo(node, None)[0]
     except:
         return None
+
+    ip_addr = info[-1][0]
+    if info[0] == socket.AF_INET6:
+        # canonicalize so different platforms resolve to same string
+        ip_addr = ip_addr.split('%')[0]
+        ip_addr = re.sub(r'^0+', '', ip_addr)
+        ip_addr = re.sub(r':0+', ':', ip_addr)
+        ip_addr = re.sub(r'::+', '::', ip_addr)
+    return ip_addr
 
 
 def _parse_node_allocs(nodes):
@@ -795,10 +795,8 @@ class _Cluster(object):
                     if os.name == 'nt':
                         raise Exception('"win_inet_pton" module is required for IPv6')
                 if ext_ip_addr:
-                    ext_ip_addr = host_addrinfo(host=ext_ip_addr)
-                    if ext_ip_addr:
-                        ext_ip_addr = ext_ip_addr.ip
-                    else:
+                    ext_ip_addr = _node_ipaddr(ext_ip_addr)
+                    if not ext_ip_addr:
                         logger.warning('Ignoring invalid ext_ip_addr %s', ext_ip_addrs[i])
                 if not ext_ip_addr:
                     ext_ip_addr = addrinfo.ip

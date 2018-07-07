@@ -139,10 +139,8 @@ class _Scheduler(object):
                 logger.warning('Ignoring invalid ip_addr %s', ip_addr)
                 continue
             if ext_ip_addr:
-                ext_ip_addr = dispy.host_addrinfo(host=ext_ip_addr)
-                if ext_ip_addr:
-                    ext_ip_addr = ext_ip_addr.ip
-                else:
+                ext_ip_addr = dispy._node_ipaddr(ext_ip_addr)
+                if not ext_ip_addr:
                     logger.warning('Ignoring invalid ext_ip_addr %s', ext_ip_addrs[i])
             if not ext_ip_addr:
                 ext_ip_addr = addrinfo.ip
