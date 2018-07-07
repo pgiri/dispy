@@ -436,34 +436,29 @@ class _DispyNode(object):
             _dispy_logger.debug('Busy (%s/%s); ignoring ping message from %s',
                                 self.avail_cpus, self.num_cpus, addr[0])
             raise StopIteration
-        if info.get('port', None) == self.port:
-            raise StopIteration
-        try:
-            scheduler_ip_addrs = info['ip_addrs']
-            if (not info.get('relay', None) and isinstance(addr, tuple) and
-                isinstance(addr[0], str)):
-                scheduler_ip_addrs.append(addr[0])
-            scheduler_port = info['port']
-        except:
-            _dispy_logger.debug(traceback.format_exc())
-            raise StopIteration
+
+        scheduler_ip_addrs = info['ip_addrs']
+        scheduler_port = info['port']
+        if (not info.get('relay', None) and isinstance(addr, tuple) and isinstance(addr[0], str)):
+            scheduler_ip_addrs.append(addr[0])
+        msg = {'port': self.port, 'sign': self.sign, 'version': _dispy_version}
+        sign = info.get('sign', '')
+        if sign:
+            msg.update({'name': self.name, 'cpus': self.avail_cpus, 'platform': platform.platform(),
+                        'auth': auth_code(self.secret, sign)})
+            if psutil:
+                msg['avail_info'] = DispyNodeAvailInfo(
+                    100.0 - psutil.cpu_percent(), psutil.virtual_memory().available,
+                    psutil.disk_usage(self.dest_path_prefix).free,
+                    100.0 - psutil.swap_memory().percent)
+            else:
+                msg['avail_info'] = None
 
         # TODO: pick appropriate addrinfo based on netmask if available
         addrinfos = self.addrinfos.values()
 
         for addrinfo in addrinfos:
-            pong_msg = {'ip_addr': addrinfo.ext_ip_addr, 'port': self.port, 'sign': self.sign,
-                        'version': _dispy_version, 'name': self.name, 'cpus': self.avail_cpus,
-                        'platform': platform.platform(),
-                        'auth': auth_code(self.secret, info.get('sign', ''))}
-            if psutil:
-                pong_msg['avail_info'] = DispyNodeAvailInfo(
-                    100.0 - psutil.cpu_percent(), psutil.virtual_memory().available,
-                    psutil.disk_usage(self.dest_path_prefix).free,
-                    100.0 - psutil.swap_memory().percent)
-            else:
-                pong_msg['avail_info'] = None
-
+            msg['ip_addr'] = addrinfo.ext_ip_addr
             for scheduler_ip_addr in scheduler_ip_addrs:
                 if re.match('\d+\.', scheduler_ip_addr):
                     sock_family = socket.AF_INET
@@ -471,13 +466,16 @@ class _DispyNode(object):
                     sock_family = socket.AF_INET6
                 if sock_family != addrinfo.family:
                     continue
-                pong_msg['scheduler_ip_addr'] = scheduler_ip_addr
+                msg['scheduler_ip_addr'] = scheduler_ip_addr
                 sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_STREAM),
                                    keyfile=self.keyfile, certfile=self.certfile)
                 sock.settimeout(MsgTimeout)
                 try:
                     yield sock.connect((scheduler_ip_addr, scheduler_port))
-                    yield sock.send_msg('PONG:'.encode() + serialize(pong_msg))
+                    if sign:
+                        yield sock.send_msg('PONG:'.encode() + serialize(msg))
+                    else:
+                        yield sock.send_msg('PING:'.encode() + serialize(msg))
                 except:
                     pass
                 finally:
