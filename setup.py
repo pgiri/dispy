@@ -11,7 +11,7 @@ else:
 
 setup(
     name='dispy',
-    version='4.8.9',
+    version='4.9.0',
     description='Distributed and Parallel Computing with/for Python.',
     keywords='distributed computing, parallel processing, mapreduce, hadoop, job scheduler',
     url='http://dispy.sourceforge.net',
@@ -22,7 +22,7 @@ setup(
     package_data = {
         'dispy' : ['data/*', 'examples/*', 'doc/*'],
     },
-    install_requires=['pycos >= 4.7.3'],
+    install_requires=['pycos >= 4.7.4'],
     scripts=[os.path.join(base_dir, 'dispy', script) for script in \
              ['dispynode.py', 'dispynetrelay.py', 'dispyscheduler.py']] + \
             [os.path.join(base_dir, script) for script in ['dispy.py']],
