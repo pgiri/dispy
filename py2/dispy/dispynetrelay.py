@@ -35,7 +35,8 @@ class DispyNetRelay(object):
     """
 
     def __init__(self, ip_addrs=[], node_port=51348, listen_port=0,
-                 scheduler_nodes=[], scheduler_port=51347, ipv4_udp_multicast=False):
+                 scheduler_nodes=[], scheduler_port=51347, ipv4_udp_multicast=False,
+                  secret='', certfile=None, keyfile=None):
         addrinfos = []
         if not ip_addrs:
             ip_addrs = [None]
@@ -47,18 +48,24 @@ class DispyNetRelay(object):
                 continue
             addrinfos.append(addrinfo)
 
+        self.node_port = node_port
         if not listen_port:
             listen_port = node_port
-        self.node_port = node_port
         self.listen_port = listen_port
         self.ipv4_udp_multicast = bool(ipv4_udp_multicast)
         self.ip_addrs = set()
-        self.scheduler_ip_addrs = set()
-        for addr in scheduler_nodes:
-            addr = dispy._node_ipaddr(addr)
-            if addr:
-                self.scheduler_ip_addrs.append(addr)
+        self.scheduler_ip_addr = None
         self.scheduler_port = scheduler_port
+        self.secret = secret
+        if certfile:
+            self.certfile = os.path.abspath(certfile)
+        else:
+            self.certfile = None
+        if keyfile:
+            self.keyfile = os.path.abspath(keyfile)
+        else:
+            self.keyfile = None
+
         udp_addrinfos = {}
         for addrinfo in addrinfos:
             self.ip_addrs.add(addrinfo.ip)
@@ -76,15 +83,55 @@ class DispyNetRelay(object):
                 bind_addr = addrinfo.broadcast
             udp_addrinfos[bind_addr] = addrinfo
 
+        scheduler_ip_addrs = []
+        for addr in scheduler_nodes:
+            addr = dispy._node_ipaddr(addr)
+            if addr:
+                scheduler_ip_addrs.append(addr)
+
         for bind_addr, addrinfo in udp_addrinfos.items():
             Task(self.listen_udp_proc, bind_addr, addrinfo)
             Task(self.sched_udp_proc, bind_addr, addrinfo)
+            for addr in scheduler_ip_addrs:
+                msg = {'version': __version__, 'ip_addrs': [addr], 'port': self.scheduler_port,
+                       'sign': None}
+                Task(self.verify_broadcast, addrinfo, msg)
 
         logger.info('version %s started', dispy._dispy_version)
 
-    def listen_udp_proc(self, bind_addr, addrinfo, task=None):
-        task.set_daemon()
+    def verify_broadcast(self, addrinfo, msg, task=None):
+        if msg.get('relay', None):
+            raise StopIteration
+        msg['relay'] = 'y'
+        # TODO: check if current scheduler is done with nodes?
+        if msg['sign']:
+            msg['auth'] = dispy.auth_code(self.secret, msg['sign'])
+        reply = None
+        for scheduler_ip_addr in msg['ip_addrs']:
+            msg['scheduler_ip_addr'] = scheduler_ip_addr
+            sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_STREAM),
+                               keyfile=self.keyfile, certfile=self.certfile)
+            sock.settimeout(dispy.MsgTimeout)
+            try:
+                yield sock.connect((scheduler_ip_addr, msg['port']))
+                yield sock.send_msg('RELAY_INFO:'.encode() + serialize(msg))
+                reply = yield sock.recv_msg()
+                reply = deserialize(reply)
+            except:
+                continue
+            else:
+                break
+            finally:
+                sock.close()
 
+        if not reply:
+            raise StopIteration
+
+        # TODO: since dispynetrelay is not aware of computations closing, if
+        # more than one client sends ping, nodes will respond to different
+        # clients
+        self.scheduler_ip_addr = reply['ip_addrs'] = [scheduler_ip_addr]
+        self.scheduler_port = reply['port']
         bc_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
         ttl_bin = struct.pack('@i', 1)
         if addrinfo.family == socket.AF_INET:
@@ -95,11 +142,12 @@ class DispyNetRelay(object):
         else:  # addrinfo.family == socket.AF_INET6
             bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, ttl_bin)
             bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, addrinfo.ifn)
-        if self.scheduler_ip_addrs:
-            msg = {'ip_addrs': self.scheduler_ip_addrs, 'port': self.scheduler_port,
-                   'version': __version__, 'sign': ''}
-            yield bc_sock.sendto('PING:'.encode() + serialize(msg),
-                                 (addrinfo.broadcast, self.node_port))
+        yield bc_sock.sendto('PING:'.encode() + serialize(msg),
+                             (addrinfo.broadcast, self.node_port))
+        bc_sock.close()
+
+    def listen_udp_proc(self, bind_addr, addrinfo, task=None):
+        task.set_daemon()
 
         listen_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
         listen_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -130,44 +178,25 @@ class DispyNetRelay(object):
                 logger.debug('Ignoring loop back ping from %s' % addr[0])
                 continue
             try:
-                info = deserialize(msg[len('PING:'.encode()):])
-                if info['version'] != __version__:
+                msg = deserialize(msg[len('PING:'.encode()):])
+                if msg['version'] != __version__:
                     logger.warning('Ignoring %s due to version mismatch: %s / %s',
-                                   info['ip_addrs'], info['version'], __version__)
+                                   msg['ip_addrs'], msg['version'], __version__)
                     continue
-                self.scheduler_ip_addrs = set(info['ip_addrs'] + [addr[0]])
-                self.scheduler_port = info['port']
             except:
                 logger.debug('Ignoring ping message from %s (%s)', addr[0], addr[1])
                 logger.debug(traceback.format_exc())
                 continue
-            if info.get('relay', None):
-                logger.debug('Ignoring ping back (from %s)', addr[0])
-                continue
-            if self.node_port == self.listen_port:
-                info['relay'] = 'y'  # 'check if this message loops back to self
-
-            yield bc_sock.sendto('PING:'.encode() + serialize(info), addr)
+            Task(self.verify_broadcast, addrnifo, msg)
 
     def listen_tcp_proc(self, addrinfo, task=None):
         task.set_daemon()
         auth_len = len(dispy.auth_code('', ''))
-        tcp_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_STREAM))
+        tcp_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_STREAM),
+                                   keyfile=self.keyfile, certfile=self.certfile)
         tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         tcp_sock.bind((addrinfo.ip, self.listen_port))
         tcp_sock.listen(8)
-
-        bc_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
-        ttl_bin = struct.pack('@i', 1)
-        if addrinfo.family == socket.AF_INET:
-            if self.ipv4_udp_multicast:
-                bc_sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, ttl_bin)
-            else:
-                bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        else:  # addrinfo.sock_family == socket.AF_INET6
-            bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS,
-                               struct.pack('@i', 2))
-            bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, addrinfo.ifn)
 
         def tcp_req(conn, addr, task=None):
             conn.settimeout(dispy.MsgTimeout)
@@ -181,24 +210,16 @@ class DispyNetRelay(object):
             finally:
                 conn.close()
             try:
-                info = deserialize(msg[len('PING:'.encode()):])
-                if info['version'] != __version__:
+                msg = deserialize(msg[len('PING:'.encode()):])
+                if msg['version'] != __version__:
                     logger.warning('Ignoring %s due to version mismatch: %s / %s',
-                                   info['ip_addrs'], info['version'], __version__)
+                                   msg['ip_addrs'], msg['version'], __version__)
                     raise StopIteration
-                # TODO: since dispynetrelay is not aware of computations
-                # closing, if more than one client sends ping, nodes will
-                # respond to different clients
-                self.scheduler_ip_addrs = set(info['ip_addrs'] + [addr[0]])
-                self.scheduler_port = info['port']
             except:
                 logger.debug('Ignoring ping message from %s (%s)', addr[0], addr[1])
                 logger.debug(traceback.format_exc())
                 raise StopIteration
-            if self.node_port == self.listen_port:
-                info['relay'] = 'y'  # 'check if this message loops back to self
-            yield bc_sock.sendto('PING:'.encode() + serialize(info),
-                                 (addrinfo.broadcast, self.node_port))
+            Task(self.verify_broadcast, addrinfo, msg)
 
         while 1:
             conn, addr = yield tcp_sock.accept()
@@ -207,16 +228,16 @@ class DispyNetRelay(object):
     def sched_udp_proc(self, bind_addr, addrinfo, task=None):
         task.set_daemon()
 
-        auth = dispy.auth_code('', '')
-        def relay_msg(info, task=None):
-            msg = {'ip_addrs': list(self.scheduler_ip_addrs), 'port': self.scheduler_port,
-                   'version': __version__}
-            msg['relay'] = 'y'
-            sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_STREAM))
+        def relay_msg(msg, task=None):
+            relay = {'ip_addrs': self.scheduler_ip_addr, 'port': self.scheduler_port,
+                     'version': __version__}
+            relay['relay'] = 'y'
+            sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_STREAM),
+                               keyfile=self.keyfile, certfile=self.certfile)
             sock.settimeout(dispy.MsgTimeout)
-            yield sock.connect((info['ip_addr'], info['port']))
-            yield sock.sendall(auth)
-            yield sock.send_msg('PING:'.encode() + serialize(msg))
+            yield sock.connect((msg['ip_addr'], msg['port']))
+            yield sock.sendall(dispy.auth_code(self.secret, msg['sign']))
+            yield sock.send_msg('PING:'.encode() + serialize(relay))
             sock.close()
 
         sched_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
@@ -244,14 +265,14 @@ class DispyNetRelay(object):
                 logger.debug('Ignoring message from %s (%s)', addr[0], addr[1])
                 continue
             try:
-                info = deserialize(msg[len('PING:'.encode()):])
-                assert info['version'] == __version__
-                # assert isinstance(info['cpus'], int)
+                msg = deserialize(msg[len('PING:'.encode()):])
+                assert msg['version'] == __version__
+                # assert isinstance(msg['cpus'], int)
             except:
-                logger.debug(traceback.format_exc())
-            if not self.scheduler_ip_addrs:
                 continue
-            Task(relay_msg, info)
+            if not self.scheduler_ip_addr:
+                continue
+            Task(relay_msg, msg)
 
 
 if __name__ == '__main__':
@@ -271,6 +292,12 @@ if __name__ == '__main__':
     parser.add_argument('--listen_port', dest='listen_port', type=int, default=0,
                         help='port number to listen (instead of node_port) '
                         'for connection from client')
+    parser.add_argument('-s', '--secret', dest='secret', default='',
+                        help='authentication secret for handshake with dispy clients')
+    parser.add_argument('--certfile', dest='certfile', default='',
+                        help='file containing SSL certificate')
+    parser.add_argument('--keyfile', dest='keyfile', default='',
+                        help='file containing SSL key')
     parser.add_argument('--ipv4_udp_multicast', dest='ipv4_udp_multicast', action='store_true',
                         default=False, help='use multicast for IPv4 UDP instead of broadcast')
     parser.add_argument('--daemon', action='store_true', dest='daemon', default=False,

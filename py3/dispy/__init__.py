@@ -279,7 +279,6 @@ def _node_ipaddr(node):
         ip_addr = re.sub(r'^0+', '', ip_addr)
         ip_addr = re.sub(r':0+', ':', ip_addr)
         ip_addr = re.sub(r'::+', '::', ip_addr)
-        # TODO: handle dot notation in last 4 bytes?
     return ip_addr
 
 
@@ -1095,9 +1094,9 @@ class _Cluster(object, metaclass=Singleton):
                     raise StopIteration
                 assert info['auth'] == self.auth
             except (AssertionError):
-                logger.warning('Ignoring node %s ("secret" mismatch)', addr[0])
+                logger.warning('Ignoring node %s ("secret" mismatch)', info['ip_addr'])
             except (Exception) as err:
-                logger.warning('Ignoring node %s (%s: %s)', addr[0], err.__class__.__name__, err)
+                logger.warning('Ignoring node %s: %s', addr[0], err)
             else:
                 self.add_node(info)
 
@@ -1287,6 +1286,19 @@ class _Cluster(object, metaclass=Singleton):
                 yield conn.send_msg(b'NAK')
             conn.close()
 
+        elif msg.startswith(b'RELAY_INFO:'):
+            try:
+                info = deserialize(msg[len(b'RELAY_INFO:'):])
+                assert info['version'] == _dispy_version
+                msg = {'sign': self.sign, 'ip_addrs': [info['scheduler_ip_addr']],
+                       'port': self.port}
+                if 'auth' in info and info['auth'] != self.auth:
+                    msg = None
+            except:
+                msg = None
+            yield conn.send_msg(serialize(msg))
+            conn.close()
+
         else:
             logger.warning('Invalid message from %s:%s ignored', addr[0], addr[1])
             # logger.debug(traceback.format_exc())
@@ -1412,6 +1424,7 @@ class _Cluster(object, metaclass=Singleton):
             yield tcp_sock.sendall(b'x' * len(self.auth))
             yield tcp_sock.send_msg(b'PING:' + serialize(ping_msg))
         except:
+            print(traceback.format_exc())
             pass
         tcp_sock.close()
 

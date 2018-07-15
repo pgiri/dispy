@@ -1093,9 +1093,9 @@ class _Cluster(object):
                     raise StopIteration
                 assert info['auth'] == self.auth
             except (AssertionError):
-                logger.warning('Ignoring node %s ("secret" mismatch)', addr[0])
+                logger.warning('Ignoring node %s ("secret" mismatch)', info['ip_addr'])
             except (Exception) as err:
-                logger.warning('Ignoring node %s (%s: %s)', addr[0], err.__class__.__name__, err)
+                logger.warning('Ignoring node %s: %s', addr[0], err)
             else:
                 self.add_node(info)
 
@@ -1283,6 +1283,19 @@ class _Cluster(object):
                 cluster._scheduled_event.set()
             except:
                 yield conn.send_msg('NAK')
+            conn.close()
+
+        elif msg.startswith('RELAY_INFO:'):
+            try:
+                info = deserialize(msg[len('RELAY_INFO:'):])
+                assert info['version'] == _dispy_version
+                msg = {'sign': self.sign, 'ip_addrs': [info['scheduler_ip_addr']],
+                       'port': self.port}
+                if 'auth' in info and info['auth'] != self.auth:
+                    msg = None
+            except:
+                msg = None
+            yield conn.send_msg(serialize(msg))
             conn.close()
 
         else:

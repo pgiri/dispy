@@ -542,6 +542,19 @@ class _Scheduler(object, metaclass=Singleton):
                 if dispy_node:
                     dispy_node.cpus = cpus
 
+        elif msg.startswith(b'RELAY_INFO:'):
+            try:
+                info = deserialize(msg[len(b'RELAY_INFO:'):])
+                assert info['version'] == _dispy_version
+                msg = {'sign': self.sign, 'ip_addrs': [info['scheduler_ip_addr']],
+                       'port': self.port}
+                if 'auth' in info and info['auth'] != self.node_auth:
+                    msg = None
+            except:
+                msg = None
+            yield conn.send_msg(serialize(msg))
+            conn.close()
+
         else:
             logger.warning('Invalid message from %s:%s ignored', addr[0], addr[1])
             conn.close()
