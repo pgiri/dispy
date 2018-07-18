@@ -2434,12 +2434,14 @@ class JobCluster(object):
                                        key=lambda node_alloc: node_alloc.ip_rex, reverse=True)
         self._dispy_nodes = {}
 
-        if inspect.isfunction(computation):
+        if inspect.isfunction(computation) or inspect.ismethod(computation):
             func = computation
             compute = _Compute(_Compute.func_type, func.__name__)
             lines = inspect.getsourcelines(func)[0]
             lines[0] = lines[0].lstrip()
             compute.code = ''.join(lines)
+            if inspect.ismethod(computation):
+                depends.append(computation.__self__.__class__)
         elif isinstance(computation, str):
             compute = _Compute(_Compute.prog_type, computation)
             depends.append(computation)
