@@ -420,9 +420,7 @@ def host_addrinfo(host=None, socket_family=None):
             host = socket.gethostname()
         netmask = None
         for sock_family in socket_families:
-            for addr in socket.getaddrinfo(host, None):
-                if addr[0] != sock_family:
-                    continue
+            for addr in socket.getaddrinfo(host, None, sock_family, socket.SOCK_STREAM):
                 ifn = addr[-1][-1]
                 if sock_family == socket.AF_INET:
                     broadcast = '<broadcast>'
