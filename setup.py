@@ -11,7 +11,7 @@ else:
 
 setup(
     name='dispy',
-    version='4.9.0',
+    version='4.9.1',
     description='Distributed and Parallel Computing with/for Python.',
     keywords='distributed computing, parallel processing, mapreduce, hadoop, job scheduler',
     url='http://dispy.sourceforge.net',
