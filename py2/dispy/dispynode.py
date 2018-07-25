@@ -461,6 +461,8 @@ class _DispyNode(object):
         for addrinfo in addrinfos:
             msg['ip_addr'] = addrinfo.ext_ip_addr
             for scheduler_ip_addr in scheduler_ip_addrs:
+                if not isinstance(scheduler_ip_addr, str):
+                    continue
                 if re.match('\d+\.', scheduler_ip_addr):
                     sock_family = socket.AF_INET
                 else:
