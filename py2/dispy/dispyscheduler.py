@@ -1249,6 +1249,7 @@ class _Scheduler(object):
             else:  # addrinfo.family == socket.AF_INET6
                 bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, ttl_bin)
                 bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, addrinfo.ifn)
+            bc_sock.bind((addrinfo.ip, 0))
             try:
                 yield bc_sock.sendto('PING:' + serialize(ping_msg), (addrinfo.broadcast, port))
             except:

@@ -400,6 +400,7 @@ class _DispyNode(object):
                 sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, addrinfo.ifn)
             ping_msg = {'ip_addr': addrinfo.ext_ip_addr, 'port': self.port, 'sign': self.sign,
                         'version': _dispy_version, 'scheduler_ip_addr': None}
+            sock.bind((addrinfo.ip, 0))
             try:
                 yield sock.sendto('PING:'.encode() + serialize(ping_msg),
                                   (addrinfo.broadcast, self.scheduler['port']))

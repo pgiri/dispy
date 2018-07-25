@@ -142,6 +142,7 @@ class DispyNetRelay(object):
         else:  # addrinfo.family == socket.AF_INET6
             bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, ttl_bin)
             bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, addrinfo.ifn)
+        bc_sock.bind((addrinfo.ip, 0))
         yield bc_sock.sendto('PING:'.encode() + serialize(msg),
                              (addrinfo.broadcast, self.node_port))
         bc_sock.close()
