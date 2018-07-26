@@ -34,7 +34,7 @@ class DispyNetRelay(object):
     """Internal use only.
     """
 
-    def __init__(self, ip_addrs=[], node_port=51348, listen_port=0,
+    def __init__(self, ip_addrs=[], node_port=51348, relay_port=0,
                  scheduler_nodes=[], scheduler_port=51347, ipv4_udp_multicast=False,
                   secret='', certfile=None, keyfile=None):
         addrinfos = []
@@ -49,9 +49,9 @@ class DispyNetRelay(object):
             addrinfos.append(addrinfo)
 
         self.node_port = node_port
-        if not listen_port:
-            listen_port = node_port
-        self.listen_port = listen_port
+        if not relay_port:
+            relay_port = node_port
+        self.relay_port = relay_port
         self.ipv4_udp_multicast = bool(ipv4_udp_multicast)
         self.ip_addrs = set()
         self.scheduler_ip_addr = None
@@ -71,7 +71,7 @@ class DispyNetRelay(object):
             self.ip_addrs.add(addrinfo.ip)
             if addrinfo.family == socket.AF_INET and self.ipv4_udp_multicast:
                 addrinfo.broadcast = dispy.IPV4_MULTICAST_GROUP
-            Task(self.listen_tcp_proc, addrinfo)
+            Task(self.relay_tcp_proc, addrinfo)
             if os.name == 'nt':
                 bind_addr = addrinfo.ip
             elif sys.platform == 'darwin':
@@ -90,7 +90,7 @@ class DispyNetRelay(object):
                 scheduler_ip_addrs.append(addr)
 
         for bind_addr, addrinfo in udp_addrinfos.items():
-            Task(self.listen_udp_proc, bind_addr, addrinfo)
+            Task(self.relay_udp_proc, bind_addr, addrinfo)
             Task(self.sched_udp_proc, bind_addr, addrinfo)
             for addr in scheduler_ip_addrs:
                 msg = {'version': __version__, 'ip_addrs': [addr], 'port': self.scheduler_port,
@@ -147,31 +147,31 @@ class DispyNetRelay(object):
                              (addrinfo.broadcast, self.node_port))
         bc_sock.close()
 
-    def listen_udp_proc(self, bind_addr, addrinfo, task=None):
+    def relay_udp_proc(self, bind_addr, addrinfo, task=None):
         task.set_daemon()
 
-        listen_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
-        listen_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        relay_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
+        relay_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         if hasattr(socket, 'SO_REUSEPORT'):
-            listen_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            relay_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
 
-        listen_sock.bind((bind_addr, self.listen_port))
+        relay_sock.bind((bind_addr, self.relay_port))
 
         if addrinfo.family == socket.AF_INET:
             if self.ipv4_udp_multicast:
                 mreq = socket.inet_aton(addrinfo.broadcast) + socket.inet_aton(addrinfo.ip)
-                listen_sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+                relay_sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
         else:  # addrinfo.family == socket.AF_INET6:
             mreq = socket.inet_pton(addrinfo.family, addrinfo.broadcast)
             mreq += struct.pack('@I', addrinfo.ifn)
-            listen_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
+            relay_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
             try:
-                listen_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                relay_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
             except:
                 pass
 
         while 1:
-            msg, addr = yield listen_sock.recvfrom(1024)
+            msg, addr = yield relay_sock.recvfrom(1024)
             if not msg.startswith('PING:'.encode()):
                 logger.debug('Ignoring message from %s', addr[0])
                 continue
@@ -190,13 +190,13 @@ class DispyNetRelay(object):
                 continue
             Task(self.verify_broadcast, addrnifo, msg)
 
-    def listen_tcp_proc(self, addrinfo, task=None):
+    def relay_tcp_proc(self, addrinfo, task=None):
         task.set_daemon()
         auth_len = len(dispy.auth_code('', ''))
         tcp_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_STREAM),
                                    keyfile=self.keyfile, certfile=self.certfile)
         tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        tcp_sock.bind((addrinfo.ip, self.listen_port))
+        tcp_sock.bind((addrinfo.ip, self.relay_port))
         tcp_sock.listen(8)
 
         def tcp_req(conn, addr, task=None):
@@ -290,7 +290,7 @@ if __name__ == '__main__':
                         help='port number used by scheduler')
     parser.add_argument('--node_port', dest='node_port', type=int, default=51348,
                         help='port number used by nodes')
-    parser.add_argument('--listen_port', dest='listen_port', type=int, default=0,
+    parser.add_argument('--relay_port', dest='relay_port', type=int, default=0,
                         help='port number to listen (instead of node_port) '
                         'for connection from client')
     parser.add_argument('-s', '--secret', dest='secret', default='',
