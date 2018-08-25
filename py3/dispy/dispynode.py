@@ -207,6 +207,8 @@ def _dispy_job_func(__dispy_job_info, __dispy_job_certfile, __dispy_job_keyfile,
     __dispy_job_reply.stdout = sys.stdout.getvalue()
     __dispy_job_reply.stderr = sys.stderr.getvalue()
     __dispy_job_reply.end_time = time.time()
+    if os.name == 'nt':
+        os.chdir(os.path.join(__dispy_path, '..'))
     __dispy_reply_Q.put(__dispy_job_reply)
 
 
@@ -1354,6 +1356,8 @@ class _DispyNode(object):
             reply.status = DispyJob.Terminated
             reply.exception = traceback.format_exc()
         reply.end_time = time.time()
+        if os.name == 'nt':
+            os.chdir(os.path.join(compute.dest_path, '..'))
         self.reply_Q.put(reply)
 
     def __reply_Q(self):
