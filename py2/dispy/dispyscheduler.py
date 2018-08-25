@@ -629,6 +629,7 @@ class _Scheduler(object):
                 _job.pinned = node
                 node.pending_jobs.append(_job)
             else:
+                _job.pinned = None
                 cluster._jobs.append(_job)
             logger.debug('Submitted job %s / %s', _job.uid, job.submit_time)
             cluster.pending_jobs += 1
