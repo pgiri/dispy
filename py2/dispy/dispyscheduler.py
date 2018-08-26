@@ -2270,6 +2270,9 @@ if __name__ == '__main__':
                 cmd = cmd.strip().lower()
                 if cmd == 'quit' or cmd == 'exit':
                     break
+                else:
+                    Task(scheduler.print_status)
+                    time.sleep(0.2)
             except KeyboardInterrupt:
                 # TODO: terminate even if jobs are scheduled?
                 logger.info('Interrupted; terminating')
