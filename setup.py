@@ -1,5 +1,6 @@
 import sys
 import os
+import re
 from setuptools import setup
 
 if sys.version_info.major == 3:
@@ -9,9 +10,14 @@ else:
     assert sys.version_info.minor >= 7
     base_dir = 'py2'
 
+with open(os.path.join(base_dir, 'dispy', '__init__.py')) as fd:
+    for line in fd:
+        if line.startswith('__version__ = '):
+            module_version = re.match(r'[^\d]+([\d\.]+)', line).group(1)
+
 setup(
     name='dispy',
-    version='4.9.1',
+    version=module_version,
     description='Distributed and Parallel Computing with/for Python.',
     keywords='distributed computing, parallel processing, mapreduce, hadoop, job scheduler',
     url='http://dispy.sourceforge.net',
@@ -22,7 +28,7 @@ setup(
     package_data = {
         'dispy' : ['data/*', 'examples/*', 'doc/*'],
     },
-    install_requires=['pycos >= 4.7.6'],
+    install_requires=['pycos >= 4.8.1'],
     scripts=[os.path.join(base_dir, 'dispy', script) for script in \
              ['dispynode.py', 'dispynetrelay.py', 'dispyscheduler.py']] + \
             [os.path.join(base_dir, script) for script in ['dispy.py']],
