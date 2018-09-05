@@ -153,7 +153,10 @@ class DispyNetRelay(object):
         relay_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
         relay_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         if hasattr(socket, 'SO_REUSEPORT'):
-            relay_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            try:
+                relay_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            except Exception:
+                pass
 
         relay_sock.bind((bind_addr, self.relay_port))
 
@@ -244,7 +247,10 @@ class DispyNetRelay(object):
         sched_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
         sched_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         if hasattr(socket, 'SO_REUSEPORT'):
-            sched_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            try:
+                sched_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            except Exception:
+                pass
         sched_sock.bind((bind_addr, self.scheduler_port))
 
         if addrinfo.family == socket.AF_INET:

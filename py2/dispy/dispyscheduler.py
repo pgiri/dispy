@@ -285,7 +285,10 @@ class _Scheduler(object):
         udp_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
         udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         if hasattr(socket, 'SO_REUSEPORT'):
-            udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            try:
+                udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            except Exception:
+                pass
 
         while not self.port:
             yield task.sleep(0.2)
