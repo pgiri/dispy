@@ -125,6 +125,7 @@ class _Scheduler(object, metaclass=Singleton):
                  node_secret='', cluster_secret='', node_keyfile=None, node_certfile=None,
                  cluster_keyfile=None, cluster_certfile=None, dest_path_prefix=None, clean=False,
                  zombie_interval=60, http_server=False):
+        self.ipv4_udp_multicast = bool(ipv4_udp_multicast)
         self.addrinfos = {}
         if not ip_addrs:
             ip_addrs = [None]
@@ -134,7 +135,7 @@ class _Scheduler(object, metaclass=Singleton):
                 ext_ip_addr = ext_ip_addrs[i]
             else:
                 ext_ip_addr = None
-            addrinfo = dispy.host_addrinfo(host=ip_addr)
+            addrinfo = dispy.host_addrinfo(host=ip_addr, ipv4_multicast=self.ipv4_udp_multicast)
             if not addrinfo:
                 logger.warning('Ignoring invalid ip_addr %s', ip_addr)
                 continue
@@ -258,11 +259,8 @@ class _Scheduler(object, metaclass=Singleton):
         self.tcp_tasks = []
         self.udp_tasks = []
         self.scheduler_tasks = []
-        self.ipv4_udp_multicast = bool(ipv4_udp_multicast)
         udp_addrinfos = {}
         for addrinfo in self.addrinfos.values():
-            if addrinfo.family == socket.AF_INET and self.ipv4_udp_multicast:
-                addrinfo.broadcast = dispy.IPV4_MULTICAST_GROUP
             self.tcp_tasks.append(Task(self.tcp_server, addrinfo))
             self.scheduler_tasks.append(Task(self.scheduler_server, addrinfo))
             if os.name == 'nt':

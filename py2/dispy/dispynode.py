@@ -228,6 +228,7 @@ class _DispyNode(object):
             self.name = socket.gethostname()
         if not ip_addrs:
             ip_addrs = [None]
+        self.ipv4_udp_multicast = bool(ipv4_udp_multicast)
         addrinfos = {}
         for i in range(len(ip_addrs)):
             ip_addr = ip_addrs[i]
@@ -235,7 +236,7 @@ class _DispyNode(object):
                 ext_ip_addr = ext_ip_addrs[i]
             else:
                 ext_ip_addr = None
-            addrinfo = dispy.host_addrinfo(host=ip_addr)
+            addrinfo = dispy.host_addrinfo(host=ip_addr, ipv4_multicast=self.ipv4_udp_multicast)
             if not addrinfo or not addrinfo.ip:
                 dispynode_logger.warning('Ignoring invalid ip_addr %s', ip_addr)
                 continue
@@ -361,23 +362,10 @@ class _DispyNode(object):
         self.__init_environ = dict(os.environ)
         self.__exclusive = True
 
-        self.ipv4_udp_multicast = bool(ipv4_udp_multicast)
         udp_addrinfos = {}
         for addrinfo in self.addrinfos.values():
-            if addrinfo.family == socket.AF_INET and self.ipv4_udp_multicast:
-                addrinfo.broadcast = dispy.IPV4_MULTICAST_GROUP
             Task(self.tcp_server, addrinfo)
-
-            if os.name == 'nt':
-                bind_addr = addrinfo.ip
-            elif sys.platform == 'darwin':
-                if addrinfo.family == socket.AF_INET and (not self.ipv4_udp_multicast):
-                    bind_addr = ''
-                else:
-                    bind_addr = addrinfo.broadcast
-            else:
-                bind_addr = addrinfo.broadcast
-            udp_addrinfos[bind_addr] = addrinfo
+            udp_addrinfos[addrinfo.bind_addr] = addrinfo
 
         for bind_addr, addrinfo in udp_addrinfos.items():
             Task(self.udp_server, bind_addr, addrinfo)

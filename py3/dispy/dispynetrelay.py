@@ -37,12 +37,13 @@ class DispyNetRelay(object):
     def __init__(self, ip_addrs=[], node_port=51348, relay_port=0,
                  scheduler_nodes=[], scheduler_port=51347, ipv4_udp_multicast=False,
                   secret='', certfile=None, keyfile=None):
+        self.ipv4_udp_multicast = bool(ipv4_udp_multicast)
         addrinfos = []
         if not ip_addrs:
             ip_addrs = [None]
         for i in range(len(ip_addrs)):
             ip_addr = ip_addrs[i]
-            addrinfo = dispy.host_addrinfo(host=ip_addr)
+            addrinfo = dispy.host_addrinfo(host=ip_addr, ipv4_multicast=self.ipv4_udp_multicast)
             if not addrinfo:
                 logger.warning('Ignoring invalid ip_addr %s', ip_addr)
                 continue
@@ -52,7 +53,6 @@ class DispyNetRelay(object):
         if not relay_port:
             relay_port = node_port
         self.relay_port = relay_port
-        self.ipv4_udp_multicast = bool(ipv4_udp_multicast)
         self.ip_addrs = set()
         self.scheduler_ip_addr = None
         self.scheduler_port = scheduler_port
@@ -69,19 +69,8 @@ class DispyNetRelay(object):
         udp_addrinfos = {}
         for addrinfo in addrinfos:
             self.ip_addrs.add(addrinfo.ip)
-            if addrinfo.family == socket.AF_INET and self.ipv4_udp_multicast:
-                addrinfo.broadcast = dispy.IPV4_MULTICAST_GROUP
             Task(self.relay_tcp_proc, addrinfo)
-            if os.name == 'nt':
-                bind_addr = addrinfo.ip
-            elif sys.platform == 'darwin':
-                if addrinfo.family == socket.AF_INET and (not self.ipv4_udp_multicast):
-                    bind_addr = ''
-                else:
-                    bind_addr = addrinfo.broadcast
-            else:
-                bind_addr = addrinfo.broadcast
-            udp_addrinfos[bind_addr] = addrinfo
+            udp_addrinfos[addrinfo.bind_addr] = addrinfo
 
         scheduler_ip_addrs = []
         for addr in scheduler_nodes:

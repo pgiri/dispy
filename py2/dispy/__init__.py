@@ -26,6 +26,7 @@ import numbers
 import collections
 import struct
 import errno
+import platform
 try:
     import netifaces
 except:
@@ -305,7 +306,7 @@ def _parse_node_allocs(nodes):
     return [node_alloc for node_alloc in node_allocs if node_alloc.ip_addr]
 
 
-def host_addrinfo(host=None, socket_family=None):
+def host_addrinfo(host=None, socket_family=None, ipv4_multicast=False):
     """If 'host' is given (as either host name or IP address), resolve it and
     fill AddrInfo structure. If 'host' is not given, netifaces module is used to
     find appropriate IP address. If 'socket_family' is given, IP address with that
@@ -318,9 +319,21 @@ def host_addrinfo(host=None, socket_family=None):
             self.family = family
             self.ip = ip
             self.ifn = ifn
-            self.broadcast = broadcast
+            if family == socket.AF_INET and ipv4_multicast:
+                self.broadcast = IPV4_MULTICAST_GROUP
+            else:
+                self.broadcast = broadcast
             self.netmask = netmask
             self.ext_ip_addr = None
+            if os.name == 'nt':
+                self.bind_addr = ip
+            elif platform.system() in ('Darwin', 'DragonFlyBSD', 'FreeBSD', 'OpenBSD', 'NetBSD'):
+                if family == socket.AF_INET and (not ipv4_multicast):
+                    self.bind_addr = ''
+                else:
+                    self.bind_addr = self.broadcast
+            else:
+                self.bind_addr = self.broadcast
 
     def canonical_ipv6(ip_addr):
         # canonicalize so different platforms resolve to same string
@@ -773,6 +786,7 @@ class _Cluster(object):
         if not hasattr(self, 'pycos'):
             self.pycos = Pycos()
             logger.info('dispy client version: %s', __version__)
+            self.ipv4_udp_multicast = bool(ipv4_udp_multicast)
             self.addrinfos = {}
             if isinstance(ip_addr, list):
                 ip_addrs = ip_addr
@@ -789,7 +803,7 @@ class _Cluster(object):
                     ext_ip_addr = ext_ip_addrs[i]
                 else:
                     ext_ip_addr = None
-                addrinfo = host_addrinfo(host=ip_addr)
+                addrinfo = host_addrinfo(host=ip_addr, ipv4_multicast=self.ipv4_udp_multicast)
                 if not addrinfo:
                     logger.warning('Ignoring invalid ip_addr %s', ip_addr)
                     continue
@@ -820,7 +834,6 @@ class _Cluster(object):
             else:
                 node_port = 51348
             self.node_port = node_port
-
             self._nodes = {}
             self.secret = secret
             self.keyfile = keyfile
@@ -873,7 +886,6 @@ class _Cluster(object):
             self.worker_thread = threading.Thread(target=self.worker)
             self.worker_thread.daemon = True
             self.worker_thread.start()
-            self.ipv4_udp_multicast = bool(ipv4_udp_multicast)
 
             if self.shared:
                 port_bound_event = None
@@ -883,22 +895,10 @@ class _Cluster(object):
             self.udp_tasks = []
             udp_addrinfos = {}
             for addrinfo in self.addrinfos.values():
-                if addrinfo.family == socket.AF_INET and self.ipv4_udp_multicast:
-                    addrinfo.broadcast = IPV4_MULTICAST_GROUP
                 self.tcp_tasks.append(Task(self.tcp_server, addrinfo, port_bound_event))
                 if self.shared:
                     continue
-
-                if os.name == 'nt':
-                    bind_addr = addrinfo.ip
-                elif sys.platform == 'darwin':
-                    if addrinfo.family == socket.AF_INET and (not self.ipv4_udp_multicast):
-                        bind_addr = ''
-                    else:
-                        bind_addr = addrinfo.broadcast
-                else:
-                    bind_addr = addrinfo.broadcast
-                udp_addrinfos[bind_addr] = addrinfo
+                udp_addrinfos[addrinfo.bind_addr] = addrinfo
 
             for bind_addr, addrinfo in udp_addrinfos.items():
                 self.udp_tasks.append(Task(self.udp_server, bind_addr, addrinfo, port_bound_event))
