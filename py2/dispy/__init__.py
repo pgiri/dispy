@@ -43,7 +43,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "Apache 2.0"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.9.2"
+__version__ = "4.10.0"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
@@ -510,6 +510,12 @@ class _Compute(object):
 
     def __getstate__(self):
         state = dict(self.__dict__)
+        if self.code:
+            state['code'] = serialize(self.code)
+        if isinstance(self.setup, _Function):
+            state['setup'] = serialize(self.setup)
+        if isinstance(self.cleanup, _Function):
+            state['cleanup'] = serialize(self.cleanup)
         return state
 
 
@@ -573,15 +579,15 @@ class _Node(object):
             resp = yield self.xfer_file(xf, task=task)
             if resp != 0:
                 logger.error('Could not transfer file "%s"', xf.name)
+                yield self.close(compute, task=task)
                 raise StopIteration(resp)
 
-        if isinstance(compute.setup, _Function):
-            # set bigger timeout in case setup needs to load large files etc.
-            resp = yield self.send('SETUP:' + serialize(compute.id), timeout=0, task=task)
-            if resp != 0:
-                logger.warning('Setup of computation "%s" on %s failed: %s',
-                               compute.name, self.ip_addr, resp)
-                raise StopIteration(resp)
+        resp = yield self.send('SETUP:' + serialize(compute.id), timeout=0, task=task)
+        if resp != 0:
+            logger.warning('Setup of computation "%s" on %s failed: %s',
+                           compute.name, self.ip_addr, resp)
+            yield self.close(compute, task=task)
+            raise StopIteration(resp)
         self.last_pulse = time.time()
         raise StopIteration(0)
 
@@ -834,6 +840,7 @@ class _Cluster(object):
             else:
                 node_port = 51348
             self.node_port = node_port
+
             self._nodes = {}
             self.secret = secret
             self.keyfile = keyfile
