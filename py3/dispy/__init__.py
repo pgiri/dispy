@@ -708,14 +708,19 @@ class _DispyJob_(object):
                     continue
                 self.xfer_files.append(_XferFile(name, dst, compute_id))
                 depend_ids.add(name)
-            elif inspect.isfunction(dep) or inspect.isclass(dep) or hasattr(dep, '__class__'):
+            elif (inspect.isfunction(dep) or inspect.isclass(dep) or
+                  (hasattr(dep, '__class__') and hasattr(dep, '__module__'))):
                 if inspect.isfunction(dep) or inspect.isclass(dep):
                     pass
                 elif hasattr(dep, '__class__') and inspect.isclass(dep.__class__):
                     dep = dep.__class__
                 if id(dep) in depend_ids:
                     continue
-                lines = inspect.getsourcelines(dep)[0]
+                try:
+                    lines = inspect.getsourcelines(dep)[0]
+                except Exception:
+                    logger.warning('Invalid job depends eleement "%s"; ignoring it.', dep)
+                    continue
                 lines[0] = lines[0].lstrip()
                 self.code += '\n' + ''.join(lines)
                 depend_ids.add(id(dep))
@@ -2544,19 +2549,28 @@ class JobCluster(object):
                     depend_ids[name] = dep
                 except:
                     raise Exception('File "%s" is not valid' % name)
-            elif inspect.isfunction(dep) or inspect.isclass(dep) or hasattr(dep, '__class__'):
+            elif (inspect.isfunction(dep) or inspect.isclass(dep) or
+                  (hasattr(dep, '__class__') and hasattr(dep, '__module__'))):
                 if inspect.isfunction(dep) or inspect.isclass(dep):
                     pass
                 elif hasattr(dep, '__class__') and inspect.isclass(dep.__class__):
                     dep = dep.__class__
                 if id(dep) in depend_ids:
                     continue
-                lines = inspect.getsourcelines(dep)[0]
+                try:
+                    lines = inspect.getsourcelines(dep)[0]
+                except Exception:
+                    logger.warning('Depenendency "%s" is not valid', dep)
+                    raise
                 lines[0] = lines[0].lstrip()
                 compute.code += '\n' + ''.join(lines)
                 depend_ids[id(dep)] = id(dep)
             elif isinstance(dep, functools.partial):
-                lines = inspect.getsourcelines(dep.func)[0]
+                try:
+                    lines = inspect.getsourcelines(dep.func)[0]
+                except Exception:
+                    logger.warning('Depenendency "%s" is not valid', dep)
+                    raise
                 lines[0] = lines[0].lstrip()
                 compute.code += '\n' + ''.join(lines)
                 depend_ids[id(dep)] = id(dep)
@@ -2794,7 +2808,7 @@ class JobCluster(object):
         terminated by nodes executing them). Additional clusters may be created
         after this call returns.
         """
-        if self._compute:
+        if getattr(self, '_compute', None):
             ret = self._complete.wait(timeout=timeout)
             if not terminate and not ret:
                 return False
