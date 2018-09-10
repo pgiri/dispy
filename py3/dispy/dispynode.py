@@ -232,7 +232,6 @@ def _dispy_setup_process(compute, pipe, reply_Q, init_globals):
         init_globals = set(globals().keys())
     if compute.setup:
         try:
-            compute.setup = deserialize(compute.setup)
             localvars = {'_dispy_setup_args': compute.setup.args,
                          '_dispy_setup_kwargs': compute.setup.kwargs}
             exec('assert %s(*_dispy_setup_args, **_dispy_setup_kwargs) == 0' %
@@ -273,7 +272,6 @@ def _dispy_setup_process(compute, pipe, reply_Q, init_globals):
 
     if compute.cleanup:
         try:
-            compute.cleanup = deserialize(compute.cleanup)
             if isinstance(compute.cleanup, _Function):
                 localvars = {'_dispy_cleanup_args': compute.cleanup.args,
                              '_dispy_cleanup_kwargs': compute.cleanup.kwargs}
@@ -964,14 +962,11 @@ class _DispyNode(object):
                             compute.code = None
 
                     if compute.setup:
-                        compute.setup = deserialize(compute.setup)
                         localvars = {'_dispy_setup_args': compute.setup.args,
                                      '_dispy_setup_kwargs': compute.setup.kwargs}
                         exec('assert %s(*_dispy_setup_args, **_dispy_setup_kwargs) == 0' %
                              compute.setup.name, globalvars, localvars)
                         compute.setup = None
-                    if not isinstance(compute.cleanup, bool):
-                        compute.cleanup = deserialize(compute.cleanup)
             except Exception:
                 resp = traceback.format_exc()
             else:

@@ -510,12 +510,6 @@ class _Compute(object):
 
     def __getstate__(self):
         state = dict(self.__dict__)
-#         if self.code:
-#             state['code'] = self.code
-#         if isinstance(self.setup, _Function):
-#             state['setup'] = serialize(self.setup)
-#         if isinstance(self.cleanup, _Function):
-#             state['cleanup'] = serialize(self.cleanup)
         return state
 
 
