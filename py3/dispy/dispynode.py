@@ -212,6 +212,80 @@ def _dispy_job_func(__dispy_reply_Q, __dispy_job_name, __dispy_job_code, __dispy
     __dispy_reply_Q.put(__dispy_job_reply)
 
 
+def _dispy_setup_process(compute, pipe, reply_Q, init_globals):
+    os.chdir(compute.dest_path)
+    globals().update(init_globals)
+    if compute.code:
+        try:
+            compute.code = compile(compute.code, '<string>', 'exec')
+            exec(compute.code, globals())
+            if os.name == 'nt':
+                compute.code = marshal.dumps(compute.code)
+            else:
+                compute.code = None
+        except Exception:
+            dispynode_logger.debug(traceback.format_exc())
+            pipe.send({'setup_status': -1})
+            return
+
+    if os.name == 'nt':
+        init_globals = set(globals().keys())
+    if compute.setup:
+        try:
+            compute.setup = deserialize(compute.setup)
+            localvars = {'_dispy_setup_args': compute.setup.args,
+                         '_dispy_setup_kwargs': compute.setup.kwargs}
+            exec('assert %s(*_dispy_setup_args, **_dispy_setup_kwargs) == 0' %
+                 compute.setup.name, globals(), localvars)
+        except Exception:
+            dispynode_logger.debug(traceback.format_exc())
+            pipe.send({'setup_status': -1})
+            pipe.close()
+            return -1
+        compute.setup = None
+    pipe.send({'setup_status': 0})
+    # TODO: With Windows, instead of sending globals set in "setup" to "main"
+    # (and quitting this process), let this process create jobs (which may have some
+    # performance overhead due to moving job arguments through pipe)?
+    if os.name == 'nt':
+        pipe.send({'globals': {var: value for var, value in globals().items()
+                               if var not in init_globals}})
+        pipe.close()
+        return 0
+
+    while 1:
+        try:
+            msg = pipe.recv()
+        except EOFError:
+            dispynode_logger.debug('%s: pipe closed!', compute.id)
+            break
+
+        if msg['req'] == 'job':
+            args = (reply_Q, compute.name, (compute.code, msg['code']), init_globals,
+                    msg['args'], msg['kwargs'], msg['reply'])
+            job_proc = multiprocessing.Process(target=_dispy_job_func, args=args)
+            job_proc.start()
+            reply_Q.put({'req': 'job_pid', 'uid': msg['reply'].uid, 'pid': job_proc.pid})
+            msg = args = None
+
+        elif msg['req'] == 'quit':
+            break
+
+    if compute.cleanup:
+        try:
+            compute.cleanup = deserialize(compute.cleanup)
+            if isinstance(compute.cleanup, _Function):
+                localvars = {'_dispy_cleanup_args': compute.cleanup.args,
+                             '_dispy_cleanup_kwargs': compute.cleanup.kwargs}
+                exec('%s(*_dispy_cleanup_args, **_dispy_cleanup_kwargs)' %
+                     compute.cleanup.name, globals(), localvars)
+        except Exception:
+            dispynode_logger.debug('"cleanup" for computation "%s" failed: %s',
+                                   compute.id, traceback.format_exc())
+    pipe.close()
+    return 0
+
+
 class _DispyNode(object):
     """Internal use only.
     """
@@ -226,67 +300,8 @@ class _DispyNode(object):
             self.pending_results = 0
             self.last_pulse = time.time()
             self.zombie = False
-            self.job_proc = None
+            self.setup_proc = None
             self.parent_pipe = self.child_pipe = None
-
-    @staticmethod
-    def job_process(compute, pipe, reply_Q, init_globals):
-        os.chdir(compute.dest_path)
-        globals().update(init_globals)
-        if compute.code:
-            try:
-                if os.name != 'nt':
-                    exec(deserialize(compute.code), globals())
-                    compute.code = None
-            except Exception:
-                dispynode_logger.debug(traceback.format_exc())
-                pipe.send({'setup_status': -1})
-                return
-
-        if compute.setup:
-            try:
-                compute.setup = deserialize(compute.setup)
-                localvars = {'_dispy_setup_args': compute.setup.args,
-                             '_dispy_setup_kwargs': compute.setup.kwargs}
-                exec('assert %s(*_dispy_setup_args, **_dispy_setup_kwargs) == 0' %
-                     compute.setup.name, globals(), localvars)
-            except Exception:
-                dispynode_logger.debug(traceback.format_exc())
-                pipe.send({'setup_status': -1})
-                return
-            compute.setup = None
-        pipe.send({'setup_status': 0})
-
-        while 1:
-            try:
-                msg = pipe.recv()
-            except EOFError:
-                dispynode_logger.debug('%s: pipe closed!', compute.id)
-                break
-
-            if msg['req'] == 'job':
-                args = (reply_Q, compute.name, (compute.code, msg['code']), init_globals,
-                        msg['args'], msg['kwargs'], msg['reply'])
-                job_proc = multiprocessing.Process(target=_dispy_job_func, args=args)
-                job_proc.start()
-                reply_Q.put({'req': 'job_pid', 'uid': msg['reply'].uid, 'pid': job_proc.pid})
-                msg = args = None
-
-            elif msg['req'] == 'quit':
-                break
-
-        if compute.cleanup:
-            try:
-                compute.cleanup = deserialize(compute.cleanup)
-                if isinstance(compute.cleanup, _Function):
-                    localvars = {'_dispy_cleanup_args': compute.cleanup.args,
-                                 '_dispy_cleanup_kwargs': compute.cleanup.kwargs}
-                    exec('%s(*_dispy_cleanup_args, **_dispy_cleanup_kwargs)' %
-                         compute.cleanup.name, globals(), localvars)
-            except Exception:
-                dispynode_logger.debug('"cleanup" for computation "%s" failed: %s',
-                                       compute.id, traceback.format_exc())
-        pipe.close()
 
     def __init__(self, cpus, ip_addrs=[], ext_ip_addrs=[], node_port=None,
                  name='', scheduler_node=None, scheduler_port=None, ipv4_udp_multicast=False,
@@ -691,7 +706,7 @@ class _DispyNode(object):
                 self.avail_cpus -= 1
                 client.pending_jobs += 1
                 try:
-                    if client.job_proc:
+                    if client.parent_pipe:
                         args = {'req': 'job', 'reply': job_info.job_reply, 'code': _job.code,
                                 'args': _job._args, 'kwargs': _job._kwargs}
                         client.parent_pipe.send(args)
@@ -899,6 +914,7 @@ class _DispyNode(object):
                 client.globals['_DispyNode'] = None
                 client.globals['_dispy_node'] = None
                 client.globals['_dispy_config'] = None
+                client.globals['_dispy_setup_process'] = None
                 client.globals['dispy_node_name'] = self.name
                 client.globals['dispy_node_ip_addr'] = compute.node_ip_addr
                 client.globals['dispy_sock_family'] = self.addrinfos[compute.node_ip_addr].family
@@ -911,17 +927,29 @@ class _DispyNode(object):
                     # TODO: use this only for function computations?
                     client.parent_pipe, client.child_pipe = multiprocessing.Pipe(duplex=True)
                     args = (client.compute, client.child_pipe, self.reply_Q, client.globals)
-                    client.job_proc = multiprocessing.Process(target=_DispyNode.job_process,
-                                                              args=args)
-                    client.job_proc.start()
+                    client.setup_proc = multiprocessing.Process(target=_dispy_setup_process,
+                                                                args=args)
+                    client.setup_proc.start()
                     msg = client.parent_pipe.recv()
                     assert msg['setup_status'] == 0
+                    if os.name == 'nt':
+                        try:
+                            msg = client.parent_pipe.recv()
+                        except Exception:
+                            msg = {}
+                        client.parent_pipe.close()
+                        client.parent_pipe = None
+                        client.setup_proc = None
+                        for var, value in msg.get('globals', {}).items():
+                            client.globals[var] = value
+                        if compute.code:
+                            compute.code = compile(compute.code, '<string>', 'exec')
+                            compute.code = marshal.dumps(compute.code)
                 else:
                     os.chdir(compute.dest_path)
                     globalvars = dict(globals())
                     globalvars.update(client.globals)
                     if compute.code:
-                        compute.code = deserialize(compute.code)
                         try:
                             compute.code = compile(compute.code, '<string>', 'exec')
                             exec(compute.code, globalvars)
@@ -930,7 +958,10 @@ class _DispyNode(object):
                             Task(self.cleanup_computation, client)
                             raise
 
-                        compute.code = marshal.dumps(compute.code)
+                        if os.name == 'nt':
+                            compute.code = marshal.dumps(compute.code)
+                        else:
+                            compute.code = None
 
                     if compute.setup:
                         compute.setup = deserialize(compute.setup)
@@ -938,10 +969,10 @@ class _DispyNode(object):
                                      '_dispy_setup_kwargs': compute.setup.kwargs}
                         exec('assert %s(*_dispy_setup_args, **_dispy_setup_kwargs) == 0' %
                              compute.setup.name, globalvars, localvars)
+                        compute.setup = None
                     if not isinstance(compute.cleanup, bool):
                         compute.cleanup = deserialize(compute.cleanup)
             except Exception:
-                dispynode_logger.debug('Setup failed')
                 resp = traceback.format_exc()
             else:
                 resp = 'ACK'
@@ -986,7 +1017,7 @@ class _DispyNode(object):
                         dispynode_logger.debug('Killing job %s', job_info.job_reply.uid)
                         proc.kill()
                 else:
-                    if client.job_proc and isinstance(job_info.pid, int):
+                    if client.setup_proc and isinstance(job_info.pid, int):
                         # TODO: is there a way to check if pid is valid?
                         if i == 0:
                             signum = signal.SIGTERM
@@ -1427,7 +1458,7 @@ class _DispyNode(object):
             env = {}
             env.update(os.environ)
             env['PATH'] = compute.dest_path + os.pathsep + env['PATH']
-            for k, v in client.globals.iteritems():
+            for k, v in client.globals.items():
                 if isinstance(v, str):
                     env[k] = v
                 elif isinstance(v, int):
@@ -1613,7 +1644,7 @@ class _DispyNode(object):
         self.scheduler['auth'].discard(compute.auth)
 
         os.chdir(self.dest_path_prefix)
-        if compute.cleanup and client.job_proc is None:
+        if compute.cleanup and client.setup_proc is None:
             if isinstance(compute.cleanup, _Function):
                 try:
                     globalvars = dict(globals())
@@ -1664,10 +1695,10 @@ class _DispyNode(object):
                 self.timer_task.resume(None)
                 Task(self.broadcast_ping_msg)
 
-        if isinstance(client.job_proc, multiprocessing.Process):
+        if isinstance(client.setup_proc, multiprocessing.Process):
             for i in range(20):
-                if not client.job_proc.is_alive():
-                    client.job_proc = None
+                if not client.setup_proc.is_alive():
+                    client.setup_proc = None
                     break
                 if i == 15:
                     try:
@@ -1675,12 +1706,12 @@ class _DispyNode(object):
                     except Exception:
                         pass
                     try:
-                        client.job_proc.terminate()
+                        client.setup_proc.terminate()
                     except Exception:
                         pass
                 elif i == 19:
                     try:
-                        os.kill(client.job_proc.pid, signal.SIGKILL)
+                        os.kill(client.setup_proc.pid, signal.SIGKILL)
                     except Exception:
                         pass
                 yield task.sleep(0.5)
@@ -2094,7 +2125,7 @@ if __name__ == '__main__':
         # Python 3 under Windows blocks multiprocessing.Process on reading
         # input; pressing "Enter" twice works (for one subprocess). Until
         # this is understood / fixed, disable reading input.
-        print('\nReading standard input disabled, as multiprocessing does not seem to work'
+        print('\nReading standard input disabled, as multiprocessing does not seem to work '
               'with reading input under Windows')
         _dispy_config['daemon'] = True
 
