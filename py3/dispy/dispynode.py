@@ -956,10 +956,7 @@ class _DispyNode(object):
                             Task(self.cleanup_computation, client)
                             raise
 
-                        if os.name == 'nt':
-                            compute.code = marshal.dumps(compute.code)
-                        else:
-                            compute.code = None
+                        compute.code = marshal.dumps(compute.code)
 
                     if compute.setup:
                         localvars = {'_dispy_setup_args': compute.setup.args,
