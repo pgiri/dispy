@@ -293,7 +293,6 @@ def _dispy_setup_process(compute, pipe, client_globals):
         # be removed. This requires extra bandwith. Since cancelling
         # jobs is relatively rare, it may be better to use psutil or
         # os.kill to terminate processes.
-        dispynode_logger.debug('  setup process terminating %s / %s', pid, job_reply.uid)
         try:
             if psutil:
                 proc = psutil.Process(pid)
@@ -2509,6 +2508,10 @@ if __name__ == '__main__':
 
         # As of Sep 28, 2018, it seems multiprocessing works with reading input,
         # but don't what fixed it, so for now, leave it as is.
+
+        # Update on Sep 30, 2018: While multiprocessing now works with
+        # reading input, entering text seems to raise SIGINT or
+        # SIGBREAK causing dispynode to quit, so leave it as daemon.
         print('\n    Reading standard input disabled, as multiprocessing\n'
               '    does not seem to work with reading input under Windows')
         _dispy_config['daemon'] = True
