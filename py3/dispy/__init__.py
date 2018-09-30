@@ -29,7 +29,7 @@ import errno
 import platform
 try:
     import netifaces
-except:
+except ImportError:
     netifaces = None
 
 import pycos
@@ -195,14 +195,14 @@ class NodeAllocate(object):
             try:
                 port = int(port)
                 assert port > 0
-            except:
+            except Exception:
                 logger.warning('port must be > 0 for node "%s"', host)
                 port = None
         self.port = port
         if cpus:
             try:
                 cpus = int(cpus)
-            except:
+            except Exception:
                 logger.warning('Invalid cpus for "%s" ignored', host)
                 cpus = 0
         self.cpus = cpus
@@ -253,7 +253,7 @@ def _same_file(tgt, xf):
             abs(stat_buf.st_mtime - xf.stat_buf.st_mtime) <= 1 and \
                 stat.S_IMODE(stat_buf.st_mode) == stat.S_IMODE(xf.stat_buf.st_mode):
             return True
-    except:
+    except Exception:
         return False
 
 
@@ -270,7 +270,7 @@ def _node_ipaddr(node):
         return node
     try:
         info = socket.getaddrinfo(node, None)[0]
-    except:
+    except Exception:
         return None
 
     ip_addr = info[-1][0]
@@ -564,7 +564,7 @@ class _Node(object):
         try:
             cpus = deserialize(reply)
             assert isinstance(cpus, int) and cpus > 0
-        except:
+        except Exception:
             logger.warning('Transfer of computation "%s" to %s failed', compute.name, self.ip_addr)
             raise StopIteration(-1)
         if not self.cpus:
@@ -598,7 +598,7 @@ class _Node(object):
                 resp = yield sock.recv_msg()
             else:
                 resp = 0
-        except:
+        except Exception:
             logger.error('Could not connect to %s:%s, %s',
                          self.ip_addr, self.port, traceback.format_exc())
             # TODO: mark this node down, reschedule on different node?
@@ -635,7 +635,7 @@ class _Node(object):
                 resp = 0
             else:
                 resp = -1
-        except:
+        except Exception:
             logger.error('Could not transfer %s to %s', xf.name, self.ip_addr)
             # TODO: mark this node down, reschedule on different node?
             resp = -1
@@ -650,7 +650,7 @@ class _Node(object):
                'terminate_pending': terminate_pending}
         try:
             yield self.send(b'CLOSE:' + serialize(req), reply=True, task=task)
-        except:
+        except Exception:
             logger.debug('Deleting computation %s/%s from %s failed',
                          compute.id, compute.name, self.ip_addr)
 
@@ -872,7 +872,7 @@ class _Cluster(object, metaclass=Singleton):
                                           'secret': self.secret, 'auth': self.auth,
                                           'keyfile': self.keyfile, 'certfile': self.certfile}
                 self.shelf.sync()
-            except:
+            except Exception:
                 raise Exception('Could not create fault recover file "%s"' %
                                 self.recover_file)
             logger.info('Storing fault recovery information in "%s"', self.recover_file)
@@ -925,7 +925,7 @@ class _Cluster(object, metaclass=Singleton):
                 else:
                     logger.warning('Error binding to port %s: %s ...', self.port, exc.errno)
                 yield task.sleep(5)
-            except:
+            except Exception:
                 logger.warning('Could not bind to port %s: %s', self.port, traceback.format_exc())
                 yield task.sleep(5)
             else:
@@ -941,7 +941,7 @@ class _Cluster(object, metaclass=Singleton):
             udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
             try:
                 udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
-            except:
+            except Exception:
                 pass
         port_bound_event.set()
         del port_bound_event
@@ -959,7 +959,7 @@ class _Cluster(object, metaclass=Singleton):
                     assert info['port'] > 0
                     assert info['ip_addr']
                     # socket.inet_aton(status['ip_addr'])
-                except:
+                except Exception:
                     # logger.debug(traceback.format_exc())
                     logger.debug('Ignoring node %s', addr[0])
                     continue
@@ -979,7 +979,7 @@ class _Cluster(object, metaclass=Singleton):
                     yield sock.send_msg(b'PING:' + serialize(msg))
                 except GeneratorExit:
                     break
-                except:
+                except Exception:
                     logger.debug(traceback.format_exc())
                 finally:
                     sock.close()
@@ -998,7 +998,7 @@ class _Cluster(object, metaclass=Singleton):
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind((addrinfo.ip, self.port))
-        except:
+        except Exception:
             logger.warning('Could not bind TCP server to %s:%s', addrinfo.ip, self.port)
             raise StopIteration
         if not self.port:
@@ -1017,7 +1017,7 @@ class _Cluster(object, metaclass=Singleton):
                 continue
             except GeneratorExit:
                 break
-            except:
+            except Exception:
                 logger.debug(traceback.format_exc())
                 continue
             Task(self.tcp_req, conn, addr)
@@ -1030,7 +1030,7 @@ class _Cluster(object, metaclass=Singleton):
         if msg.startswith(b'JOB_REPLY:'):
             try:
                 info = deserialize(msg[len(b'JOB_REPLY:'):])
-            except:
+            except Exception:
                 logger.warning('Invalid job reply from %s:%s ignored', addr[0], addr[1])
             else:
                 yield self.job_reply_process(info, conn, addr)
@@ -1056,7 +1056,7 @@ class _Cluster(object, metaclass=Singleton):
                             dispy_node.update_time = node.last_pulse
                             self.worker_Q.put((cluster.status_callback,
                                                (DispyNode.AvailInfo, dispy_node, None)))
-            except:
+            except Exception:
                 logger.warning('Ignoring pulse message from %s', addr[0])
                 # logger.debug(traceback.format_exc())
             conn.close()
@@ -1068,7 +1068,7 @@ class _Cluster(object, metaclass=Singleton):
                 info = deserialize(msg[len(b'JOB_STATUS:'):])
                 _job = self._sched_jobs[info['uid']]
                 assert _job.hash == info['hash']
-            except:
+            except Exception:
                 logger.warning('Invalid job status from %s:%s ignored', addr[0], addr[1])
             else:
                 job = _job.job
@@ -1119,7 +1119,7 @@ class _Cluster(object, metaclass=Singleton):
                 assert info['port'] > 0
                 assert info['ip_addr']
                 # socket.inet_aton(status['ip_addr'])
-            except:
+            except Exception:
                 # logger.debug(traceback.format_exc())
                 logger.debug('Ignoring node %s', addr[0])
                 raise StopIteration
@@ -1138,7 +1138,7 @@ class _Cluster(object, metaclass=Singleton):
                 yield sock.connect((info['ip_addr'], info['port']))
                 yield sock.sendall(auth)
                 yield sock.send_msg(b'PING:' + serialize(msg))
-            except:
+            except Exception:
                 logger.debug(traceback.format_exc())
             finally:
                 sock.close()
@@ -1148,7 +1148,7 @@ class _Cluster(object, metaclass=Singleton):
                 xf = deserialize(msg[len(b'FILEXFER:'):])
                 msg = yield conn.recv_msg()
                 job_reply = deserialize(msg)
-            except:
+            except Exception:
                 logger.debug(traceback.format_exc())
             else:
                 yield self.file_xfer_process(job_reply, xf, conn, addr)
@@ -1166,7 +1166,7 @@ class _Cluster(object, metaclass=Singleton):
                     logger.warning('Invalid signature from %s', node.ip_addr)
                     raise StopIteration
                 cpus = info['cpus']
-            except:
+            except Exception:
                 raise StopIteration
             if cpus < 0:
                 logger.warning('Node requested using %s CPUs, disabling it',
@@ -1206,7 +1206,7 @@ class _Cluster(object, metaclass=Singleton):
             conn.close()
             try:
                 info = deserialize(msg[len(b'TERMINATED:'):])
-            except:
+            except Exception:
                 # logger.debug(traceback.format_exc())
                 pass
             else:
@@ -1243,7 +1243,7 @@ class _Cluster(object, metaclass=Singleton):
                 info = deserialize(msg[len(b'NODE_STATUS:'):])
                 cluster = self._clusters[info['compute_id']]
                 assert info['auth'] == cluster._compute.auth
-            except:
+            except Exception:
                 logger.debug('Invalid node status from %s:%s ignored', addr[0], addr[1])
                 # logger.debug(traceback.format_exc())
             else:
@@ -1290,7 +1290,7 @@ class _Cluster(object, metaclass=Singleton):
                 self.timer_task.resume(True)
                 yield conn.send_msg(b'ACK')
                 cluster._scheduled_event.set()
-            except:
+            except Exception:
                 yield conn.send_msg(b'NAK')
             conn.close()
 
@@ -1302,7 +1302,7 @@ class _Cluster(object, metaclass=Singleton):
                        'port': self.port}
                 if 'auth' in info and info['auth'] != self.auth:
                     msg = None
-            except:
+            except Exception:
                 msg = None
             yield conn.send_msg(serialize(msg))
             conn.close()
@@ -1343,7 +1343,7 @@ class _Cluster(object, metaclass=Singleton):
                             yield sock.connect((cluster.scheduler_ip_addr, cluster.scheduler_port))
                             yield sock.sendall(cluster._scheduler_auth)
                             yield sock.send_msg(b'PULSE:' + serialize(msg))
-                        except:
+                        except Exception:
                             pass
                         sock.close()
                 else:
@@ -1431,7 +1431,7 @@ class _Cluster(object, metaclass=Singleton):
             yield tcp_sock.connect((ip_addr, port))
             yield tcp_sock.sendall(b'x' * len(self.auth))
             yield tcp_sock.send_msg(b'PING:' + serialize(ping_msg))
-        except:
+        except Exception:
             pass
         tcp_sock.close()
 
@@ -1458,7 +1458,7 @@ class _Cluster(object, metaclass=Singleton):
             bc_sock.bind((addrinfo.ip, 0))
             try:
                 yield bc_sock.sendto(b'PING:' + serialize(ping_msg), (addrinfo.broadcast, port))
-            except:
+            except Exception:
                 pass
             bc_sock.close()
 
@@ -1489,7 +1489,7 @@ class _Cluster(object, metaclass=Singleton):
                 req = {'compute_id': cluster._compute.id, 'auth': cluster._compute.auth}
                 reply = yield node.send(b'PENDING_JOBS:' + serialize(req))
                 reply = deserialize(reply)
-            except:
+            except Exception:
                 logger.debug(traceback.format_exc())
                 continue
             finally:
@@ -1510,7 +1510,7 @@ class _Cluster(object, metaclass=Singleton):
                     yield conn.send_msg(b'RETRIEVE_JOB:' + serialize(req))
                     reply = yield conn.recv_msg()
                     reply = deserialize(reply)
-                except:
+                except Exception:
                     logger.debug(traceback.format_exc())
                     continue
                 else:
@@ -1677,7 +1677,7 @@ class _Cluster(object, metaclass=Singleton):
             # assert info['version'] == _dispy_version
             assert info['port'] > 0 and info['cpus'] > 0
             # TODO: check if it is one of ext_ip_addr?
-        except:
+        except Exception:
             # logger.debug(traceback.format_exc())
             return
         node = self._nodes.get(info['ip_addr'], None)
@@ -1753,7 +1753,7 @@ class _Cluster(object, metaclass=Singleton):
             func, args = item
             try:
                 func(*args)
-            except:
+            except Exception:
                 logger.debug('Running %s failed: %s', func.__name__, traceback.format_exc())
             self.worker_Q.task_done()
 
@@ -1900,7 +1900,7 @@ class _Cluster(object, metaclass=Singleton):
                     cluster._jobs.insert(0, _job)
                 node.busy -= 1
             self._sched_event.set()
-        except:
+        except Exception:
             logger.warning('Failed to run job %s on %s for computation %s',
                            _job.uid, node.ip_addr, cluster._compute.name)
             logger.debug(traceback.format_exc())
@@ -2185,7 +2185,7 @@ class _Cluster(object, metaclass=Singleton):
                 info = yield sock.recv_msg()
                 _jobs = [self._sched_jobs.get(uid, None) for uid in deserialize(info)]
                 jobs = [_job.job for _job in _jobs if _job]
-            except:
+            except Exception:
                 logger.debug(traceback.format_exc())
                 jobs = []
             sock.close()
@@ -2220,7 +2220,7 @@ class _Cluster(object, metaclass=Singleton):
                 if os.path.isfile(self.recover_file + ext):
                     try:
                         os.remove(self.recover_file + ext)
-                    except:
+                    except Exception:
                         pass
         if self.pycos:
             self.pycos.finish()
@@ -2367,14 +2367,14 @@ class JobCluster(object):
             try:
                 ping_interval = float(ping_interval)
                 assert 1.0 <= ping_interval <= 1000
-            except:
+            except Exception:
                 raise Exception('Invalid ping_interval; must be between 1 and 1000')
         self.ping_interval = ping_interval
         if pulse_interval is not None:
             try:
                 pulse_interval = float(pulse_interval)
                 assert 1.0 <= pulse_interval <= 1000
-            except:
+            except Exception:
                 raise Exception('Invalid pulse_interval; must be between 1 and 1000')
         self.pulse_interval = pulse_interval
 
@@ -2382,7 +2382,7 @@ class JobCluster(object):
             try:
                 poll_interval = float(poll_interval)
                 assert 5.0 <= poll_interval <= 1000
-            except:
+            except Exception:
                 raise Exception('Invalid poll_interval; must be between 5 and 1000')
         self.poll_interval = poll_interval
 
@@ -2400,7 +2400,7 @@ class JobCluster(object):
                 assert args.varargs is None
                 assert args.keywords is None
                 assert args.defaults is None
-            except:
+            except Exception:
                 raise Exception('Invalid callback function; '
                                 'it must take excatly one argument - an instance of DispyJob')
         self.callback = callback
@@ -2419,7 +2419,7 @@ class JobCluster(object):
                 assert args.varargs is None
                 assert args.keywords is None
                 assert args.defaults is None
-            except:
+            except Exception:
                 raise Exception('Invalid cluster_status function; '
                                 'it must take excatly 3 arguments')
         self.status_callback = cluster_status
@@ -2541,7 +2541,7 @@ class JobCluster(object):
                     xf = _XferFile(name, dst, compute.id)
                     compute.xfer_files.add(xf)
                     depend_ids[name] = dep
-                except:
+                except Exception:
                     raise Exception('File "%s" is not valid' % name)
             elif (inspect.isfunction(dep) or inspect.isclass(dep) or
                   (hasattr(dep, '__class__') and hasattr(dep, '__module__'))):
@@ -2569,7 +2569,7 @@ class JobCluster(object):
                 compute.code += '\n' + ''.join(lines)
                 depend_ids[id(dep)] = id(dep)
             else:
-                raise Exception('Invalid function: %s' % dep)
+                raise Exception('Invalid dependency: %s' % dep)
         if compute.code:
             # make sure code can be compiled
             code = compile(compute.code, '<string>', 'exec')
@@ -2611,7 +2611,7 @@ class JobCluster(object):
             args = [str(arg) for arg in args]
         try:
             _job = _DispyJob_(self._compute.id, args, kwargs)
-        except:
+        except Exception:
             logger.warning('Creating job for "%s", "%s" failed with "%s"',
                            str(args), str(kwargs), traceback.format_exc())
             return None
@@ -2647,7 +2647,7 @@ class JobCluster(object):
             args = [str(arg) for arg in args]
         try:
             _job = _DispyJob_(self._compute.id, args, kwargs)
-        except:
+        except Exception:
             logger.warning('Creating job for "%s", "%s" failed with "%s"',
                            str(args), str(kwargs), traceback.format_exc())
             return None
@@ -2923,7 +2923,7 @@ class SharedJobCluster(JobCluster):
                 self._compute.auth = reply['auth']
             else:
                 raise Exception('Scheduler refused computation: %s' % reply)
-        except:
+        except Exception:
             raise
         finally:
             sock.close()
@@ -2951,7 +2951,7 @@ class SharedJobCluster(JobCluster):
                         recvd = sock.recv_msg()
                         recvd = deserialize(recvd)
                 assert recvd == xf.stat_buf.st_size
-            except:
+            except Exception:
                 logger.error('Could not transfer %s to %s', xf.name, self.scheduler_ip_addr)
                 # TODO: delete computation?
             sock.close()
@@ -3006,7 +3006,7 @@ class SharedJobCluster(JobCluster):
             args = [str(arg) for arg in args]
         try:
             _job = _DispyJob_(self._compute.id, args, kwargs)
-        except:
+        except Exception:
             logger.warning('Creating job for "%s", "%s" failed with "%s"',
                            str(args), str(kwargs), traceback.format_exc())
             return None
@@ -3059,7 +3059,7 @@ class SharedJobCluster(JobCluster):
                 sock.send_msg('NAK'.encode())
                 _job.job._dispy_job_ = None
                 del _job.job
-        except:
+        except Exception:
             logger.warning('Creating job for "%s", "%s" failed with "%s"',
                            str(args), str(kwargs), traceback.format_exc())
             _job.job._dispy_job_ = None
@@ -3089,7 +3089,7 @@ class SharedJobCluster(JobCluster):
             sock.sendall(self._scheduler_auth)
             req = {'uid': _job.uid, 'compute_id': self._compute.id, 'auth': self._compute.auth}
             sock.send_msg(b'TERMINATE_JOB:' + serialize(req))
-        except:
+        except Exception:
             logger.warning('Could not connect to scheduler to terminate job')
             return -1
         finally:
@@ -3119,7 +3119,7 @@ class SharedJobCluster(JobCluster):
             sock.send_msg(b'ALLOCATE_NODE:' + serialize(req))
             reply = sock.recv_msg()
             reply = deserialize(reply)
-        except:
+        except Exception:
             logger.warning('Could not connect to scheduler to add node')
             reply = -1
         finally:
@@ -3145,7 +3145,7 @@ class SharedJobCluster(JobCluster):
             sock.send_msg(b'DEALLOCATE_NODE:' + serialize(req))
             reply = sock.recv_msg()
             reply = deserialize(reply)
-        except:
+        except Exception:
             logger.warning('Could not connect to scheduler to add node')
             reply = -1
         finally:
@@ -3172,7 +3172,7 @@ class SharedJobCluster(JobCluster):
             sock.send_msg(b'CLOSE_NODE:' + serialize(req))
             reply = sock.recv_msg()
             reply = deserialize(reply)
-        except:
+        except Exception:
             logger.warning('Could not connect to scheduler to add node')
             reply = -1
         finally:
@@ -3200,7 +3200,7 @@ class SharedJobCluster(JobCluster):
             reply = sock.recv_msg()
             job_uids = deserialize(reply)
             _jobs = [self._cluster._sched_jobs.get(uid, None) for uid in job_uids]
-        except:
+        except Exception:
             logger.warning('Could not connect to scheduler to get running jobs at node')
             _jobs = []
         finally:
@@ -3222,7 +3222,7 @@ class SharedJobCluster(JobCluster):
             sock.send_msg(b'SET_NODE_CPUS:' + serialize(req))
             reply = sock.recv_msg()
             reply = deserialize(reply)
-        except:
+        except Exception:
             logger.warning('Could not connect to scheduler to add node')
             return -1
         finally:
@@ -3272,7 +3272,7 @@ class SharedJobCluster(JobCluster):
                     recvd = sock.recv_msg()
                     recvd = deserialize(recvd)
             assert recvd == xf.stat_buf.st_size
-        except:
+        except Exception:
             return -1
         else:
             return 0
@@ -3326,7 +3326,7 @@ def recover_jobs(recover_file=None, timeout=None, terminate_pending=False):
 
     try:
         shelf = shelve.open(recover_file, flag='r')
-    except:
+    except Exception:
         print('Could not open recover file "%s"' % recover_file)
         return []
 
@@ -3345,7 +3345,7 @@ def recover_jobs(recover_file=None, timeout=None, terminate_pending=False):
             if os.path.isfile(recover_file + ext):
                 try:
                     os.remove(recover_file + ext)
-                except:
+                except Exception:
                     pass
         return []
 
@@ -3365,7 +3365,7 @@ def recover_jobs(recover_file=None, timeout=None, terminate_pending=False):
         if msg.startswith(b'JOB_REPLY:'):
             try:
                 reply = deserialize(msg[len(b'JOB_REPLY:'):])
-            except:
+            except Exception:
                 logger.warning('Invalid job reply from %s:%s ignored', addr[0], addr[1])
                 conn.close()
                 raise StopIteration
@@ -3416,7 +3416,7 @@ def recover_jobs(recover_file=None, timeout=None, terminate_pending=False):
                 break
             except socket.timeout:
                 continue
-            except:
+            except Exception:
                 continue
             else:
                 Task(tcp_req, conn, addr, pending)
@@ -3436,7 +3436,7 @@ def recover_jobs(recover_file=None, timeout=None, terminate_pending=False):
                 try:
                     reply = deserialize(reply)
                     assert isinstance(reply, int)
-                except:
+                except Exception:
                     logger.warning('Invalid resend reply from %s', ip_addr)
                     continue
                 logger.debug('Pending jobs from %s for %s: %s',
@@ -3487,7 +3487,7 @@ def recover_jobs(recover_file=None, timeout=None, terminate_pending=False):
             if os.path.isfile(recover_file + ext):
                 try:
                     os.remove(recover_file + ext)
-                except:
+                except Exception:
                     pass
     return pending['jobs']
 
