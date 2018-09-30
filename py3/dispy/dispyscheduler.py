@@ -24,7 +24,7 @@ import hashlib
 import struct
 try:
     import netifaces
-except:
+except ImportError:
     netifaces = None
 
 # 'httpd' module may not be available at sys.path[0] as 'dispy.py' is
@@ -185,7 +185,7 @@ class _Scheduler(object, metaclass=Singleton):
             try:
                 self.pulse_interval = float(pulse_interval)
                 assert 1.0 <= self.pulse_interval <= 1000
-            except:
+            except Exception:
                 raise Exception('Invalid pulse_interval; must be between 1 and 1000')
         else:
             self.pulse_interval = None
@@ -194,7 +194,7 @@ class _Scheduler(object, metaclass=Singleton):
             try:
                 self.ping_interval = float(ping_interval)
                 assert 1.0 <= self.ping_interval <= 1000
-            except:
+            except Exception:
                 raise Exception('Invalid ping_interval; must be between 1 and 1000')
         else:
             self.ping_interval = None
@@ -301,7 +301,7 @@ class _Scheduler(object, metaclass=Singleton):
             udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
             try:
                 udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
-            except:
+            except Exception:
                 pass
 
         Task(self.broadcast_ping, addrinfos=[addrinfo])
@@ -318,7 +318,7 @@ class _Scheduler(object, metaclass=Singleton):
                     assert info['port'] > 0
                     assert info['ip_addr']
                     # socket.inet_aton(status['ip_addr'])
-                except:
+                except Exception:
                     logger.debug('Ignoring node %s', addr[0])
                     logger.debug(traceback.format_exc())
                     continue
@@ -338,7 +338,7 @@ class _Scheduler(object, metaclass=Singleton):
                     yield sock.connect((info['ip_addr'], info['port']))
                     yield sock.sendall(auth)
                     yield sock.send_msg(b'PING:' + serialize(msg))
-                except:
+                except Exception:
                     logger.debug(traceback.format_exc())
                 finally:
                     sock.close()
@@ -353,7 +353,7 @@ class _Scheduler(object, metaclass=Singleton):
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind((addrinfo.ip, self.port))
-        except:
+        except Exception:
             logger.debug('Could not bind TCP to %s:%s', addrinfo.ip, self.port)
             raise StopIteration
         logger.debug('TCP server at %s:%s', addrinfo.ip, self.port)
@@ -367,7 +367,7 @@ class _Scheduler(object, metaclass=Singleton):
                 continue
             except GeneratorExit:
                 break
-            except:
+            except Exception:
                 logger.debug(traceback.format_exc())
                 continue
             Task(self.tcp_req, conn, addr)
@@ -379,7 +379,7 @@ class _Scheduler(object, metaclass=Singleton):
         if msg.startswith(b'JOB_REPLY:'):
             try:
                 info = deserialize(msg[len(b'JOB_REPLY:'):])
-            except:
+            except Exception:
                 logger.warning('Invalid job reply from %s:%s ignored', addr[0], addr[1])
             else:
                 yield self.job_reply_process(info, conn, addr)
@@ -389,7 +389,7 @@ class _Scheduler(object, metaclass=Singleton):
             msg = msg[len(b'PULSE:'):]
             try:
                 info = deserialize(msg)
-            except:
+            except Exception:
                 logger.warning('Ignoring pulse message from %s', addr[0])
                 conn.close()
                 raise StopIteration
@@ -416,7 +416,7 @@ class _Scheduler(object, metaclass=Singleton):
             try:
                 info = deserialize(msg[len(b'PONG:'):])
                 assert info['auth'] == self.node_auth
-            except:
+            except Exception:
                 logger.warning('Ignoring node %s due to "secret" mismatch', addr[0])
             else:
                 self.add_node(info)
@@ -431,7 +431,7 @@ class _Scheduler(object, metaclass=Singleton):
                     raise Exception('')
                 assert info['port'] > 0
                 assert info['ip_addr']
-            except:
+            except Exception:
                 logger.debug('Ignoring node %s', addr[0])
                 logger.debug(traceback.format_exc())
                 raise StopIteration
@@ -450,7 +450,7 @@ class _Scheduler(object, metaclass=Singleton):
                     yield sock.connect((info['ip_addr'], info['port']))
                     yield sock.sendall(auth)
                     yield sock.send_msg(b'PING:' + serialize(msg))
-                except:
+                except Exception:
                     logger.debug(traceback.format_exc())
                 finally:
                     sock.close()
@@ -461,7 +461,7 @@ class _Scheduler(object, metaclass=Singleton):
                 msg = yield conn.recv_msg()
                 job_reply = deserialize(msg)
                 yield self.xfer_to_client(job_reply, xf, conn, addr)
-            except:
+            except Exception:
                 logger.debug(traceback.format_exc())
             conn.close()
 
@@ -492,7 +492,7 @@ class _Scheduler(object, metaclass=Singleton):
                             continue
                         Task(self.send_node_status, cluster, dispy_node, DispyNode.Closed)
                     self.reschedule_jobs(dead_jobs)
-            except:
+            except Exception:
                 # logger.debug(traceback.format_exc())
                 pass
 
@@ -508,7 +508,7 @@ class _Scheduler(object, metaclass=Singleton):
                     logger.warning('Invalid signature from %s', node.ip_addr)
                     raise StopIteration
                 cpus = info['cpus']
-            except:
+            except Exception:
                 logger.debug(traceback.format_exc())
                 raise StopIteration
             if cpus < 0:
@@ -551,7 +551,7 @@ class _Scheduler(object, metaclass=Singleton):
                        'port': self.port}
                 if 'auth' in info and info['auth'] != self.node_auth:
                     msg = None
-            except:
+            except Exception:
                 msg = None
             yield conn.send_msg(serialize(msg))
             conn.close()
@@ -583,7 +583,7 @@ class _Scheduler(object, metaclass=Singleton):
                 msg = yield reply_sock.recv_msg()
                 assert msg == 'ACK'.encode()
                 self.add_cluster(cluster)
-            except:
+            except Exception:
                 self._clusters.pop(cluster._compute.id, None)
                 logger.debug('Ignoring computation %s / %s from %s:%s',
                              cluster._compute.name, cluster._compute.id,
@@ -599,7 +599,7 @@ class _Scheduler(object, metaclass=Singleton):
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind((addrinfo.ip, self.scheduler_port))
-        except:
+        except Exception:
             logger.warning('Could not bind scheduler server to %s:%s',
                            addrinfo.ip, self.scheduler_port)
             raise StopIteration
@@ -646,7 +646,7 @@ class _Scheduler(object, metaclass=Singleton):
                 compute = req['compute']
                 node_allocs = req['node_allocs']
                 exclusive = req['exclusive']
-            except:
+            except Exception:
                 return serialize(('Invalid computation').encode())
             for xf in compute.xfer_files:
                 if MaxFileSize and xf.stat_buf.st_size > MaxFileSize:
@@ -666,7 +666,7 @@ class _Scheduler(object, metaclass=Singleton):
             if not os.path.isdir(dest):
                 try:
                     os.mkdir(dest)
-                except:
+                except Exception:
                     return serialize(('Could not create destination directory').encode())
             if compute.dest_path and isinstance(compute.dest_path, str):
                 # TODO: get os.sep from client and convert (in case of mixed environments)?
@@ -677,7 +677,7 @@ class _Scheduler(object, metaclass=Singleton):
                 if not os.path.isdir(cluster.dest_path):
                     try:
                         os.makedirs(cluster.dest_path)
-                    except:
+                    except Exception:
                         return serialize(('Could not create destination directory').encode())
             else:
                 cluster.dest_path = tempfile.mkdtemp(prefix=compute.name + '_', dir=dest)
@@ -710,7 +710,7 @@ class _Scheduler(object, metaclass=Singleton):
             # generator
             try:
                 xf = deserialize(msg)
-            except:
+            except Exception:
                 logger.debug('Ignoring file trasnfer request from %s', addr[0])
                 raise StopIteration(serialize(-1))
             cluster = self.pending_clusters.get(xf.compute_id, None)
@@ -749,14 +749,14 @@ class _Scheduler(object, metaclass=Singleton):
                 else:
                     cluster.file_uses[tgt] = 1
                 logger.debug('Copied file %s', tgt)
-            except:
+            except Exception:
                 logger.warning('Copying file "%s" failed with "%s"', xf.name, traceback.format_exc())
                 recvd = -1
                 try:
                     os.remove(tgt)
                     if len(os.listdir(cluster.dest_path)) == 0:
                         os.rmdir(cluster.dest_path)
-                except:
+                except Exception:
                     pass
             raise StopIteration(serialize(recvd))
 
@@ -766,7 +766,7 @@ class _Scheduler(object, metaclass=Singleton):
                 msg = deserialize(msg)
                 node = self._nodes.get(msg['node'], None)
                 xf = msg['xf']
-            except:
+            except Exception:
                 logger.debug('Ignoring file trasnfer request from %s', addr[0])
                 raise StopIteration(serialize(-1))
             cluster = self._clusters.get(xf.compute_id, None)
@@ -797,7 +797,7 @@ class _Scheduler(object, metaclass=Singleton):
                     yield node_sock.sendall(data)
                     recvd = yield node_sock.recv_msg()
                     recvd = deserialize(recvd)
-            except:
+            except Exception:
                 logger.error('Could not transfer %s to %s: %s', xf.name, node.ip_addr, recvd)
                 logger.debug(traceback.format_exc())
                 # TODO: mark this node down, reschedule on different node?
@@ -811,7 +811,7 @@ class _Scheduler(object, metaclass=Singleton):
         resp = None
         try:
             req = yield conn.recvall(len(self.cluster_auth))
-        except:
+        except Exception:
             logger.warning('Failed to read message from %s: %s', str(addr), traceback.format_exc())
             conn.close()
             raise StopIteration
@@ -829,7 +829,7 @@ class _Scheduler(object, metaclass=Singleton):
                     reply = {'ip_addr': req['ip_addr'], 'port': self.scheduler_port,
                              'sign': self.sign, 'version': _dispy_version}
                     yield conn.send_msg(serialize(reply))
-                except:
+                except Exception:
                     pass
             else:
                 logger.warning('Invalid/unauthorized request ignored')
@@ -851,7 +851,7 @@ class _Scheduler(object, metaclass=Singleton):
                 node = req['node']
                 if node:
                     node = self._nodes[node]
-            except:
+            except Exception:
                 pass
             else:
                 yield _job_request(self, cluster, node, _job)
@@ -861,7 +861,7 @@ class _Scheduler(object, metaclass=Singleton):
             msg = msg[len(b'PULSE:'):]
             try:
                 info = deserialize(msg)
-            except:
+            except Exception:
                 logger.warning('Ignoring pulse message from %s', addr[0])
                 conn.close()
                 raise StopIteration
@@ -886,7 +886,7 @@ class _Scheduler(object, metaclass=Singleton):
                     assert os.path.isfile(xf.name)
                 self.unsched_clusters.append(cluster)
                 self.pending_clusters.pop(cluster._compute.id)
-            except:
+            except Exception:
                 logger.debug('Ignoring schedule request from %s', addr[0])
                 resp = 'NAK'.encode()
             else:
@@ -898,7 +898,7 @@ class _Scheduler(object, metaclass=Singleton):
             try:
                 req = deserialize(msg)
                 auth = req['auth']
-            except:
+            except Exception:
                 logger.warning('Invalid compuation for deleting')
                 conn.close()
                 raise StopIteration
@@ -932,7 +932,7 @@ class _Scheduler(object, metaclass=Singleton):
                     # assert req['get_uids'] == True
                     job_uids = yield self.node_jobs(cluster, node, from_node,
                                                     get_uids=True, task=task)
-            except:
+            except Exception:
                 job_uids = []
             resp = serialize(job_uids)
 
@@ -943,7 +943,7 @@ class _Scheduler(object, metaclass=Singleton):
                 uid = req['uid']
                 cluster = self._clusters[req['compute_id']]
                 assert cluster.client_auth == req['auth']
-            except:
+            except Exception:
                 logger.warning('Invalid job cancel message')
                 conn.close()
                 raise StopIteration
@@ -955,7 +955,7 @@ class _Scheduler(object, metaclass=Singleton):
                 info = deserialize(msg)
                 compute_id = info['compute_id']
                 auth = info['auth']
-            except:
+            except Exception:
                 resp = serialize(0)
             else:
                 cluster = self._clusters.get(compute_id, None)
@@ -964,7 +964,7 @@ class _Scheduler(object, metaclass=Singleton):
                         with open(os.path.join(self.dest_path_prefix,
                                                '%s_%s' % (compute_id, auth)), 'rb') as fd:
                             cluster = pickle.load(fd)
-                    except:
+                    except Exception:
                         pass
                 if cluster is None:
                     resp = 0
@@ -983,7 +983,7 @@ class _Scheduler(object, metaclass=Singleton):
                 info = deserialize(msg)
                 compute_id = info['compute_id']
                 auth = info['auth']
-            except:
+            except Exception:
                 pass
             else:
                 cluster = self._clusters.get(compute_id, None)
@@ -999,7 +999,7 @@ class _Scheduler(object, metaclass=Singleton):
                             result_file = os.path.basename(result_file)
                             try:
                                 uid = int(result_file[len('_dispy_job_reply_'):])
-                            except:
+                            except Exception:
                                 pass
                             else:
                                 done.append(uid)
@@ -1022,7 +1022,7 @@ class _Scheduler(object, metaclass=Singleton):
                 assert cluster.client_auth == req['auth']
                 resp = yield self.allocate_node(cluster, req['node_alloc'], task=task)
                 resp = serialize(resp)
-            except:
+            except Exception:
                 resp = serialize(-1)
 
         elif msg.startswith(b'DEALLOCATE_NODE:'):
@@ -1033,7 +1033,7 @@ class _Scheduler(object, metaclass=Singleton):
                 assert cluster.client_auth == req['auth']
                 resp = yield self.deallocate_node(cluster, req['node'], task=task)
                 resp = serialize(resp)
-            except:
+            except Exception:
                 resp = serialize(-1)
 
         elif msg.startswith(b'CLOSE_NODE:'):
@@ -1045,7 +1045,7 @@ class _Scheduler(object, metaclass=Singleton):
                 resp = yield self.close_node(cluster, req['node'],
                                              terminate_pending=req['terminate_pending'], task=task)
                 resp = serialize(resp)
-            except:
+            except Exception:
                 resp = serialize(-1)
 
         elif msg.startswith(b'SET_NODE_CPUS:'):
@@ -1061,7 +1061,7 @@ class _Scheduler(object, metaclass=Singleton):
                 node = self._nodes.get(node, None)
                 if node:
                     cpus = node.cpus
-            except:
+            except Exception:
                 logger.debug(traceback.format_exc())
             resp = serialize(cpus)
 
@@ -1071,7 +1071,7 @@ class _Scheduler(object, metaclass=Singleton):
         if resp is not None:
             try:
                 yield conn.send_msg(resp)
-            except:
+            except Exception:
                 logger.warning('Failed to send response to %s: %s',
                                str(addr), traceback.format_exc())
         conn.close()
@@ -1087,7 +1087,7 @@ class _Scheduler(object, metaclass=Singleton):
             try:
                 with open(result_file, 'rb') as fd:
                     result = pickle.load(fd)
-            except:
+            except Exception:
                 logger.debug('Could not load "%s"', result_file)
             else:
                 status = yield self.send_job_result(
@@ -1166,7 +1166,7 @@ class _Scheduler(object, metaclass=Singleton):
                         os.remove(path)
                     try:
                         shutil.rmtree(cluster.dest_path)
-                    except:
+                    except Exception:
                         logger.debug(traceback.format_exc())
                     self.pending_clusters.pop(cluster._compute.id, None)
 
@@ -1204,7 +1204,7 @@ class _Scheduler(object, metaclass=Singleton):
                 recvd = yield client_sock.recv_msg()
                 recvd = deserialize(recvd)
             yield conn.send_msg(serialize(recvd))
-        except:
+        except Exception:
             yield conn.send_msg(serialize(-1))
         finally:
             client_sock.close()
@@ -1227,7 +1227,7 @@ class _Scheduler(object, metaclass=Singleton):
             yield tcp_sock.connect((ip_addr, port))
             yield tcp_sock.sendall(b'x' * len(self.node_auth))
             yield tcp_sock.send_msg(b'PING:' + serialize(ping_msg))
-        except:
+        except Exception:
             pass
         tcp_sock.close()
 
@@ -1254,7 +1254,7 @@ class _Scheduler(object, metaclass=Singleton):
             bc_sock.bind((addrinfo.ip, 0))
             try:
                 yield bc_sock.sendto(b'PING:' + serialize(ping_msg), (addrinfo.broadcast, port))
-            except:
+            except Exception:
                 pass
             bc_sock.close()
 
@@ -1307,7 +1307,7 @@ class _Scheduler(object, metaclass=Singleton):
             if not cluster.pending_results:
                 try:
                     os.remove(pkl_path)
-                except:
+                except Exception:
                     logger.debug(traceback.format_exc())
                     pass
             raise StopIteration
@@ -1317,7 +1317,7 @@ class _Scheduler(object, metaclass=Singleton):
         if cluster.pending_results == 0:
             try:
                 os.remove(pkl_path)
-            except:
+            except Exception:
                 logger.warning('Could not remove "%s"', pkl_path)
         else:
             with open(pkl_path, 'wb') as fd:
@@ -1327,7 +1327,7 @@ class _Scheduler(object, metaclass=Singleton):
             if use_count == 1:
                 try:
                     os.remove(path)
-                except:
+                except Exception:
                     logger.warning('Could not remove "%s"', path)
         cluster.file_uses.clear()
 
@@ -1336,7 +1336,7 @@ class _Scheduler(object, metaclass=Singleton):
                 if not filenames or dirpath.endswith('__pycache__'):
                     try:
                         shutil.rmtree(dirpath)
-                    except:
+                    except Exception:
                         logger.warning('Could not remove "%s"', dirpath)
                         break
 
@@ -1396,7 +1396,7 @@ class _Scheduler(object, metaclass=Singleton):
             # assert info['version'] == _dispy_version
             assert info['port'] > 0 and info['cpus'] > 0
             # TODO: check if it is one of ext_ip_addr?
-        except:
+        except Exception:
             # logger.debug(traceback.format_exc())
             return
         node = self._nodes.get(info['ip_addr'], None)
@@ -1463,7 +1463,7 @@ class _Scheduler(object, metaclass=Singleton):
             yield sock.send_msg(b'JOB_REPLY:' + serialize(result))
             ack = yield sock.recv_msg()
             assert ack == b'ACK'
-        except:
+        except Exception:
             status = -1
             if not resending:
                 # store job result even if computation has not enabled
@@ -1475,7 +1475,7 @@ class _Scheduler(object, metaclass=Singleton):
                 try:
                     with open(f, 'wb') as fd:
                         pickle.dump(result, fd)
-                except:
+                except Exception:
                     logger.debug('Could not save reply for job %s', uid)
                 else:
                     cluster.pending_results += 1
@@ -1491,7 +1491,7 @@ class _Scheduler(object, metaclass=Singleton):
                         cluster.file_uses.pop(f, None)
                         try:
                             os.remove(f)
-                        except:
+                        except Exception:
                             logger.warning('Could not remove "%s"', f)
                 else:
                     self.done_jobs.pop(uid, None)
@@ -1521,7 +1521,7 @@ class _Scheduler(object, metaclass=Singleton):
                       'hash': _job.hash}
             status['start_time'] = _job.job.start_time
             yield sock.send_msg(b'JOB_STATUS:' + serialize(status))
-        except:
+        except Exception:
             logger.warning('Could not send job status to %s:%s',
                            cluster.client_ip_addr, cluster.client_job_result_port)
         sock.close()
@@ -1544,7 +1544,7 @@ class _Scheduler(object, metaclass=Singleton):
         try:
             yield sock.connect((cluster.client_ip_addr, cluster.client_job_result_port))
             yield sock.send_msg(b'NODE_STATUS:' + serialize(status_info))
-        except:
+        except Exception:
             logger.debug('Could not send node status to %s:%s',
                          cluster.client_ip_addr, cluster.client_job_result_port)
         sock.close()
@@ -1607,7 +1607,7 @@ class _Scheduler(object, metaclass=Singleton):
                     if cluster.file_uses[xf.name] == 0:
                         cluster.file_uses.pop(xf.name)
                         os.remove(xf.name)
-                except:
+                except Exception:
                     logger.warning('Could not remove "%s"', xf.name)
         Task(self.send_job_result, _job.uid, cluster, reply, resending=False)
 
@@ -1762,7 +1762,7 @@ class _Scheduler(object, metaclass=Singleton):
                     cluster._jobs.insert(0, _job)
                 node.busy -= 1
             self._sched_event.set()
-        except:
+        except Exception:
             logger.warning('Failed to run job %s on %s for computation %s',
                            _job.uid, node.ip_addr, cluster._compute.name)
             # logger.debug(traceback.format_exc())
@@ -1836,7 +1836,7 @@ class _Scheduler(object, metaclass=Singleton):
         def send_reply(reply):
             try:
                 yield conn.send_msg(serialize(reply))
-            except:
+            except Exception:
                 raise StopIteration(-1)
             raise StopIteration(0)
 
@@ -1846,7 +1846,7 @@ class _Scheduler(object, metaclass=Singleton):
             compute_id = req['compute_id']
             auth = req['auth']
             job_hash = req['hash']
-        except:
+        except Exception:
             yield send_reply(None)
             raise StopIteration
 
@@ -1868,7 +1868,7 @@ class _Scheduler(object, metaclass=Singleton):
             with open(info_file, 'rb') as fd:
                 job_reply = pickle.load(fd)
             assert job_reply.hash == job_hash
-        except:
+        except Exception:
             yield send_reply(None)
             raise StopIteration
 
@@ -1879,13 +1879,13 @@ class _Scheduler(object, metaclass=Singleton):
             cluster.pending_results -= 1
             with open(pkl_path, 'wb') as fd:
                 pickle.dump(cluster, fd)
-        except:
+        except Exception:
             pass
         else:
             cluster.file_uses.pop(info_file, None)
             try:
                 os.remove(info_file)
-            except:
+            except Exception:
                 pass
 
     def cancel_job(self, cluster, uid):
@@ -1925,16 +1925,16 @@ class _Scheduler(object, metaclass=Singleton):
         # generator
         if not isinstance(node_alloc, list):
             node_alloc = [node_alloc]
-        for i in range(len(node_allocs)-1, -1, -1):
-            node = self._nodes.get(node_allocs[i].ip_addr, None)
+        for i in range(len(node_alloc)-1, -1, -1):
+            node = self._nodes.get(node_alloc[i].ip_addr, None)
             if node:
                 dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
                 if dispy_node:
                     node.clusters.add(cluster._compute.id)
                     self._sched_event.set()
-                    del node_allocs[i]
+                    del node_alloc[i]
                     continue
-        if not node_allocs:
+        if not node_alloc:
             raise StopIteration(0)
         cluster._node_allocs.extend(node_alloc)
         cluster._node_allocs = sorted(cluster._node_allocs,
@@ -1978,7 +1978,7 @@ class _Scheduler(object, metaclass=Singleton):
                 yield sock.send_msg(b'JOBS:' + serialize(req))
                 msg = yield sock.recv_msg()
                 uids = [info['uid'] for info in deserialize(msg)]
-            except:
+            except Exception:
                 logger.debug(traceback.format_exc())
                 uids = []
             sock.close()
@@ -2033,7 +2033,7 @@ class _Scheduler(object, metaclass=Singleton):
                     os.remove(path)
                 try:
                     shutil.rmtree(cluster.dest_path)
-                except:
+                except Exception:
                     logger.debug(traceback.format_exc())
                 # TODO: inform cluster
             self.pending_clusters.clear()
@@ -2256,7 +2256,7 @@ if __name__ == '__main__':
         try:
             if os.getpgrp() != os.tcgetpgrp(sys.stdin.fileno()):
                 daemon = True
-        except:
+        except (Exception, KeyboardInterrupt):
             pass
 
     logger.info('dispyscheduler version %s', _dispy_version)
@@ -2278,7 +2278,7 @@ if __name__ == '__main__':
                 # TODO: terminate even if jobs are scheduled?
                 logger.info('Interrupted; terminating')
                 break
-            except:
+            except (Exception, KeyboardInterrupt):
                 logger.debug(traceback.format_exc())
     scheduler.shutdown()
     exit(0)

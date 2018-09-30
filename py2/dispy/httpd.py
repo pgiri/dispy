@@ -9,14 +9,14 @@ import threading
 import json
 import cgi
 import time
-import socket
 import ssl
 import re
 import functools
 import copy
 import traceback
 
-from dispy import DispyJob, DispyNode, DispyNodeAvailInfo, logger
+import dispy
+from dispy import DispyJob, DispyNodeAvailInfo, logger
 
 if sys.version_info.major > 2:
     from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -139,8 +139,8 @@ class DispyHTTPServer(object):
                     if path.endswith('.html'):
                         if path.endswith('monitor.html') or path.endswith('node.html'):
                             data = data % {'TIMEOUT': str(self._ctx._poll_sec),
-                                           'SHOW_JOB_ARGS': 'true' if self._ctx._show_args \
-                                                       else 'false'}
+                                           'SHOW_JOB_ARGS': 'true' if self._ctx._show_args
+                                                            else 'false'}
                         content_type = 'text/html'
                     elif path.endswith('.js'):
                         content_type = 'text/javascript'
@@ -155,7 +155,7 @@ class DispyHTTPServer(object):
                     self.end_headers()
                     self.wfile.write(data.encode())
                     return
-                except:
+                except Exception:
                     logger.warning('HTTP client %s: Could not read/send "%s"',
                                    self.client_address[0], path)
                     logger.debug(traceback.format_exc())
@@ -205,14 +205,13 @@ class DispyHTTPServer(object):
                     # so an object's __str__ or __repr__ is used if provided;
                     # TODO: check job is in _ctx's jobs?
                     jobs = [{'uid': id(job), 'job_id': str(job.id),
-                                  'args': ', '.join(str(arg) for arg in job._args) \
-                                          if show_args else '',
-                                  'kwargs': ', '.join('%s=%s' % (key, val)
-                                                      for key, val in job._kwargs.items()) \
-                                            if show_args else '',
-                                  'start_time_ms': int(1000 * job.start_time),
-                                  'cluster': name}
-                                 for job in jobs]
+                             'args': ', '.join(str(arg) for arg in job._args)
+                                     if show_args else '',
+                             'kwargs': ', '.join('%s=%s' % (key, val)
+                                                 for key, val in job._kwargs.items())
+                                     if show_args else '',
+                             'start_time_ms': int(1000 * job.start_time), 'cluster': name}
+                            for job in jobs]
                     cluster_jobs[name] = jobs
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
@@ -264,7 +263,7 @@ class DispyHTTPServer(object):
                     elif item.name == 'cpus':
                         try:
                             node['cpus'] = int(item.value)
-                        except:
+                        except Exception:
                             pass
                     elif item.name == 'id':
                         node_id = item.value
@@ -325,7 +324,7 @@ class DispyHTTPServer(object):
                             if timeout < 1:
                                 timeout = 0
                             self._ctx._poll_sec = timeout
-                        except:
+                        except Exception:
                             logger.warning('HTTP client %s: invalid timeout "%s" ignored',
                                            self.client_address[0], item.value)
                     elif item.name == 'show_job_args':

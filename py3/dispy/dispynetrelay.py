@@ -106,7 +106,7 @@ class DispyNetRelay(object):
                 yield sock.send_msg('RELAY_INFO:'.encode() + serialize(msg))
                 reply = yield sock.recv_msg()
                 reply = deserialize(reply)
-            except:
+            except Exception:
                 continue
             else:
                 break
@@ -159,7 +159,7 @@ class DispyNetRelay(object):
             relay_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
             try:
                 relay_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
-            except:
+            except Exception:
                 pass
 
         while 1:
@@ -176,7 +176,7 @@ class DispyNetRelay(object):
                     logger.warning('Ignoring %s due to version mismatch: %s / %s',
                                    msg['ip_addrs'], msg['version'], __version__)
                     continue
-            except:
+            except Exception:
                 logger.debug('Ignoring ping message from %s (%s)', addr[0], addr[1])
                 logger.debug(traceback.format_exc())
                 continue
@@ -196,7 +196,7 @@ class DispyNetRelay(object):
             try:
                 msg = yield conn.recvall(auth_len)
                 msg = yield conn.recv_msg()
-            except:
+            except Exception:
                 logger.debug(traceback.format_exc())
                 logger.debug('Ignoring invalid TCP message from %s:%s', addr[0], addr[1])
                 raise StopIteration
@@ -208,7 +208,7 @@ class DispyNetRelay(object):
                     logger.warning('Ignoring %s due to version mismatch: %s / %s',
                                    msg['ip_addrs'], msg['version'], __version__)
                     raise StopIteration
-            except:
+            except Exception:
                 logger.debug('Ignoring ping message from %s (%s)', addr[0], addr[1])
                 logger.debug(traceback.format_exc())
                 raise StopIteration
@@ -252,7 +252,7 @@ class DispyNetRelay(object):
             sched_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
             try:
                 sched_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
-            except:
+            except Exception:
                 pass
 
         while 1:
@@ -264,7 +264,7 @@ class DispyNetRelay(object):
                 msg = deserialize(msg[len('PING:'.encode()):])
                 assert msg['version'] == __version__
                 # assert isinstance(msg['cpus'], int)
-            except:
+            except Exception:
                 continue
             if not self.scheduler_ip_addr:
                 continue
@@ -312,14 +312,14 @@ if __name__ == '__main__':
     try:
         if os.getpgrp() != os.tcgetpgrp(sys.stdin.fileno()):
             daemon = True
-    except:
+    except Exception:
         pass
 
     if daemon:
         while 1:
             try:
                 time.sleep(3600)
-            except:
+            except (Exception, KeyboardInterrupt):
                 break
     else:
         while True:
@@ -332,5 +332,5 @@ if __name__ == '__main__':
                 # TODO: terminate even if jobs are scheduled?
                 logger.info('Interrupted; terminating')
                 break
-            except:
+            except Exception:
                 logger.debug(traceback.format_exc())
