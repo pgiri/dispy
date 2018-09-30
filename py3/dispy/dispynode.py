@@ -2023,7 +2023,6 @@ class _DispyNode(object):
                 if parent_pipe and parent_pipe.poll():
                     try:
                         msg = parent_pipe.recv()
-                        print('  PIPE MSG: %s' % msg)
                         if msg == 'quit':
                             break
                         else:
@@ -2035,9 +2034,7 @@ class _DispyNode(object):
                 client.setup_proc.terminate()
 
             for i in range(10):
-                print('  SETUP PROC: %s' % i)
                 if not client.setup_proc.is_alive():
-                    print(' SETUP PROC DONE')
                     break
                 client.setup_proc.join(0.1)
             else:
