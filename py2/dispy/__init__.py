@@ -2845,8 +2845,10 @@ class SharedJobCluster(JobCluster):
                  poll_interval=None, reentrant=False, exclusive=False,
                  secret='', keyfile=None, certfile=None, recover_file=None):
 
-        self.addrinfo = host_addrinfo(host=scheduler_node)
-        self.scheduler_ip_addr = self.addrinfo.ip
+        self.scheduler_ip_addr = _node_ipaddr(scheduler_node)
+        self.addrinfo = host_addrinfo(host=ip_addr)
+        self.addrinfo.family = socket.getaddrinfo(self.scheduler_ip_addr, None)[0][0]
+
         if not nodes:
             nodes = ['*']
         elif not isinstance(nodes, list):
