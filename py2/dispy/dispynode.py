@@ -178,8 +178,8 @@ def _dispy_job_func(__dispy_job_name, __dispy_job_code, __dispy_job_globals,
     """Internal use only.
     """
 
-    if os.name == 'nt':
-        __dispy_path = os.getcwd()
+    __dispy_path = __dispy_job_globals['dispy_job_path']
+    os.chdir(__dispy_path)
     sys.stdout = io.StringIO()
     sys.stderr = io.StringIO()
     reply_Q = __dispy_job_globals.pop('reply_Q')
@@ -613,6 +613,7 @@ class _DispyNode(object):
         if not os.path.isdir(self.dest_path_prefix):
             os.makedirs(self.dest_path_prefix)
             os.chmod(self.dest_path_prefix, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+        os.chdir(self.dest_path_prefix)
 
         self.pycos = Pycos()
 
@@ -1179,6 +1180,7 @@ class _DispyNode(object):
 
             client.globals['dispy_node_name'] = self.name
             client.globals['dispy_node_ip_addr'] = compute.node_ip_addr
+            client.globals['dispy_job_path'] = compute.dest_path
             client.globals['_DispyNode'] = None
             client.globals['_dispy_node'] = None
             client.globals['_Client'] = None
@@ -1267,6 +1269,7 @@ class _DispyNode(object):
                         raise StopIteration(client, '"setup" failed with %s' %
                                             localvars['_dispy_setup_status'])
                     compute.setup = None
+                    os.chdir(self.dest_path_prefix)
 
                     for module in sys.modules.keys():
                         if module not in self.__init_modules:
@@ -1813,6 +1816,7 @@ class _DispyNode(object):
             job_pkl = os.path.join(self.dest_path_prefix, 'job_%s.pkl' % (reply.uid))
             with open(job_pkl, 'wb') as fd:
                 pickle.dump({'pid': job_info.proc.pid, 'ppid': self.pid}, fd)
+            os.chdir(self.dest_path_prefix)
             reply.stdout, reply.stderr = job_info.proc.communicate()
             reply.result = serialize(job_info.proc.returncode)
             if reply.status == DispyJob.Running:
