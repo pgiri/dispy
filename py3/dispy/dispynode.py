@@ -2543,10 +2543,12 @@ if __name__ == '__main__':
     signal.signal(signal.SIGINT, sighandler)
     if os.name == 'nt':
         signal.signal(signal.SIGBREAK, sighandler)
-    if hasattr(signal, 'SIGQUIT'):
-        signal.signal(signal.SIGQUIT, sighandler)
-    if hasattr(signal, 'SIGHUP'):
-        signal.signal(signal.SIGHUP, sighandler)
+
+    if not _dispy_config['daemon']:
+        if hasattr(signal, 'SIGQUIT'):
+            signal.signal(signal.SIGQUIT, sighandler)
+        if hasattr(signal, 'SIGHUP'):
+            signal.signal(signal.SIGHUP, sighandler)
 
     # if hasattr(signal, 'SIGCHLD'):
     #     signal.signal(signal.SIGCHLD, signal.SIG_IGN)
