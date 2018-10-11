@@ -43,7 +43,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "Apache 2.0"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.10.0"
+__version__ = "4.10.1"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
@@ -249,9 +249,8 @@ def _same_file(tgt, xf):
     # TODO: compare checksum?
     try:
         stat_buf = os.stat(tgt)
-        if stat_buf.st_size == xf.stat_buf.st_size and \
-            abs(stat_buf.st_mtime - xf.stat_buf.st_mtime) <= 1 and \
-                stat.S_IMODE(stat_buf.st_mode) == stat.S_IMODE(xf.stat_buf.st_mode):
+        if (stat_buf.st_size == xf.stat_buf.st_size and
+            abs(stat_buf.st_mtime - xf.stat_buf.st_mtime) <= 1):
             return True
     except Exception:
         return False
@@ -1856,6 +1855,7 @@ class _Cluster(object, metaclass=Singleton):
                 _job.job.status = DispyJob.Created
                 _job.job.ip_addr = None
                 _job.node = None
+                dispy_job = _job.job
                 # TODO: call 'status_callback'?
                 # _job.hash = ''.join(hex(x)[2:] for x in os.urandom(10))
                 cluster._jobs.append(_job)

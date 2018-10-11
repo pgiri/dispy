@@ -178,12 +178,23 @@ def _dispy_job_func(__dispy_job_name, __dispy_job_code, __dispy_job_globals,
     """Internal use only.
     """
 
-    __dispy_path = __dispy_job_globals['dispy_job_path']
-    os.chdir(__dispy_path)
-    sys.stdout = io.StringIO()
-    sys.stderr = io.StringIO()
+    suid = __dispy_job_globals.pop('suid', None)
+    if suid is not None:
+        sgid = __dispy_job_globals.pop('sgid', None)
+        if hasattr(os, 'setresuid'):
+            os.setresgid(sgid, sgid, sgid)
+            os.setresuid(suid, suid, suid)
+        else:
+            os.setregid(sgid, sgid)
+            os.setreuid(suid, suid)
+        del sgid
+    del suid
+
     reply_Q = __dispy_job_globals.pop('reply_Q')
     globals().update(__dispy_job_globals)
+    globals()['_dispy_job_func'] = None
+    sys.stdout = io.StringIO()
+    sys.stderr = io.StringIO()
     try:
         if __dispy_job_code[0]:
             exec(marshal.loads(__dispy_job_code[0]), globals())
@@ -191,7 +202,6 @@ def _dispy_job_func(__dispy_job_name, __dispy_job_code, __dispy_job_globals,
             exec(__dispy_job_code[1], globals())
         if __name__ == '__mp_main__':  # Windows multiprocessing process
             sys.modules['__mp_main__'].__dict__.update(globals())
-        globals()['_dispy_job_func'] = None
         localvars = {'dispy_job_args': deserialize(__dispy_job_args),
                      'dispy_job_kwargs': deserialize(__dispy_job_kwargs)}
         exec('__dispy_job_reply.result = %s(*dispy_job_args, **dispy_job_kwargs)' %
@@ -206,8 +216,6 @@ def _dispy_job_func(__dispy_job_name, __dispy_job_code, __dispy_job_globals,
     __dispy_job_reply.stdout = sys.stdout.getvalue()
     __dispy_job_reply.stderr = sys.stderr.getvalue()
     __dispy_job_reply.end_time = time.time()
-    if os.name == 'nt':
-        os.chdir(os.path.join(__dispy_path, '..'))
     reply_Q.put(__dispy_job_reply)
 
 
@@ -218,6 +226,15 @@ def _dispy_setup_process(compute, pipe, client_globals):
     import threading
 
     os.chdir(compute.dest_path)
+    suid = client_globals.pop('suid', None)
+    if suid is not None:
+        sgid = client_globals.pop('sgid', None)
+        if hasattr(os, 'setresuid'):
+            os.setresgid(sgid, sgid, sgid)
+            os.setresuid(suid, suid, suid)
+        else:
+            os.setregid(sgid, sgid)
+            os.setreuid(suid, suid)
     globals().update(client_globals)
     globals().pop('reply_Q', None)
     dispynode_logger.setLevel(client_globals.pop('loglevel'))
@@ -460,6 +477,26 @@ class _DispyNode(object):
         if not dest_path_prefix:
             dest_path_prefix = os.path.join(tempfile.gettempdir(), 'dispy', 'node')
         self.dest_path_prefix = os.path.abspath(dest_path_prefix.strip()).rstrip(os.sep)
+        dispynode_logger.info('Files will be saved under "%s"', self.dest_path_prefix)
+        self._safe_setup = bool(safe_setup)
+
+        self.suid = None
+        self.sgid = None
+        if (self._safe_setup and hasattr(stat, 'S_ISUID') and
+            (hasattr(os, 'setresuid') or hasattr(os, 'setreuid'))):
+            sbuf = os.stat(sys.executable)
+            if sbuf.st_mode & stat.S_ISUID:
+                self.suid = sbuf.st_uid
+            if sbuf.st_mode & stat.S_ISGID:
+                self.sgid = sbuf.st_gid
+
+            if (os.geteuid() == self.suid and os.getegid() == self.sgid):
+                self.ruid = os.getuid()
+                self.rgid = os.getgid()
+                os.setgid(self.rgid)
+                os.setuid(self.ruid)
+            else:
+                self.suid = self.sgid = None
 
         if os.name == 'nt':
             self.signals = [signal.CTRL_BREAK_EVENT, signal.CTRL_BREAK_EVENT, signal.SIGTERM]
@@ -471,8 +508,8 @@ class _DispyNode(object):
             with open(config, 'rb') as fd:
                 config = pickle.load(fd)
             if not clean:
-                print('Another dispynode server seems to be running with PID %s;\n'
-                      '    terminate that process and rerun with "clean" option' %
+                print('\n    Another dispynode server seems to be running with PID %s;'
+                      '\n    terminate that process and rerun with "clean" option\n' %
                       config.get('pid', None))
                 exit(1)
 
@@ -483,8 +520,8 @@ class _DispyNode(object):
                     assert abs(proc.create_time() - config['create_time']) < 1
                     assert proc.ppid() in (config['ppid'], 1)
                 except Exception:
-                    print('Apparently previous dispynode (PID %s) has gone away;\n'
-                          'please check manually and kill process(es) if necessary\n' %
+                    print('\n    Apparently previous dispynode (PID %s) has gone away;'
+                          '\n    please check manually and kill process(es) if necessary\n' %
                           config['pid'])
                     config = None
             else:
@@ -614,7 +651,8 @@ class _DispyNode(object):
 
         if not os.path.isdir(self.dest_path_prefix):
             os.makedirs(self.dest_path_prefix)
-            os.chmod(self.dest_path_prefix, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+            os.chmod(self.dest_path_prefix, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
+                     | stat.S_IXGRP | stat.S_IXOTH)
         os.chdir(self.dest_path_prefix)
 
         self.pycos = Pycos()
@@ -701,7 +739,6 @@ class _DispyNode(object):
         self.__init_globals.pop('_dispy_config',  None)
         self.__init_globals.pop('_dispy_cmd', None)
         self.__init_globals['_dispy_node'] = self
-        self._safe_setup = bool(safe_setup)
 
         udp_addrinfos = {}
         for addrinfo in self.addrinfos.values():
@@ -971,8 +1008,10 @@ class _DispyNode(object):
                         client.globals['__dispy_job_reply'] = job_info.job_reply
                         args = (compute.name, (compute.code, _job.code),
                                 client.globals, _job._args, _job._kwargs)
+                        os.chdir(compute.dest_path)
                         job_info.proc = multiprocessing.Process(target=_dispy_job_func, args=args)
                         job_info.proc.start()
+                        os.chdir(self.dest_path_prefix)
                         job_pkl = os.path.join(self.dest_path_prefix, 'job_%s.pkl' % reply.uid)
                         with open(job_pkl, 'wb') as fd:
                             pickle.dump({'pid': job_info.proc.pid, 'ppid': self.pid}, fd)
@@ -1052,7 +1091,11 @@ class _DispyNode(object):
                     compute.dest_path = os.path.join(dest, compute.dest_path)
                 if not os.path.isdir(compute.dest_path):
                     try:
-                        os.makedirs(compute.dest_path)
+                        os.mkdir(compute.dest_path)
+                        os.chmod(compute.dest_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR |
+                                 stat.S_IRGRP | stat.S_IWGRP | stat.S_IXGRP | stat.S_ISGID)
+                        if self.sgid is not None:
+                            os.chown(compute.dest_path, -1, self.sgid)
                     except Exception:
                         try:
                             yield conn.send_msg(('Could not create destination path').encode())
@@ -1060,8 +1103,11 @@ class _DispyNode(object):
                             pass
                         raise StopIteration
             else:
-                compute.dest_path = tempfile.mkdtemp(prefix=compute.name + '_', dir=dest)
-            os.chmod(compute.dest_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+                compute.dest_path = tempfile.mkdtemp(prefix=str(compute.id) + '_', dir=dest)
+                os.chmod(compute.dest_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR |
+                         stat.S_IRGRP | stat.S_IWGRP | stat.S_IXGRP | stat.S_ISGID)
+            if self.sgid is not None:
+                os.chown(compute.dest_path, -1, self.sgid)
 
             if compute.id in self.clients:
                 dispynode_logger.warning('Computation "%s" (%s) is being replaced',
@@ -1156,6 +1202,13 @@ class _DispyNode(object):
                     assert recvd == xf.stat_buf.st_size
                     os.utime(tgt, (xf.stat_buf.st_atime, xf.stat_buf.st_mtime))
                     os.chmod(tgt, stat.S_IMODE(xf.stat_buf.st_mode))
+                    # flags = stat.S_IMODE(xf.stat_buf.st_mode) & stat.S_IRWXU
+                    # os.chmod(tgt, stat.S_IMODE(xf.stat_buf.st_mode) |
+                    #          (stat.S_IRGRP if (flags & stat.S_IRUSR) else 0) |
+                    #          (stat.S_IWGRP if (flags & stat.S_IWUSR) else 0) |
+                    #          (stat.S_IXGRP if (flags & stat.S_IXUSR) else 0))
+                    if self.sgid is not None:
+                        os.chown(tgt, -1, self.sgid)
                 except Exception:
                     dispynode_logger.warning('Copying file "%s" failed (%s / %s) with "%s"',
                                              xf.name, recvd, xf.stat_buf.st_size,
@@ -1194,6 +1247,8 @@ class _DispyNode(object):
             client.globals['__dispy_job_reply_addr'] = (compute.scheduler_ip_addr,
                                                         compute.job_result_port)
             client.globals['reply_Q'] = self.reply_Q
+            client.globals['suid'] = self.suid
+            client.globals['sgid'] = self.sgid
 
             setup_status = 0
             if self._safe_setup and (compute.setup or (not isinstance(compute.cleanup, bool))):
@@ -1201,8 +1256,7 @@ class _DispyNode(object):
                 client.globals['loglevel'] = dispynode_logger.level
                 client.parent_pipe, client.child_pipe = multiprocessing.Pipe(duplex=True)
                 args = (client.compute, client.child_pipe, client.globals)
-                client.setup_proc = multiprocessing.Process(target=_dispy_setup_process,
-                                                            args=args)
+                client.setup_proc = multiprocessing.Process(target=_dispy_setup_process, args=args)
                 client.setup_proc.start()
                 compute.setup = None
                 for i in range(40):
@@ -1252,7 +1306,6 @@ class _DispyNode(object):
                 globalvars = dict(self.__init_globals)
                 globalvars.update(client.globals)
                 if compute.code:
-                    os.chdir(compute.dest_path)
                     compute.code = compile(compute.code, '<string>', 'exec')
                     exec(compute.code, globalvars)
                     compute.code = marshal.dumps(compute.code)
@@ -1261,6 +1314,7 @@ class _DispyNode(object):
                     localvars = {'_dispy_setup_status': 0,
                                  '_dispy_setup_args': compute.setup.args,
                                  '_dispy_setup_kwargs': compute.setup.kwargs}
+                    os.chdir(compute.dest_path)
                     exec('_dispy_setup_status = %s(*_dispy_setup_args, **_dispy_setup_kwargs)' %
                          compute.setup.name, globalvars, localvars)
                     if localvars['_dispy_setup_status'] in (0, 1):
@@ -1995,8 +2049,8 @@ class _DispyNode(object):
         self.num_computations += 1
         self.scheduler['auth'].discard(compute.auth)
 
-        os.chdir(compute.dest_path)
         if isinstance(compute.cleanup, _Function):
+            os.chdir(compute.dest_path)
             try:
                 globalvars = dict(self.__init_globals)
                 globalvars.update(client.globals)
@@ -2014,12 +2068,12 @@ class _DispyNode(object):
                 dispynode_logger.debug('Cleanup "%s" failed', compute.cleanup.name)
                 dispynode_logger.debug(traceback.format_exc())
 
+            os.chdir(self.dest_path_prefix)
             for module in list(sys.modules.keys()):
                 if module not in self.__init_modules:
                     sys.modules.pop(module, None)
             sys.modules.update(self.__init_modules)
         client.globals.clear()
-        os.chdir(self.dest_path_prefix)
 
         if isinstance(client.setup_proc, multiprocessing.Process):
             for i in range(20):
@@ -2114,10 +2168,23 @@ class _DispyNode(object):
                         else:
                             remove = False
                     if remove:
-                        try:
-                            shutil.rmtree(dirpath)
-                        except Exception:
-                            dispynode_logger.warning('Could not remove "%s"', dirpath)
+                        if os.name == 'nt':
+                            # a job process may not finished yet, so wait a bit if necessary
+                            for i in range(10):
+                                try:
+                                    shutil.rmtree(dirpath)
+                                except Exception:
+                                    yield task.sleep(0.1)
+                                    continue
+                                else:
+                                    break
+                            else:
+                                dispynode_logger.warning('Could not remove "%s"', dirpath)
+                        else:
+                            try:
+                                shutil.rmtree(dirpath)
+                            except Exception:
+                                dispynode_logger.warning('Could not remove "%s"', dirpath)
 
         if client.pending_results == 0:
             pkl_path = os.path.join(self.dest_path_prefix, '%s_%s.pkl' % (compute.id, compute.auth))
