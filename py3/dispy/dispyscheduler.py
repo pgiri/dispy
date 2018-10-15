@@ -1050,20 +1050,17 @@ class _Scheduler(object, metaclass=Singleton):
 
         elif msg.startswith(b'SET_NODE_CPUS:'):
             req = msg[len(b'SET_NODE_CPUS:'):]
-            cpus = -1
             try:
                 req = deserialize(req)
                 cluster = self._clusters[req['compute_id']]
                 assert cluster.client_auth == req['auth']
                 # for shared cluster, changing cpus may not be valid, as we
                 # don't maintain cpus per cluster
-                node = _node_ipaddr(node)
-                node = self._nodes.get(node, None)
-                if node:
-                    cpus = node.cpus
+                resp = yield self.set_node_cpus(req['node'], req['cpus'])
             except Exception:
                 logger.debug(traceback.format_exc())
-            resp = serialize(cpus)
+                resp = (None, -1)
+            resp = serialize(resp)
 
         else:
             logger.debug('Ignoring invalid command')
@@ -1948,7 +1945,7 @@ class _Scheduler(object, metaclass=Singleton):
 
     def deallocate_node(self, cluster, node, task=None):
         # generator
-        node = self._nodes.get(node, None)
+        node = self._nodes.get(_node_ipaddr(node), None)
         if node is None:
             raise StopIteration(-1)
         node.clusters.discard(cluster._compute.id)
@@ -1956,15 +1953,15 @@ class _Scheduler(object, metaclass=Singleton):
 
     def close_node(self, cluster, node, terminate_pending, task=None):
         # generator
-        node = self._nodes.get(node, None)
+        node = self._nodes.get(_node_ipaddr(node), None)
         if node is None:
             raise StopIteration(-1)
         node.clusters.discard(cluster._compute.id)
         yield node.close(cluster._compute, terminate_pending=terminate_pending)
 
-    def node_jobs(self, cluster, ip_addr, from_node=False, get_uids=True, task=None):
+    def node_jobs(self, cluster, node, from_node=False, get_uids=True, task=None):
         # generator
-        node = self._nodes.get(ip_addr, None)
+        node = self._nodes.get(_node_ipaddr(node), None)
         if not node or cluster._compute.id not in node.clusters:
             raise StopIteration([])
         if from_node:
@@ -2005,10 +2002,9 @@ class _Scheduler(object, metaclass=Singleton):
             cpus = int(cpus)
         except ValueError:
             raise StopIteration(-1)
-        node = _node_ipaddr(node)
-        node = self._nodes.get(node, None)
+        node = self._nodes.get(_node_ipaddr(node), None)
         if node is None:
-            cpus = -1
+            reply = (None, -1)
         else:
             if cpus >= 0:
                 node.cpus = min(node.avail_cpus, cpus)
@@ -2021,7 +2017,8 @@ class _Scheduler(object, metaclass=Singleton):
                 if dispy_node:
                     dispy_node.cpus = cpus
             yield self._sched_event.set()
-        raise StopIteration(cpus)
+            reply = (node.ip_addr, node.cpus)
+        raise StopIteration(reply)
 
     def shutdown(self):
         def _shutdown(self, task=None):

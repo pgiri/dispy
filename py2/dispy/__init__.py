@@ -2022,12 +2022,12 @@ class _Cluster(object):
         self._nodes = {}
         logger.debug('Scheduler quit')
 
-    def submit_job(self, _job, node=None, task=None):
+    def submit_job(self, _job, ip_addr=None, task=None):
         # generator
         _job.uid = id(_job)
         cluster = self._clusters[_job.compute_id]
-        if node:
-            node = self._nodes.get(node.ip_addr, None)
+        if ip_addr:
+            node = self._nodes.get(ip_addr, None)
             if not node or _job.compute_id not in node.clusters:
                 raise StopIteration(-1)
             node.pending_jobs.append(_job)
@@ -2076,13 +2076,8 @@ class _Cluster(object):
             resp = -1
         raise StopIteration(resp)
 
-    def allocate_node(self, cluster, node_alloc, task=None):
+    def allocate_node(self, cluster, node_allocs, task=None):
         # generator
-        if not isinstance(node_alloc, list):
-            node_alloc = [node_alloc]
-        node_allocs = _parse_node_allocs(node_alloc)
-        if not node_allocs:
-            raise StopIteration(-1)
         for i in range(len(node_allocs)-1, -1, -1):
             node = self._nodes.get(node_allocs[i].ip_addr, None)
             if node:
@@ -2107,18 +2102,31 @@ class _Cluster(object):
 
     def deallocate_node(self, cluster, node, task=None):
         # generator
-        node = _node_ipaddr(node)
-        node = self._nodes.get(node, None)
-        if node is None:
+        if isinstance(node, DispyNode):
+            node = cluster._dispy_nodes.get(node.ip_addr, None)
+        elif isinstance(node, str):
+            node = cluster._dispy_nodes.get(_node_ipaddr(node), None)
+        else:
+            node = None
+        if node:
+            node = self._nodes.get(node.ip_addr, None)
+        if not node:
             raise StopIteration(-1)
         node.clusters.discard(cluster._compute.id)
         yield 0
 
     def close_node(self, cluster, node, terminate_pending, task=None):
         # generator
-        node = _node_ipaddr(node)
-        node = self._nodes.get(node, None)
-        if node is None:
+        node = self._nodes.get(ip_addr, None)
+        if isinstance(node, DispyNode):
+            node = cluster._dispy_nodes.get(node.ip_addr, None)
+        elif isinstance(node, str):
+            node = cluster._dispy_nodes.get(_node_ipaddr(node), None)
+        else:
+            node = None
+        if node:
+            node = self._nodes.get(node.ip_addr, None)
+        if not node:
             raise StopIteration(-1)
         node.clusters.discard(cluster._compute.id)
         jobs = [_job for _job in node.pending_jobs if _job.compute_id == cluster._compute.id]
@@ -2132,45 +2140,61 @@ class _Cluster(object):
                                  if _job.compute_id != cluster._compute.id]
         yield node.close(cluster._compute, terminate_pending=terminate_pending)
 
-    def set_node_cpus(self, node, cpus, task=None):
+    def set_node_cpus(self, cluster, node, cpus, task=None):
         # generator
+        if isinstance(node, DispyNode):
+            node = cluster._dispy_nodes.get(node.ip_addr, None)
+        elif isinstance(node, str):
+            node = cluster._dispy_nodes.get(_node_ipaddr(node), None)
+        else:
+            node = None
+        if node:
+            node = self._nodes.get(node.ip_addr, None)
+        if not node:
+            raise StopIteration(-1)
         try:
             cpus = int(cpus)
         except ValueError:
             raise StopIteration(-1)
-        node = _node_ipaddr(node)
-        node = self._nodes.get(node, None)
-        if node is None:
-            cpus = -1
-        else:
-            if cpus >= 0:
-                node.cpus = min(node.avail_cpus, cpus)
-            elif (node.avail_cpus + cpus) >= 0:
-                node.cpus = node.avail_cpus + cpus
-            cpus = node.cpus
-            for cid in node.clusters:
-                cluster = self._clusters[cid]
-                dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
-                if dispy_node:
-                    dispy_node.cpus = cpus
-            yield self._sched_event.set()
+        if cpus >= 0:
+            node.cpus = min(node.avail_cpus, cpus)
+        elif (node.avail_cpus + cpus) >= 0:
+            node.cpus = node.avail_cpus + cpus
+        cpus = node.cpus
+        for cid in node.clusters:
+            cluster = self._clusters[cid]
+            dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
+            if dispy_node:
+                dispy_node.cpus = cpus
+        yield self._sched_event.set()
         raise StopIteration(cpus)
 
     def send_file(self, cluster, node, xf, task=None):
-        node = self._nodes.get(node.ip_addr, None)
+        if isinstance(node, DispyNode):
+            node = cluster._dispy_nodes.get(node.ip_addr, None)
+        elif isinstance(node, str):
+            node = cluster._dispy_nodes.get(_node_ipaddr(node), None)
+        else:
+            node = None
+        if node:
+            node = self._nodes.get(node.ip_addr, None)
         if not node:
             raise StopIteration(-1)
         yield node.xfer_file(xf)
 
     def node_jobs(self, cluster, node, from_node, task=None):
         # generator
-        ip_addr = node
-        node = self._nodes.get(ip_addr, None)
+        if isinstance(node, DispyNode):
+            node = cluster._dispy_nodes.get(node.ip_addr, None)
+        elif isinstance(node, str):
+            node = cluster._dispy_nodes.get(_node_ipaddr(node), None)
+        else:
+            node = None
+        if node:
+            node = self._nodes.get(node.ip_addr, None)
         if not node:
-            node = _node_ipaddr(ip_addr)
-            if node:
-                node = self._nodes.get(node, None)
-        if not node or cluster._compute.id not in node.clusters:
+            raise StopIteration(-1)
+        if cluster._compute.id not in node.clusters:
             raise StopIteration([])
         if from_node:
             sock = socket.socket(node.sock_family, socket.SOCK_STREAM)
@@ -2631,11 +2655,7 @@ class JobCluster(object):
         if isinstance(node, DispyNode):
             node = self._dispy_nodes.get(node.ip_addr, None)
         elif isinstance(node, str):
-            if node[0].isdigit():
-                node = self._dispy_nodes.get(node, None)
-            else:
-                node = _node_ipaddr(node)
-                node = self._dispy_nodes.get(node, None)
+            node = self._dispy_nodes.get(_node_ipaddr(node), None)
         else:
             node = None
         if not node:
@@ -2650,7 +2670,7 @@ class JobCluster(object):
             logger.warning('Creating job for "%s", "%s" failed with "%s"',
                            str(args), str(kwargs), traceback.format_exc())
             return None
-        if Task(self._cluster.submit_job, _job, node).value() == 0:
+        if Task(self._cluster.submit_job, _job, node.ip_addr).value() == 0:
             return _job.job
         else:
             return None
@@ -2666,10 +2686,15 @@ class JobCluster(object):
         return Task(self._cluster.cancel_job, job).value()
 
     def allocate_node(self, node):
-        """Allocate given node for this cluster. 'node' may be host
+        """Allocate given node for this cluster. 'node' may be (list of) host
         name or IP address, or an instance of NodeAllocate.
         """
-        return Task(self._cluster.allocate_node, self, node).value()
+        if not isinstance(node, list):
+            node = [node]
+        node_allocs = _parse_node_allocs(node)
+        if not node_allocs:
+            return -1
+        return Task(self._cluster.allocate_node, self, node_allocs).value()
 
     def deallocate_node(self, node):
         """Deallocate given node for this cluster. 'node' may be host name or IP
@@ -2695,26 +2720,13 @@ class JobCluster(object):
         number of CPUs given is negative then that many CPUs are not
         used (from the available CPUs).
         """
-        return Task(self._cluster.set_node_cpus, node, cpus).value()
+        return Task(self._cluster.set_node_cpus, self, node, cpus).value()
 
     def send_file(self, path, node):
         """Send file with given 'path' to 'node'.  'node' can be an
         instance of DispyNode (e.g., as received in cluster status
         callback) or IP address or host name.
         """
-        if isinstance(node, DispyNode):
-            node = self._dispy_nodes.get(node.ip_addr, None)
-        elif isinstance(node, str):
-            if node[0].isdigit():
-                node = self._dispy_nodes.get(node, None)
-            else:
-                node = _node_ipaddr(node)
-                node = self._dispy_nodes.get(node, None)
-        else:
-            node = None
-
-        if not node:
-            return -1
         cwd = self._cluster.dest_path
         path = os.path.abspath(path)
         if path.startswith(cwd):
@@ -2997,7 +3009,7 @@ class SharedJobCluster(JobCluster):
             if isinstance(node, DispyNode):
                 node = node.ip_addr
             elif isinstance(node, str):
-                node = _node_ipaddr(node)
+                pass
             else:
                 node = None
             if not node:
@@ -3097,17 +3109,16 @@ class SharedJobCluster(JobCluster):
             sock.close()
         return 0
 
-    def allocate_node(self, node_alloc):
+    def allocate_node(self, node):
         """Similar to 'allocate_node' of JobCluster.
         """
-        if not isinstance(node_alloc, list):
-            node_alloc = [node_alloc]
-        node_allocs = _parse_node_allocs(node_alloc)
+        if not isinstance(node, list):
+            node = [node]
+        node_allocs = _parse_node_allocs(node)
         if not node_allocs:
             raise StopIteration(-1)
         if len(node_allocs) != 1:
             return -1
-        node_alloc = node_allocs[0]
 
         sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM), blocking=True,
                            keyfile=self._cluster.keyfile, certfile=self._cluster.certfile)
@@ -3116,7 +3127,7 @@ class SharedJobCluster(JobCluster):
             sock.connect((self.scheduler_ip_addr, self.scheduler_port))
             sock.sendall(self._scheduler_auth)
             req = {'compute_id': self._compute.id, 'auth': self._compute.auth,
-                   'node_alloc': node_alloc}
+                   'node_alloc': node_allocs}
             sock.send_msg('ALLOCATE_NODE:' + serialize(req))
             reply = sock.recv_msg()
             reply = deserialize(reply)
@@ -3132,10 +3143,10 @@ class SharedJobCluster(JobCluster):
         """
         if isinstance(node, DispyNode):
             node = node.ip_addr
-        else:
-            node = _node_ipaddr(node)
-            if not node:
-                return -1
+        elif isinstance(node, str):
+            pass
+        if not node:
+            return -1
         sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM), blocking=True,
                            keyfile=self._cluster.keyfile, certfile=self._cluster.certfile)
         sock.settimeout(MsgTimeout)
@@ -3158,10 +3169,10 @@ class SharedJobCluster(JobCluster):
         """
         if isinstance(node, DispyNode):
             node = node.ip_addr
-        else:
-            node = _node_ipaddr(node)
-            if not node:
-                return -1
+        elif isinstance(node, str):
+            pass
+        if not node:
+            return -1
         sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM), blocking=True,
                            keyfile=self._cluster.keyfile, certfile=self._cluster.certfile)
         sock.settimeout(MsgTimeout)
@@ -3185,10 +3196,10 @@ class SharedJobCluster(JobCluster):
         """
         if isinstance(node, DispyNode):
             node = node.ip_addr
-        else:
-            node = _node_ipaddr(node)
-            if not node:
-                return []
+        elif isinstance(node, str):
+            pass
+        if not node:
+            return []
         sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM), blocking=True,
                            keyfile=self._cluster.keyfile, certfile=self._cluster.certfile)
         sock.settimeout(MsgTimeout)
@@ -3212,6 +3223,15 @@ class SharedJobCluster(JobCluster):
     def set_node_cpus(self, node, cpus):
         """Similar to 'set_node_cpus' of JobCluster.
         """
+        # setting a node's cpus may affect other clients, so (for now) disable it.
+        return -1
+
+        if isinstance(node, DispyNode):
+            node = node.ip_addr
+        elif isinstance(node, str):
+            pass
+        if not node:
+            return -1
         sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM), blocking=True,
                            keyfile=self._cluster.keyfile, certfile=self._cluster.certfile)
         sock.settimeout(MsgTimeout)
@@ -3223,6 +3243,10 @@ class SharedJobCluster(JobCluster):
             sock.send_msg('SET_NODE_CPUS:' + serialize(req))
             reply = sock.recv_msg()
             reply = deserialize(reply)
+            if isinstance(reply, tuple) and reply[0]:
+                node = self._dispy_nodes.get(reply[0], None)
+                if node:
+                    node.cpus = reply[1]
         except Exception:
             logger.warning('Could not connect to scheduler to add node')
             return -1
@@ -3235,14 +3259,10 @@ class SharedJobCluster(JobCluster):
         instance of DispyNode (e.g., as received in cluster status
         callback) or IP address or host name.
         """
-
-        if node:
-            if isinstance(node, DispyNode):
-                node = node.ip_addr
-            elif isinstance(node, str):
-                node = _node_ipaddr(node)
-            else:
-                node = None
+        if isinstance(node, DispyNode):
+            node = node.ip_addr
+        elif isinstance(node, str):
+            pass
         if not node:
             return -1
 
