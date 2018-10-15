@@ -487,8 +487,16 @@ class _DispyNode(object):
             sbuf = os.stat(sys.executable)
             if sbuf.st_mode & stat.S_ISUID:
                 self.suid = sbuf.st_uid
+                if self.suid == 0:
+                    print('\n    WARNING: Python interpreter %s has suid set to 0 '
+                          '\n    (likely administrator privileges), which is dangerous.\n\n' %
+                          sys.executable)
             if sbuf.st_mode & stat.S_ISGID:
                 self.sgid = sbuf.st_gid
+                if self.sgid == 0:
+                    print('\n    WARNING: Python interpreter %s has sgid set to 0 '
+                          '\n    (likely administrator privileges), which is dangerous.\n\n' %
+                          sys.executable)
 
             if (os.geteuid() == self.suid and os.getegid() == self.sgid):
                 self.ruid = os.getuid()
@@ -693,16 +701,17 @@ class _DispyNode(object):
                 ppid = os.getppid()
             else:
                 ppid = 1
-        with open(os.path.join(self.dest_path_prefix, 'config.pkl'), 'wb') as fd:
-            config = {
-                'ip_addrs': [addrinfo.ip for addrinfo in self.addrinfos.values()],
-                'ext_ip_addrs': [addrinfo.ext_ip_addr for addrinfo in self.addrinfos.values()],
-                'port': self.port, 'avail_cpus': self.avail_cpus,
-                'sign': self.sign, 'secret': self.secret, 'auth': self.auth,
-                'keyfile': self.keyfile, 'certfile': self.certfile, 'pid': self.pid,
-                'ppid': ppid, 'create_time': create_time
-                }
-            pickle.dump(config, fd)
+        config = os.path.join(self.dest_path_prefix, 'config.pkl')
+        with open(config, 'wb') as fd:
+            pickle.dump({
+                    'ip_addrs': [addrinfo.ip for addrinfo in self.addrinfos.values()],
+                    'ext_ip_addrs': [addrinfo.ext_ip_addr for addrinfo in self.addrinfos.values()],
+                    'port': self.port, 'avail_cpus': self.avail_cpus,
+                    'sign': self.sign, 'secret': self.secret, 'auth': self.auth,
+                    'keyfile': self.keyfile, 'certfile': self.certfile, 'pid': self.pid,
+                    'ppid': ppid, 'create_time': create_time
+                    }, fd)
+            os.chmod(config, stat.S_IRUSR | stat.S_IWUSR)
 
         # prepend current directory in sys.path so computations can
         # load modules from current working directory
@@ -1085,6 +1094,7 @@ class _DispyNode(object):
                 except Exception:
                     yield conn.send_msg(('Could not create destination path').encode())
                     raise StopIteration
+            os.chmod(dest, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
             if compute.dest_path and isinstance(compute.dest_path, str):
                 # TODO: get os.sep from client and convert (in case of mixed environments)?
                 if not compute.dest_path.startswith(os.sep):
