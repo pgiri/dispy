@@ -1709,21 +1709,20 @@ class _DispyNode(object):
         compute = client.compute
         if not os.path.isdir(compute.dest_path):
             raise StopIteration
-        result_files = [f for f in os.listdir(compute.dest_path)
-                        if f.startswith('_dispy_job_reply_') and f.endswith('.pkl')]
-        if len(result_files) > 64:
-            result_files = result_files[:64]
-        for result_file in result_files:
-            result_file = os.path.join(compute.dest_path, result_file)
+        reply_files = [f for f in os.listdir(compute.dest_path)
+                       if f.startswith('_dispy_job_reply_') and f.endswith('.pkl')]
+        if len(reply_files) > 64:
+            reply_files = reply_files[:64]
+        for reply_file in reply_files:
+            reply_file = os.path.join(compute.dest_path, reply_file)
             try:
-                with open(result_file, 'rb') as fd:
-                    job_result = pickle.load(fd)
+                with open(reply_file, 'rb') as fd:
+                    job_reply = pickle.load(fd)
             except Exception:
-                dispynode_logger.debug('Could not load "%s"', result_file)
+                dispynode_logger.debug('Could not load "%s"', reply_file)
                 # dispynode_logger.debug(traceback.format_exc())
                 continue
-            job_info = _DispyJobInfo(job_result, (compute.scheduler_ip_addr,
-                                                  compute.job_result_port), compute, [])
+            job_info = _DispyJobInfo(job_reply, compute, [])
             status = yield self._send_job_reply(job_info, resending=True)
             if status:
                 break
