@@ -473,36 +473,31 @@ class _DispyNode(object):
         if self.certfile:
             self.certfile = os.path.abspath(self.certfile)
         if not dest_path_prefix:
-            dest_path_prefix = os.path.join(tempfile.gettempdir(), 'dispy', 'node')
+            dest_path_prefix = tempfile.gettempdir()
+        dest_path_prefix = os.path.join(dest_path_prefix, 'dispy', 'node')
         self.dest_path_prefix = os.path.abspath(dest_path_prefix.strip()).rstrip(os.sep)
         dispynode_logger.info('Files will be saved under "%s"', self.dest_path_prefix)
         self._safe_setup = bool(safe_setup)
 
         self.suid = None
         self.sgid = None
-        if (self._safe_setup and hasattr(stat, 'S_ISUID') and
-            (hasattr(os, 'setresuid') or hasattr(os, 'setreuid'))):
-            sbuf = os.stat(sys.executable)
-            if sbuf.st_mode & stat.S_ISUID:
-                self.suid = sbuf.st_uid
+        if (self._safe_setup and (hasattr(os, 'setresuid') or hasattr(os, 'setreuid'))):
+            if (os.getuid() != os.geteuid() and os.getegid() != os.getgid()):
+                self.suid = os.geteuid()
+                self.sgid = os.getegid()
                 if self.suid == 0:
-                    print('\n    WARNING: Python interpreter %s has suid set to 0 '
-                          '\n    (likely administrator privileges), which is dangerous.\n\n' %
+                    print('\n    WARNING: Python interpreter %s likely has suid set to 0 '
+                          '\n    (administrator privilege), which is dangerous.\n\n' %
                           sys.executable)
-            if sbuf.st_mode & stat.S_ISGID:
-                self.sgid = sbuf.st_gid
                 if self.sgid == 0:
-                    print('\n    WARNING: Python interpreter %s has sgid set to 0 '
-                          '\n    (likely administrator privileges), which is dangerous.\n\n' %
+                    print('\n    WARNING: Python interpreter %s likely has sgid set to 0 '
+                          '\n    (administrator privilege), which is dangerous.\n\n' %
                           sys.executable)
 
-            if (os.geteuid() == self.suid and os.getegid() == self.sgid):
-                self.ruid = os.getuid()
-                self.rgid = os.getgid()
-                os.setgid(self.rgid)
-                os.setuid(self.ruid)
-            else:
-                self.suid = self.sgid = None
+                os.setegid(os.getgid())
+                os.seteuid(os.getuid())
+                dispynode_logger.info('Computations will run with uid %s and gid %s' %
+                                      (self.suid, self.sgid))
 
         if os.name == 'nt':
             self.signals = [signal.CTRL_BREAK_EVENT, signal.CTRL_BREAK_EVENT, signal.SIGTERM]
@@ -657,8 +652,10 @@ class _DispyNode(object):
 
         if not os.path.isdir(self.dest_path_prefix):
             os.makedirs(self.dest_path_prefix)
-            os.chmod(self.dest_path_prefix, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
-                     | stat.S_IXGRP | stat.S_IXOTH)
+        os.chmod(self.dest_path_prefix, stat.S_IRUSR | stat.S_IWUSR |
+                 stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        os.chmod(os.path.join(self.dest_path_prefix, '..'), stat.S_IRUSR | stat.S_IWUSR |
+                 stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
         os.chdir(self.dest_path_prefix)
 
         self.pycos = Pycos()
@@ -1345,6 +1342,35 @@ class _DispyNode(object):
             raise StopIteration(None, 'ACK')
 
         def terminate_job(client, job_info, task=None):
+
+            def kill_pid(pid, signum):
+                suid = client.globals.get('suid', None)
+                if suid is None:
+                    try:
+                        os.kill(pid, signum)
+                    except (OSError, Exception):
+                        return -1
+                    return 0
+                else:
+                    sgid = client.globals['sgid']
+                    def suid_kill():
+                        if hasattr(os, 'setresuid'):
+                            os.setresgid(sgid, sgid, sgid)
+                            os.setresuid(suid, suid, suid)
+                        else:
+                            os.setregid(sgid, sgid)
+                            os.setreuid(suid, suid)
+                        try:
+                            os.kill(pid, signum)
+                        except (OSError, Exception):
+                            return -1
+                        return 0
+
+                    proc = multiprocessing.Process(target=suid_kill)
+                    proc.start()
+                    proc.join()
+                    return proc.exitcode
+
             compute = client.compute
             if job_info.proc:
                 proc = job_info.proc
@@ -1364,23 +1390,18 @@ class _DispyNode(object):
             else:
                 if isinstance(proc, multiprocessing.Process):
                     if proc.is_alive():
-                        proc.terminate()
+                        kill_pid(proc.pid, signal.SIGTERM)
                     else:
                         raise StopIteration
                 elif isinstance(proc, subprocess.Popen):
                     if proc.poll() is None:
-                        proc.terminate()
+                        kill_pid(proc.pid, signal.SIGTERM)
                     else:
                         raise StopIteration
                 else:
-                    try:
-                        os.kill(pid, self.signals[0])
-                    except OSError:
+                    if kill_pid(pid, self.signals[0]):
                         # job terminated?
-                        raise StopIteration
-                    except Exception:
                         # TODO: send reply? job already finished?
-                        dispynode_logger.debug(traceback.format_exc())
                         raise StopIteration
 
             wait_nohang = getattr(os, 'WNOHANG', None)
@@ -1409,15 +1430,11 @@ class _DispyNode(object):
                     yield task.sleep(0.1)
                     continue
 
-                try:
-                    os.kill(pid, signum)
-                except OSError:
+                if kill_pid(pid, signum):
                     # TODO: check err.errno for all platforms
                     break
             else:
-                try:
-                    os.kill(pid, self.signals[2])
-                except Exception:
+                if kill_pid(pid, self.signals[2]):
                     # TODO: is there a way to be sure if process is
                     # killed / job finished etc.?
                     dispynode_logger.debug('Killing job %s (PID %s) failed: %s',
@@ -1855,6 +1872,36 @@ class _DispyNode(object):
             yield self.broadcast_ping_msg(task=task)
 
     def __job_program(self, _job, job_info):
+
+        def suid_program(program, env, suid, sgid, pipe):
+            if hasattr(os, 'setresuid'):
+                os.setresgid(sgid, sgid, sgid)
+                os.setresuid(suid, suid, suid)
+            else:
+                os.setregid(sgid, sgid)
+                os.setreuid(suid, suid)
+
+            if os.name == 'nt':
+                flags = subprocess.CREATE_NEW_PROCESS_GROUP
+            else:
+                flags = 0
+            sub_proc = subprocess.Popen(program, stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE, env=env, creationflags=flags)
+
+            def sighandler(signum, frame):
+                sub_proc.send_signal(signum)
+                # os.kill(sub_proc.pid, signum)
+
+            signal.signal(signal.SIGINT, sighandler)
+            signal.signal(signal.SIGTERM, sighandler)
+            if os.name == 'nt':
+                signal.signal(signal.SIGBREAK, sighandler)
+
+            out, err = sub_proc.communicate()
+            pipe.send((out, err))
+            pipe.close()
+            exit(sub_proc.returncode)
+
         client = self.clients[_job.compute_id]
         compute = client.compute
         if compute.name.endswith('.py'):
@@ -1874,14 +1921,29 @@ class _DispyNode(object):
                     env[k] = v
                 elif isinstance(v, int):
                     env[k] = repr(v)
-            job_info.proc = subprocess.Popen(program, stdout=subprocess.PIPE,
-                                             stderr=subprocess.PIPE, env=env)
             job_pkl = os.path.join(self.dest_path_prefix, 'job_%s.pkl' % (reply.uid))
-            with open(job_pkl, 'wb') as fd:
-                pickle.dump({'pid': job_info.proc.pid, 'ppid': self.pid}, fd)
-            os.chdir(self.dest_path_prefix)
-            reply.stdout, reply.stderr = job_info.proc.communicate()
-            reply.result = serialize(job_info.proc.returncode)
+            suid = client.globals.get('suid', None)
+            if suid is not None:
+                pipe = multiprocessing.Pipe(duplex=False)
+                args = (program, env, suid, client.globals['sgid'], pipe[1])
+                job_info.proc = multiprocessing.Process(target=suid_program, args=args)
+                job_info.proc.start()
+                os.chdir(self.dest_path_prefix)
+                with open(job_pkl, 'wb') as fd:
+                    pickle.dump({'pid': job_info.proc.pid, 'ppid': self.pid}, fd)
+                job_info.proc.join()
+                reply.stdout, reply.stderr = pipe[0].recv()
+                pipe[0].close()
+                reply.result = serialize(job_info.proc.exitcode)
+            else:
+                job_info.proc = subprocess.Popen(program, stdout=subprocess.PIPE,
+                                                 stderr=subprocess.PIPE, env=env)
+                os.chdir(self.dest_path_prefix)
+                with open(job_pkl, 'wb') as fd:
+                    pickle.dump({'pid': job_info.proc.pid, 'ppid': self.pid}, fd)
+                reply.stdout, reply.stderr = job_info.proc.communicate()
+                reply.result = serialize(job_info.proc.returncode)
+
             if reply.status == DispyJob.Running:
                 reply.status = DispyJob.Finished
             else:
@@ -1890,9 +1952,8 @@ class _DispyNode(object):
             reply.result = serialize(None)
             reply.status = DispyJob.Terminated
             reply.exception = traceback.format_exc()
+            os.chdir(self.dest_path_prefix)
         reply.end_time = time.time()
-        if os.name == 'nt':
-            os.chdir(os.path.join(compute.dest_path, '..'))
         self.reply_Q.put(reply)
 
     def __reply_Q(self):
