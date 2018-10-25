@@ -483,23 +483,22 @@ class _DispyNode(object):
 
         self.suid = None
         self.sgid = None
-        if (self._safe_setup and (hasattr(os, 'setresuid') or hasattr(os, 'setreuid'))):
-            if (os.getuid() != os.geteuid() and os.getegid() != os.getgid()):
-                self.suid = os.geteuid()
-                self.sgid = os.getegid()
-                if self.suid == 0:
-                    print('\n    WARNING: Python interpreter %s likely has suid set to 0 '
-                          '\n    (administrator privilege), which is dangerous.\n\n' %
-                          sys.executable)
-                if self.sgid == 0:
-                    print('\n    WARNING: Python interpreter %s likely has sgid set to 0 '
-                          '\n    (administrator privilege), which is dangerous.\n\n' %
-                          sys.executable)
+        if ((hasattr(os, 'setresuid') or hasattr(os, 'setreuid')) and os.getuid() != os.geteuid()):
+            self.suid = os.geteuid()
+            self.sgid = os.getegid()
+            if self.suid == 0:
+                print('\n    WARNING: Python interpreter %s likely has suid set to 0 '
+                      '\n    (administrator privilege), which is dangerous.\n\n' %
+                      sys.executable)
+            if self.sgid == 0:
+                print('\n    WARNING: Python interpreter %s likely has sgid set to 0 '
+                      '\n    (administrator privilege), which is dangerous.\n\n' %
+                      sys.executable)
 
-                os.setegid(os.getgid())
-                os.seteuid(os.getuid())
-                dispynode_logger.info('Computations will run with uid %s and gid %s' %
-                                      (self.suid, self.sgid))
+            os.setegid(os.getgid())
+            os.seteuid(os.getuid())
+            dispynode_logger.info('Computations will run with uid %s and gid %s' %
+                                  (self.suid, self.sgid))
 
         if os.name == 'nt':
             self.signals = [signal.CTRL_BREAK_EVENT, signal.CTRL_BREAK_EVENT, signal.SIGTERM]
