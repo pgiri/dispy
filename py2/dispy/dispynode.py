@@ -512,35 +512,52 @@ class _DispyNode(object):
                       '\n    terminate that process and rerun with "clean" option\n' %
                       config.get('pid', None))
                 exit(1)
+        else:
+             config = {}
 
-        if clean and isinstance(config, dict):
-            if psutil and config['create_time']:
+        if clean:
+            if psutil:
                 try:
                     proc = psutil.Process(config['pid'])
-                    assert abs(proc.create_time() - config['create_time']) < 1
-                    assert proc.ppid() in (config['ppid'], 1)
+                    assert any(arg.endswith('dispynode.py') for arg in proc.cmdline())
+                    if config:
+                        assert proc.ppid() in (config['ppid'], 1)
+                        if config['create_time']:
+                            assert abs(proc.create_time() - config['create_time']) < 1
                 except Exception:
                     print('\n    Apparently previous dispynode (PID %s) has gone away;'
                           '\n    please check manually and kill process(es) if necessary\n' %
-                          config['pid'])
-                    config = None
+                          config.get('pid', None))
+                    config = {}
             else:
                 print('\n    WARNING: Using "clean" without "psutil" module may be dangerous!\n')
 
             wait_nohang = getattr(os, 'WNOHANG', None)
-            for job_file in glob.glob(os.path.join(self.dest_path_prefix, 'job_*.pkl')):
-                if not isinstance(config, dict):
-                    try:
-                        os.remove(job_file)
-                    except Exception:
-                        print('Could not remove file "%s"' % job_file)
+            for name in glob.glob(os.path.join(self.dest_path_prefix, '*.pkl')):
+                if name.startswith('_dispy_job_reply_'):
+                    # job results may be retrieved by clients with
+                    # 'recover_jobs' function, so keep them
                     continue
-                with open(job_file, 'rb') as fd:
+                if not config or not name.startswith('job_') or not os.path.isfile(name):
+                    try:
+                        if os.path.isdir(name):
+                            shutil.rmtree(name, ignore_errors=True)
+                        else:
+                            os.remove(name)
+                    except Exception:
+                        print('Could not remove "%s"' % name)
+                    continue
+                with open(name, 'rb') as fd:
                     info = pickle.load(fd)
                     pid = info['pid']
-                dispynode_logger.debug('Killing process with ID %s', pid)
                 try:
-                    if psutil:
+                    os.remove(name)
+                except Exception:
+                    # print(traceback.format_exc())
+                    pass
+                dispynode_logger.debug('Killing process with ID %s', pid)
+                if psutil:
+                    try:
                         proc = psutil.Process(pid)
                         assert proc.is_running()
                         assert proc.ppid() == info['ppid']
@@ -551,47 +568,45 @@ class _DispyNode(object):
                         else:
                             assert any(arg.endswith('dispynode.py') for arg in proc.cmdline())
                             proc.terminate()
-                    else:
-                        proc = None
-                        os.kill(pid, self.signals[0])
+                    except Exception:
+                        continue
+                else:
+                    proc = None
+                    os.kill(pid, self.signals[0])
 
-                    signum = self.signals[1]
-                    for i in range(10):
-                        time.sleep(0.2)
-                        if proc:
-                            proc.wait(0.1)
-                            if not proc.is_running():
-                                break
-                            continue
-                        elif wait_nohang:
-                            try:
-                                if os.waitpid(pid, wait_nohang)[0] == pid:
-                                    break
-                            except OSError:
-                                # TODO: check err.errno for all platforms
-                                break
-                        elif signum:
-                            continue
-
+                signum = self.signals[1]
+                for i in range(10):
+                    time.sleep(0.2)
+                    if proc:
+                        proc.wait(0.1)
+                        if not proc.is_running():
+                            break
+                        continue
+                    elif wait_nohang:
                         try:
-                            os.kill(pid, signum)
-                        except OSError:
+                            if os.waitpid(pid, wait_nohang)[0] == pid:
+                                break
+                        except (OSError, Exception):
                             # TODO: check err.errno for all platforms
                             break
-                    else:
-                        try:
-                            if proc:
-                                proc.kill()
-                                proc.wait(1)
-                            else:
-                                os.kill(pid, self.signals[2])
-                        except Exception:
-                            print('  Could not kill job process with ID %s' % pid)
-                            continue
-                    os.remove(job_file)
-                except Exception:
-                    # print(traceback.format_exc())
-                    pass
+                    elif signum:
+                        continue
+
+                    try:
+                        os.kill(pid, signum)
+                    except (OSError, Exception):
+                        # TODO: check err.errno for all platforms
+                        break
+                else:
+                    try:
+                        if proc:
+                            proc.kill()
+                            proc.wait(1)
+                        else:
+                            os.kill(pid, self.signals[2])
+                    except Exception:
+                        print('  Could not kill job process with ID %s' % pid)
+                        continue
 
             try:
                 pid = config['pid']
