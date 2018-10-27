@@ -103,7 +103,7 @@ class DispyJob(object):
 
     def __init__(self, args, kwargs):
         # id can be assigned by user as appropriate (e.g., to distinguish jobs)
-        self.id = None
+        self.id = id(self)
         # rest are read-only
         self.result = None
         self.stdout = None
