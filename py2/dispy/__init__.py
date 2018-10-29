@@ -27,6 +27,7 @@ import collections
 import struct
 import errno
 import platform
+import itertools
 try:
     import netifaces
 except ImportError:
@@ -103,7 +104,7 @@ class DispyJob(object):
 
     def __init__(self, args, kwargs):
         # id can be assigned by user as appropriate (e.g., to distinguish jobs)
-        self.id = id(self)
+        self.id = None
         # rest are read-only
         self.result = None
         self.stdout = None
@@ -750,7 +751,7 @@ class _DispyJob_(object):
         resp = yield self.node.send('JOB:' + serialize(self), task=task)
         # TODO: deal with NAKs (reschedule?)
         if resp != 0:
-            logger.warning('Failed to run %s on %s: %s', self.uid, self.node.ip_addr, resp)
+            logger.warning('Failed to run %s on %s: %s', self.job.id, self.node.ip_addr, resp)
             raise Exception(str(resp))
         raise StopIteration(resp)
 
@@ -855,6 +856,7 @@ class _Cluster(object):
             self._sched_jobs = {}
             self._sched_event = pycos.Event()
             self._abandoned_jobs = {}
+            self._job_id = itertools.count(start=1)
             self.terminate = False
             self.sign = hashlib.sha1(os.urandom(20))
             for ext_ip_addr in self.addrinfos:
@@ -1821,7 +1823,7 @@ class _Cluster(object):
             elif job.status == DispyJob.Abandoned:
                 pass
             else:
-                logger.warning('Invalid job reply? %s: %s', _job.uid, job.status)
+                logger.warning('Invalid job reply? %s: %s', job.id, job.status)
 
         job.result = deserialize(reply.result)
         job.start_time = reply.start_time
@@ -1843,11 +1845,11 @@ class _Cluster(object):
                 elif reply.status == DispyJob.Cancelled:
                     assert self.shared is True
                 else:
-                    logger.warning('Invalid reply status: %s for job %s', reply.status, _job.uid)
+                    logger.warning('Invalid reply status: %s for job %s', reply.status, job.id)
             elif job.status == DispyJob.Abandoned:
                 pass
             else:
-                logger.warning('Invalid job reply (status)? %s: %s', _job.uid, job.status)
+                logger.warning('Invalid job reply (status)? %s: %s', job.id, job.status)
 
             job.stdout = reply.stdout
             job.stderr = reply.stderr
@@ -1880,8 +1882,8 @@ class _Cluster(object):
                 # _job.hash = os.urandom(10).encode('hex')
                 cluster._jobs.append(_job)
             else:
-                logger.debug('Job %s scheduled on %s abandoned', _job.uid, _job.node.ip_addr)
                 dispy_job = _job.job
+                logger.debug('Job %s scheduled on %s abandoned', dispy_job.id, _job.node.ip_addr)
                 dispy_job.status = DispyJob.Abandoned
                 self._abandoned_jobs[_job.uid] = _job
                 cluster._pending_jobs -= 1
@@ -2061,6 +2063,7 @@ class _Cluster(object):
     def submit_job(self, _job, ip_addr=None, task=None):
         # generator
         _job.uid = id(_job)
+        _job.job.id = next(self._job_id)
         cluster = self._clusters[_job.compute_id]
         if ip_addr:
             node = self._nodes.get(ip_addr, None)
@@ -2085,7 +2088,7 @@ class _Cluster(object):
             raise StopIteration(-1)
         cluster = self._clusters.get(_job.compute_id, None)
         if not cluster:
-            logger.warning('Invalid job %s for cluster "%s"!', _job.uid, cluster._compute.name)
+            logger.warning('Invalid job %s for cluster "%s"!', job.id, cluster._compute.name)
             raise StopIteration(-1)
         # assert cluster._pending_jobs >= 1
         if _job.job.status == DispyJob.Created:
@@ -2097,11 +2100,11 @@ class _Cluster(object):
             self.finish_job(cluster, _job, DispyJob.Cancelled)
             if cluster.status_callback:
                 self.worker_Q.put((cluster.status_callback, (DispyJob.Cancelled, None, dispy_job)))
-            logger.debug('Cancelled (removed) job %s', _job.uid)
+            logger.debug('Cancelled (removed) job %s', job.id)
             raise StopIteration(0)
         elif not (_job.job.status == DispyJob.Running or
                   _job.job.status == DispyJob.ProvisionalResult or _job.node is None):
-            logger.warning('Job %s is not valid for cancel (%s)', _job.uid, _job.job.status)
+            logger.warning('Job %s is not valid for cancel (%s)', job.id, _job.job.status)
             raise StopIteration(-1)
         _job.job.status = DispyJob.Cancelled
         # don't send this status - when job is terminated status/callback get called
@@ -3104,6 +3107,7 @@ class SharedJobCluster(JobCluster):
                     self._cluster.worker_Q.put((self.status_callback,
                                                 (DispyJob.Created, None, _job.job)))
                 job = _job.job
+                job.id = next(self._cluster._job_id)
             else:
                 sock.send_msg('NAK'.encode())
                 _job.job._dispy_job_ = None
