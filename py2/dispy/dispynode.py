@@ -356,6 +356,7 @@ def _dispy_setup_process(compute, pipe, client_globals):
                 pass
         dispynode_logger.debug('Job %s terminated', job_reply.uid)
         job_reply.result = serialize(None)
+        job_reply.status = DispyJob.Terminated
         job_reply.end_time = time.time()
         reply_Q.put(job_reply)
 
