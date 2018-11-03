@@ -285,7 +285,7 @@ def _dispy_setup_process(compute, pipe, client_globals):
 
     init_vars = setup_globals = None
     reply_Q = client_globals['reply_Q']
-    pid = os.getpid()
+    setup_pid = os.getpid()
 
     def sighandler(signum, frame):
         dispynode_logger.debug('setup_process received signal %s', signum)
@@ -294,6 +294,7 @@ def _dispy_setup_process(compute, pipe, client_globals):
     if os.name == 'nt':
         signal.signal(signal.SIGBREAK, sighandler)
 
+    wait_nohang = getattr(os, 'WNOHANG', None)
     if os.name == 'nt':
         signals = [signal.CTRL_BREAK_EVENT, signal.CTRL_BREAK_EVENT, signal.SIGTERM]
     else:
@@ -316,10 +317,9 @@ def _dispy_setup_process(compute, pipe, client_globals):
             else:
                 proc = None
                 os.kill(pid, signals[0])
-        except Exception:
+        except (OSError, Exception):
             # Likely job is done?
             return
-        wait_nohang = getattr(os, 'WNOHANG', None)
         signum = signals[1]
         for i in range(20):
             if proc:
@@ -342,7 +342,7 @@ def _dispy_setup_process(compute, pipe, client_globals):
 
             try:
                 os.kill(pid, signum)
-            except OSError:
+            except (OSError, Exception):
                 # TODO: check err.errno for all platforms
                 break
         else:
@@ -352,7 +352,7 @@ def _dispy_setup_process(compute, pipe, client_globals):
                     proc.wait(1)
                 else:
                     os.kill(pid, signals[2])
-            except Exception:
+            except (OSError, Exception):
                 pass
         dispynode_logger.debug('Job %s terminated', job_reply.uid)
         job_reply.result = serialize(None)
@@ -373,13 +373,30 @@ def _dispy_setup_process(compute, pipe, client_globals):
                     msg['args'], msg['kwargs'])
             job_proc = multiprocessing.Process(target=_dispy_job_func, args=args)
             job_proc.start()
-            reply_Q.put({'req': 'job_pid', 'uid': job_reply.uid, 'pid': job_proc.pid, 'ppid': pid})
+            reply_Q.put({'req': 'job_pid', 'uid': job_reply.uid, 'pid': job_proc.pid,
+                         'ppid': setup_pid})
             msg = args = None
 
         elif msg['req'] == 'terminate_job':
             thread = threading.Thread(target=terminate_job, args=(msg,))
             thread.daemon = True
             thread.start()
+
+        elif msg['req'] == 'wait_pid':
+            pid = msg.get('pid', None)
+            job_reply = msg.get('job_reply', None)
+            if pid and wait_nohang:
+                try:
+                    assert os.waitpid(pid, wait_nohang)[0] == pid
+                except (OSError, Exception):
+                    # print(traceback.format_exc())
+                    pass
+                else:
+                    if job_reply:
+                        job_reply.status = DispyJob.Terminated
+                        job_reply.result = serialize(None)
+                        job_reply.end_time = time.time()
+                        reply_Q.put(job_reply)
 
         elif msg['req'] == 'quit':
             break
@@ -1762,6 +1779,42 @@ class _DispyNode(object):
     def timer_proc(self, task=None):
         task.set_daemon()
         last_pulse_time = last_zombie_time = time.time()
+
+        def reply_dead_jobs(job_infos, task=None):
+            yield task.sleep(5)
+            self.thread_lock.acquire()
+            job_infos = [job_info for job_info in job_infos
+                         if self.job_infos.get(job_info.job_reply.uid, None) == job_info]
+            self.thread_lock.release()
+            for job_info in job_infos:
+                if isinstance(job_info.proc, multiprocessing.Process):
+                    try:
+                        job_info.proc.join(0.1)
+                    except Exception:
+                        continue
+                elif psutil and isinstance(job_info.proc, psutil.Process):
+                    try:
+                        status = job_info.proc.status()
+                    except (psutil.NoSuchProcess, Exception):
+                        status = None
+                    except psutil.ZombieProcess:
+                        status = psutil.STATUS_ZOMBIE
+
+                    if status == psutil.STATUS_ZOMBIE:
+                        client = self.clients.get(job_info.compute_id, None)
+                        if client and client.use_setup_proc:
+                            client.parent_pipe.send({'req': 'wait_pid', 'pid': job_info.pid,
+                                                     'job_reply': job_info.job_reply})
+                            continue
+                else:
+                    continue
+
+                job_reply = job_info.job_reply
+                job_reply.status = DispyJob.Terminated
+                job_reply.result = serialize(None)
+                job_reply.end_time = time.time()
+                self.reply_Q.put(job_reply)
+
         while 1:
             reset = yield task.suspend(self.pulse_interval)
             if reset:
@@ -1803,6 +1856,26 @@ class _DispyNode(object):
 
             if self.zombie_interval and (now - last_zombie_time) >= self.zombie_interval:
                 last_zombie_time = now
+
+                self.thread_lock.acquire()
+                job_infos = self.job_infos.values()
+                self.thread_lock.release()
+                dead_jobs = []
+                for job_info in job_infos:
+                    proc = job_info.proc
+                    if isinstance(proc, multiprocessing.Process):
+                        if not proc.is_alive():
+                            dead_jobs.append(job_info)
+                    elif psutil and isinstance(proc, psutil.Process):
+                        try:
+                            status = proc.status()
+                        except (psutil.NoSuchProcess, psutil.ZombieProcess, Exception):
+                            status = None
+                        if status is None or status == psutil.STATUS_ZOMBIE:
+                            dead_jobs.append(job_info)
+                if dead_jobs:
+                    Task(reply_dead_jobs, dead_jobs)
+
                 for client in self.clients.itervalues():
                     if (now - client.last_pulse) > self.zombie_interval:
                         dispynode_logger.warning('Computation "%s" is marked as zombie',
@@ -1977,12 +2050,27 @@ class _DispyNode(object):
             if isinstance(item, dict) and item.get('req', None) == 'job_pid':
                 self.thread_lock.acquire()
                 job_info = self.job_infos.get(item.get('uid', None), None)
-                if job_info:
-                    job_info.pid = item.get('pid', None)
-                    job_pkl = os.path.join(self.dest_path_prefix, 'job_%s.pkl' % item['uid'])
-                    with open(job_pkl, 'wb') as fd:
-                        pickle.dump({'pid': job_info.pid, 'ppid': item['ppid']}, fd)
                 self.thread_lock.release()
+                if not job_info:
+                    continue
+                job_info.pid = item.get('pid', None)
+                job_pkl = os.path.join(self.dest_path_prefix, 'job_%s.pkl' % item['uid'])
+                with open(job_pkl, 'wb') as fd:
+                    pickle.dump({'pid': job_info.pid, 'ppid': item['ppid']}, fd)
+                if psutil:
+                    try:
+                        proc = psutil.Process(job_info.pid)
+                        assert proc.ppid() == item['ppid']
+                    except (psutil.NoSuchProcess, Exception):
+                        pass
+                    except psutil.ZombieProcess:
+                        client = self.clients.get(job_info.compute_id, None)
+                        if client:
+                            client.parent_pipe.send({'req': 'wait_pid', 'pid': job_info.pid,
+                                                     'job_reply': job_info.job_reply})
+                    else:
+                        dispynode_logger.info('job proc for %s: %s' % (job_info.pid, proc.status()))
+                        job_info.proc = proc
                 continue
 
             job_reply = item
