@@ -2157,7 +2157,6 @@ class _Cluster(object, metaclass=Singleton):
 
     def close_node(self, cluster, node, terminate_pending, task=None):
         # generator
-        node = self._nodes.get(ip_addr, None)
         if isinstance(node, DispyNode):
             node = cluster._dispy_nodes.get(node.ip_addr, None)
         elif isinstance(node, str):
