@@ -1818,6 +1818,7 @@ class _Cluster(object):
         job.status = reply.status
         logger.debug('Received reply for job %s / %s from %s', job.id, _job.uid, job.ip_addr)
         if reply.status == DispyJob.ProvisionalResult:
+            self._sched_jobs[_job.uid] = _job
             if cluster.callback:
                 self.worker_Q.put((cluster.callback, (job,)))
         else:
