@@ -54,7 +54,6 @@ if __name__ == '__main__':
     jobs = []
     for n in range(10):
         job = cluster.submit(n)
-        job.id = n
         jobs.append(job)
 
     for job in jobs:

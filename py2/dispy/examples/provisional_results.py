@@ -41,7 +41,6 @@ if __name__ == '__main__':
         if job is None:
             print('creating job %s failed!' % n)
             continue
-        job.id = n
         jobs.append(job)
     cluster.wait()
     cluster.print_status()

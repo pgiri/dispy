@@ -51,12 +51,9 @@ if __name__ == '__main__':
     cluster = dispy.JobCluster(compute, callback=job_callback, loglevel=logging.INFO)
     pending_jobs = {}
     # submit 1000 jobs
-    i = 0
-    while i <= 1000:
-        i += 1
+    for i in range(1000):
         job = cluster.submit(random.uniform(3, 7))
         jobs_cond.acquire()
-        job.id = i
         # there is a chance the job may have finished and job_callback called by
         # this time, so put it in 'pending_jobs' only if job is pending
         if job.status == dispy.DispyJob.Created or job.status == dispy.DispyJob.Running:

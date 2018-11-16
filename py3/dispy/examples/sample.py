@@ -13,7 +13,6 @@ if __name__ == '__main__':
         # schedule execution of 'compute' on a node (running 'dispynode')
         # with a parameter (random number in this case)
         job = cluster.submit(random.randint(5,20))
-        job.id = i # optionally associate an ID to job (if needed later)
         jobs.append(job)
     # cluster.wait() # wait for all scheduled jobs to finish
     for job in jobs:

@@ -37,8 +37,7 @@ if __name__ == '__main__':
     for i in range(8):
         c = C(str(i), random.uniform(1, 9))
         job = cluster.submit(c, n=random.randint(5, 20))
-        job.id = i
-    
+
     cluster.wait() # wait for all jobs to finish
     http_server.shutdown() # this waits until browser gets all updates
     cluster.close()

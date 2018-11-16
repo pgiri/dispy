@@ -40,7 +40,6 @@ if __name__ == '__main__':
         if not job:
             print('Failed to create job %s' % i)
             continue
-        job.id = i # optionally associate an ID to job (if needed later)
         jobs.append(job)
 
     for job in jobs:
