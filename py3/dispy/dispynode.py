@@ -533,7 +533,7 @@ class _DispyNode(object):
                       config.get('pid', None))
                 exit(1)
         else:
-             config = {}
+            config = {}
 
         if clean:
             if psutil:
@@ -1387,6 +1387,7 @@ class _DispyNode(object):
                     return 0
                 else:
                     sgid = client.globals['sgid']
+
                     def suid_kill():
                         if hasattr(os, 'setresuid'):
                             os.setresgid(sgid, sgid, sgid)
