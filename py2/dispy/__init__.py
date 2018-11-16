@@ -44,7 +44,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "Apache 2.0"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.10.1"
+__version__ = "4.10.2"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
@@ -1049,8 +1049,7 @@ class _Cluster(object):
                 yield conn.send_msg('PULSE')
                 if info['avail_info']:
                     node.avail_info = info['avail_info']
-                    for cid in node.clusters:
-                        cluster = self._clusters[cid]
+                    for cluster in node.clusters:
                         if cluster.status_callback:
                             dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
                             if not dispy_node:
@@ -1181,8 +1180,8 @@ class _Cluster(object):
             if cpus > node.avail_cpus:
                 node.avail_cpus = cpus
                 node_computations = []
-                for cid, cluster in self._clusters.iteritems():
-                    if cid in node.clusters:
+                for cluster in self._clusters.itervalues():
+                    if cluster in node.clusters:
                         continue
                     compute = cluster._compute
                     for node_alloc in cluster._node_allocs:
@@ -1199,8 +1198,7 @@ class _Cluster(object):
                 yield self._sched_event.set()
             else:
                 node.avail_cpus = cpus
-            for cid in node.clusters:
-                cluster = self._clusters[cid]
+            for cluster in node.clusters:
                 dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
                 if dispy_node:
                     dispy_node.cpus = cpus
@@ -1224,12 +1222,9 @@ class _Cluster(object):
                 if node.clusters:
                     dead_jobs = [_job for _job in self._sched_jobs.itervalues()
                                  if _job.node is not None and _job.node.ip_addr == node.ip_addr]
-                    cids = list(node.clusters)
+                    clusters = list(node.clusters)
                     node.clusters = set()
-                    for cid in cids:
-                        cluster = self._clusters.get(cid, None)
-                        if not cluster:
-                            continue
+                    for cluster in clusters:
                         dispy_node = cluster._dispy_nodes.pop(node.ip_addr, None)
                         if not dispy_node:
                             continue
@@ -1359,12 +1354,9 @@ class _Cluster(object):
                             dead_nodes[node.ip_addr] = node
                     if dead_nodes:
                         for node in dead_nodes.itervalues():
-                            cids = list(node.clusters)
+                            clusters = list(node.clusters)
                             node.clusters = set()
-                            for cid in cids:
-                                cluster = self._clusters.get(cid, None)
-                                if not cluster:
-                                    continue
+                            for cluster in clusters:
                                 dispy_node = cluster._dispy_nodes.pop(node.ip_addr, None)
                                 if not dispy_node:
                                     continue
@@ -1578,7 +1570,7 @@ class _Cluster(object):
         self.send_ping_cluster(cluster)
         compute_nodes = []
         for ip_addr, node in self._nodes.iteritems():
-            if compute.id in node.clusters:
+            if cluster in node.clusters:
                 continue
             for node_alloc in cluster._node_allocs:
                 cpus = node_alloc.allocate(cluster, node.ip_addr, node.name, node.avail_cpus,
@@ -1624,7 +1616,7 @@ class _Cluster(object):
                                  if _job.compute_id == cid]
                     for i in reversed(drop_jobs):
                         node.pending_jobs.remove(i)
-                node.clusters.discard(cid)
+                node.clusters.discard(cluster)
                 close_nodes.append((Task(node.close, cluster._compute,
                                          terminate_pending=cluster._complete.is_set()),
                                     dispy_node))
@@ -1669,7 +1661,7 @@ class _Cluster(object):
                 yield node.close(compute, task=task)
             else:
                 dispy_node.update_time = time.time()
-                node.clusters.add(compute.id)
+                node.clusters.add(cluster)
                 self._sched_event.set()
                 if cluster.status_callback:
                     self.worker_Q.put((cluster.status_callback,
@@ -1699,8 +1691,7 @@ class _Cluster(object):
             if info['cpus'] > 0:
                 node.avail_cpus = info['cpus']
                 node.cpus = min(node.cpus, node.avail_cpus)
-                for cid in node.clusters:
-                    cluster = self._clusters[cid]
+                for cluster in node.clusters:
                     dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
                     if dispy_node:
                         dispy_node.avail_cpus = node.avail_cpus
@@ -1717,12 +1708,9 @@ class _Cluster(object):
                 self.reschedule_jobs(dead_jobs)
                 node.busy = 0
                 node.auth = auth
-                cids = list(node.clusters)
+                clusters = list(node.clusters)
                 node.clusters = set()
-                for cid in cids:
-                    cluster = self._clusters.get(cid, None)
-                    if not cluster:
-                        continue
+                for cluster in clusters:
                     dispy_node = cluster._dispy_nodes.pop(node.ip_addr, None)
                     if dispy_node and cluster.status_callback:
                         self.worker_Q.put((cluster.status_callback,
@@ -1731,8 +1719,8 @@ class _Cluster(object):
         node_computations = []
         node.name = info['name']
         node.scheduler_ip_addr = info['scheduler_ip_addr']
-        for cid, cluster in self._clusters.iteritems():
-            if cid in node.clusters:
+        for cluster in self._clusters.itervalues():
+            if cluster in node.clusters:
                 continue
             compute = cluster._compute
             for node_alloc in cluster._node_allocs:
@@ -1908,7 +1896,7 @@ class _Cluster(object):
             logger.debug(traceback.format_exc())
             # TODO: remove the node from all clusters and globally?
             # this job might have been deleted already due to timeout
-            node.clusters.discard(cluster._compute.id)
+            node.clusters.discard(cluster)
             if node.pending_jobs:
                 for njob in node.pending_jobs:
                     if njob.compute_id == cluster._compute.id:
@@ -1978,7 +1966,7 @@ class _Cluster(object):
             if node.pending_jobs:
                 host = node
                 break
-            if not any(self._clusters[cid]._jobs for cid in node.clusters):
+            if not any(cluster._jobs for cluster in node.clusters):
                 continue
             if (node.busy / node.cpus) < load:
                 load = node.busy / node.cpus
@@ -1998,16 +1986,15 @@ class _Cluster(object):
                 _job = node.pending_jobs.pop(0)
             else:
                 # TODO: strategy to pick a cluster?
-                _job = None
-                for cid in node.clusters:
-                    if self._clusters[cid]._jobs:
-                        _job = self._clusters[cid]._jobs.pop(0)
+                for cluster in node.clusters:
+                    # assert node.ip_addr in cluster._dispy_nodes
+                    if cluster._jobs:
+                        _job = cluster._jobs.pop(0)
                         break
-                if _job is None:
+                else:
                     self._sched_event.clear()
                     yield self._sched_event.wait()
                     continue
-            cluster = self._clusters[_job.compute_id]
             _job.node = node
             # assert node.busy < node.cpus
             self._sched_jobs[_job.uid] = _job
@@ -2067,7 +2054,7 @@ class _Cluster(object):
         cluster = self._clusters[_job.compute_id]
         if ip_addr:
             node = self._nodes.get(ip_addr, None)
-            if not node or _job.compute_id not in node.clusters:
+            if not node or cluster not in node.clusters:
                 raise StopIteration(-1)
             node.pending_jobs.append(_job)
             _job.pinned = node
@@ -2122,7 +2109,7 @@ class _Cluster(object):
             if node:
                 dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
                 if dispy_node:
-                    node.clusters.add(cluster._compute.id)
+                    node.clusters.add(cluster)
                     self._sched_event.set()
                     del node_allocs[i]
                     continue
@@ -2151,7 +2138,7 @@ class _Cluster(object):
             node = self._nodes.get(node.ip_addr, None)
         if not node:
             raise StopIteration(-1)
-        node.clusters.discard(cluster._compute.id)
+        node.clusters.discard(cluster)
         yield 0
 
     def close_node(self, cluster, node, terminate_pending, task=None):
@@ -2166,7 +2153,7 @@ class _Cluster(object):
             node = self._nodes.get(node.ip_addr, None)
         if not node:
             raise StopIteration(-1)
-        node.clusters.discard(cluster._compute.id)
+        node.clusters.discard(cluster)
         jobs = [_job for _job in node.pending_jobs if _job.compute_id == cluster._compute.id]
         if cluster.status_callback:
             dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
@@ -2199,8 +2186,7 @@ class _Cluster(object):
         elif (node.avail_cpus + cpus) >= 0:
             node.cpus = node.avail_cpus + cpus
         cpus = node.cpus
-        for cid in node.clusters:
-            cluster = self._clusters[cid]
+        for cluster in node.clusters:
             dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
             if dispy_node:
                 dispy_node.cpus = cpus
@@ -2232,7 +2218,7 @@ class _Cluster(object):
             node = self._nodes.get(node.ip_addr, None)
         if not node:
             raise StopIteration(-1)
-        if cluster._compute.id not in node.clusters:
+        if cluster not in node.clusters:
             raise StopIteration([])
         if from_node:
             sock = socket.socket(node.sock_family, socket.SOCK_STREAM)
