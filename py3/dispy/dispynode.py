@@ -444,7 +444,7 @@ class _DispyNode(object):
     def __init__(self, cpus, ip_addrs=[], ext_ip_addrs=[], node_port=None,
                  name='', scheduler_node=None, scheduler_port=None, ipv4_udp_multicast=False,
                  dest_path_prefix='', clean=False, secret='', keyfile=None, certfile=None,
-                 zombie_interval=60, ping_interval=None, serve=-1,
+                 zombie_interval=60, ping_interval=None, force_cleanup=False, serve=-1,
                  service_start=None, service_stop=None, service_end=None, safe_setup=True,
                  daemon=False, client_shutdown=False):
         assert 0 < cpus <= multiprocessing.cpu_count()
@@ -498,6 +498,7 @@ class _DispyNode(object):
         self.dest_path_prefix = os.path.abspath(dest_path_prefix.strip()).rstrip(os.sep)
         dispynode_logger.info('Files will be saved under "%s"', self.dest_path_prefix)
         self._safe_setup = bool(safe_setup)
+        self._force_cleanup = bool(force_cleanup)
 
         self.suid = None
         self.sgid = None
@@ -1154,6 +1155,9 @@ class _DispyNode(object):
 
             if compute.type == _Compute.prog_type:
                 compute.name = os.path.join(compute.dest_path, os.path.basename(compute.name))
+
+            if not compute.cleanup and self._force_cleanup:
+                compute.cleanup = True
 
             if not ((not self.scheduler['auth']) or
                     (self.scheduler['ip_addr'] == compute.scheduler_ip_addr and
@@ -2588,6 +2592,8 @@ if __name__ == '__main__':
                         help='number of clients to serve before exiting')
     parser.add_argument('--client_shutdown', dest='client_shutdown', action='store_true',
                         default=False, help='if given, client can shutdown node')
+    parser.add_argument('--force_cleanup', dest='force_cleanup', action='store_true',
+                        default=False, help='if given, cleanup is always enabled')
     parser.add_argument('--msg_timeout', dest='msg_timeout', type=float, default=MsgTimeout,
                         help='timeout used for messages to/from client in seconds')
     parser.add_argument('-s', '--secret', dest='secret', default='',
@@ -2621,6 +2627,7 @@ if __name__ == '__main__':
         cfg['loglevel'] = cfg['loglevel'] == 'True'
         cfg['clean'] = cfg['clean'] == 'True'
         cfg['safe_setup'] = cfg['safe_setup'] == 'True'
+        cfg['force_cleanup'] = cfg['force_cleanup'] == 'True'
         cfg['daemon'] = cfg['daemon'] == 'True'
         cfg['ip_addrs'] = cfg['ip_addrs'].strip()
         if cfg['ip_addrs']:
