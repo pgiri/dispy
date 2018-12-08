@@ -44,7 +44,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "Apache 2.0"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.10.2"
+__version__ = "4.10.3"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
@@ -1009,9 +1009,6 @@ class _Cluster(object):
         logger.debug('dispy client at %s:%s', addrinfo.ip, self.port)
         sock.listen(128)
 
-        if not self.shared:
-            Task(self.broadcast_ping, [addrinfo])
-
         while 1:
             try:
                 conn, addr = yield sock.accept()
@@ -1372,7 +1369,7 @@ class _Cluster(object):
             if self.ping_interval and (now - last_ping_time) >= self.ping_interval:
                 last_ping_time = now
                 for cluster in self._clusters.itervalues():
-                    self.send_ping_cluster(cluster)
+                    Task(self.discover_nodes, cluster, cluster._node_allocs)
 
             if self.poll_interval and (now - last_poll_time) >= self.poll_interval:
                 last_poll_time = now
@@ -1457,8 +1454,8 @@ class _Cluster(object):
                 pass
             bc_sock.close()
 
-    def send_ping_cluster(self, cluster, task=None):
-        for node_alloc in cluster._node_allocs:
+    def discover_nodes(self, cluster, node_allocs, task=None):
+        for node_alloc in node_allocs:
             # TODO: we assume subnets are indicated by '*', instead of
             # subnet mask; this is a limitation, but specifying with
             # subnet mask a bit cumbersome.
@@ -1466,10 +1463,11 @@ class _Cluster(object):
                 Task(self.broadcast_ping, port=node_alloc.port)
             else:
                 ip_addr = node_alloc.ip_addr
-                if ip_addr in cluster._dispy_nodes:
+                if ip_addr in self._nodes:
                     continue
                 port = node_alloc.port
                 Task(self.send_ping_node, ip_addr, port)
+        yield 0
 
     def poll_job_results(self, cluster, task=None):
         # generator
@@ -1567,7 +1565,7 @@ class _Cluster(object):
             if self.pulse_interval or self.ping_interval or self.poll_interval:
                 self.timer_task.resume(True)
 
-        self.send_ping_cluster(cluster)
+        Task(self.discover_nodes, cluster, cluster._node_allocs)
         compute_nodes = []
         for ip_addr, node in self._nodes.iteritems():
             if cluster in node.clusters:
@@ -2709,6 +2707,16 @@ class JobCluster(object):
         the queue or terminated).
         """
         return Task(self._cluster.cancel_job, job).value()
+
+    def discover_nodes(self, nodes):
+        """Discover given list of nodes. Each node may be host name or IP address, or an
+        instance of NodeAllocate. If a node is '*', UDP broadcast is used to
+        detect all nodes in local network.
+        """
+        if not isinstance(nodes, list):
+            nodes = [nodes]
+        nodes = _parse_node_allocs(nodes)
+        return Task(self._cluster.discover_nodes, self, nodes).value()
 
     def allocate_node(self, node):
         """Allocate given node for this cluster. 'node' may be (list of) host
