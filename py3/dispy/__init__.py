@@ -1984,6 +1984,7 @@ class _Cluster(object, metaclass=Singleton):
                 continue
             if node.pending_jobs:
                 _job = node.pending_jobs.pop(0)
+                cluster = self._clusters[_job.compute_id]
             else:
                 # TODO: strategy to pick a cluster?
                 for cluster in node.clusters:
