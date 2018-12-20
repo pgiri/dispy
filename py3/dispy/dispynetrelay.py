@@ -180,7 +180,7 @@ class DispyNetRelay(object):
                 logger.debug('Ignoring ping message from %s (%s)', addr[0], addr[1])
                 logger.debug(traceback.format_exc())
                 continue
-            Task(self.verify_broadcast, addrnifo, msg)
+            Task(self.verify_broadcast, addrinfo, msg)
 
     def relay_tcp_proc(self, addrinfo, task=None):
         task.set_daemon()
