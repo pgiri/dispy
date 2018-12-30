@@ -18,7 +18,6 @@
       var cur_cluster_name = null;
       var timer = null;
       var timeout = 1000 * %(TIMEOUT)s;
-      timeout = 1000 * 50;
       var sort_key = 'ip_addr';
       var sorted_keys = [];
       var show_job_args = false;
@@ -52,16 +51,17 @@
             node.cpus + '</td><td>' + node.busy + '</td>';
           if (node.avail_info) {
             rows += '<td>' + (node.avail_info.cpu.toFixed(2) + ' %%') +
-                     '</td><td>' + formatBytes(node.avail_info.memory) +
-                     '</td><td>' + (node.avail_info.swap.toFixed(2) + ' %%') +
-                     '</td><td>' + formatBytes(node.avail_info.disk) + '</td>';
+                    '</td><td>' + formatBytes(node.avail_info.memory) +
+                    '</td><td>' + (node.avail_info.swap.toFixed(2) + ' %%') +
+                    '</td><td>' + formatBytes(node.avail_info.disk) + '</td>';
           } else {
             rows += '<td>-</td><td>-</td><td>-</td><td>-</td>';
           }
-          rows += '<td>' + node.jobs_done + '</td><td>' +
-            (node.jobs_done > 0 ? (node.cpu_time / node.jobs_done).toFixed(2) : 0) + '</td><td>' +
-            node.cpu_time.toFixed(2) + '</td><td>' +
-            node.last_update.toLocaleTimeString() + '</td></tr>';
+          rows += '<td>' + formatBytes(node.tx) + '</td><td>' + formatBytes(node.rx) + '</td>' +
+                  '<td>' + node.jobs_done + '</td><td>' +
+                  (node.jobs_done > 0 ? (node.cpu_time / node.jobs_done).toFixed(2) : 0) +
+                  '</td><td>' + node.cpu_time.toFixed(2) + '</td><td>' +
+                  node.last_update.toLocaleTimeString() + '</td></tr>';
         });
         $('#nodes').html(rows);
       }
@@ -325,15 +325,17 @@
         <thead>
           <tr>
             <th rowspan="2"><input type="checkbox" id="all-nodes" /></th>
-	    <th rowspan="2">IP Address</th><th rowspan="2">Name</th>
-	    <th rowspan="2">CPUs</th><th rowspan="2">Busy</th>
-	    <th colspan="4">Available</th><th rowspan="2">Jobs<br />Done</th>
+            <th rowspan="2">IP Address</th><th rowspan="2">Name</th>
+            <th rowspan="2">CPUs</th><th rowspan="2">Busy</th>
+            <th colspan="4">Available</th><th colspan="2">Data</th>
+            <th rowspan="2">Jobs<br />Done</th>
             <th rowspan="2">Sec/Job</th><th rowspan="2">CPU Time<br />Sec</th>
-	    <th rowspan="2">Last Update</th>
+            <th rowspan="2">Last Update</th>
 	  </tr>
 
 	  <tr>
 	    <th>CPU</th><th>Memory</th><th>Swap</th><th>Disk</th>
+	    <th>Sent</th><th>Recvd</th>
           </tr>
         </thead>
         <tbody id="nodes">

@@ -55,6 +55,8 @@
               $('#node_sec_job').text((node.jobs_done > 0 ?
                                        (node.cpu_time / node.jobs_done) : 0).toFixed(2));
               $('#node_update').text((new Date(1000 * node.update_time)).toLocaleTimeString());
+              $('#node_tx').text(formatBytes(node.tx));
+              $('#node_rx').text(formatBytes(node.rx));
               if ($('#node').is(':hidden')) {
                 $('#node').show();
                 $('#timeout-div').show();
@@ -333,6 +335,12 @@
           </tr>
           <tr>
             <td>CPU Time Sec / Job</td><td id="node_sec_job"></td>
+          </tr>
+          <tr>
+            <td>Data Sent</td><td id="node_tx"></td>
+          </tr>
+          <tr>
+            <td>Data Received</td><td id="node_rx"></td>
           </tr>
           <tr>
             <td>Last Update</td><td id="node_update"></td>

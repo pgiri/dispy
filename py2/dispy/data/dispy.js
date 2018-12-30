@@ -61,7 +61,6 @@ function bin_desc_search(arr, elem, compare, min, max) {
 
 function formatBytes(bytes, precision) {
     bytes = parseFloat(bytes);
-    precision = precision || 2;
     var n = bytes;
     var i;
     for (i = 0; n > 1024; i++) {
@@ -72,5 +71,13 @@ function formatBytes(bytes, precision) {
 	i = sizes.length - 1;
 	n = bytes / Math.pow(1024, i);
     }
+    if (precision == null) {
+	if (i == 0) {
+	    precision = 0;
+	} else {
+	    precision = 2;
+	}
+    }
+
     return n.toFixed(precision) + ' ' + sizes[i];
 }

@@ -196,6 +196,8 @@ class DispyHTTPServer(object):
                         node.jobs_done += cluster_node.jobs_done
                         node.cpu_time += cluster_node.cpu_time
                         node.update_time = max(node.update_time, cluster_node.update_time)
+                        node.tx += cluster_node.tx
+                        node.rx += cluster_node.rx
                     else:
                         node = copy.copy(cluster_node)
                     # jobs = cluster_info.cluster.node_jobs(ip_addr)
