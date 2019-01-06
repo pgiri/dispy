@@ -575,13 +575,15 @@ class _Node(object):
             self.cpus = cpus
         for xf in compute.xfer_files:
             resp = yield self.xfer_file(xf, task=task)
-            if resp != 0:
+            if resp < 0:
                 logger.error('Could not transfer file "%s"', xf.name)
                 yield self.close(compute, task=task)
                 raise StopIteration(resp)
 
         resp = yield self.send(b'SETUP:' + serialize(compute.id), timeout=0, task=task)
-        if resp < 0:
+        if not isinstance(resp, int) or resp < 0:
+            if isinstance(resp, bytearray):
+                resp = resp.decode()
             logger.warning('Setup of computation "%s" on %s failed: %s',
                            compute.name, self.ip_addr, resp)
             yield self.close(compute, task=task)
@@ -611,8 +613,8 @@ class _Node(object):
             sock.close()
 
         if resp == b'ACK':
-            self.tx += len(msg)
             resp = len(msg)
+            self.tx += len(msg)
         raise StopIteration(resp)
 
     def xfer_file(self, xf, task=None):
@@ -1257,6 +1259,8 @@ class _Cluster(object, metaclass=Singleton):
                     dispy_node = cluster._dispy_nodes.get(info['ip_addr'], None)
                     if dispy_node:
                         dispy_node.avail_info = info['avail_info']
+                        dispy_node.tx = info['tx']
+                        dispy_node.rx = info['rx']
                         if cluster.status_callback:
                             self.worker_Q.put((cluster.status_callback,
                                                (DispyNode.AvailInfo, dispy_node, None)))
@@ -1658,18 +1662,20 @@ class _Cluster(object, metaclass=Singleton):
             cluster = self._clusters.get(compute.id, None)
             if not cluster or node.ip_addr in cluster._dispy_nodes:
                 continue
-            dispy_node = DispyNode(node.ip_addr, node.name, node.cpus)
+            dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
+            if not dispy_node:
+                dispy_node = DispyNode(node.ip_addr, node.name, node.cpus)
+                cluster._dispy_nodes[node.ip_addr] = dispy_node
+                dispy_node.tx = node.tx
+                dispy_node.rx = node.rx
             dispy_node.avail_cpus = node.avail_cpus
             dispy_node.avail_info = node.avail_info
-            cluster._dispy_nodes[node.ip_addr] = dispy_node
             self.shelf['node_%s' % (node.ip_addr)] = {'port': node.port, 'auth': node.auth}
             shelf_compute = self.shelf['compute_%s' % compute.id]
             shelf_compute['nodes'].append(node.ip_addr)
             self.shelf['compute_%s' % compute.id] = shelf_compute
             self.shelf.sync()
             res = yield node.setup(compute, exclusive=True, task=task)
-            dispy_node.tx = node.tx
-            dispy_node.rx = node.rx
             if res or compute.id not in self._clusters:
                 cluster._dispy_nodes.pop(node.ip_addr, None)
                 logger.warning('Failed to setup %s for compute "%s": %s',

@@ -382,7 +382,7 @@ class _Scheduler(object):
             except Exception:
                 logger.warning('Invalid job reply from %s:%s ignored', addr[0], addr[1])
             else:
-                yield self.job_reply_process(info, conn, addr)
+                yield self.job_reply_process(info, len(msg), conn, addr)
             conn.close()
 
         elif msg.startswith('PULSE:'):
@@ -770,15 +770,21 @@ class _Scheduler(object):
                 logger.debug('Ignoring file trasnfer request from %s', addr[0])
                 raise StopIteration(serialize(-1))
             cluster = self._clusters.get(xf.compute_id, None)
-            if not cluster or not node or node.ip_addr not in cluster._dispy_nodes:
+            if not cluster or not node:
+                logger.error('send_file "%s" is invalid', xf.name)
+                raise StopIteration(serialize(-1))
+            dispy_node = cluster._dispy_nodes.get(node.ip_addr)
+            if not dispy_node:
                 logger.error('send_file "%s" is invalid', xf.name)
                 raise StopIteration(serialize(-1))
             if _same_file(xf.name, xf):
                 resp = yield node.xfer_file(xf)
-                if resp == 0:
-                    raise StopIteration(serialize(xf.stat_buf.st_size))
-                else:
+                if resp < 0:
                     raise StopIteration(serialize(-1))
+                else:
+                    node.tx += resp
+                    dispy_node.tx += resp
+                    raise StopIteration(serialize(xf.stat_buf.st_size))
 
             node_sock = AsyncSocket(socket.socket(node.sock_family, socket.SOCK_STREAM),
                                     keyfile=self.node_keyfile, certfile=self.node_certfile)
@@ -797,6 +803,8 @@ class _Scheduler(object):
                     yield node_sock.sendall(data)
                     recvd = yield node_sock.recv_msg()
                     recvd = deserialize(recvd)
+                node.tx += recvd
+                dispy_node.tx += recvd
             except Exception:
                 logger.error('Could not transfer %s to %s: %s', xf.name, node.ip_addr, recvd)
                 logger.debug(traceback.format_exc())
@@ -1372,10 +1380,14 @@ class _Scheduler(object):
             cluster = self._clusters[compute.id]
             if node.ip_addr in cluster._dispy_nodes:
                 continue
-            dispy_node = DispyNode(node.ip_addr, node.name, node.cpus)
+            dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
+            if not dispy_node:
+                dispy_node = DispyNode(node.ip_addr, node.name, node.cpus)
+                cluster._dispy_nodes[node.ip_addr] = dispy_node
+                dispy_node.tx = node.tx
+                dispy_node.rx = node.rx
             dispy_node.avail_cpus = node.avail_cpus
             dispy_node.avail_info = node.avail_info
-            cluster._dispy_nodes[node.ip_addr] = dispy_node
             r = yield node.setup(compute, exclusive=cluster.exclusive, task=task)
             if r or compute.id not in self._clusters:
                 cluster._dispy_nodes.pop(node.ip_addr, None)
@@ -1538,6 +1550,8 @@ class _Scheduler(object):
             status_info['ip_addr'] = dispy_node.ip_addr
             if status == DispyNode.AvailInfo:
                 status_info['avail_info'] = dispy_node.avail_info
+                status_info['tx'] = dispy_node.tx
+                status_info['rx'] = dispy_node.rx
         try:
             yield sock.connect((cluster.client_ip_addr, cluster.client_job_result_port))
             yield sock.send_msg('NODE_STATUS:' + serialize(status_info))
@@ -1546,7 +1560,7 @@ class _Scheduler(object):
                          cluster.client_ip_addr, cluster.client_job_result_port)
         sock.close()
 
-    def job_reply_process(self, reply, sock, addr):
+    def job_reply_process(self, reply, msg_len, sock, addr):
         _job = self._sched_jobs.get(reply.uid, None)
         if not _job or reply.hash != _job.hash:
             logger.warning('Ignoring invalid reply for job %s from %s', reply.uid, addr[0])
@@ -1556,16 +1570,18 @@ class _Scheduler(object):
         _job._args = _job._kwargs = None
         node = self._nodes.get(reply.ip_addr, None)
         cluster = self._clusters.get(_job.compute_id, None)
-        if cluster is None:
+        if not cluster:
             # job cancelled while/after closing computation
-            if node and node.busy > 0:
-                node.busy -= 1
-                node.cpu_time += reply.end_time - reply.start_time
-                node.last_pulse = time.time()
-                self._sched_event.set()
+            if node:
+                node.rx += msg_len
+                if node.busy > 0:
+                    node.busy -= 1
+                    node.cpu_time += reply.end_time - reply.start_time
+                    node.last_pulse = time.time()
+                    self._sched_event.set()
             yield sock.send_msg('ACK')
             raise StopIteration
-        if node is None:
+        if not node:
             logger.warning('Ignoring invalid reply for job %s from %s', reply.uid, addr[0])
             yield sock.send_msg('ACK')
             raise StopIteration
@@ -1574,6 +1590,9 @@ class _Scheduler(object):
         logger.debug('Received reply for job %s from %s', _job.uid, addr[0])
         # assert _job.job.status not in [DispyJob.Created, DispyJob.Finished]
         setattr(reply, 'cpus', node.cpus)
+        dispy_node = cluster._dispy_nodes.get(_job.node.ip_addr, None)
+        if dispy_node:
+            dispy_node.rx += msg_len
 
         yield sock.send_msg('ACK')
         job.start_time = reply.start_time
@@ -1584,7 +1603,6 @@ class _Scheduler(object):
             node.busy -= 1
             node.cpu_time += reply.end_time - reply.start_time
             if cluster.status_callback:
-                dispy_node = cluster._dispy_nodes.get(_job.node.ip_addr, None)
                 if dispy_node:
                     dispy_node.busy -= 1
                     dispy_node.jobs_done += 1
@@ -1737,8 +1755,11 @@ class _Scheduler(object):
         # generator
         # assert task is not None
         node = _job.node
+        dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
         try:
-            yield _job.run(task=task)
+            tx = yield _job.run(task=task)
+            if dispy_node:
+                dispy_node.tx += tx
         except EnvironmentError:
             logger.warning('Failed to run job %s on %s for computation %s; removing this node',
                            _job.uid, node.ip_addr, cluster._compute.name)
@@ -1748,7 +1769,6 @@ class _Scheduler(object):
             if node.pending_jobs:
                 for njob in node.pending_jobs:
                     if njob.compute_id == cluster._compute.id:
-                        dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
                         if cluster.status_callback and dispy_node:
                             dispy_node.update_time = time.time()
                             cluster.status_callback(DispyJob.Cancelled, dispy_node, njob.job)
