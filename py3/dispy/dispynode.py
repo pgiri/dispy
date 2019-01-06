@@ -210,7 +210,7 @@ def _dispy_job_func(__dispy_job_name, __dispy_job_code, __dispy_job_globals,
     except Exception:
         __dispy_job_reply.exception = traceback.format_exc()
         __dispy_job_reply.status = DispyJob.Terminated
-        __dispy_job_reply.result = serialize(None)
+        __dispy_job_reply.result = None
 
     __dispy_job_reply.result = serialize(__dispy_job_reply.result)
     __dispy_job_reply.stdout = sys.stdout.getvalue()
@@ -453,10 +453,12 @@ class _DispyNode(object):
             self.name = name
         else:
             self.name = socket.gethostname()
+            if 'localhost' in self.name.lower():
+                self.name = ''
         if not ip_addrs:
             ip_addrs = [None]
         self.ipv4_udp_multicast = bool(ipv4_udp_multicast)
-        addrinfos = {}
+        self.addrinfos = {}
         for i in range(len(ip_addrs)):
             ip_addr = ip_addrs[i]
             if i < len(ext_ip_addrs):
@@ -471,6 +473,16 @@ class _DispyNode(object):
                 dispynode_logger.warning('node IP address %s seems to be loopback address; '
                                          'this will prevent communication with clients on '
                                          'other machines. ', addrinfo.ip)
+            elif not self.name:
+                try:
+                    name = socket.gethostbyaddr(addrinfo.ip)
+                except Exception:
+                    pass
+                else:
+                    for name in [name[0]] + name[1]:
+                        if 'localhost' not in name.lower():
+                            self.name = name
+                            break
             if ext_ip_addr:
                 ext_ip_addr = dispy._node_ipaddr(ext_ip_addr)
                 if not ext_ip_addr:
@@ -478,10 +490,11 @@ class _DispyNode(object):
             if not ext_ip_addr:
                 ext_ip_addr = addrinfo.ip
             addrinfo.ext_ip_addr = ext_ip_addr
-            addrinfos[ext_ip_addr] = addrinfo
-        if not addrinfos:
+            self.addrinfos[ext_ip_addr] = addrinfo
+        if not self.addrinfos:
             raise Exception('No valid ip_addr')
-        self.addrinfos = addrinfos
+        if not self.name:
+            self.name = list(self.addrinfos.values())[0].ip
 
         if node_port is None:
             node_port = 51348
