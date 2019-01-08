@@ -1508,6 +1508,9 @@ class _Scheduler(object, metaclass=Singleton):
                         Task(self.resend_job_results, cluster)
             if cluster.pending_jobs == 0 and cluster.pending_results == 0 and cluster.zombie:
                 Task(self.cleanup_computation, cluster)
+            dispy_node = cluster._dispy_nodes.get(result.ip_addr, None)
+            if dispy_node:
+                Task(self.send_node_status, cluster, dispy_node, DispyNode.AvailInfo)
         finally:
             sock.close()
 
