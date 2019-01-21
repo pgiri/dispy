@@ -44,7 +44,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "Apache 2.0"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.10.4"
+__version__ = "4.10.5"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
@@ -479,7 +479,7 @@ def host_addrinfo(host=None, socket_family=None, ipv4_multicast=False):
 
 
 # This tuple stores information about partial functions; for
-# now'setup' and 'cleanup' functions can be partial functions.
+# now 'setup' and 'cleanup' functions can be partial functions.
 # TODO: useful to have 'compute' as partial function as well?
 _Function = collections.namedtuple('_Function', ['name', 'args', 'kwargs'])
 logger = pycos.Logger('dispy')
@@ -509,10 +509,6 @@ class _Compute(object):
         self.auth = None
         self.job_result_port = None
         self.pulse_interval = None
-
-    def __getstate__(self):
-        state = dict(self.__dict__)
-        return state
 
 
 class _XferFile(object):
@@ -1633,10 +1629,8 @@ class _Cluster(object, metaclass=Singleton):
                 if not node:
                     continue
                 if not cluster._complete.is_set():
-                    drop_jobs = [i for i, _job in enumerate(node.pending_jobs)
-                                 if _job.compute_id == cid]
-                    for i in reversed(drop_jobs):
-                        node.pending_jobs.remove(i)
+                    node.pending_jobs = [_job for _job in node.pending_jobs
+                                         if _job.compute_id != cid]
                 node.clusters.discard(cluster)
                 close_nodes.append((Task(node.close, cluster._compute,
                                          terminate_pending=cluster._complete.is_set()),
@@ -2833,24 +2827,25 @@ class JobCluster(object):
         """
         Prints status of cluster (see 'status').
         """
-        TB = 10**12
-        GB = 10**9
-        MB = 10**6
-        KB = 10**3
+
+        KB = 1024
+        MB = 1024 * KB
+        GB = 1024 * MB
+        TB = 1024 * GB
+
         def byte_size(size):
-            size = float(size)
             if size > TB:
-                return '%.2f T' % (size / TB)
+                return '%.1f T' % (float(size) / TB)
             elif size > GB:
-                return '%.2f G' % (size / GB)
+                return '%.1f G' % (float(size) / GB)
             elif size > MB:
-                return '%.2f M' % (size / MB)
+                return '%.1f M' % (float(size) / MB)
             elif size > KB:
-                return '%.2f K' % (size / KB)
+                return '%.1f K' % (float(size) / KB)
             return '%d B' % size
 
         print('')
-        heading = (' %22s | %5s | %7s | %10s | %13s | %8s | %8s' %
+        heading = (' %15s | %5s | %7s | %8s | %13s | %7s | %7s' %
                    ('Node', 'CPUs', 'Jobs', 'Sec/Job', 'Node Time Sec', 'Sent', 'Rcvd'))
         print(heading)
         print('-' * len(heading))
@@ -2858,16 +2853,16 @@ class JobCluster(object):
         cpu_time = 0.0
         for dispy_node in info.nodes:
             cpu_time += dispy_node.cpu_time
-            name = dispy_node.ip_addr
             if dispy_node.name:
-                name += ' (' + dispy_node.name + ')'
+                name = dispy_node.name
+            else:
+                name = dispy_node.ip_addr
             if dispy_node.jobs_done > 0:
                 secs_per_job = dispy_node.cpu_time / dispy_node.jobs_done
             else:
                 secs_per_job = 0
-            print(' %-22.22s | %5s | %7s | %10.3f | %13.3f | %8s | %8s' %
-                  (name, dispy_node.cpus, dispy_node.jobs_done,
-                   secs_per_job, dispy_node.cpu_time,
+            print(' %15.15s | %5s | %7s | %8.1f | %13.1f | %7s | %7s' %
+                  (name, dispy_node.cpus, dispy_node.jobs_done, secs_per_job, dispy_node.cpu_time,
                    byte_size(dispy_node.tx), byte_size(dispy_node.rx)))
         print('')
         if info.jobs_pending:
