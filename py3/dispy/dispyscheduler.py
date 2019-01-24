@@ -1633,6 +1633,7 @@ class _Scheduler(object, metaclass=Singleton):
             else:
                 logger.debug('Terminating job %s scheduled on %s', _job.uid, _job.node.ip_addr)
                 reply = _JobReply(_job, _job.node.ip_addr, status=DispyJob.Abandoned)
+                reply.result = serialize(None)
                 cluster.pending_jobs -= 1
                 if cluster.pending_jobs == 0:
                     cluster.end_time = time.time()
