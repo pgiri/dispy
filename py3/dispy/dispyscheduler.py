@@ -400,8 +400,7 @@ class _Scheduler(object, metaclass=Singleton):
                 yield conn.send_msg(b'PULSE')
                 if info['avail_info']:
                     node.avail_info = info['avail_info']
-                    for cid in node.clusters:
-                        cluster = self._clusters[cid]
+                    for cluster in node.clusters:
                         dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
                         if dispy_node:
                             dispy_node.avail_info = info['avail_info']
@@ -481,12 +480,9 @@ class _Scheduler(object, metaclass=Singleton):
                 if node.clusters:
                     dead_jobs = [_job for _job in self._sched_jobs.values()
                                  if _job.node is not None and _job.node.ip_addr == node.ip_addr]
-                    cids = list(node.clusters)
-                    node.clusters = set()
-                    for cid in cids:
-                        cluster = self._clusters.get(cid, None)
-                        if not cluster:
-                            continue
+                    clusters = list(node.clusters)
+                    node.clusters.clear()
+                    for cluster in clusters:
                         dispy_node = cluster._dispy_nodes.pop(node.ip_addr, None)
                         if not dispy_node:
                             continue
@@ -520,8 +516,8 @@ class _Scheduler(object, metaclass=Singleton):
             if cpus > node.avail_cpus:
                 node.avail_cpus = cpus
                 node_computations = []
-                for cid, cluster in self._clusters.items():
-                    if cid in node.clusters:
+                for cluster in self._clusters.values():
+                    if cluster in node.clusters:
                         continue
                     compute = cluster._compute
                     for node_alloc in cluster._node_allocs:
@@ -537,8 +533,7 @@ class _Scheduler(object, metaclass=Singleton):
                 yield self._sched_event.set()
             else:
                 node.avail_cpus = cpus
-            for cid in node.clusters:
-                cluster = self._clusters[cid]
+            for cluster in node.clusters:
                 dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
                 if dispy_node:
                     dispy_node.cpus = cpus
@@ -721,7 +716,7 @@ class _Scheduler(object, metaclass=Singleton):
                     logger.error('Computation "%s" is invalid', xf.compute_id)
                     raise StopIteration(serialize(-1))
             tgt = os.path.join(cluster.dest_path, xf.dest_path.replace(xf.sep, os.sep),
-                                       xf.name.split(xf.sep)[-1])
+                               xf.name.split(xf.sep)[-1])
             if os.path.isfile(tgt) and _same_file(tgt, xf):
                 if tgt in cluster.file_uses:
                     cluster.file_uses[tgt] += 1
@@ -750,7 +745,8 @@ class _Scheduler(object, metaclass=Singleton):
                     cluster.file_uses[tgt] = 1
                 logger.debug('Copied file %s', tgt)
             except Exception:
-                logger.warning('Copying file "%s" failed with "%s"', xf.name, traceback.format_exc())
+                logger.warning('Copying file "%s" failed with "%s"',
+                               xf.name, traceback.format_exc())
                 recvd = -1
                 try:
                     os.remove(tgt)
@@ -1123,12 +1119,9 @@ class _Scheduler(object, metaclass=Singleton):
                         dead_nodes[node.ip_addr] = node
                 for ip_addr in dead_nodes:
                     node = self._nodes.pop(ip_addr, None)
-                    cids = list(node.clusters)
-                    node.clusters = set()
-                    for cid in cids:
-                        cluster = self._clusters.get(cid, None)
-                        if not cluster:
-                            continue
+                    clusters = list(node.clusters)
+                    node.clusters.clear()
+                    for cluster in clusters:
                         dispy_node = cluster._dispy_nodes.pop(node.ip_addr, None)
                         if not dispy_node:
                             continue
@@ -1287,7 +1280,7 @@ class _Scheduler(object, metaclass=Singleton):
         self.send_ping_cluster(cluster._node_allocs, set(cluster._dispy_nodes.keys()))
         compute_nodes = []
         for ip_addr, node in self._nodes.items():
-            if compute.id in node.clusters:
+            if cluster in node.clusters:
                 continue
             for node_alloc in cluster._node_allocs:
                 cpus = node_alloc.allocate(cluster, node.ip_addr, node.name, node.avail_cpus)
@@ -1357,7 +1350,7 @@ class _Scheduler(object, metaclass=Singleton):
                          if _job.compute_id == cid]
             for i in reversed(drop_jobs):
                 node.pending_jobs.remove(i)
-            node.clusters.discard(cid)
+            node.clusters.discard(cluster)
             if cluster.exclusive:
                 node.cpus = node.avail_cpus
             close_nodes.append((Task(node.close, compute, terminate_pending=terminate_pending),
@@ -1396,7 +1389,7 @@ class _Scheduler(object, metaclass=Singleton):
                 Task(node.close, compute)
             else:
                 dispy_node.update_time = time.time()
-                node.clusters.add(compute.id)
+                node.clusters.add(cluster)
                 self._sched_event.set()
                 Task(self.send_node_status, cluster, dispy_node, DispyNode.Initialized)
 
@@ -1435,12 +1428,9 @@ class _Scheduler(object, metaclass=Singleton):
                              if _job.node is not None and _job.node.ip_addr == node.ip_addr]
                 node.busy = 0
                 node.auth = auth
-                cids = list(node.clusters)
-                node.clusters = set()
-                for cid in cids:
-                    cluster = self._clusters.get(cid, None)
-                    if not cluster:
-                        continue
+                clusters = list(node.clusters)
+                node.clusters.clear()
+                for cluster in clusters:
                     dispy_node = cluster._dispy_nodes.pop(node.ip_addr, None)
                     if not dispy_node:
                         continue
@@ -1450,8 +1440,8 @@ class _Scheduler(object, metaclass=Singleton):
         node_computations = []
         node.name = info['name']
         node.scheduler_ip_addr = info['scheduler_ip_addr']
-        for cid, cluster in self._clusters.items():
-            if cid in node.clusters:
+        for cluster in self._clusters.values():
+            if cluster in node.clusters:
                 continue
             compute = cluster._compute
             for node_alloc in cluster._node_allocs:
@@ -1661,7 +1651,7 @@ class _Scheduler(object, metaclass=Singleton):
                 continue
             if host.pending_jobs:
                 return host
-            if not any(self._clusters[cid]._jobs for cid in host.clusters):
+            if not any(cluster._jobs for cluster in host.clusters):
                 continue
             if (host.busy / host.cpus) < load:
                 node = host
@@ -1676,8 +1666,7 @@ class _Scheduler(object, metaclass=Singleton):
         if not node:
             return (None, None, None)
         _job = cluster = lrs = None
-        for cid in node.clusters:
-            cluster = self._clusters[cid]
+        for cluster in node.clusters:
             if cluster._jobs and (not lrs or
                                   cluster._jobs[0].job.submit_time < lrs._jobs[0].job.submit_time):
                 lrs = cluster
@@ -1702,8 +1691,7 @@ class _Scheduler(object, metaclass=Singleton):
         if not node:
             return (None, None, None)
         _job = cluster = lrs = None
-        for cid in node.clusters:
-            cluster = self._clusters[cid]
+        for cluster in node.clusters:
             if cluster._jobs and (not lrs or cluster.job_sched_time < lrs.job_sched_time):
                 lrs = cluster
         if lrs:
@@ -1733,8 +1721,7 @@ class _Scheduler(object, metaclass=Singleton):
         if not node:
             return (None, None, None)
         _job = cluster = lrs = None
-        for cid in node.clusters:
-            cluster = self._clusters[cid]
+        for cluster in node.clusters:
             if cluster._jobs and (not lrs or cluster.start_time < lrs.start_time):
                 lrs = cluster
         if lrs:
@@ -1766,7 +1753,7 @@ class _Scheduler(object, metaclass=Singleton):
         except EnvironmentError:
             logger.warning('Failed to run job %s on %s for computation %s; removing this node',
                            _job.uid, node.ip_addr, cluster._compute.name)
-            node.clusters.discard(cluster._compute.id)
+            node.clusters.discard(cluster)
             # TODO: remove the node from all clusters and globally?
             # this job might have been deleted already due to timeout
             if node.pending_jobs:
@@ -1835,7 +1822,7 @@ class _Scheduler(object, metaclass=Singleton):
             if cluster:
                 reply = _JobReply(_job, cluster.ip_addr, status=DispyJob.Terminated)
                 Task(self.send_job_result, _job.uid, cluster, reply, resending=False)
-        for cid, cluster in self._clusters.items():
+        for cluster in self._clusters.values():
             for _job in cluster._jobs:
                 reply = _JobReply(_job, cluster.ip_addr, status=DispyJob.Terminated)
                 Task(self.send_job_result, _job.uid, cluster, reply, resending=False)
@@ -1950,7 +1937,7 @@ class _Scheduler(object, metaclass=Singleton):
             if node:
                 dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
                 if dispy_node:
-                    node.clusters.add(cluster._compute.id)
+                    node.clusters.add(cluster)
                     self._sched_event.set()
                     del node_alloc[i]
                     continue
@@ -1971,7 +1958,7 @@ class _Scheduler(object, metaclass=Singleton):
         node = self._nodes.get(_node_ipaddr(node), None)
         if node is None:
             raise StopIteration(-1)
-        node.clusters.discard(cluster._compute.id)
+        node.clusters.discard(cluster)
         yield 0
 
     def close_node(self, cluster, node, terminate_pending, task=None):
@@ -1979,13 +1966,13 @@ class _Scheduler(object, metaclass=Singleton):
         node = self._nodes.get(_node_ipaddr(node), None)
         if node is None:
             raise StopIteration(-1)
-        node.clusters.discard(cluster._compute.id)
+        node.clusters.discard(cluster)
         yield node.close(cluster._compute, terminate_pending=terminate_pending)
 
     def node_jobs(self, cluster, node, from_node=False, get_uids=True, task=None):
         # generator
         node = self._nodes.get(_node_ipaddr(node), None)
-        if not node or cluster._compute.id not in node.clusters:
+        if not node or cluster not in node.clusters:
             raise StopIteration([])
         if from_node:
             sock = socket.socket(node.sock_family, socket.SOCK_STREAM)
@@ -2034,8 +2021,7 @@ class _Scheduler(object, metaclass=Singleton):
             elif (node.avail_cpus + cpus) >= 0:
                 node.cpus = node.avail_cpus + cpus
             cpus = node.cpus
-            for cid in node.clusters:
-                cluster = self._clusters[cid]
+            for cluster in node.clusters:
                 dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
                 if dispy_node:
                     dispy_node.cpus = cpus
