@@ -1822,10 +1822,12 @@ class _Scheduler(object):
             cluster = self._clusters.get(_job.compute_id, None)
             if cluster:
                 reply = _JobReply(_job, cluster.ip_addr, status=DispyJob.Terminated)
+                reply.result = serialize(None)
                 Task(self.send_job_result, _job.uid, cluster, reply, resending=False)
         for cluster in self._clusters.itervalues():
             for _job in cluster._jobs:
                 reply = _JobReply(_job, cluster.ip_addr, status=DispyJob.Terminated)
+                reply.result = serialize(None)
                 Task(self.send_job_result, _job.uid, cluster, reply, resending=False)
             cluster._jobs = []
 
@@ -1911,6 +1913,7 @@ class _Scheduler(object):
                     self.done_jobs[_job.uid] = _job
                     cluster.pending_jobs -= 1
                     reply = _JobReply(_job, cluster.ip_addr, status=DispyJob.Cancelled)
+                    reply.result = serialize(None)
                     Task(self.send_job_result, _job.uid, cluster, reply, resending=False)
                     return 0
 
@@ -1924,6 +1927,7 @@ class _Scheduler(object):
                         self.done_jobs[_job.uid] = _job
                         cluster.pending_jobs -= 1
                         reply = _JobReply(_job, cluster.ip_addr, status=DispyJob.Cancelled)
+                        reply.result = serialize(None)
                         Task(self.send_job_result, _job.uid, cluster, reply, resending=False)
                         return 0
             logger.debug('Invalid job %s!', uid)
