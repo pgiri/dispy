@@ -1832,7 +1832,7 @@ class _Cluster(object, metaclass=Singleton):
             else:
                 logger.warning('Invalid job reply? %s: %s', job.id, job.status)
 
-        job.result = deserialize(reply.result)
+        job.result, reply.result = deserialize(reply.result), None
         job.start_time = reply.start_time
         job.status = reply.status
         logger.debug('Received reply for job %s / %s from %s', job.id, _job.uid, job.ip_addr)
