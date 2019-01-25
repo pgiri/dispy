@@ -41,8 +41,8 @@ def status_cb(status, node, job):
             
 
 if __name__ == '__main__':
-    import dispy, sys, os, logging
-    cluster = dispy.JobCluster(compute, cluster_status=status_cb, loglevel=logging.DEBUG)
+    import dispy, sys, os
+    cluster = dispy.JobCluster(compute, cluster_status=status_cb)
     submitted = 0
     while True:
         try:
