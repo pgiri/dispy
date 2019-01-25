@@ -35,20 +35,24 @@ def job_callback(job): # executed at the client
         if job.id: # job may have finished before 'main' assigned id
             pending_jobs.pop(job.id)
             # dispy.logger.info('job "%s" done with %s: %s', job.id, job.result, len(pending_jobs))
+            # if job's result is no longer needed, set it to None to reduce memory footprint
+            job.result = None
             if len(pending_jobs) <= lower_bound:
                 jobs_cond.notify()
         jobs_cond.release()
 
 if __name__ == '__main__':
-    import dispy, threading, random, logging
+    import dispy, threading, random
 
     # set lower and upper bounds as appropriate; assuming there are 30
-    # processors in a cluster, bounds are set to 50 to 100
+    # processors in a cluster, bounds are set to 50 to 100; using sub-class
+    # instances of NodeAllocate as 'nodes' or using 'cluster_status' allows to
+    # find number of actual processors dispy uses
     lower_bound, upper_bound = 50, 100
     # use Condition variable to protect access to pending_jobs, as
     # 'job_callback' is executed in another thread
     jobs_cond = threading.Condition()
-    cluster = dispy.JobCluster(compute, callback=job_callback, loglevel=logging.INFO)
+    cluster = dispy.JobCluster(compute, callback=job_callback)
     pending_jobs = {}
     # submit 1000 jobs
     for i in range(1000):
