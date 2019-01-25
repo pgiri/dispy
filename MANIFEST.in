@@ -1,5 +1,7 @@
 include README.rst
 include LICENSE.txt
+include PKG-INFO
 include *.py
 recursive-include py2 *
 recursive-include py3 *
+recursive-include py3.7 *
