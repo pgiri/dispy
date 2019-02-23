@@ -52,6 +52,10 @@ _dispy_version = __version__
 MsgTimeout = 10
 IPV6_MULTICAST_GROUP = 'ff05::b409:3171:9705:6159:5134:70'
 IPV4_MULTICAST_GROUP = '239.255.51.34'
+# PyPI / pip packaging adjusts assertion below for Python 3.7+
+assert sys.version_info.major == 3 and sys.version_info.minor < 7, \
+    ('"%s" is not suitable for Python version %s.%s; use file installed by pip instead' %
+     (__file__, sys.version_info.major, sys.version_info.minor))
 
 
 class DispyJob(object):

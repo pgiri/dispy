@@ -58,6 +58,10 @@ MaxFileSize = 0
 # node (whereas 'print' statements are sent back to client with
 # job.stdout)
 dispynode_logger = pycos.Logger('dispynode')
+# PyPI / pip packaging adjusts assertion below for Python 3.7+
+assert sys.version_info.major == 3 and sys.version_info.minor < 7, \
+    ('"%s" is not suitable for Python version %s.%s; use file installed by pip instead' %
+     (__file__, sys.version_info.major, sys.version_info.minor))
 
 
 def dispy_provisional_result(result, timeout=MsgTimeout):
