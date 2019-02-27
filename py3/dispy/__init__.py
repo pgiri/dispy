@@ -28,6 +28,7 @@ import struct
 import errno
 import platform
 import itertools
+import copy
 try:
     import netifaces
 except ImportError:
@@ -1103,7 +1104,7 @@ class _Cluster(object, metaclass=Singleton):
                             dispy_node.update_time = time.time()
                             if cluster.status_callback:
                                 self.worker_Q.put((cluster.status_callback,
-                                                   (job.status, dispy_node, job)))
+                                                   (job.status, dispy_node, copy.copy(job))))
         elif msg.startswith(b'PONG:'):
             conn.close()
             try:
@@ -1776,7 +1777,7 @@ class _Cluster(object, metaclass=Singleton):
         job = _job.job
         _job.finish(status)
         if cluster.callback:
-            self.worker_Q.put((cluster.callback, (job,)))
+            self.worker_Q.put((cluster.callback, (copy.copy(job),)))
         if status != DispyJob.ProvisionalResult:
             # assert cluster._pending_jobs > 0
             cluster._pending_jobs -= 1
@@ -1848,7 +1849,7 @@ class _Cluster(object, metaclass=Singleton):
         if reply.status == DispyJob.ProvisionalResult:
             self._sched_jobs[_job.uid] = _job
             if cluster.callback:
-                self.worker_Q.put((cluster.callback, (job,)))
+                self.worker_Q.put((cluster.callback, (copy.copy(job),)))
         else:
             if node and dispy_node:
                 if reply.status == DispyJob.Finished or reply.status == DispyJob.Terminated:
@@ -1873,7 +1874,8 @@ class _Cluster(object, metaclass=Singleton):
             job.end_time = reply.end_time
             self.finish_job(cluster, _job, reply.status)
             if cluster.status_callback:
-                self.worker_Q.put((cluster.status_callback, (reply.status, dispy_node, job)))
+                self.worker_Q.put((cluster.status_callback, (reply.status, dispy_node,
+                                                             copy.copy(job))))
             self._sched_event.set()
         yield sock.send_msg(b'ACK')
 
@@ -1909,7 +1911,7 @@ class _Cluster(object, metaclass=Singleton):
 
             if cluster.status_callback:
                 self.worker_Q.put((cluster.status_callback,
-                                   (DispyJob.Abandoned, dispy_node, dispy_job)))
+                                   (DispyJob.Abandoned, dispy_node, copy.copy(dispy_job))))
         self._sched_event.set()
 
     def run_job(self, _job, cluster, task=None):
@@ -1969,7 +1971,7 @@ class _Cluster(object, metaclass=Singleton):
                 dispy_node.update_time = time.time()
                 if cluster.status_callback:
                     self.worker_Q.put((cluster.status_callback,
-                                       (DispyJob.Running, dispy_node, _job.job)))
+                                       (DispyJob.Running, dispy_node, copy.copy(_job.job))))
         if (not cluster._compute.reentrant) and (not cluster.status_callback) and _job.job:
             _job.job._args = ()
             _job.job._kwargs = {}
@@ -2052,7 +2054,7 @@ class _Cluster(object, metaclass=Singleton):
                     if dispy_node:
                         dispy_node.update_time = time.time()
                         self.worker_Q.put((cluster.status_callback,
-                                           (status, dispy_node, dispy_job)))
+                                           (status, dispy_node, copy.copy(dispy_job))))
             for dispy_node in cluster._dispy_nodes.values():
                 node = self._nodes.get(dispy_node.ip_addr, None)
                 if not node:
@@ -2068,7 +2070,7 @@ class _Cluster(object, metaclass=Singleton):
                     if cluster.status_callback:
                         dispy_node.update_time = time.time()
                         self.worker_Q.put((cluster.status_callback,
-                                           (status, dispy_node, dispy_job)))
+                                           (status, dispy_node, copy.copy(dispy_job))))
                 node.pending_jobs = []
             cluster._jobs = []
             cluster._pending_jobs = 0
@@ -2093,7 +2095,8 @@ class _Cluster(object, metaclass=Singleton):
         cluster._pending_jobs += 1
         cluster._complete.clear()
         if cluster.status_callback:
-            self.worker_Q.put((cluster.status_callback, (DispyJob.Created, None, _job.job)))
+            self.worker_Q.put((cluster.status_callback, (DispyJob.Created, None,
+                                                         copy.copy(_job.job))))
         self._sched_event.set()
         yield 0
 
@@ -2190,7 +2193,7 @@ class _Cluster(object, metaclass=Singleton):
             dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
             for _job in jobs:
                 self.worker_Q.put((cluster.status_callback,
-                                   (DispyJob.Cancelled, dispy_node, _job.job)))
+                                   (DispyJob.Cancelled, dispy_node, copy.copy(_job.job))))
         if jobs:
             node.pending_jobs = [_job for _job in node.pending_jobs
                                  if _job.compute_id != cluster._compute.id]
@@ -3151,7 +3154,7 @@ class SharedJobCluster(JobCluster):
                 sock.send_msg(b'ACK')
                 if self.status_callback:
                     self._cluster.worker_Q.put((self.status_callback,
-                                                (DispyJob.Created, None, _job.job)))
+                                                (DispyJob.Created, None, copy.copy(_job.job))))
                 job = _job.job
                 job.id = next(self._cluster._job_id)
             else:
