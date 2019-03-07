@@ -603,7 +603,7 @@ class _Node(object):
             logger.error('Could not connect to %s:%s, %s',
                          self.ip_addr, self.port, traceback.format_exc())
             # TODO: mark this node down, reschedule on different node?
-            resp = traceback.format_exc()
+            raise
         finally:
             sock.close()
 
@@ -1914,7 +1914,7 @@ class _Cluster(object):
         try:
             tx = yield _job.run(task=task)
             dispy_node.tx += tx
-        except EnvironmentError:
+        except (EnvironmentError, OSError):
             logger.warning('Failed to run job %s on %s for computation %s; removing this node',
                            _job.uid, node.ip_addr, cluster._compute.name)
             logger.debug(traceback.format_exc())
@@ -2122,7 +2122,10 @@ class _Cluster(object):
         _job.job.status = DispyJob.Cancelled
         # don't send this status - when job is terminated status/callback get called
         logger.debug('Job %s / %s is being terminated', _job.job.id, _job.uid)
-        resp = yield _job.node.send('TERMINATE_JOB:' + serialize(_job), reply=False, task=task)
+        try:
+            resp = yield _job.node.send('TERMINATE_JOB:' + serialize(_job), reply=False, task=task)
+        except Exception:
+            resp = -1
         if resp < 0:
             logger.debug('Terminating job %s / %s failed: %s', _job.job.id, _job.uid, resp)
         else:
@@ -3535,8 +3538,8 @@ def recover_jobs(recover_file=None, timeout=None, terminate_pending=False):
                 node = nodes.get(ip_addr, None)
                 if not node:
                     continue
-                reply = yield node.send('RESEND_JOB_RESULTS:' + serialize(req))
                 try:
+                    reply = yield node.send('RESEND_JOB_RESULTS:' + serialize(req))
                     reply = deserialize(reply)
                     assert isinstance(reply, int)
                 except Exception:
@@ -3546,7 +3549,10 @@ def recover_jobs(recover_file=None, timeout=None, terminate_pending=False):
                              node.ip_addr, compute['name'], reply)
                 if reply == 0:
                     req['node_ip_addr'] = ip_addr
-                    yield node.send('CLOSE:' + serialize(req), reply=True, task=task)
+                    try:
+                        yield node.send('CLOSE:' + serialize(req), reply=True, task=task)
+                    except Exception:
+                        pass
                 else:
                     pending['count'] += reply
         pending['resend_req_done'] = True
