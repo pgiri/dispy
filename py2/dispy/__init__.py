@@ -29,6 +29,7 @@ import errno
 import platform
 import itertools
 import copy
+import types
 try:
     import netifaces
 except ImportError:
@@ -1763,7 +1764,13 @@ class _Cluster(object):
             try:
                 func(*args)
             except Exception:
-                logger.debug('Running %s failed: %s', func.func_name, traceback.format_exc())
+                if isinstance(func, types.FunctionType):
+                    name = func.func_name
+                elif isinstance(getattr(func, 'func', None), types.FunctionType):
+                    name = func.func.func_name
+                else:
+                    name = ''
+                logger.warning('Callback %s failed: %s', name, traceback.format_exc())
             self.worker_Q.task_done()
 
     def finish_job(self, cluster, _job, status):
