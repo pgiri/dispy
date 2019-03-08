@@ -166,9 +166,14 @@ class DispyHTTPServer(object):
             return
 
         def do_POST(self):
-            form = cgi.FieldStorage(fp=self.rfile, headers=self.headers,
-                                    environ={'REQUEST_METHOD': 'POST'})
-            client_request = self.path[1:]
+            try:
+                form = cgi.FieldStorage(fp=self.rfile, headers=self.headers,
+                                        environ={'REQUEST_METHOD': 'POST'})
+                client_request = self.path[1:]
+            except Exception:
+                logger.debug('Ignoring invalid POST request from %s', self.client_address[0])
+                self.send_error(400)
+                return
 
             if client_request == 'node_info':
                 ip_addr = None
@@ -206,7 +211,7 @@ class DispyHTTPServer(object):
                     # args and kwargs are sent as strings in Python,
                     # so an object's __str__ or __repr__ is used if provided;
                     # TODO: check job is in _ctx's jobs?
-                    jobs = [{'uid': id(job), 'job_id': str(job.id),
+                    jobs = [{'uid': job._uid, 'job_id': str(job.id),
                              'args': ', '.join(str(arg) for arg in job._args)
                                      if show_args else '',
                              'kwargs': ', '.join('%s=%s' % (key, val)
@@ -244,7 +249,7 @@ class DispyHTTPServer(object):
                     if not job:
                         continue
                     if cluster.cancel(job) == 0:
-                        cancelled.append(id(job))
+                        cancelled.append(job._uid)
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
                 self.end_headers()
@@ -398,13 +403,13 @@ class DispyHTTPServer(object):
         if status == DispyJob.Running:
             self._cluster_lock.acquire()
             cluster_info.jobs_submitted += 1
-            cluster_info.jobs[id(job)] = job
+            cluster_info.jobs[job._uid] = job
             self._cluster_lock.release()
         elif (status == DispyJob.Finished or status == DispyJob.Terminated or
               status == DispyJob.Cancelled or status == DispyJob.Abandoned):
             self._cluster_lock.acquire()
             cluster_info.jobs_done += 1
-            cluster_info.jobs.pop(id(job), None)
+            cluster_info.jobs.pop(job._uid, None)
             self._cluster_lock.release()
 
         if node:

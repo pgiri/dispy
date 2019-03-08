@@ -92,7 +92,7 @@ class DispyJob(object):
 
     __slots__ = ('id', 'result', 'stdout', 'stderr', 'exception',
                  'submit_time', 'start_time', 'end_time', 'status',
-                 'ip_addr', 'finish', '_args', '_kwargs', '_dispy_job_')
+                 'ip_addr', 'finish', '_args', '_kwargs', '_dispy_job_', '_uid')
 
     Created = 5
     Running = 6
@@ -126,6 +126,7 @@ class DispyJob(object):
         self._args = args
         self._kwargs = kwargs
         self._dispy_job_ = None
+        self._uid = id(self)
 
     def __call__(self, clear=False):
         self.finish.wait()
