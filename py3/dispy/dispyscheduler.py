@@ -618,7 +618,7 @@ class _Scheduler(object, metaclass=Singleton):
                                        xf.name.split(xf.sep)[-1])
                 xf.sep = os.sep
 
-            job = DispyJob((), {})
+            job = DispyJob(None, (), {})
             job.id = _job.uid
             _job.job = job
             yield conn.send_msg(serialize(_job.uid))

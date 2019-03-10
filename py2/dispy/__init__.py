@@ -104,9 +104,14 @@ class DispyJob(object):
     Abandoned = 10
     Finished = 11
 
-    def __init__(self, args, kwargs):
+    id_iter = itertools.count(start=1)
+
+    def __init__(self, job_id, args, kwargs):
         # id can be assigned by user as appropriate (e.g., to distinguish jobs)
-        self.id = None
+        if job_id:
+            self.id = job_id
+        else:
+            self.id = next(DispyJob.id_iter)
         # rest are read-only
         self.result = None
         self.stdout = None
@@ -667,9 +672,9 @@ class _DispyJob_(object):
     __slots__ = ('job', 'uid', 'compute_id', 'hash', 'node', 'pinned',
                  'xfer_files', '_args', '_kwargs', 'code')
 
-    def __init__(self, compute_id, args, kwargs):
+    def __init__(self, compute_id, job_id, args, kwargs):
         job_deps = kwargs.pop('dispy_job_depends', [])
-        self.job = DispyJob(args, kwargs)
+        self.job = DispyJob(job_id, args, kwargs)
         self.job._dispy_job_ = self
         self._args = self.job._args
         self._kwargs = self.job._kwargs
@@ -865,7 +870,6 @@ class _Cluster(object):
             self._sched_jobs = {}
             self._sched_event = pycos.Event()
             self._abandoned_jobs = {}
-            self._job_id = itertools.count(start=1)
             self.terminate = False
             self.sign = hashlib.sha1(os.urandom(20))
             for ext_ip_addr in self.addrinfos:
@@ -2083,7 +2087,6 @@ class _Cluster(object):
     def submit_job(self, _job, ip_addr=None, task=None):
         # generator
         _job.uid = id(_job)
-        _job.job.id = next(self._job_id)
         cluster = self._clusters[_job.compute_id]
         if ip_addr:
             node = self._nodes.get(ip_addr, None)
@@ -2694,14 +2697,20 @@ class JobCluster(object):
         Arguments should be serializable and should correspond to
         arguments for computation used when cluster is created.
         """
+        return self.submit_job_id(None, *args, **kwargs)
+
+    def submit_job_id(self, job_id, *args, **kwargs):
+        """Same as 'submit' but job's 'id' is initialized to 'job_id'.
+        """
         if self._compute.type == _Compute.prog_type:
             args = [str(arg) for arg in args]
         try:
-            _job = _DispyJob_(self._compute.id, args, kwargs)
+            _job = _DispyJob_(self._compute.id, job_id, args, kwargs)
         except Exception:
             logger.warning('Creating job for "%s", "%s" failed with "%s"',
                            str(args), str(kwargs), traceback.format_exc())
             return None
+
         if Task(self._cluster.submit_job, _job).value() == 0:
             return _job.job
         else:
@@ -2716,6 +2725,11 @@ class JobCluster(object):
         Arguments should be serializable and should correspond to
         arguments for computation used when cluster is created.
         """
+        return self.submit_job_id_node(None, *args, **kwargs)
+
+    def submit_job_id_node(self, job_id, node, *args, **kwargs):
+        """Same as 'submit_node' but job's 'id' is initialized to 'job_id'.
+        """
         if isinstance(node, DispyNode):
             node = self._dispy_nodes.get(node.ip_addr, None)
         elif isinstance(node, str):
@@ -2729,12 +2743,13 @@ class JobCluster(object):
         if self._compute.type == _Compute.prog_type:
             args = [str(arg) for arg in args]
         try:
-            _job = _DispyJob_(self._compute.id, args, kwargs)
+            _job = _DispyJob_(self._compute.id, job_id, args, kwargs)
         except Exception:
             logger.warning('Creating job for "%s", "%s" failed with "%s"',
                            str(args), str(kwargs), traceback.format_exc())
             return None
-        if Task(self._cluster.submit_job, _job, node.ip_addr).value() == 0:
+
+        if Task(self._cluster.submit_job, _job, ip_addr=node.ip_addr).value() == 0:
             return _job.job
         else:
             return None
@@ -3085,7 +3100,12 @@ class SharedJobCluster(JobCluster):
         Arguments should be serializable and should correspond to
         arguments for computation used when cluster is created.
         """
-        return self.submit_node(None, *args, **kwargs)
+        return self.submit_job_id_node(None, None, *args, **kwargs)
+
+    def submit_job_id(self, job_id, *args, **kwargs):
+        """Same as 'submit' but job's 'id' is initialized to 'job_id'.
+        """
+        return self.submit_job_id_node(job_id, None, *args, **kwargs)
 
     def submit_node(self, node, *args, **kwargs):
         """Submit a job for execution at 'node' with the given
@@ -3096,7 +3116,11 @@ class SharedJobCluster(JobCluster):
         Arguments should be serializable and should correspond to
         arguments for computation used when cluster is created.
         """
+        return self.submit_job_id_node(None, node, *args, **kwargs)
 
+    def submit_job_id_node(self, job_id, node, *args, **kwargs):
+        """Same as 'submit_node' but job's 'id' is initialized to 'job_id'.
+        """
         if node:
             if isinstance(node, DispyNode):
                 node = node.ip_addr
@@ -3110,7 +3134,7 @@ class SharedJobCluster(JobCluster):
         if self._compute.type == _Compute.prog_type:
             args = [str(arg) for arg in args]
         try:
-            _job = _DispyJob_(self._compute.id, args, kwargs)
+            _job = _DispyJob_(self._compute.id, job_id, args, kwargs)
         except Exception:
             logger.warning('Creating job for "%s", "%s" failed with "%s"',
                            str(args), str(kwargs), traceback.format_exc())
@@ -3152,6 +3176,7 @@ class SharedJobCluster(JobCluster):
             msg = sock.recv_msg()
             _job.uid = deserialize(msg)
             if _job.uid:
+                job = _job.job
                 self._cluster._sched_jobs[_job.uid] = _job
                 self._pending_jobs += 1
                 self._complete.clear()
@@ -3159,8 +3184,6 @@ class SharedJobCluster(JobCluster):
                 if self.status_callback:
                     self._cluster.worker_Q.put((self.status_callback,
                                                 (DispyJob.Created, None, copy.copy(_job.job))))
-                job = _job.job
-                job.id = next(self._cluster._job_id)
             else:
                 sock.send_msg('NAK'.encode())
                 _job.job._dispy_job_ = None
@@ -3170,6 +3193,7 @@ class SharedJobCluster(JobCluster):
                            str(args), str(kwargs), traceback.format_exc())
             _job.job._dispy_job_ = None
             del _job.job
+            job = None
         finally:
             sock.close()
         return job
@@ -3485,7 +3509,7 @@ def recover_jobs(recover_file=None, timeout=None, terminate_pending=False):
                 raise StopIteration
             yield conn.send_msg('ACK')
             logger.debug('Received reply for job %s', reply.uid)
-            job = DispyJob((), {})
+            job = DispyJob(None, (), {})
             job.result = deserialize(reply.result)
             job.stdout = reply.stdout
             job.stderr = reply.stderr
