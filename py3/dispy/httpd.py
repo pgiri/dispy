@@ -371,8 +371,15 @@ class DispyHTTPServer(object):
         if cluster:
             cluster_info = self.__class__._ClusterInfo(cluster)
             self._clusters[cluster.name] = cluster_info
-            if cluster.status_callback is None:
-                cluster.status_callback = functools.partial(self.cluster_status, cluster_info)
+            http_callback = functools.partial(self.cluster_status, cluster_info)
+            if cluster.status_callback:
+                client_callback = cluster.status_callback
+                def chain_callbacks(status, node, job):
+                    http_callback(status, node, job)
+                    client_callback(status, node, job)
+                cluster.status_callback = chain_callbacks
+            else:
+                cluster.status_callback = http_callback
         if not DocumentRoot:
             DocumentRoot = os.path.join(os.path.dirname(__file__), 'data')
         if poll_sec < 1:
