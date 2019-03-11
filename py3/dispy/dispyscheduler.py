@@ -1755,20 +1755,20 @@ class _Scheduler(object, metaclass=Singleton):
             tx = yield _job.run(task=task)
             if dispy_node:
                 dispy_node.tx += tx
-        except EnvironmentError:
+        except (EnvironmentError, OSError):
             logger.warning('Failed to run job %s on %s for computation %s; removing this node',
                            _job.uid, node.ip_addr, cluster._compute.name)
-            node.clusters.discard(cluster)
-            # TODO: remove the node from all clusters and globally?
-            # this job might have been deleted already due to timeout
             if node.pending_jobs:
+                # TODO: instead of discarding pending jobs, maintain them
+                # elsewhere, while cluster is alive?
                 for njob in node.pending_jobs:
-                    if njob.compute_id == cluster._compute.id:
-                        if cluster.status_callback and dispy_node:
-                            dispy_node.update_time = time.time()
-                            cluster.status_callback(DispyJob.Cancelled, dispy_node, njob.job)
-                node.pending_jobs = [njob for njob in node.pending_jobs
-                                     if njob.compute_id != cluster._compute.id]
+                    if cluster.status_callback and dispy_node:
+                        dispy_node.update_time = time.time()
+                        cluster.status_callback(DispyJob.Cancelled, dispy_node, njob.job)
+                node.pending_jobs = []
+            # TODO: need to close computations on this node?
+            node.clusters.clear()
+            self._nodes.pop(node.ip_addr, None)
             if self._sched_jobs.pop(_job.uid, None) == _job:
                 if not _job.pinned:
                     cluster._jobs.insert(0, _job)

@@ -535,7 +535,7 @@ class _Node(object):
     """
     __slots__ = ['ip_addr', 'port', 'name', 'cpus', 'avail_cpus', 'busy', 'cpu_time', 'clusters',
                  'auth', 'secret', 'keyfile', 'certfile', 'last_pulse', 'scheduler_ip_addr',
-                 '_jobs', 'pending_jobs', 'avail_info', 'platform', 'sock_family', 'tx', 'rx']
+                 'pending_jobs', 'avail_info', 'platform', 'sock_family', 'tx', 'rx']
 
     def __init__(self, ip_addr, port, cpus, sign, secret, platform='',
                  keyfile=None, certfile=None):
@@ -1930,20 +1930,19 @@ class _Cluster(object):
             logger.warning('Failed to run job %s on %s for computation %s; removing this node',
                            _job.uid, node.ip_addr, cluster._compute.name)
             logger.debug(traceback.format_exc())
-            # TODO: remove the node from all clusters and globally?
-            # this job might have been deleted already due to timeout
-            node.clusters.discard(cluster)
             if node.pending_jobs:
+                # TODO: instead of discarding pending jobs, maintain them
+                # elsewhere, while cluster is alive?
                 for njob in node.pending_jobs:
-                    if njob.compute_id == cluster._compute.id:
-                        dispy_job = njob.job
-                        self.finish_job(cluster, njob, DispyJob.Cancelled)
-                        if cluster.status_callback and dispy_node:
-                            dispy_node.update_time = time.time()
-                            self.worker_Q.put((cluster.status_callback,
-                                               (DispyJob.Cancelled, dispy_node, dispy_job)))
-                node.pending_jobs = [njob for njob in node.pending_jobs
-                                     if njob.compute_id != cluster._compute.id]
+                    self.finish_job(cluster, njob, DispyJob.Cancelled)
+                    if cluster.status_callback and dispy_node:
+                        dispy_node.update_time = time.time()
+                        self.worker_Q.put((cluster.status_callback,
+                                           (DispyJob.Cancelled, dispy_node, njob.job)))
+                node.pending_jobs = []
+            # TODO: need to close computations on this node?
+            node.clusters.clear()
+            self._nodes.pop(node.ip_addr, None)
             if self._sched_jobs.pop(_job.uid, None) == _job:
                 if not _job.pinned:
                     cluster._jobs.insert(0, _job)
