@@ -1767,6 +1767,10 @@ class _Scheduler(object, metaclass=Singleton):
                         cluster.status_callback(DispyJob.Cancelled, dispy_node, njob.job)
                 node.pending_jobs = []
             # TODO: need to close computations on this node?
+            if dispy_node:
+                for c in node.clusters:
+                    if c.status_callback:
+                        Task(self.send_node_status, c, dispy_node, DispyNode.Closed)
             node.clusters.clear()
             self._nodes.pop(node.ip_addr, None)
             if self._sched_jobs.pop(_job.uid, None) == _job:
