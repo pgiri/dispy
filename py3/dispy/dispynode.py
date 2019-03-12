@@ -1399,13 +1399,35 @@ class _DispyNode(object):
         def terminate_job(client, job_info, task=None):
 
             def kill_pid(pid, signum):
+                def kill_proc(pid, signum):
+                    if psutil:
+                        try:
+                            proc = psutil.Process(pid)
+                            assert proc.is_running()
+                            assert proc.ppid() == self.pid
+                            if signum == self.signals[2]:
+                                proc.terminate()
+                            else:
+                                proc.kill()
+                        except Exception:
+                            dispynode_logger.debug('Could not terminate job %s of "%s" (%s): %s',
+                                                   job_info.job_reply.uid, compute.name, pid,
+                                                   traceback.format_exc())
+                            return -1
+                        else:
+                            return 0
+                    else:
+                        try:
+                            os.kill(pid, signum)
+                        except (OSError, Exception):
+                            dispynode_logger.debug('Killing PID %s failed: %s',
+                                                   pid, traceback.format_exc())
+                            return -1
+                        return 0
+
                 suid = client.globals.get('suid', None)
                 if suid is None:
-                    try:
-                        os.kill(pid, signum)
-                    except (OSError, Exception):
-                        return -1
-                    return 0
+                    return kill_proc(pid, signum)
                 else:
                     sgid = client.globals['sgid']
 
@@ -1416,11 +1438,7 @@ class _DispyNode(object):
                         else:
                             os.setregid(sgid, sgid)
                             os.setreuid(suid, suid)
-                        try:
-                            os.kill(pid, signum)
-                        except (OSError, Exception):
-                            return -1
-                        return 0
+                        return kill_proc(pid, signum)
 
                     proc = multiprocessing.Process(target=suid_kill)
                     proc.start()
@@ -1493,8 +1511,8 @@ class _DispyNode(object):
                 if kill_pid(pid, self.signals[2]):
                     # TODO: is there a way to be sure if process is
                     # killed / job finished etc.?
-                    dispynode_logger.debug('Killing job %s (PID %s) failed: %s',
-                                           job_info.job_reply.uid, pid, traceback.format_exc())
+                    dispynode_logger.debug('Killing job %s (PID %s) failed',
+                                           job_info.job_reply.uid, pid)
                     job_info.job_reply.status = DispyJob.Terminated
                     raise StopIteration
 
