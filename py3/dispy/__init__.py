@@ -1948,11 +1948,10 @@ class _Cluster(object, metaclass=Singleton):
                                            (DispyJob.Cancelled, dispy_node, njob.job)))
                 node.pending_jobs = []
             # TODO: need to close computations on this node?
-            if dispy_node:
-                for c in node.clusters:
-                    if c.status_callback:
-                        self.worker_Q.put((c.status_callback,
-                                           (DispyNode.Closed, dispy_node, None)))
+            for cl in node.clusters:
+                dn = cl._dispy_nodes.pop(node.ip_addr, None)
+                if dn and cl.status_callback:
+                    self.worker_Q.put((cl.status_callback, (DispyNode.Closed, dn, None)))
             node.clusters.clear()
             self._nodes.pop(node.ip_addr, None)
             if self._sched_jobs.pop(_job.uid, None) == _job:
