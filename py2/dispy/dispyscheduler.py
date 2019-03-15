@@ -1758,9 +1758,12 @@ class _Scheduler(object):
                 # TODO: instead of discarding pending jobs, maintain them
                 # elsewhere, while cluster is alive?
                 for njob in node.pending_jobs:
-                    if cluster.status_callback and dispy_node:
-                        dispy_node.update_time = time.time()
-                        cluster.status_callback(DispyJob.Cancelled, dispy_node, njob.job)
+                    self.done_jobs[_njob.uid] = _njob
+                    cl = self._clusters[njob.compute_id]
+                    cl.pending_jobs -= 1
+                    reply = _JobReply(_njob, cl.ip_addr, status=DispyJob.Cancelled)
+                    reply.result = serialize(None)
+                    Task(self.send_job_result, _njob.uid, cl, reply, resending=False)
                 node.pending_jobs = []
             # TODO: need to close computations on this node?
             for cl in node.clusters:

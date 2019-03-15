@@ -1934,11 +1934,12 @@ class _Cluster(object):
                 # TODO: instead of discarding pending jobs, maintain them
                 # elsewhere, while cluster is alive?
                 for njob in node.pending_jobs:
-                    self.finish_job(cluster, njob, DispyJob.Cancelled)
-                    if cluster.status_callback and dispy_node:
-                        dispy_node.update_time = time.time()
-                        self.worker_Q.put((cluster.status_callback,
-                                           (DispyJob.Cancelled, dispy_node, njob.job)))
+                    cl = self._clusters[njob.compute_id]
+                    self.finish_job(cl, njob, DispyJob.Cancelled)
+                    if cl.status_callback:
+                        dn = cl._dispy_nodes.get(node.ip_addr, None)
+                        self.worker_Q.put((cl.status_callback,
+                                           (DispyJob.Cancelled, dn, njob.job)))
                 node.pending_jobs = []
             # TODO: need to close computations on this node?
             for cl in node.clusters:
