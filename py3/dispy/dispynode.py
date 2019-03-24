@@ -27,6 +27,7 @@ import copy
 import struct
 import hashlib
 import re
+import errno
 try:
     import psutil
 except ImportError:
@@ -223,11 +224,136 @@ def _dispy_job_func(__dispy_job_name, __dispy_job_code, __dispy_job_globals,
     reply_Q.put(__dispy_job_reply)
 
 
+def _dispy_terminate_proc(proc_pid, task=None):
+
+    def terminate_proc(how):
+        if psutil and isinstance(proc_pid, psutil.Process):
+            proc = proc_pid
+            try:
+                pid = proc.pid
+                if how == 0:
+                    if proc.is_running():
+                        if proc.status() == psutil.STATUS_ZOMBIE:
+                            try:
+                                proc.wait(timeout=0.1)
+                                return 0
+                            except psutil.TimeoutExpired:
+                                return 1
+                        return 1
+                    else:
+                        return 0
+
+                elif how == 1:
+                    proc.terminate()
+
+                elif how == 2:
+                    proc.kill()
+                    try:
+                        proc.wait(timeout=0.5)
+                        return 0
+                    except psutil.TimeoutExpired:
+                        return 1
+            except psutil.ZombieProcess:
+                try:
+                    proc.wait(timeout=0.1)
+                    return 0
+                except Exception:
+                    return 1
+            except psutil.NoSuchProcess:
+                return 0
+            except Exception:
+                dispynode_logger.info('Could not terminate PID %s: %s',
+                                      proc.pid, traceback.format_exc())
+                return -1
+            return 1
+
+        elif isinstance(proc_pid, multiprocessing.Process):
+            proc = proc_pid
+            try:
+                if how == 0:
+                    if proc.is_alive():
+                        return 1
+                    else:
+                        return 0
+                elif how == 1:
+                    proc.terminate()
+                elif how == 2:
+                    kill = getattr(proc, 'kill', proc.terminate)
+                    kill()
+            except Exception:
+                dispynode_logger.debug(traceback.format_exc())
+                pass
+            return 1
+
+        elif isinstance(proc_pid, subprocess.Popen):
+            proc = proc_pid
+            try:
+                if how == 0:
+                    if proc.poll() is None:
+                        return 1
+                    else:
+                        return 0
+                elif how == 1:
+                    proc.terminate()
+                elif how == 2:
+                    proc.kill()
+            except Exception:
+                pass
+            return 1
+
+        else:
+            pid = proc_pid
+            if how == 0:
+                wait_nohang = getattr(os, 'WNOHANG', None)
+                if wait_nohang:
+                    try:
+                        if os.waitpid(pid, wait_nohang)[0] == pid:
+                            return 0
+                    except Exception:
+                        # TODO: check errno for all platforms
+                        return 1
+                # TODO: kill with 0 to check if process is running where possible
+            if os.name == 'nt':
+                signals = [signal.CTRL_BREAK_EVENT, signal.CTRL_BREAK_EVENT, signal.SIGTERM]
+            else:
+                signals = [0, signal.SIGTERM, signal.SIGKILL]
+            try:
+                os.kill(pid, signals[how])
+            except OSError as exc:
+                if exc.errno == errno.ESRCH or exc.errno == errno.EINVAL:
+                    return 0
+                else:
+                    dispynode_logger.debug('Terminatnig PID %s with %s failed: %s',
+                                           pid, how, traceback.format_exc())
+                    return -1
+            except Exception:
+                dispynode_logger.debug('Terminatnig PID %s with %s failed: %s',
+                                       pid, how, traceback.format_exc())
+                return -1
+            return 1
+
+    how = 1
+    for i in range(20):
+        status = terminate_proc(how)
+        if how == 0 and status == 0:
+            raise StopIteration(0)
+        if i == 15:
+            how = 2
+        else:
+            how = 0
+        yield task.sleep(0.3)
+    raise StopIteration(-1)
+
+
 def _dispy_setup_process(compute, pipe, client_globals):
     """
     Internal use only.
     """
+    import sys
     import threading
+    sys.modules.pop('pycos', None)
+    globals().pop('pycos', None)
+    import pycos
 
     os.chdir(compute.dest_path)
     suid = client_globals.pop('suid', None)
@@ -239,6 +365,7 @@ def _dispy_setup_process(compute, pipe, client_globals):
         else:
             os.setregid(sgid, sgid)
             os.setreuid(suid, suid)
+    _dispy_terminate_proc = globals()['_dispy_terminate_proc']
     globals().update(client_globals)
     globals().pop('reply_Q', None)
     dispynode_logger.setLevel(client_globals.pop('loglevel'))
@@ -292,6 +419,7 @@ def _dispy_setup_process(compute, pipe, client_globals):
     init_vars = setup_globals = None
     reply_Q = client_globals['reply_Q']
     setup_pid = os.getpid()
+    wait_nohang = getattr(os, 'WNOHANG', None)
 
     def sighandler(signum, frame):
         dispynode_logger.debug('setup_process received signal %s', signum)
@@ -300,14 +428,8 @@ def _dispy_setup_process(compute, pipe, client_globals):
     if os.name == 'nt':
         signal.signal(signal.SIGBREAK, sighandler)
 
-    wait_nohang = getattr(os, 'WNOHANG', None)
-    if os.name == 'nt':
-        signals = [signal.CTRL_BREAK_EVENT, signal.CTRL_BREAK_EVENT, signal.SIGTERM]
-    else:
-        signals = [signal.SIGTERM, 0, signal.SIGKILL]
-
     def terminate_job(msg):
-        pid = msg['pid']
+        proc_pid = msg['pid']
         job_reply = msg['job_reply']
         # TODO: Currently job processes are not maintained. Perhaps it
         # is better / safer approach, but requires main process to
@@ -315,51 +437,23 @@ def _dispy_setup_process(compute, pipe, client_globals):
         # be removed. This requires extra bandwith. Since cancelling
         # jobs is relatively rare, it may be better to use psutil or
         # os.kill to terminate processes.
-        try:
-            if psutil:
-                proc = psutil.Process(pid)
-                assert proc.is_running()
-                proc.terminate()
-            else:
-                proc = None
-                os.kill(pid, signals[0])
-        except (OSError, Exception):
-            # Likely job is done?
-            return
-        signum = signals[1]
-        for i in range(20):
-            if proc:
-                if not proc.is_running():
-                    break
-                proc.wait(0.1)
-                continue
-            elif wait_nohang:
-                try:
-                    if os.waitpid(pid, wait_nohang)[0] == pid:
-                        break
-                except OSError:
-                    # TODO: check err.errno for all platforms
-                    break
-                time.sleep(0.1)
-                continue
-            elif signum and i < 10:
-                time.sleep(0.1)
-                continue
 
+        if psutil:
             try:
-                os.kill(pid, signum)
-            except (OSError, Exception):
-                # TODO: check err.errno for all platforms
-                break
-        else:
-            try:
-                if proc:
-                    proc.kill()
-                    proc.wait(1)
-                else:
-                    os.kill(pid, signals[2])
-            except (OSError, Exception):
+                proc_pid = psutil.Process(proc_pid)
+                if proc_pid.ppid() != setup_pid:
+                    return
+            except psutil.NoSuchProcess:
+                # job is already done
+                return
+            except Exception:
                 pass
+
+        if pycos.Task(_dispy_terminate_proc, proc_pid).value():
+            dispynode_logger.warning('Job %s (PID %s) could not be terminated',
+                                     job_reply.uid, msg['pid'])
+            return
+
         dispynode_logger.debug('Job %s terminated', job_reply.uid)
         job_reply.result = serialize(None)
         job_reply.status = DispyJob.Terminated
@@ -536,10 +630,7 @@ class _DispyNode(object):
             dispynode_logger.info('Computations will run with uid %s and gid %s' %
                                   (self.suid, self.sgid))
 
-        if os.name == 'nt':
-            self.signals = [signal.CTRL_BREAK_EVENT, signal.CTRL_BREAK_EVENT, signal.SIGTERM]
-        else:
-            self.signals = [signal.SIGTERM, 0, signal.SIGKILL]
+        self.pycos = Pycos()
 
         config = os.path.join(self.dest_path_prefix, 'config.pkl')
         if os.path.isfile(config):
@@ -570,7 +661,6 @@ class _DispyNode(object):
             else:
                 print('\n    WARNING: Using "clean" without "psutil" module may be dangerous!\n')
 
-            wait_nohang = getattr(os, 'WNOHANG', None)
             for name in glob.glob(os.path.join(self.dest_path_prefix, '*.pkl')):
                 if name.startswith('_dispy_job_reply_'):
                     # job results may be retrieved by clients with
@@ -602,104 +692,31 @@ class _DispyNode(object):
                         if os.name == 'nt':
                             assert any(arg.startswith('from multiprocessing.')
                                        for arg in proc.cmdline())
-                            proc.terminate()
                         else:
                             assert any(arg.endswith('dispynode.py') for arg in proc.cmdline())
-                            proc.terminate()
                     except Exception:
                         continue
+                    proc_pid = proc
                 else:
-                    proc = None
-                    os.kill(pid, self.signals[0])
+                    proc_pid = pid
 
-                signum = self.signals[1]
-                for i in range(10):
-                    time.sleep(0.2)
-                    if proc:
-                        proc.wait(0.1)
-                        if not proc.is_running():
-                            break
-                        continue
-                    elif wait_nohang:
-                        try:
-                            if os.waitpid(pid, wait_nohang)[0] == pid:
-                                break
-                        except (OSError, Exception):
-                            # TODO: check err.errno for all platforms
-                            break
-                    elif signum:
-                        continue
+                if pycos.Task(_dispy_terminate_proc, proc_pid).value():
+                    dispynode_logger.warning('Could not terminate PID %s', pid)
 
-                    try:
-                        os.kill(pid, signum)
-                    except (OSError, Exception):
-                        # TODO: check err.errno for all platforms
-                        break
-                else:
-                    try:
-                        if proc:
-                            proc.kill()
-                            proc.wait(1)
-                        else:
-                            os.kill(pid, self.signals[2])
-                    except Exception:
-                        print('  Could not kill job process with ID %s' % pid)
-                        continue
+            proc_pid = config['pid']
+            print('Killing dispynode process ID %s; it may take sometime to finish.' %
+                  config['pid'])
+            if psutil:
+                try:
+                    proc_pid = psutil.Process(proc_pid)
+                    assert proc_pid.ppid() == config['ppid']
+                    assert any(arg.endswith('dispynode.py') for arg in proc_pid.cmdline())
+                except Exception:
+                    pass
 
-            try:
-                pid = config['pid']
-                print('Killing dispynode process ID %s; it may take sometime to finish.' % pid)
-                if psutil:
-                    proc = psutil.Process(pid)
-                    assert proc.ppid() == config['ppid']
-                    assert any(arg.endswith('dispynode.py') for arg in proc.cmdline())
-                else:
-                    proc = None
+            if pycos.Task(_dispy_terminate_proc, proc_pid).value():
+                dispynode_logger.warning('Could not terminate PID %s', config['pid'])
 
-                if os.name == 'nt':
-                    signum = signal.CTRL_C_EVENT
-                else:
-                    signum = signal.SIGINT
-                os.kill(pid, signum)
-
-                signum = self.signals[1]
-                for i in range(50):
-                    time.sleep(0.2)
-                    if proc:
-                        proc.wait(0.1)
-                        if not proc.is_running():
-                            break
-                        continue
-                    elif wait_nohang:
-                        try:
-                            if os.waitpid(pid, wait_nohang)[0] == pid:
-                                break
-                        except OSError:
-                            # TODO: check err.errno for all platforms
-                            break
-                    elif signum and i < 40:
-                        continue
-
-                    try:
-                        os.kill(pid, signum)
-                    except OSError:
-                        # TODO: check err.errno for all platforms
-                        break
-                else:
-                    try:
-                        if proc:
-                            proc.kill()
-                            proc.wait(1)
-                        else:
-                            os.kill(pid, self.signals[2])
-                    except Exception:
-                        print('  Could not kill job process with ID %s' % pid)
-                        print(traceback.format_exc())
-                        exit(-1)
-
-            except Exception:
-                # print(traceback.format_exc())
-                pass
             shutil.rmtree(self.dest_path_prefix, ignore_errors=True)
 
         if not os.path.isdir(self.dest_path_prefix):
@@ -709,8 +726,6 @@ class _DispyNode(object):
         os.chmod(os.path.join(self.dest_path_prefix, '..'), stat.S_IRUSR | stat.S_IWUSR |
                  stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
         os.chdir(self.dest_path_prefix)
-
-        self.pycos = Pycos()
 
         self.avail_cpus = self.num_cpus
         self.clients = {}
@@ -1301,6 +1316,7 @@ class _DispyNode(object):
             client.globals['_Client'] = None
             client.globals['_dispy_config'] = None
             client.globals['_dispy_setup_process'] = None
+            client.globals['_dispy_terminate_proc'] = None
             client.globals['__dispy_sock_family'] = client.sock_family
             client.globals['__dispy_certfile'] = self.certfile
             client.globals['__dispy_keyfile'] = self.keyfile
@@ -1311,7 +1327,9 @@ class _DispyNode(object):
             client.globals['sgid'] = self.sgid
 
             setup_status = 0
-            if self._safe_setup and (compute.setup or (not isinstance(compute.cleanup, bool))):
+            if (self._safe_setup and (compute.setup or (not isinstance(compute.cleanup, bool))) or
+                self.suid is not None):
+
                 # TODO: use this only for function computations?
                 client.globals['loglevel'] = dispynode_logger.level
                 client.parent_pipe, client.child_pipe = multiprocessing.Pipe(duplex=True)
@@ -1329,7 +1347,7 @@ class _DispyNode(object):
                     raise StopIteration(client, '"setup" has not finished in time')
 
                 setup_status = msg['setup_status']
-                if setup_status == 0:
+                if setup_status == 0 or self.suid is not None:
                     for i in range(10):
                         if client.parent_pipe.poll():
                             msg = client.parent_pipe.recv()
@@ -1397,54 +1415,6 @@ class _DispyNode(object):
             raise StopIteration(None, 'ACK')
 
         def terminate_job(client, job_info, task=None):
-
-            def kill_pid(pid, signum):
-                def kill_proc(pid, signum):
-                    if psutil:
-                        try:
-                            proc = psutil.Process(pid)
-                            assert proc.is_running()
-                            assert proc.ppid() == self.pid
-                            if signum == self.signals[2]:
-                                proc.terminate()
-                            else:
-                                proc.kill()
-                        except Exception:
-                            dispynode_logger.debug('Could not terminate job %s of "%s" (%s): %s',
-                                                   job_info.job_reply.uid, compute.name, pid,
-                                                   traceback.format_exc())
-                            return -1
-                        else:
-                            return 0
-                    else:
-                        try:
-                            os.kill(pid, signum)
-                        except (OSError, Exception):
-                            dispynode_logger.debug('Killing PID %s failed: %s',
-                                                   pid, traceback.format_exc())
-                            return -1
-                        return 0
-
-                suid = client.globals.get('suid', None)
-                if suid is None:
-                    return kill_proc(pid, signum)
-                else:
-                    sgid = client.globals['sgid']
-
-                    def suid_kill():
-                        if hasattr(os, 'setresuid'):
-                            os.setresgid(sgid, sgid, sgid)
-                            os.setresuid(suid, suid, suid)
-                        else:
-                            os.setregid(sgid, sgid)
-                            os.setreuid(suid, suid)
-                        return kill_proc(pid, signum)
-
-                    proc = multiprocessing.Process(target=suid_kill)
-                    proc.start()
-                    proc.join()
-                    return proc.exitcode
-
             compute = client.compute
             if job_info.proc:
                 proc = job_info.proc
@@ -1461,60 +1431,33 @@ class _DispyNode(object):
                 client.parent_pipe.send({'req': 'terminate_job', 'pid': job_info.pid,
                                          'job_reply': job_info.job_reply})
                 raise StopIteration
-            else:
-                if isinstance(proc, multiprocessing.Process):
-                    if proc.is_alive():
-                        kill_pid(proc.pid, signal.SIGTERM)
-                    else:
-                        raise StopIteration
-                elif isinstance(proc, subprocess.Popen):
-                    if proc.poll() is None:
-                        kill_pid(proc.pid, signal.SIGTERM)
-                    else:
-                        raise StopIteration
-                else:
-                    if kill_pid(pid, self.signals[0]):
-                        # job terminated?
-                        # TODO: send reply? job already finished?
-                        raise StopIteration
 
-            wait_nohang = getattr(os, 'WNOHANG', None)
-            signum = self.signals[1]
-            for i in range(20):
-                if proc:
-                    if isinstance(proc, multiprocessing.Process):
-                        if not proc.is_alive():
-                            break
-                        proc.join(0.1)
-                    elif isinstance(proc, subprocess.Popen):
-                        if proc.poll() is not None:
-                            break
-                        yield task.sleep(0.1)
-                    continue
-                elif wait_nohang:
-                    try:
-                        if os.waitpid(pid, wait_nohang)[0] == pid:
-                            break
-                    except OSError:
-                        # TODO: check err.errno for all platforms
-                        break
-                    yield task.sleep(0.1)
-                    continue
-                elif signum and i < 10:
-                    yield task.sleep(0.1)
-                    continue
-
-                if kill_pid(pid, signum):
-                    # TODO: check err.errno for all platforms
-                    break
-            else:
-                if kill_pid(pid, self.signals[2]):
-                    # TODO: is there a way to be sure if process is
-                    # killed / job finished etc.?
-                    dispynode_logger.debug('Killing job %s (PID %s) failed',
-                                           job_info.job_reply.uid, pid)
-                    job_info.job_reply.status = DispyJob.Terminated
+            if not proc and psutil:
+                try:
+                    proc = psutil.Process(pid)
+                    assert proc.is_running()
+                    assert proc.ppid() == self.pid
+                except (psutil.NoSuchProcess, psutil.ZombieProcess, Exception):
+                    dispynode_logger.debug(traceback.format_exc())
                     raise StopIteration
+
+            if proc:
+                proc_pid = proc
+            else:
+                proc_pid = pid
+
+            suid = client.globals.get('suid', None)
+            if suid is None:
+                status = yield _dispy_terminate_proc(proc_pid, task=task)
+            else:
+                # TODO: terminating process must be parent of process being
+                # killed, so creating suid process won't work!
+                status = -1
+
+            if status:
+                dispynode_logger.debug('Terminating job %s (PID %s) failed',
+                                       job_info.job_reply.uid, pid)
+                raise StopIteration
 
             job_reply = copy.copy(job_info.job_reply)
             job_reply.result = serialize(None)
