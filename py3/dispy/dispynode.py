@@ -2384,7 +2384,7 @@ class _DispyNode(object):
                 client.pending_jobs = 0
                 client.zombie = True
                 Task(self.cleanup_computation, client)
-            if self.scheduler['ip_addr']:
+            if self.scheduler['ip_addr'] and self.scheduler['addrinfo']:
                 addrinfo = self.scheduler['addrinfo']
                 sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_STREAM),
                                    keyfile=self.keyfile, certfile=self.certfile)
