@@ -219,6 +219,9 @@ def _dispy_job_func(__dispy_job_name, __dispy_job_code, __dispy_job_globals,
 
 
 def _dispy_terminate_proc(proc_pid, task=None):
+    """
+    Internal use only.
+    """
 
     def terminate_proc(how):
         if psutil and isinstance(proc_pid, psutil.Process):
@@ -638,15 +641,14 @@ class _DispyNode(object):
         else:
             config = {}
 
-        if clean:
+        if clean and config:
             if psutil:
                 try:
                     proc = psutil.Process(config['pid'])
                     assert any(arg.endswith('dispynode.py') for arg in proc.cmdline())
-                    if config:
-                        assert proc.ppid() in (config['ppid'], 1)
-                        if config['create_time']:
-                            assert abs(proc.create_time() - config['create_time']) < 1
+                    assert proc.ppid() in (config['ppid'], 1)
+                    if config['create_time']:
+                        assert abs(proc.create_time() - config['create_time']) < 1
                 except Exception:
                     print('\n    Apparently previous dispynode (PID %s) has gone away;'
                           '\n    please check manually and kill process(es) if necessary\n' %
