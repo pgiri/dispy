@@ -2,7 +2,6 @@ import sys
 import os
 import re
 import shutil
-import subprocess
 from setuptools import setup
 
 if sys.version_info.major == 2:
@@ -55,7 +54,7 @@ setup(
     package_data = {
         'dispy' : ['data/*', 'examples/*', 'doc/*'],
     },
-    install_requires=['pycos >= 4.8.10'],
+    install_requires=['pycos >= 4.8.11'],
     scripts=[os.path.join(base_dir, 'dispy', script) for script in \
              ['dispynode.py', 'dispynetrelay.py', 'dispyscheduler.py']] + \
             [os.path.join(base_dir, script) for script in ['dispy.py']],
