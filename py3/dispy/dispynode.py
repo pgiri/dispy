@@ -648,18 +648,20 @@ class _DispyNode(object):
             config = {}
 
         if clean and config:
+            node_proc = None
             if psutil:
                 try:
-                    proc = psutil.Process(config['pid'])
-                    assert any(arg.endswith('dispynode.py') for arg in proc.cmdline())
-                    assert proc.ppid() in (config['ppid'], 1)
+                    node_proc = psutil.Process(config['pid'])
+                    assert any(arg.endswith('dispynode.py') for arg in node_proc.cmdline())
+                    assert node_proc.ppid() in (config['ppid'], 1)
                     if config['create_time']:
-                        assert abs(proc.create_time() - config['create_time']) < 1
+                        assert abs(node_proc.create_time() - config['create_time']) < 1
                 except Exception:
                     print('\n    Apparently previous dispynode (PID %s) has gone away;'
                           '\n    please check manually and kill process(es) if necessary\n' %
                           config['pid'])
                     config = {}
+                    node_proc = None
             else:
                 print('\n    WARNING: Using "clean" without "psutil" module may be dangerous!\n')
 
@@ -705,19 +707,14 @@ class _DispyNode(object):
                 if pycos.Task(_dispy_terminate_proc, proc_pid).value():
                     dispynode_logger.warning('Could not terminate PID %s', pid)
 
-            proc_pid = config['pid']
-            print('Killing dispynode process ID %s; it may take sometime to finish.' %
-                  config['pid'])
-            if psutil:
-                try:
-                    proc_pid = psutil.Process(proc_pid)
-                    assert proc_pid.ppid() == config['ppid']
-                    assert any(arg.endswith('dispynode.py') for arg in proc_pid.cmdline())
-                except Exception:
-                    pass
-
-            if pycos.Task(_dispy_terminate_proc, proc_pid).value():
-                dispynode_logger.warning('Could not terminate PID %s', config['pid'])
+            proc_pid = config.get('pid', None)
+            if proc_pid is not None:
+                if node_proc:
+                    proc_pid = node_proc
+                print('Killing dispynode process ID %s; it may take sometime to finish.' %
+                      config['pid'])
+                if pycos.Task(_dispy_terminate_proc, proc_pid).value():
+                    dispynode_logger.warning('Could not terminate PID %s', config['pid'])
 
             shutil.rmtree(self.dest_path_prefix, ignore_errors=True)
 
