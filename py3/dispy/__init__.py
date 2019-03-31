@@ -1006,6 +1006,21 @@ class _Cluster(object, metaclass=Singleton):
                     logger.debug(traceback.format_exc())
                 finally:
                     sock.close()
+
+            elif msg.startswith(b'TERMINATED:'):
+                try:
+                    info = deserialize(msg[len(b'TERMINATED:'):])
+                    assert info['ip_addr']
+                    # socket.inet_aton(status['ip_addr'])
+                except Exception:
+                    # logger.debug(traceback.format_exc())
+                    logger.debug('Ignoring node %s', addr[0])
+                    continue
+                auth = auth_code(self.secret, info['sign'])
+                node = self._nodes.get(info['ip_addr'], None)
+                if node and node.auth == auth:
+                    self.delete_node(node)
+
             else:
                 pass
         udp_sock.close()
@@ -1764,6 +1779,27 @@ class _Cluster(object, metaclass=Singleton):
         if node_computations:
             Task(self.setup_node, node, node_computations)
 
+    def delete_node(self, node):
+        if node.pending_jobs:
+            # TODO: instead of discarding pending jobs, maintain them
+            # elsewhere, while cluster is alive?
+            for _job in node.pending_jobs:
+                cluster = self._clusters[_job.compute_id]
+                self.finish_job(cluster, _job, DispyJob.Cancelled)
+                if cluster.status_callback:
+                    dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
+                    self.worker_Q.put((cluster.status_callback,
+                                       (DispyJob.Cancelled, dispy_node, _job.job)))
+            node.pending_jobs = []
+        # TODO: need to close computations on this node?
+        for cluster in node.clusters:
+            dispy_node = cl._dispy_nodes.pop(node.ip_addr, None)
+            if dispy_node and cluster.status_callback:
+                self.worker_Q.put((cluster.status_callback,
+                                   (DispyNode.Closed, dispy_node, None)))
+        node.clusters.clear()
+        self._nodes.pop(node.ip_addr, None)
+
     def worker(self):
         # used for user callbacks only
         while 1:
@@ -1937,24 +1973,7 @@ class _Cluster(object, metaclass=Singleton):
             logger.warning('Failed to run job %s on %s for computation %s; removing this node',
                            _job.uid, node.ip_addr, cluster._compute.name)
             logger.debug(traceback.format_exc())
-            if node.pending_jobs:
-                # TODO: instead of discarding pending jobs, maintain them
-                # elsewhere, while cluster is alive?
-                for njob in node.pending_jobs:
-                    cl = self._clusters[njob.compute_id]
-                    self.finish_job(cl, njob, DispyJob.Cancelled)
-                    if cl.status_callback:
-                        dn = cl._dispy_nodes.get(node.ip_addr, None)
-                        self.worker_Q.put((cl.status_callback,
-                                           (DispyJob.Cancelled, dn, njob.job)))
-                node.pending_jobs = []
-            # TODO: need to close computations on this node?
-            for cl in node.clusters:
-                dn = cl._dispy_nodes.pop(node.ip_addr, None)
-                if dn and cl.status_callback:
-                    self.worker_Q.put((cl.status_callback, (DispyNode.Closed, dn, None)))
-            node.clusters.clear()
-            self._nodes.pop(node.ip_addr, None)
+            self.delete_node(node)
             if self._sched_jobs.pop(_job.uid, None) == _job:
                 if not _job.pinned:
                     cluster._jobs.insert(0, _job)

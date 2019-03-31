@@ -2268,18 +2268,7 @@ class _DispyNode(object):
         if self.serve > 0:
             self.serve -= 1
         if self.serve == 0:
-            addrinfo = self.addrinfos[compute.node_ip_addr]
-            sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_STREAM), blocking=True,
-                               keyfile=self.keyfile, certfile=self.certfile)
-            sock.settimeout(MsgTimeout)
-            dispynode_logger.debug('Sending TERMINATE to %s', compute.scheduler_ip_addr)
-            info = {'ip_addr': compute.node_ip_addr, 'port': self.port, 'sign': self.sign}
-            try:
-                sock.connect((compute.scheduler_ip_addr, compute.scheduler_port))
-                sock.send_msg('TERMINATED:'.encode() + serialize(info))
-            except Exception:
-                pass
-            sock.close()
+            Task(self.send_terminate)
             if self.avail_cpus:
                 self.shutdown('terminate')
         else:
@@ -2351,6 +2340,45 @@ class _DispyNode(object):
                 # print(traceback.format_exc())
                 dispynode_logger.warning('Could not remove file "%s"', pkl_path)
 
+    def send_terminate(self, task=None):
+        if self.scheduler['ip_addr'] and self.scheduler['addrinfo']:
+            addrinfo = self.scheduler['addrinfo']
+            sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_STREAM),
+                               keyfile=self.keyfile, certfile=self.certfile)
+            sock.settimeout(MsgTimeout)
+            dispynode_logger.debug('Sending TERMINATE to %s', self.scheduler['ip_addr'])
+            info = {'ip_addr': addrinfo.ext_ip_addr, 'port': self.port, 'sign': self.sign}
+            try:
+                yield sock.connect((self.scheduler['ip_addr'], self.scheduler['port']))
+                yield sock.send_msg('TERMINATED:'.encode() + serialize(info))
+            except Exception:
+                pass
+            sock.close()
+
+        udp_addrinfos = {}
+        for addrinfo in self.addrinfos.values():
+            udp_addrinfos[addrinfo.bind_addr] = addrinfo
+
+        for bind_addr, addrinfo in udp_addrinfos.items():
+            sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
+            sock.settimeout(1)
+            ttl_bin = struct.pack('@i', 1)
+            if addrinfo.family == socket.AF_INET:
+                if self.ipv4_udp_multicast:
+                    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, ttl_bin)
+                else:
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            else:  # addrinfo.family == socket.AF_INET6
+                sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, ttl_bin)
+                sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, addrinfo.ifn)
+            info = {'ip_addr': addrinfo.ext_ip_addr, 'port': self.port, 'sign': self.sign}
+            try:
+                yield sock.sendto('TERMINATED:'.encode() + serialize(info),
+                                  (addrinfo.broadcast, self.scheduler['port']))
+            except Exception:
+                pass
+            sock.close()
+
     def shutdown(self, how):
         def _shutdown(self, how, task=None):
             self.thread_lock.acquire()
@@ -2385,20 +2413,8 @@ class _DispyNode(object):
                 client.pending_jobs = 0
                 client.zombie = True
                 Task(self.cleanup_computation, client)
-            if self.scheduler['ip_addr'] and self.scheduler['addrinfo']:
-                addrinfo = self.scheduler['addrinfo']
-                sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_STREAM),
-                                   keyfile=self.keyfile, certfile=self.certfile)
-                sock.settimeout(MsgTimeout)
-                dispynode_logger.debug('Sending TERMINATE to %s', self.scheduler['ip_addr'])
-                info = {'ip_addr': addrinfo.ext_ip_addr, 'port': self.port, 'sign': self.sign}
-                try:
-                    yield sock.connect((self.scheduler['ip_addr'], self.scheduler['port']))
-                    yield sock.send_msg('TERMINATED:'.encode() + serialize(info))
-                except Exception:
-                    pass
-                sock.close()
 
+            yield self.send_terminate(task=task)
             self.sign = ''
             # delay a bit for client to close node, in case shutdown
             # is called by 'dispynode_shutdown'
