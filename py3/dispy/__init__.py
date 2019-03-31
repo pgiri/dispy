@@ -2278,6 +2278,7 @@ class _Cluster(object, metaclass=Singleton):
             raise StopIteration(-1)
         tx = yield node.xfer_file(xf)
         dispy_node.tx += tx
+        raise StopIteration(0)
 
     def node_jobs(self, cluster, node, from_node, task=None):
         # generator
