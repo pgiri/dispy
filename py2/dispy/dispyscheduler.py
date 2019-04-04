@@ -346,12 +346,10 @@ class _Scheduler(object):
             elif msg.startswith('TERMINATED:'):
                 try:
                     info = deserialize(msg[len('TERMINATED:'):])
-                    logger.debug('TERMINATED: %s', str(info))
+                    # logger.debug('TERMINATED: %s', str(info))
                     assert info['ip_addr']
-                    # socket.inet_aton(status['ip_addr'])
                 except Exception:
                     # logger.debug(traceback.format_exc())
-                    logger.debug('Ignoring node %s', addr[0])
                     continue
                 auth = auth_code(self.node_secret, info['sign'])
                 node = self._nodes.get(info['ip_addr'], None)
@@ -1577,6 +1575,10 @@ class _Scheduler(object):
                        'status': status, 'auth': cluster.client_auth}
         if status == DispyNode.Initialized:
             status_info['dispy_node'] = dispy_node
+            node = self._nodes.get(dispy_node.ip_addr, None)
+            if node:
+                status_info['node_auth'] = node.auth
+                status_info['node_port'] = node.port
         else:
             status_info['ip_addr'] = dispy_node.ip_addr
             if status == DispyNode.AvailInfo:

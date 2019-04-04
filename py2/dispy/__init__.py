@@ -1287,9 +1287,12 @@ class _Cluster(object):
                         node.name = dispy_node.name
                         node.cpus = dispy_node.cpus
                     else:
-                        node = _Node(dispy_node.ip_addr, 0, dispy_node.cpus, '', '', platform='')
+                        node = _Node(dispy_node.ip_addr, 0, dispy_node.cpus, '', '', platform='',
+                                     keyfile=self.keyfile, certfile=self.certfile)
                         node.name = dispy_node.name
                         self._nodes[node.ip_addr] = node
+                    node.auth = info.get('node_auth', None)
+                    node.port = info.get('node_port', 0)
                     cluster._dispy_nodes[dispy_node.ip_addr] = dispy_node
                     if cluster.status_callback:
                         self.worker_Q.put((cluster.status_callback,
@@ -1301,6 +1304,9 @@ class _Cluster(object):
                         if cluster.status_callback:
                             self.worker_Q.put((cluster.status_callback,
                                                (DispyNode.Closed, dispy_node, None)))
+                    node = self._nodes.get(info['ip_addr'], None)
+                    if node:
+                        node.auth = None
                 else:
                     logger.warning('Invalid node status %s from %s:%s ignored',
                                    info['status'], addr[0], addr[1])
@@ -3396,11 +3402,16 @@ class SharedJobCluster(JobCluster):
             sock.close()
         return reply
 
-    def send_file(self, path, node):
-        """Send file with given 'path' to 'node'.  'node' can be an
-        instance of DispyNode (e.g., as received in cluster status
-        callback) or IP address or host name.
+    def transfer_file(self, path, node):
+        """Send file with given 'path' to 'node'.  'node' can be an instance of
+        DispyNode (e.g., as received in cluster status callback) or IP address
+        or host name. This method sends the file through 'dispyscheduler', so
+        this method can be used if SSL setup between client to scheduler is
+        different from that between scheduler and nodes (in other cases, either
+        'send_file' or 'transfer_file' can be used, although 'send_file' would
+        be more efficient).
         """
+
         if isinstance(node, DispyNode):
             node = node.ip_addr
         elif isinstance(node, str):
