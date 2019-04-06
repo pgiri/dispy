@@ -46,7 +46,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "Apache 2.0"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.10.6"
+__version__ = "4.11.0"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
@@ -521,6 +521,7 @@ class _Compute(object):
         self.auth = None
         self.job_result_port = None
         self.pulse_interval = None
+        self.client_reply_addr = None
 
 
 class _XferFile(object):
@@ -3063,6 +3064,7 @@ class SharedJobCluster(JobCluster):
         self._compute.scheduler_ip_addr = ext_ip_addr
         self._compute.scheduler_port = self._cluster.port
         self._compute.job_result_port = self._cluster.port
+        self._compute.client_reply_addr = (ext_ip_addr, self._cluster.port)
 
         sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM), blocking=True,
                            keyfile=keyfile, certfile=certfile)
@@ -3408,13 +3410,13 @@ class SharedJobCluster(JobCluster):
             sock.close()
         return reply
 
-    def transfer_file(self, path, node):
+    def relay_file(self, path, node):
         """Send file with given 'path' to 'node'.  'node' can be an instance of
         DispyNode (e.g., as received in cluster status callback) or IP address
         or host name. This method sends the file through 'dispyscheduler', so
         this method can be used if SSL setup between client to scheduler is
         different from that between scheduler and nodes (in other cases, either
-        'send_file' or 'transfer_file' can be used, although 'send_file' would
+        'send_file' or 'relay_file' can be used, although 'send_file' would
         be more efficient).
         """
 

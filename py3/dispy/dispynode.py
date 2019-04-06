@@ -101,7 +101,7 @@ def dispy_provisional_result(result, timeout=MsgTimeout):
         sock.close()
 
 
-def dispy_send_file(path, timeout=MsgTimeout):
+def dispy_send_file(path, relay=False, timeout=MsgTimeout):
     """Computations may use this function to send files back to the client.
 
     If the computations have small amount of data to be sent back to
@@ -117,6 +117,9 @@ def dispy_send_file(path, timeout=MsgTimeout):
 
     If file size exceeds 'MaxFileSize' bytes, this function returns -1,
     without sending it.
+
+    If 'relay' is False (default), the file is sent to client; otherwise, it
+    is sent to scheduler, which can be different in the case of SharedJobCluster.
 
     'timeout' is seconds for socket connection/messages; i.e., if
     there is no I/O on socket (to client), this call fails. Default
@@ -140,7 +143,10 @@ def dispy_send_file(path, timeout=MsgTimeout):
     sock = AsyncSocket(sock, blocking=True, keyfile=__dispy_keyfile, certfile=__dispy_certfile)
     sock.settimeout(timeout)
     try:
-        sock.connect(__dispy_job_reply_addr)
+        if relay:
+            sock.connect(__dispy_job_reply_addr)
+        else:
+            sock.connect(__dispy_client_reply_addr)
         sock.send_msg('FILEXFER:'.encode() + serialize(xf))
         sock.send_msg(serialize(__dispy_job_reply))
         recvd = sock.recv_msg()
@@ -162,6 +168,13 @@ def dispy_send_file(path, timeout=MsgTimeout):
         return 0
     finally:
         sock.close()
+
+
+def dispy_relay_file(path, timeout=MsgTimeout):
+    """Computations may use this function to send files back to the client, via
+    scheduler.
+    """
+    return dispy_send_file(path, relay=True, timeout=MsgTimeout)
 
 
 class _DispyJobInfo(object):
@@ -1321,6 +1334,11 @@ class _DispyNode(object):
             client.globals['__dispy_keyfile'] = self.keyfile
             client.globals['__dispy_job_reply_addr'] = (compute.scheduler_ip_addr,
                                                         compute.job_result_port)
+            if compute.client_reply_addr:
+                client.globals['__dispy_client_reply_addr'] = compute.client_reply_addr
+            else:
+                client.globals['__dispy_client_reply_addr'] = (compute.scheduler_ip_addr,
+                                                               compute.job_result_port)
             client.globals['reply_Q'] = self.reply_Q
             client.globals['suid'] = self.suid
             client.globals['sgid'] = self.sgid
