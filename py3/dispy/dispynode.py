@@ -65,7 +65,7 @@ assert sys.version_info.major == 3 and sys.version_info.minor < 7, \
      (__file__, sys.version_info.major, sys.version_info.minor))
 
 
-def dispy_provisional_result(result, timeout=MsgTimeout):
+def dispy_provisional_result(result, relay=False, timeout=MsgTimeout):
     """Sends provisional result of computation back to the client.
 
     In some cases, such as optimizations, computations may send
@@ -74,6 +74,9 @@ def dispy_provisional_result(result, timeout=MsgTimeout):
     computations based on the results or alter computations if
     necessary. The computations can use this function in such cases
     with the current result of computation as argument.
+
+    If 'relay' is False (default), the result is sent to client; otherwise, it
+    is sent to scheduler, which can be different in the case of SharedJobCluster.
 
     'timeout' is seconds for socket connection/messages; i.e., if
     there is no I/O on socket (to client), this call fails. Default
@@ -89,7 +92,10 @@ def dispy_provisional_result(result, timeout=MsgTimeout):
     sock = AsyncSocket(sock, blocking=True, keyfile=__dispy_keyfile, certfile=__dispy_certfile)
     sock.settimeout(timeout)
     try:
-        sock.connect(__dispy_job_reply_addr)
+        if relay:
+            sock.connect(__dispy_job_reply_addr)
+        else:
+            sock.connect(__dispy_client_reply_addr)
         sock.send_msg(b'JOB_REPLY:' + serialize(__dispy_job_reply))
         ack = sock.recv_msg()
         assert ack == b'ACK'
