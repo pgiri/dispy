@@ -1874,11 +1874,16 @@ class _DispyNode(object):
                     if isinstance(proc, multiprocessing.Process):
                         if not proc.is_alive():
                             dead_jobs.append(job_info)
+                    elif isinstance(proc_pid, subprocess.Popen):
+                        if proc.poll() is not None:
+                            dead_jobs.append(job_info)
                     elif psutil and isinstance(proc, psutil.Process):
                         try:
                             status = proc.status()
-                        except (psutil.NoSuchProcess, psutil.ZombieProcess, Exception):
+                        except (psutil.NoSuchProcess, psutil.ZombieProcess):
                             status = None
+                        except Exception:
+                            status = -1
                         if status is None or status == psutil.STATUS_ZOMBIE:
                             dead_jobs.append(job_info)
                 if dead_jobs:

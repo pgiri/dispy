@@ -120,7 +120,7 @@ def dispy_send_file(path, relay=False, timeout=MsgTimeout):
     If file size exceeds 'MaxFileSize' bytes, this function returns -1,
     without sending it.
 
-    If 'to_client' is True (default), the file is sent to client; otherwise, it
+    If 'relay' is False (default), the file is sent to client; otherwise, it
     is sent to scheduler, which can be different in the case of SharedJobCluster.
 
     'timeout' is seconds for socket connection/messages; i.e., if
@@ -172,7 +172,7 @@ def dispy_send_file(path, relay=False, timeout=MsgTimeout):
         sock.close()
 
 
-def dispy_transfer_file(path, timeout=MsgTimeout):
+def dispy_relay_file(path, timeout=MsgTimeout):
     """Computations may use this function to send files back to the client, via
     scheduler.
     """
@@ -1868,11 +1868,16 @@ class _DispyNode(object):
                     if isinstance(proc, multiprocessing.Process):
                         if not proc.is_alive():
                             dead_jobs.append(job_info)
+                    elif isinstance(proc_pid, subprocess.Popen):
+                        if proc.poll() is not None:
+                            dead_jobs.append(job_info)
                     elif psutil and isinstance(proc, psutil.Process):
                         try:
                             status = proc.status()
-                        except (psutil.NoSuchProcess, psutil.ZombieProcess, Exception):
+                        except (psutil.NoSuchProcess, psutil.ZombieProcess):
                             status = None
+                        except Exception:
+                            status = -1
                         if status is None or status == psutil.STATUS_ZOMBIE:
                             dead_jobs.append(job_info)
                 if dead_jobs:
