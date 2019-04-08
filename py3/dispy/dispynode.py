@@ -176,13 +176,6 @@ def dispy_send_file(path, relay=False, timeout=MsgTimeout):
         sock.close()
 
 
-def dispy_relay_file(path, timeout=MsgTimeout):
-    """Computations may use this function to send files back to the client, via
-    scheduler.
-    """
-    return dispy_send_file(path, relay=True, timeout=MsgTimeout)
-
-
 class _DispyJobInfo(object):
     """Internal use only.
     """
@@ -1789,7 +1782,7 @@ class _DispyNode(object):
         last_pulse_time = last_zombie_time = time.time()
 
         def reply_dead_jobs(job_infos, task=None):
-            yield task.sleep(5)
+            yield task.sleep(2)
             self.thread_lock.acquire()
             job_infos = [job_info for job_info in job_infos
                          if self.job_infos.get(job_info.job_reply.uid, None) == job_info]
@@ -1874,7 +1867,7 @@ class _DispyNode(object):
                     if isinstance(proc, multiprocessing.Process):
                         if not proc.is_alive():
                             dead_jobs.append(job_info)
-                    elif isinstance(proc_pid, subprocess.Popen):
+                    elif isinstance(proc, subprocess.Popen):
                         if proc.poll() is not None:
                             dead_jobs.append(job_info)
                     elif psutil and isinstance(proc, psutil.Process):

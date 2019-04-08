@@ -1800,7 +1800,7 @@ class _Cluster(object, metaclass=Singleton):
             node.pending_jobs = []
         # TODO: need to close computations on this node?
         for cluster in node.clusters:
-            dispy_node = cl._dispy_nodes.pop(node.ip_addr, None)
+            dispy_node = cluster._dispy_nodes.pop(node.ip_addr, None)
             if dispy_node and cluster.status_callback:
                 self.worker_Q.put((cluster.status_callback,
                                    (DispyNode.Closed, dispy_node, None)))
@@ -2849,7 +2849,7 @@ class JobCluster(object):
         """
         return Task(self._cluster.set_node_cpus, self, node, cpus).value()
 
-    def send_file(self, path, node):
+    def send_file(self, path, node, relay=False):
         """Send file with given 'path' to 'node'.  'node' can be an
         instance of DispyNode (e.g., as received in cluster status
         callback) or IP address or host name.
@@ -3410,15 +3410,18 @@ class SharedJobCluster(JobCluster):
             sock.close()
         return reply
 
-    def relay_file(self, path, node):
+    def send_file(self, path, node, relay=False):
         """Send file with given 'path' to 'node'.  'node' can be an instance of
         DispyNode (e.g., as received in cluster status callback) or IP address
-        or host name. This method sends the file through 'dispyscheduler', so
-        this method can be used if SSL setup between client to scheduler is
-        different from that between scheduler and nodes (in other cases, either
-        'send_file' or 'relay_file' can be used, although 'send_file' would
-        be more efficient).
+        or host name.  If 'relay=False', the file is sent directly to node. If
+        'relay=True', file is sent through 'dispyscheduler', which is necessary
+        if if nodes can't be reached directly from client, such as when SSL
+        setup between client to scheduler is different from that between
+        scheduler and nodes.
         """
+
+        if not relay:
+            return super(self.__class__, self).send_file(path, node, relay=False)
 
         if isinstance(node, DispyNode):
             node = node.ip_addr

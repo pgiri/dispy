@@ -1534,7 +1534,7 @@ class _Scheduler(object):
             node.pending_jobs = []
         # TODO: need to close computations on this node?
         for cluster in node.clusters:
-            dispy_node = cl._dispy_nodes.pop(node.ip_addr, None)
+            dispy_node = cluster._dispy_nodes.pop(node.ip_addr, None)
             if dispy_node and cluster.status_callback:
                 self.worker_Q.put((cluster.status_callback,
                                    (DispyNode.Closed, dispy_node, None)))
