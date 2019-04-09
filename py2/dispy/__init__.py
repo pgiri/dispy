@@ -2757,7 +2757,7 @@ class JobCluster(object):
         Arguments should be serializable and should correspond to
         arguments for computation used when cluster is created.
         """
-        return self.submit_job_id_node(None, *args, **kwargs)
+        return self.submit_job_id_node(None, node, *args, **kwargs)
 
     def submit_job_id_node(self, job_id, node, *args, **kwargs):
         """Same as 'submit_node' but job's 'id' is initialized to 'job_id'.
