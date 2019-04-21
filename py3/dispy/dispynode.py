@@ -371,6 +371,7 @@ def _dispy_setup_process(compute, pipe, client_globals):
     import pycos
 
     os.chdir(compute.dest_path)
+    sys.path.insert(0, compute.dest_path)
     suid = client_globals.pop('suid', None)
     if suid is not None:
         sgid = client_globals.pop('sgid', None)
@@ -1409,8 +1410,13 @@ class _DispyNode(object):
                                  '_dispy_setup_args': compute.setup.args,
                                  '_dispy_setup_kwargs': compute.setup.kwargs}
                     os.chdir(compute.dest_path)
+                    sys.path.insert(0, compute.dest_path)
                     exec('_dispy_setup_status = %s(*_dispy_setup_args, **_dispy_setup_kwargs)' %
                          compute.setup.name, globalvars, localvars)
+                    try:
+                        sys.path.remove(compute.dest_path)
+                    except Exception:
+                        pass
                     if localvars['_dispy_setup_status'] in (0, 1):
                         for var, value in globalvars.items():
                             if var not in init_vars:
