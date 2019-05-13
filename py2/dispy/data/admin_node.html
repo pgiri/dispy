@@ -1,0 +1,460 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    <link type="text/css" rel="stylesheet" href="dispy.css" />
+
+    <script type="text/javascript" src="jquery.js"></script>
+    <script type="text/javascript" src="dispy.js"></script>
+
+    <script type="text/javascript">
+    //<![CDATA[
+
+      jQuery.ajaxSettings.traditional = true;
+
+      var dispy_node = {ip_addr: null};
+      var service_start = 0;
+      var service_stop = 0;
+      var service_end = 0;
+      var timer = null;
+      var poll_interval = 1000 * %(POLL_INTERVAL)s;
+      var dispy_uid = '';
+
+      function get_uid() {
+        let uid = dispy_uid;
+        if (uid.length == 0) {
+          uid = getCookie('dispy_uid');
+        }
+        $.ajax({
+          url: '/get_uid',
+          method: 'POST',
+          data: {uid: uid},
+          timeout: 2000
+        })
+          .done(function(uid) {
+            setCookie('dispy_uid', uid, 3600);
+            dispy_uid = uid;
+            let host = getLocationParam('host');
+            $('#host').val(host);
+            if (!host) {
+              $('#node').hide();
+              $('#timeout_div').hide();
+            } else {
+              $('#host').attr('size', Math.max($('#host').attr('size'), host.length));
+              node_info(host);
+            }
+          })
+            .fail(function(jqXHR, textStatus, errorTHrown) {
+              $('#messages').append('<li style="color:red">' +
+              'Could not communicate with admin http server; ' +
+              'reload this page when server is ready / restarted.</li>');
+            })
+      }
+
+      function getLocationParam(param) {
+        param = param.replace(/[\[]/, '\\[').replace(/[\]]/, '\\]');
+        var regex = new RegExp('[\\?&]' + param + '=([^&#]*)'),
+            results = regex.exec(location.search);
+        return results === null ? '' : decodeURIComponent(results[1].replace(/\+/g, ' '));
+      }
+
+      function show_node(node) {
+        $('#messages').html('');
+        if (!node.hasOwnProperty('ip_addr')) {
+          $('#messages').append('<li style="color:red">' +
+                                'Failed to get information about node.</li>');
+          $('#node').hide();
+          $('#timeout_div').hide();
+          $('#jobs').hide();
+          return;
+        }
+        if (dispy_node.ip_addr != node.ip_addr) {
+          dispy_node = node;
+          service_start = null;
+          service_stop = null;
+          service_end = null;
+        }
+        $('#node_ip_addr').text(node.ip_addr);
+        $('#node_name').text(node.name);
+        $('#node_cpus').text(node.cpus + ' of ' + node.max_cpus);
+        $('#serve').text(node.serve);
+        if (node.avail_info) {
+          $('#node_cpu_usage').text(node.avail_info.cpu.toFixed(2) + ' %%');
+          $('#node_avail_memory').text(formatBytes(node.avail_info.memory));
+          $('#node_avail_swap').text(node.avail_info.swap.toFixed(2) + ' %%');
+          $('#node_avail_disk').text(formatBytes(node.avail_info.disk));
+        }
+        $('#node_clients_done').text(node.clients_done);
+        $('#node_jobs_done').text(node.jobs_done);
+        $('#node_cpu_time').text(node.cpu_time.toFixed(2));
+        $('#node_update').text((new Date(1000 * node.update_time)).toLocaleTimeString());
+        if (node.service_start != service_start) {
+          service_start = node.service_start;
+          let service_time = '';
+          if (service_start > 0) {
+            service_time = new Date(1000 * service_start);
+            service_time = padLeft(service_time.getHours(), 2) + ':' +
+              padLeft(service_time.getMinutes(), 2);
+          }
+          $('#svc_start_time').val(service_time);
+        }
+        if (node.service_stop != service_stop) {
+          service_stop = node.service_stop;
+          let service_time = '';
+          if (service_stop > 0) {
+            service_time = new Date(1000 * service_stop);
+            service_time = padLeft(service_time.getHours(), 2) + ':' +
+              padLeft(service_time.getMinutes(), 2);
+          }
+          $('#svc_stop_time').val(service_time);
+        }
+        if (node.service_end != service_end) {
+          service_end = node.service_end;
+          let service_time = '';
+          if (service_end > 0) {
+            service_time = new Date(1000 * service_end);
+            service_time = padLeft(service_time.getHours(), 2) + ':' +
+              padLeft(service_time.getMinutes(), 2);
+          }
+          $('#svc_end_time').val(service_time);
+        }
+        if ($('#node').is(':hidden')) {
+          $('#node').show();
+          $('#timeout_div').show();
+        }
+      }
+
+      function node_info(host) {
+        $.ajax({
+          url: '/node_info',
+          method: 'POST',
+          dataType: 'json',
+          data: {host: host, uid: dispy_uid},
+          timeout: Math.min(5000, poll_interval)
+        })
+          .done(function(node) {
+            show_node(node);
+            let now = new Date();
+            $('#messages').append('<li>Status updated at ' + now.toLocaleTimeString() + '</li>');
+            if (poll_interval >= 1000) {
+              timer = setTimeout(function() { node_info(node.ip_addr) }, poll_interval);
+            }
+          })
+          .fail(function(jqXHR, textStatus, errorThrown) {
+            $('#messages').append('<li style="color:red">Node update failed.</li>');
+          });
+      }
+
+      function control_service_time(control, time) {
+        if (!dispy_node.ip_addr) {
+          return;
+        }
+        var nodes = [dispy_node.ip_addr];
+        if (time.length > 0) {
+          let hhmm = time.split(':');
+          if (hhmm.length != 2 || !$.isNumeric(hhmm[0]) || !$.isNumeric(hhmm[1])) {
+            $('#messages').append('<li style="color:red">Service time must be in ' +
+                                  'HH:MM format.</li>');
+            return;
+          }
+          let hh = parseInt(hhmm[0]), mm = parseInt(hhmm[1]);
+          if (hh < 0 || hh >= 24 || mm < 0 || mm >= 60) {
+            $('#messages').append('<li style="color:red">Invalid service time ' + time +
+                                  'ignored.</li>');
+            return;
+          }
+        }
+        $.ajax({
+          url: 'service_time',
+          method: 'POST',
+          data: {hosts: JSON.stringify(nodes), control: control, time: time, uid: dispy_uid},
+          timeout: 1000
+        })
+          .done(function(node) {
+            if (node.hasOwnProperty('ip_addr')) {
+              show_node(node);
+            }
+          })
+          .fail(function(jqXHR, textStatus, errorThrown) {
+            $('#messages').append('<li style="color:red">Service update failed: ' +
+                                  textStatus + '</li>');
+          });
+      }
+
+      $(document).ready(function() {
+
+        get_uid();
+        
+        $('#poll_interval').click(function() {
+          var interval;
+          if ($('#poll_now').prop('checked') == true) {
+            interval = 0;
+            $('#poll_now').prop('checked', false);
+          } else {
+            interval = $('#poll_interval_value').val();
+            if (!$.isNumeric(interval)) {
+              $('#messages').append('<li style="color:red">Invalid timeout value ignored.</li>');
+              $('#poll_interval_value').val(poll_interval / 1000);
+              interval = poll_interval / 1000;
+            }
+            interval = parseInt(interval);
+            if (timer != null) {
+              clearTimeout(timer);
+              timer = null;
+            }
+            if (interval < 5) {
+              $('#messages').append('<li style="color:red">poll interval must be >= 5</li>');
+              return;
+            }
+          }
+
+          if (poll_interval != (1000 * interval)) {
+            $.ajax({
+              url: 'poll_interval',
+              method: 'POST',
+              dataType: 'json',
+              data: {uid: dispy_uid, interval: interval},
+              timeout: Math.min(2000, poll_interval)
+            })
+              .done(function(status) {
+                if (interval) {
+                  $('#poll_interval_value').val(interval);
+                  poll_interval = 1000 * interval;
+                }
+                if (dispy_node.ip_addr) {
+                  if (timer != null) {
+                    clearTimeout(timer);
+                    timer = null;
+                  }
+                  timer = setTimeout(function() { node_info(dispy_node.ip_addr) },
+                                     Math.min(3000, poll_interval / 2.0));
+                }
+              })
+          }
+        });
+
+        $('#use_all_cpus').change(function() {
+          if (this.checked) {
+            $(this).prop('checked', false);
+            if (dispy_node.ip_addr) {
+              $('#cpus').val(dispy_node.max_cpus);
+            }
+          }
+        });
+
+        $('#set_cpus').click(function() {
+          let cpus = $('#cpus').val();
+          $('#use_all_cpus').prop('checked', false);
+          $.ajax({
+            url: 'set_cpus',
+            method: 'POST',
+            dataType: 'json',
+            data: {uid: dispy_uid, host: dispy_node.ip_addr, cpus: cpus},
+            timeout: Math.min(5000, poll_interval)
+          })
+            .done(function(status) {
+              $('#cpus').val('');
+            })
+            .fail(function(jqXHR, textStatus, errorThrown) {
+              $('#messages').append('<li style="color:red">CPU update failed: ' +
+                                    textStatus + '</li>');
+            });
+        });
+
+        $('#svc_start').click(function() {
+          $('#messages').html('');
+          let time = $('#svc_start_now').prop('checked') == true;
+          if (time) {
+            $('#svc_start_now').prop('checked', false);
+            time = '';
+          } else {
+            time = $('#svc_start_time').val();
+          }
+          control_service_time('start_time', time);
+        });
+
+        $('#svc_stop').click(function() {
+          $('#messages').html('');
+          let time = $('#svc_stop_now').prop('checked') == true;
+          if (time) {
+            $('#svc_stop_now').prop('checked', false);
+            time = '';
+          } else {
+            time = $('#svc_stop_time').val();
+          }
+          control_service_time('stop_time', time);
+        });
+
+        $('#svc_end').click(function() {
+          $('#messages').html('');
+          let time = $('#svc_end_now').prop('checked') == true;
+          if (time) {
+            $('#svc_end_now').prop('checked', false);
+            time = '';
+          } else {
+            time = $('#svc_end_time').val();
+          }
+          control_service_time('end_time', time);
+        });
+
+        $('#set_serve').click(function() {
+          $('#messages').html('');
+          let serve = $('#serve').val();
+          if (!$.isNumeric(serve)) {
+            $('#messages').append('<li style="color:red">Invalid value for ' +
+                                  '# of clients to run ignored.</li>');
+            return;
+          }
+
+          $.ajax({
+            url: 'serve_clients',
+            method: 'POST',
+            data: {host: dispy_node.ip_addr, serve: serve, uid: dispy_uid},
+            timeout: 1000
+          })
+            .fail(function(jqXHR, textStatus, errorThrown) {
+              $('#messages').append('<li style="color:red">Setting clients to serve failed: ' +
+                                    textStatus + '</li>');
+            });
+
+        });
+
+        $('#change_host').click(function() {
+          let host = $('#host').val();
+          if (host.length == 0 || host != dispy_node.ip_addr) {
+            return;
+          }
+          if (timer != null) {
+            clearTimeout(timer);
+            timer = null;
+          }
+          node_info(host);
+        });
+
+      });
+
+    //]]>
+    </script>
+
+  <title>dispy: Admin Node</title>
+  </head>
+  <body>
+
+    <div id="page">
+      <nav style="margin:0 auto;" id="navigation" role="navigation">
+        <ul>
+          <li><a href="admin.html">Admin Cluster(s)</a></li>
+          <li class="active"><a href="admin_node.html">Admin Node</a></li>
+        </ul>
+      </nav>
+
+      <h1 style="margin:2em 0;"><span class="title">dispy: Admin Node</span></h1>
+
+      <table id="node" class="fancy shadow alt" style="margin:10px auto;text-align:left;font-weight:bold;">
+        <tbody>
+          <tr>
+            <td>IP Address</td><td id="node_ip_addr"></td>
+          </tr>
+          <tr>
+            <td>Name</td><td id="node_name"></td>
+          </tr>
+          <tr>
+            <td>CPUs Managed by dispy</td><td id="node_cpus"></td>
+          </tr>
+          <tr>
+            <td>Available CPU</td><td id="node_cpu_usage">Unknown</td>
+          </tr>
+          <tr>
+            <td>Available Memory</td><td id="node_avail_memory">Unknown</td>
+          </tr>
+          <tr>
+            <td>Available Swap Space</td><td id="node_avail_swap">Unknown</td>
+          </tr>
+          <tr>
+            <td>Available Disk Space</td><td id="node_avail_disk">Unknown</td>
+          </tr>
+          <tr>
+            <td>Clients Done</td><td id="node_clients_done"></td>
+          </tr>
+          <tr>
+            <td>Jobs Done</td><td id="node_jobs_done"></td>
+          </tr>
+          <tr>
+            <td>CPU Time Used Sec</td><td id="node_cpu_time"></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <hr style="margin:10px;" />
+
+      <table id="inputs" style="margin:10px auto;text-align:left;">
+        <tr>
+          <td><strong>Poll Interval Seconds :</strong></td>
+          <td><input type="text" id="poll_interval_value" value="%(POLL_INTERVAL)s"
+                     style="width:3em;" maxlength="6" />
+            <div style="float:right;">
+	      <input type="checkbox" id="poll_now" name="poll-now">
+	        <label for="poll_now">Now</label></div></td>
+          <td><button type="button" id="poll_interval" style="margin:5px auto;">Update</button></td>
+        </tr>
+        <tr>
+          <td><strong>Service Start Time : </strong></td>
+          <td><input type="text" id="svc_start_time" value="" style="min-width:3em;" size="4" />
+            <div style="float:right;">
+	      <input type="checkbox" id="svc_start_now" name="svc-start-now" />
+	        <label for="svc_start_now">Now</label></div></td>
+	  <td>
+	    <button type="button" id="svc_start" style="margin:5px auto;">Set</button>
+	  </td>
+	</tr>
+        <tr>
+          <td><strong>Service Stop Time : </strong></td>
+          <td><input type="text" id="svc_stop_time" value="" style="min-width:3em;" size="4" />
+            <div style="float:right;">
+	      <input type="checkbox" id="svc_stop_now" name="svc-stop-now" />
+	        <label for="svc_stop_now">Now</label></div></td>
+	  <td>
+	    <button type="button" id="svc_stop" style="margin:5px auto;">Set</button>
+	  </td>
+	</tr>
+        <tr>
+          <td><strong>Service End Time : </strong></td>
+          <td><input type="text" id="svc_end_time" value="" style="min-width:3em;" size="4" />
+            <div style="float:right;">
+	      <input type="checkbox" id="svc_end_now" name="svc-end-now" />
+	        <label for="svc_end_now">Now</label></div></td>
+	  <td>
+	    <button type="button" id="svc_end" style="margin:5px auto;">Set</button>
+	  </td>
+	</tr>
+	<tr>
+          <td><strong># of CPUs to Use : </strong></td>
+          <td><input type="text" id="cpus" value="" style="min-width:3em;" size="4" />
+            <div style="float:right;">
+	      <input type="checkbox" id="use_all_cpus" name="use-all-cpus" />
+	        <label for="use_all_cpus">All</label></div></td>
+	  <td><button type="button" id="set_cpus" style="margin:5px auto;">Set</button></td>
+	</tr>
+	<tr>
+          <td><strong># of Clients to Run : </strong><br /><span>(and Quit)</span></td>
+          <td><input type="text" id="serve" value="" style="min-width:3em;" size="4" /></td>
+	  <td><button type="button" id="set_serve" style="margin:5px auto;">Set</button></td>
+	</tr>
+	<tr>
+          <td><strong>Name or IP of Node to Show : </strong></td>
+          <td><input type="text" id="host" value="" style="min-width:8em;" size="8" /></td>
+	  <td><button type="button" id="change_host" style="margin:5px auto;">Change</button></td>
+	</tr>
+      </table>
+
+      <hr style="margin:10px;" />
+
+      <div>
+        <ul id="messages" style="margin:1em auto;display:inline-block;text-align:left;"></ul>
+      </div>
+
+    </div>
+  </body>
+</html>

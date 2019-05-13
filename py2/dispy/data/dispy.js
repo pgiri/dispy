@@ -81,3 +81,31 @@ function formatBytes(bytes, precision) {
 
     return n.toFixed(precision) + ' ' + sizes[i];
 }
+
+function padLeft(num, pad) {
+    num = num.toString();
+    if (pad > num.length) {
+	num = '0'.repeat(pad - num.length) + num;
+    }
+    return num;
+}
+
+function setCookie(cname, cvalue, exp_sec) {
+  let time = new Date();
+  time.setTime(time.getTime() + (1000 * exp_sec));
+  let expires = 'expires=' + time.toUTCString();
+  document.cookie = cname + '=' + cvalue + ';' + expires + ';path=/';
+}
+
+function getCookie(cname) {
+  let name = cname + '=';
+  let carr = document.cookie.split(';');
+  for(let i = 0; i < carr.length; i++) {
+    let c = $.trim(carr[i]);
+    if (c.indexOf(name) == 0) {
+      return c.substring(name.length, c.length);
+    }
+  }
+  return '';
+}
+

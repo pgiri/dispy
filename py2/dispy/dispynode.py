@@ -552,8 +552,8 @@ class _DispyNode(object):
     def __init__(self, cpus, ip_addrs=[], ext_ip_addrs=[], node_port=None,
                  name='', scheduler_node=None, scheduler_port=None, ipv4_udp_multicast=False,
                  dest_path_prefix='', clean=False, secret='', keyfile=None, certfile=None,
-                 zombie_interval=60, ping_interval=None, force_cleanup=False, serve=-1,
-                 service_start=None, service_stop=None, service_end=None, safe_setup=True,
+                 admin_secret='', zombie_interval=60, ping_interval=None, force_cleanup=False,
+                 serve=-1, service_start=None, service_stop=None, service_end=None, safe_setup=True,
                  daemon=False, client_shutdown=False):
         assert 0 < cpus <= multiprocessing.cpu_count()
         self.num_cpus = cpus
@@ -743,6 +743,12 @@ class _DispyNode(object):
         self.sign = self.sign.hexdigest()
         self.secret = secret
         self.auth = auth_code(self.secret, self.sign)
+        self.admin_secret = admin_secret
+        if admin_secret:
+            self.admin_auth = auth_code(admin_secret, self.sign)
+        else:
+            self.admin_auth = None
+        self.admin_sign = None
         self.zombie_interval = 60 * zombie_interval
         if ping_interval:
             self.ping_interval = ping_interval
@@ -755,8 +761,8 @@ class _DispyNode(object):
         self.scheduler = {'ip_addr': dispy._node_ipaddr(scheduler_node) if scheduler_node else None,
                           'port': scheduler_port, 'auth': set(), 'addrinfo': None}
         self.cpu_time = 0
-        self.num_jobs = 0
-        self.num_computations = 0
+        self.jobs_done = 0
+        self.clients_done = 0
         self.pid = os.getpid()
 
         if psutil:
@@ -936,6 +942,23 @@ class _DispyNode(object):
     def udp_server(self, addrinfo, task=None):
         task.set_daemon()
 
+        def send_node_info(msg, addr, task=None):
+            info = {'ip_addr': addrinfo.ext_ip_addr, 'port': self.port, 'sign': self.sign,
+                    'version': _dispy_version}
+            sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_STREAM),
+                               keyfile=self.keyfile, certfile=self.certfile)
+            sock.settimeout(MsgTimeout)
+            try:
+                yield sock.connect((msg['ip_addr'], msg['port']))
+            except (EnvironmentError, OSError):
+                yield sock.connect((addr, msg['port']))
+            try:
+                yield sock.send_msg(b'NODE_INFO:' + serialize(info))
+            except Exception:
+                dispynode_logger.debug(traceback.format_exc())
+                pass
+            sock.close()
+
         udp_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
         udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         if hasattr(socket, 'SO_REUSEPORT'):
@@ -979,6 +1002,7 @@ class _DispyNode(object):
                     dispynode_logger.debug('Ignoring ping message from %s (%s)', addr[0], addr[1])
                     continue
                 Task(self.send_pong_msg, info, addr)
+
             elif msg.startswith('PULSE:'):
                 try:
                     info = deserialize(msg[len('PULSE:'):])
@@ -989,8 +1013,32 @@ class _DispyNode(object):
                         now = time.time()
                         for client in self.clients.itervalues():
                             client.last_pulse = now
+
+            elif msg.startswith('NODE_INFO:'):
+                try:
+                    msg = deserialize(msg[len('NODE_INFO:'):])
+                except Exception:
+                    dispynode_logger.warning('Ignoring invalid INFO request from %s', addr[0])
+                else:
+                    if (msg.get('version', None) == _dispy_version and
+                        msg.get('sign', 1) != self.admin_sign):
+                        Task(send_node_info, msg, addr[0])
+
             else:
                 dispynode_logger.warning('Ignoring ping message from %s', addr[0])
+
+    def status_info(self):
+        info = {'busy': self.num_cpus - self.avail_cpus, 'serve': self.serve,
+                'clients_done': self.clients_done, 'jobs_done': self.jobs_done,
+                'cpu_time': self.cpu_time, 'scheduler_ip': self.scheduler['ip_addr']}
+        if psutil:
+            info['avail_info'] = DispyNodeAvailInfo(
+                100.0 - psutil.cpu_percent(), psutil.virtual_memory().available,
+                psutil.disk_usage(self.dest_path_prefix).free,
+                100.0 - psutil.swap_memory().percent)
+        else:
+            info['avail_info'] = None
+        return info
 
     def tcp_server(self, addrinfo, task=None):
         task.set_daemon()
@@ -1563,6 +1611,68 @@ class _DispyNode(object):
         if req != self.auth:
             if msg.startswith('PING:'):
                 pass
+
+            elif msg == 'NODE_STATUS:':
+                if req == self.admin_auth:
+                    info = serialize(self.status_info())
+                else:
+                    info = -1
+                yield conn.send_msg(info)
+                conn.close()
+                raise StopIteration
+
+            elif msg.startswith('NODE_INFO:'):
+                if req == self.admin_auth:
+                    info = self.status_info()
+                    info.update({'name': self.name, 'service_start': self.service_start,
+                                 'service_stop': self.service_stop, 'service_end': self.service_end,
+                                 'cpus': self.avail_cpus, 'max_cpus': multiprocessing.cpu_count()})
+                    info = serialize(info)
+                    msg = deserialize(msg[len('NODE_INFO:'):])
+                    self.admin_sign = msg.get('sign', None)
+                else:
+                    info = self.sign.encode()
+                yield conn.send_msg(info)
+                conn.close()
+                raise StopIteration
+
+            elif msg.startswith('SET_CPUS:'):
+                if req == self.admin_auth:
+                    msg = deserialize(msg[len('SET_CPUS:'):])
+                    resp = self.set_cpus(msg.get('cpus', None))
+                    if resp == 0:
+                        resp = {'cpus': self.num_cpus}
+                else:
+                    resp = -1
+                yield conn.send_msg(serialize(resp))
+                conn.close()
+                raise StopIteration
+
+            elif msg.startswith('SERVICE_TIME:'):
+                if req == self.admin_auth:
+                    msg = deserialize(msg[len('SERVICE_TIME:'):])
+                    resp = self.service_control(msg.get('control', None), msg.get('time', None))
+                else:
+                    resp = -1
+                yield conn.send_msg(serialize(resp))
+                conn.close()
+                raise StopIteration
+
+            elif msg.startswith('SERVE_CLIENTS:'):
+                if req == self.admin_auth:
+                    msg = deserialize(msg[len('SERVE_CLIENTS:'):])
+                    serve = msg.get('serve', None)
+                    if isinstance(serve, int):
+                        self.serve = serve
+                        resp = {'serve': serve}
+                    else:
+                        resp = -1
+                else:
+                    resp = -1
+                yield conn.send_msg(serialize(resp))
+                conn.close()
+                raise StopIteration
+
             else:
                 dispynode_logger.warning('Ignoring invalid request from %s:%s', addr[0], addr[1])
                 conn.close()
@@ -1674,6 +1784,32 @@ class _DispyNode(object):
                     Task(self.send_pong_msg, info, addr)
             except Exception:
                 dispynode_logger.debug(traceback.format_exc())
+            conn.close()
+
+        elif msg == 'NODE_STATUS:':
+            if self.admin_auth:
+                info = -1
+            else:
+                info = self.status_info()
+            yield conn.send_msg(serialize(info))
+            conn.close()
+            raise StopIteration
+
+        elif msg.startswith('NODE_INFO:'):
+            if self.admin_auth:
+                info = self.sign.encode()
+            else:
+                info = self.status_info()
+                info.update({'name': self.name, 'service_start': self.service_start,
+                             'service_stop': self.service_stop, 'service_end': self.service_end,
+                             'cpus': self.avail_cpus, 'max_cpus': multiprocessing.cpu_count()})
+                info = serialize(info)
+            yield conn.send_msg(info)
+            conn.close()
+            raise StopIteration
+
+        elif msg.startswith('SERVICE_TIME:') or msg.startswith('SERVE_CLIENTS'):
+            yield conn.send_msg(b'')
             conn.close()
 
         elif msg.startswith('JOBS:'):
@@ -1916,6 +2052,41 @@ class _DispyNode(object):
             if self.ping_interval and (not self.scheduler['auth']):
                 yield self.broadcast_ping_msg(task=task)
 
+    def set_cpus(self, cpus):
+        if not isinstance(cpus, int):
+            return -1
+        if cpus >= 0:
+            if cpus > multiprocessing.cpu_count():
+                return -1
+        else:
+            cpus += multiprocessing.cpu_count()
+            if cpus < 0:
+                return -1
+
+        if cpus == self.num_cpus:
+            return 0
+        self.num_cpus = cpus
+        self.avail_cpus = cpus - len(self.job_infos)
+        if self.scheduler['auth']:
+            def announce_cpus(task=None):
+                addrinfo = self.scheduler['addrinfo']
+                sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_STREAM),
+                                   keyfile=self.keyfile, certfile=self.certfile)
+                sock.settimeout(MsgTimeout)
+                try:
+                    yield sock.connect((self.scheduler['ip_addr'], self.scheduler['port']))
+                    info = {'ip_addr': addrinfo.ext_ip_addr, 'sign': self.sign, 'cpus': cpus}
+                    yield sock.send_msg('NODE_CPUS:'.encode() + serialize(info))
+                except Exception:
+                    pass
+                finally:
+                    sock.close()
+            Task(announce_cpus)
+        else:
+            if self.num_cpus > 0:
+                Task(self.broadcast_ping_msg)
+        return 0
+
     def service_available(self):
         if self.serve == 0:
             return False
@@ -1925,9 +2096,44 @@ class _DispyNode(object):
         if self.service_stop:
             if (self.service_start <= now < self.service_stop):
                 return True
-        elif (self.service_start <= now < self.service_end):
+        elif not self.service_end or (self.service_start <= now < self.service_end):
             return True
         return False
+
+    def service_control(self, control, service_time):
+        if service_time:
+            bod = time.localtime()
+            bod = (int(time.time()) - (bod.tm_hour * 3600) - (bod.tm_min * 60))
+            try:
+                service_time = time.strptime(service_time, '%H:%M')
+                service_time = bod + (service_time.tm_hour * 3600) + (service_time.tm_min * 60)
+                if service_time < (time.time() + 60):
+                    service_time += 24 * 3600
+            except Exception:
+                return -1
+        else:
+            service_time = time.time()
+
+        if control == 'start_time':
+            if self.service_stop and self.service_stop < service_time:
+                return -1
+            if self.service_end and self.service_end < service_time:
+                return -1
+            self.service_start = service_time
+        elif control == 'stop_time':
+            if self.service_start and self.service_start > service_time:
+                return -1
+            if self.service_end and self.service_end < service_time:
+                return -1
+            self.service_stop = service_time
+        elif control == 'end_time':
+            if self.service_stop and self.service_stop > service_time:
+                return -1
+            self.service_end = service_time
+        else:
+            return -1
+        return {'service_start': self.service_start, 'service_stop': self.service_stop,
+                'service_end': self.service_end}
 
     def service_schedule(self, task=None):
         task.set_daemon()
@@ -2091,7 +2297,7 @@ class _DispyNode(object):
             except Exception:
                 pass
             job_info.job_reply = job_reply
-            self.num_jobs += 1
+            self.jobs_done += 1
             self.cpu_time += (job_reply.end_time - job_reply.start_time)
             Task(self._send_job_reply, job_info, resending=False)
             proc, job_info.proc = job_info.proc, None
@@ -2223,7 +2429,7 @@ class _DispyNode(object):
             except Exception:
                 dispynode_logger.debug(traceback.format_exc())
 
-        self.num_computations += 1
+        self.clients_done += 1
         self.scheduler['auth'].discard(compute.auth)
 
         if isinstance(compute.cleanup, _Function):
@@ -2510,6 +2716,7 @@ class _DispyNode(object):
             cmd = yield task.receive()
             if cmd in ('quit', 'exit'):
                 break
+
             elif cmd in ('stop', 'start', 'cpus'):
                 if cmd == 'stop':
                     cpus = 0
@@ -2531,34 +2738,17 @@ class _DispyNode(object):
                     except Exception:
                         print('  Invalid cpus ignored')
                         continue
-                    self.num_cpus = cpus
+                    if self.set_cpus(cpus):
+                        print('  Setting cpus failed')
 
-                self.avail_cpus = cpus - len(self.job_infos)
-
-                if self.scheduler['auth']:
-                    addrinfo = self.scheduler['addrinfo']
-                    sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_STREAM),
-                                       keyfile=self.keyfile, certfile=self.certfile)
-                    sock.settimeout(MsgTimeout)
-                    try:
-                        yield sock.connect((self.scheduler['ip_addr'], self.scheduler['port']))
-                        info = {'ip_addr': addrinfo.ext_ip_addr, 'sign': self.sign, 'cpus': cpus}
-                        yield sock.send_msg('NODE_CPUS:'.encode() + serialize(info))
-                    except Exception:
-                        pass
-                    finally:
-                        sock.close()
-                else:
-                    if self.num_cpus > 0:
-                        Task(self.broadcast_ping_msg)
             elif cmd == 'release':
                 Task(release)
             else:
                 print('\n  Serving %d CPUs%s%s%s' %
                       (self.avail_cpus + len(self.job_infos), service_from, service_to,
                        ' for %d clients' % self.serve if self.serve > 0 else ''))
-                print('  Completed:\n    %d Computations, %d jobs, %.3f sec CPU time' %
-                      (self.num_computations, self.num_jobs, self.cpu_time))
+                print('  Completed:\n    %d Clients, %d jobs, %.3f sec CPU time' %
+                      (self.clients_done, self.jobs_done, self.cpu_time))
                 print('  Running:')
                 for i, client in enumerate(self.clients.itervalues(), start=1):
                     compute = client.compute
@@ -2621,6 +2811,8 @@ if __name__ == '__main__':
                         help='timeout used for messages to/from client in seconds')
     parser.add_argument('-s', '--secret', dest='secret', default='',
                         help='authentication secret for handshake with dispy clients')
+    parser.add_argument('--admin_secret', dest='admin_secret', default='',
+                        help='authentication secret for dispy admin')
     parser.add_argument('--certfile', dest='certfile', default='',
                         help='file containing SSL certificate')
     parser.add_argument('--keyfile', dest='keyfile', default='',

@@ -1,0 +1,395 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    <link type="text/css" rel="stylesheet" href="dispy.css" />
+
+    <script type="text/javascript" src="jquery.js"></script>
+    <script type="text/javascript" src="dispy.js"></script>
+
+    <script type="text/javascript">
+    //<![CDATA[
+
+      jQuery.ajaxSettings.traditional = true;
+
+      var timer = null;
+      var cluster_nodes = {};
+      var poll_interval = 1000 * %(POLL_INTERVAL)s;
+      var sort_key = '';
+      var dispy_uid = '';
+      var secret = '';
+
+      function get_uid() {
+        let uid = dispy_uid;
+        if (uid.length == 0) {
+          uid = getCookie('dispy_uid');
+        }
+        $.ajax({
+          url: '/get_uid',
+          method: 'POST',
+          dataType: 'json',
+          data: {uid: uid},
+          timeout: 2000
+        })
+          .done(function(uid) {
+            setCookie('dispy_uid', uid, 3600);
+            dispy_uid = uid;
+            cluster_status('status');
+          })
+          .fail(function(jqXHR, textStatus, errorTHrown) {
+            $('#messages').append('<li style="color:red">' +
+            'Could not communicate with admin http server; ' +
+            'reload this page when server is ready / restarted.</li>');
+          })
+      }
+
+      function show_cluster() {
+        var sorted_nodes;
+        if (sort_key) {
+          sorted_nodes = $.map(cluster_nodes, function(node) {
+            return {key:node[sort_key], node:node}; });
+          sorted_nodes = sorted_nodes.sort(function(a, b) { return a.key - b.key; });
+          // alert('sorted: ' + $.map(sorted_nodes, function(key_node) { return key_node.key; }).join());
+          sorted_nodes = $.map(sorted_nodes, function(key_node) { return key_node.node; });
+        } else {
+          sorted_nodes = cluster_nodes;
+        }
+
+        var rows = '';
+        var jobs_done = 0;
+        var cpu_time = 0;
+
+        $.each(sorted_nodes, function(idx, node) {
+          jobs_done += node.jobs_done;
+          cpu_time += node.cpu_time;
+          rows += '<tr>' +
+            '<td><input type="checkbox" name="node_select" value="' + node.ip_addr + '" /></td>' +
+            '<td><a href="admin_node.html?host=' + node.ip_addr + '" ' + 'title="Manage ' +
+            node.ip_addr + '">' + node.ip_addr + '</a></td><td>' + node.name + '</td><td>' +
+            node.cpus + '</td><td>' + node.busy + '</td>';
+          if (node.avail_info) {
+            rows += '<td>' + (node.avail_info.cpu.toFixed(2) + ' %%') +
+              '</td><td>' + formatBytes(node.avail_info.memory) +
+              '</td><td>' + (node.avail_info.swap.toFixed(2) + ' %%') +
+              '</td><td>' + formatBytes(node.avail_info.disk) + '</td>';
+          } else {
+            rows += '<td>-</td><td>-</td><td>-</td><td>-</td>';
+          }
+          rows += '<td>' + node.jobs_done + '</td><td>' +
+            node.cpu_time.toFixed(2) + '</td><td>' +
+            (new Date(node.update_time * 1000)).toLocaleTimeString() + '</td></tr>';
+        });
+        $('#cpu_time').text(cpu_time.toFixed(2));
+        $('#jobs_done').text(jobs_done);
+        $('#nodes').html(rows);
+      }
+
+     function cluster_status(request) {
+       $.ajax({
+         url: request,
+         method: 'POST',
+         dataType: 'json',
+         data: {uid: dispy_uid},
+         timeout: Math.min(5000, poll_interval)
+       })
+         .done(function(status_data) {
+           $.each(status_data, function(idx, node) {
+             cluster_nodes[node.ip_addr] = node;
+           });
+           show_cluster();
+           $('#messages').html('<li>Status updated at ' +
+                               (new Date()).toLocaleTimeString() + '</li>');
+           if (poll_interval >= 1000) {
+             timer = setTimeout(function() { cluster_status('update') }, poll_interval);
+           }
+         })
+
+         .fail(function(jqXHR, textStatus, errorThrown) {
+           $('#messages').append('<li style="color:red">' +
+                                 'Could not get status from dispy cluster; ' +
+                                 'reload this page when cluster is ready.</li>');
+           if (timer != null) {
+             clearTimeout(timer);
+             timer = null;
+           }
+         })
+      }
+
+      $(document).ready(function() {
+
+        get_uid();
+        dispy_secret = getCookie('dispy_secret');
+        if (dispy_secret.length > 0) {
+          $('#dispy_secret').val(dispy_secret);
+        }
+
+        $('#poll_interval').click(function() {
+          var interval;
+          if ($('#poll_now').prop('checked') == true) {
+            interval = 0;
+            $('#poll_now').prop('checked', false);
+          } else {
+            interval = $('#poll_interval_value').val();
+            if (!$.isNumeric(interval)) {
+              $('#messages').append('<li>Invalid poll interval ignored.</li>');
+              $('#poll_interval_value').val(poll_interval / 1000);
+              interval = poll_interval / 1000;
+            }
+            interval = parseInt(interval);
+            if (interval < 5) {
+              $('#messages').append('<li style="color:red">poll interval must be >= 5</li>');
+              return;
+            }
+          }
+
+          if (poll_interval != (1000 * interval)) {
+            $.ajax({
+              url: 'poll_interval',
+              method: 'POST',
+              data: {uid: dispy_uid, interval: interval},
+              timeout: Math.min(2000, poll_interval)
+            })
+              .done(function(status) {
+                if (interval) {
+                  $('#poll_interval_value').val(interval);
+                  poll_interval = 1000 * interval;
+                }
+                if (timer != null) {
+                  clearTimeout(timer);
+                  timer = null;
+                }
+                timer = setTimeout(function() { cluster_status('update') }, 
+                                   Math.min(3000, poll_interval / 2.0));
+              })
+          }
+        });
+
+        $('#sort_key').change(function() {
+          var selected = $('#sort_key').val();
+          if (sort_key != selected) {
+            sort_key = selected;
+            if (sort_key) {
+              show_cluster();
+            }
+          }
+        });
+
+        $('#add_node').click(function() {
+          var host = $('#add_node_host').val();
+          var port = $('#add_node_port').val();
+          if (host.length > 0 && port.length > 0) {
+            $.ajax({
+              url: '/add_node',
+              method: 'POST',
+              data: {host: host, port: port, uid: dispy_uid},
+              timeout: 1000
+            });
+          }
+        });
+
+        $('#set_secret').click(function() {
+          let secret = $('#dispy_secret').val();
+          $.ajax({
+            url: '/set_secret',
+            method: 'POST',
+            data: {secret: secret, uid: dispy_uid},
+            timeout: 1000
+          })
+            .done(function(status) {
+              if (status == 0) {
+                setCookie('dispy_secret', secret, 24 * 3600)
+                dispy_secret = secret;
+                // cluster_nodes.clear();
+                // show_cluster();
+                // cluster_status('status');
+                cluster_status('update');
+              }
+            })
+          
+        });
+
+        $('#show_secret').change(function() {
+          if (this.checked) {
+            $('#dispy_secret').attr('type', 'text');
+          } else {
+            $('#dispy_secret').attr('type', 'password');
+          }
+        });
+
+        $('#node_execute').click(function() {
+          $('#messages').html('');
+          var node_action = $('select[name="node-action"]').val();
+          var nodes = [];
+          $('input[type="checkbox"][name="node_select"]').each(function(i) {
+            if ($(this).prop('checked')) {
+              nodes.push($(this).val().trim());
+            }
+          });
+          if (nodes.length == 0) {
+            return false;
+          }
+
+          let time = $('#svc_time_now').prop('checked') == true;
+          if (time) {
+            $('#svc_time_now').prop('checked', false);
+            time = '';
+          } else {
+            time = $('#svc_time').val();
+          }
+
+          $.ajax({
+            url: 'service_time',
+            method: 'POST',
+            data: {hosts: JSON.stringify(nodes), control: node_action, time: time, uid: dispy_uid},
+            timeout: 5000
+          })
+          .done(function(status) {
+            if (status == 0) {
+              $('#messages').html('Node execute success. : ' + status);
+	    } else {
+              $('#messages').html('Node execute failed. : ' + status);
+	    }
+          })
+          .fail(function(jqXHR, textStatus, errorThrown) {
+            $('#messages').html('Node execute request failed.' + textStatus);
+          });
+
+        });
+
+        $('#all-nodes').click(function() {
+	  var check = this.checked;
+          $('input[type="checkbox"][name="node_select"]').each(function(i) {
+            $(this).prop('checked', check);
+          });
+	});
+
+      });
+    //]]>
+    </script>
+
+  <title>dispy: Admin Cluster(s)</title>
+  </head>
+  <body>
+    <div id="page">
+      <nav style="margin:0 auto;" id="navigation" role="navigation">
+        <ul>
+          <li class="active"><a href="admin.html">Admin Cluster(s)</a></li>
+          <li><a href="admin_node.html">Admin Node</a></li>
+        </ul>
+      </nav>
+
+      <h1><span class="title">dispy: Admin Cluster(s)</span></h1>
+
+      <table class="border alt"
+        style="background:transparent;margin:10px auto;font-weight:bold;text-align:right;">
+        <tr>
+           <td>Admin Secret : </td><td id="secret"></td>
+        </tr>
+        <tr>
+          <td style="border-top: 1px solid #bcd;">CPU Time Sec : </td>
+          <td style="border-top: 1px solid #bcd;" id="cpu_time"></td>
+        </tr>
+        <tr>
+          <td style="border-top: 1px solid #bcd;">Jobs Done : </td>
+          <td style="border-top: 1px solid #bcd;" id="jobs_done"></td>
+        </tr>
+      </table>
+
+      <table class="shadow alt" style="text-align:right;margin:10px auto;">
+        <caption><span class="border" style="display:inline-block;">Nodes</span></caption>
+        <thead>
+          <tr>
+            <th rowspan="2"><input type="checkbox" id="all-nodes" /></th>
+            <th rowspan="2">IP Address</th><th rowspan="2">Name</th>
+            <th rowspan="2">CPUs</th><th rowspan="2">Busy</th>
+            <th colspan="4">Available</th>
+            <th rowspan="2">Jobs<br />Done</th>
+            <th rowspan="2">CPU Time<br />Sec</th>
+            <th rowspan="2">Last Update</th>
+          </tr>
+
+          <tr>
+            <th>CPU</th><th>Memory</th><th>Swap</th><th>Disk</th>
+          </tr>
+        </thead>
+        <tbody id="nodes">
+        </tbody>
+      </table>
+
+      <hr style="margin:10px;" />
+
+      <table id="inputs" style="margin:10px auto;text-align:left;">
+
+        <tr>
+          <td><span><strong>Poll Interval Seconds :</strong></span>
+          <input style="width:3em;" maxlength="6" type="text" id="poll_interval_value"
+                 value="%(POLL_INTERVAL)s" /></td>
+          <td><button style="margin:5px auto;" type="button" id="poll_interval">Update</button></td>
+	</tr>
+
+	<tr>
+          <td><span><strong>Node :</strong></span>
+          <input style="width:8em;" maxlength="20" type="text" id="add_node_host"
+                 value="" />
+          <span><strong style="margin-left:10px;">Port :</strong></span>
+             <input style="width:4em;" maxlength="6" type="text" id="add_node_port"
+                    value="%(NODE_PORT)s" /></td>
+          <td><button style="margin:5px auto;" type="button" id="add_node">Add</button></td>
+        </tr>
+
+        <tr>
+          <td><span><strong>Cluster Admin Secret :</strong></span>
+            <input style="width:6em;text-align:left" maxlength="10" type="password"
+                   id="dispy_secret" name="passwd" value="" />
+            <input type="checkbox" id="show_secret" name="show-passwd" />
+            <label for="show_secret">Show</label>
+          </td>
+          <td><button style="margin:5px auto;" type="button" id="set_secret">Set</button></td>
+	</tr>
+
+        <tr>
+          <td><span class="border" style="display:inline-block;">
+	      <strong>Service Time of Selected Nodes : </strong>
+              <select name="node-action" style="margin-left:5px;">
+                <option value="" selected="selected">Select</option>
+                <option value="start_time">Start</option>
+                <option value="stop_time">Stop</option>
+                <option value="end_time">End</option>
+              </select>
+            </span>
+            <input type="text" id="svc_time" value="" style="min-width:3em;" size="4" />
+	    <input type="checkbox" id="svc_time_now" name="svc-time-now" />
+	    <label for="svc_time_now">Now</label>
+          </td>
+          <td>
+            <button type="button" id="node_execute" name="node-execute" style="margin-left:5px;">
+              Set</button>
+          </td>
+        </tr>
+
+        <tr>
+          <td><span><strong>Sort Nodes by : </strong></span>
+          <select name="sort-key" id="sort_key" style="margin-left:5px;">
+              <option value="" select="select">Select</option>
+              <option value="ip_addr">IP Address</option>
+              <option value="name">Name</option>
+              <option value="cpu_time">CPU Time</option>
+              <option value="done">Jobs Done</option>
+              <option value="update_time">Last Update</option>
+            </select>
+          <td><button style="margin:5px auto;" type="button" id="update">Sort</button></td>
+        </tr>
+
+      </table>
+
+      <hr style="margin:10px;" />
+
+      <div>
+        <ul id="messages" style="margin:1em auto;display:inline-block;text-align:left;"></ul>
+      </div>
+
+    </div>
+  </body>
+</html>
