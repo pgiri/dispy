@@ -30,7 +30,7 @@
           url: '/get_uid',
           method: 'POST',
           dataType: 'json',
-          data: {uid: uid},
+          data: {uid: uid, poll_interval: poll_interval / 1000},
           timeout: 2000
         })
           .done(function(uid) {
@@ -40,7 +40,7 @@
           })
           .fail(function(jqXHR, textStatus, errorTHrown) {
             $('#messages').append('<li style="color:red">' +
-            'Could not communicate with admin http server; ' +
+            'Could not communicate with admin http server (' + textStatus + '); ' +
             'reload this page when server is ready / restarted.</li>');
           })
       }
@@ -51,7 +51,6 @@
           sorted_nodes = $.map(cluster_nodes, function(node) {
             return {key:node[sort_key], node:node}; });
           sorted_nodes = sorted_nodes.sort(function(a, b) { return a.key - b.key; });
-          // alert('sorted: ' + $.map(sorted_nodes, function(key_node) { return key_node.key; }).join());
           sorted_nodes = $.map(sorted_nodes, function(key_node) { return key_node.node; });
         } else {
           sorted_nodes = cluster_nodes;
@@ -83,6 +82,7 @@
         });
         $('#cpu_time').text(cpu_time.toFixed(2));
         $('#jobs_done').text(jobs_done);
+        $('#num_nodes').text(sorted_nodes.length);
         $('#nodes').html(rows);
       }
 
@@ -108,11 +108,10 @@
 
          .fail(function(jqXHR, textStatus, errorThrown) {
            $('#messages').append('<li style="color:red">' +
-                                 'Could not get status from dispy cluster; ' +
+                                 'Could not get status from dispy cluster (' + textStatus + '); ' +
                                  'reload this page when cluster is ready.</li>');
-           if (timer != null) {
+           if (timer) {
              clearTimeout(timer);
-             timer = null;
            }
          })
       }
@@ -156,9 +155,8 @@
                   $('#poll_interval_value').val(interval);
                   poll_interval = 1000 * interval;
                 }
-                if (timer != null) {
+                if (timer) {
                   clearTimeout(timer);
-                  timer = null;
                 }
                 timer = setTimeout(function() { cluster_status('update') }, 
                                    Math.min(3000, poll_interval / 2.0));
@@ -180,17 +178,32 @@
           var host = $('#add_node_host').val();
           var port = $('#add_node_port').val();
           if (host.length > 0 && port.length > 0) {
+            $('#add_node').attr('disabled', true);
+            setTimeout(function() {
+              $('#add_node').attr('disabled', false);
+            }, 2000);
             $.ajax({
               url: '/add_node',
               method: 'POST',
               data: {host: host, port: port, uid: dispy_uid},
               timeout: 1000
-            });
+            })
+              .done(function(status) {
+                if (timer) {
+                  clearTimeout(timer);
+                }
+                timer = setTimeout(function() { cluster_status('update') }, 
+                                   Math.min(3000, poll_interval / 2.0));
+              })
           }
         });
 
         $('#set_secret').click(function() {
           let secret = $('#dispy_secret').val();
+          $('#set_secret').attr('disabled', true);
+          setTimeout(function() {
+            $('#set_secret').attr('disabled', false);
+          }, 2000);
           $.ajax({
             url: '/set_secret',
             method: 'POST',
@@ -228,6 +241,7 @@
             }
           });
           if (nodes.length == 0) {
+            $('#messages').append('<li style="color:red">No nodes selected.</li>');
             return false;
           }
 
@@ -239,23 +253,66 @@
             time = $('#svc_time').val();
           }
 
+          $('#node_execute').attr('disabled', true);
+          setTimeout(function() {
+            $('#node_execute').attr('disabled', false);
+          }, 2000);
           $.ajax({
             url: 'service_time',
             method: 'POST',
             data: {hosts: JSON.stringify(nodes), control: node_action, time: time, uid: dispy_uid},
-            timeout: 5000
+            timeout: Math.min(3000, poll_interval / 2.)
           })
-          .done(function(status) {
-            if (status == 0) {
-              $('#messages').html('Node execute success. : ' + status);
-	    } else {
-              $('#messages').html('Node execute failed. : ' + status);
-	    }
-          })
+            .done(function(status) {
+            })
           .fail(function(jqXHR, textStatus, errorThrown) {
-            $('#messages').html('Node execute request failed.' + textStatus);
+              $('#messages').append('<li style="color:red">Setting sertice time failed: ' +
+                                    textStatus + '</li>');
           });
 
+        });
+
+        $('#set_cpus').click(function() {
+          let cpus = $('#use_all_cpus').prop('checked');
+          if (cpus) {
+            $('#use_all_cpus').prop('checked', false);
+            cpus = '';
+          } else {
+            cpus = $('#cpus').val();
+            if (!cpus) {
+              $('#messages').append('<li style="color:red">Invalid CPUs.</li>');
+              return false;
+            }
+          }
+          var nodes = [];
+          $('input[type="checkbox"][name="node_select"]').each(function(i) {
+            if ($(this).prop('checked')) {
+              nodes.push($(this).val().trim());
+            }
+          });
+          if (nodes.length == 0) {
+            $('#messages').append('<li style="color:red">No nodes selected.</li>');
+            return false;
+          }
+
+          $('#set_cpus').attr('disabled', true);
+          setTimeout(function() {
+            $('#set_cpus').attr('disabled', false);
+          }, 2000);
+          $.ajax({
+            url: 'set_cpus',
+            method: 'POST',
+            dataType: 'json',
+            data: {hosts: JSON.stringify(nodes), cpus: cpus, uid: dispy_uid},
+            timeout: Math.min(5000, poll_interval / 2.)
+          })
+            .done(function(status) {
+              $('#cpus').val('');
+            })
+            .fail(function(jqXHR, textStatus, errorThrown) {
+              $('#messages').append('<li style="color:red">Setting CPUs failed: ' +
+                                    textStatus + '</li>');
+            });
         });
 
         $('#all-nodes').click(function() {
@@ -295,6 +352,10 @@
           <td style="border-top: 1px solid #bcd;">Jobs Done : </td>
           <td style="border-top: 1px solid #bcd;" id="jobs_done"></td>
         </tr>
+        <tr>
+          <td style="border-top: 1px solid #bcd;"># of Nodes : </td>
+          <td style="border-top: 1px solid #bcd;" id="num_nodes"></td>
+        </tr>
       </table>
 
       <table class="shadow alt" style="text-align:right;margin:10px auto;">
@@ -323,63 +384,71 @@
       <table id="inputs" style="margin:10px auto;text-align:left;">
 
         <tr>
-          <td><span><strong>Poll Interval Seconds :</strong></span>
-          <input style="width:3em;" maxlength="6" type="text" id="poll_interval_value"
-                 value="%(POLL_INTERVAL)s" /></td>
-          <td><button style="margin:5px auto;" type="button" id="poll_interval">Update</button></td>
+          <td><span><strong>Poll Interval Seconds :</strong></span></td>
+          <td><input type="text" id="poll_interval_value" value="%(POLL_INTERVAL)s"
+                   style="width:3em;" maxlength="6" /></td>
+          <td><button type="button" id="poll_interval" style="margin:5px auto;">Update</button></td>
 	</tr>
 
 	<tr>
-          <td><span><strong>Node :</strong></span>
-          <input style="width:8em;" maxlength="20" type="text" id="add_node_host"
-                 value="" />
-          <span><strong style="margin-left:10px;">Port :</strong></span>
-             <input style="width:4em;" maxlength="6" type="text" id="add_node_port"
-                    value="%(NODE_PORT)s" /></td>
-          <td><button style="margin:5px auto;" type="button" id="add_node">Add</button></td>
+          <td><span><strong>Node :</strong></span></td>
+          <td><input type="text" id="add_node_host" value="" style="width:8em;" maxlength="20" />
+            <span><strong style="margin-left:10px;">Port :</strong></span>
+            <input type="text" id="add_node_port" value="%(NODE_PORT)s"
+                   style="width:4em;" maxlength="6" /></td>
+          <td><button type="button" id="add_node" style="margin:5px auto;">Add</button></td>
         </tr>
 
         <tr>
-          <td><span><strong>Cluster Admin Secret :</strong></span>
-            <input style="width:6em;text-align:left" maxlength="10" type="password"
-                   id="dispy_secret" name="passwd" value="" />
+          <td><span><strong>Cluster Admin Secret :</strong></span></td>
+          <td><input type="password" id="dispy_secret" name="passwd" value=""
+                     style="width:6em;text-align:left" maxlength="10" />
             <input type="checkbox" id="show_secret" name="show-passwd" />
             <label for="show_secret">Show</label>
           </td>
-          <td><button style="margin:5px auto;" type="button" id="set_secret">Set</button></td>
+          <td><button type="button" id="set_secret"style="margin:5px auto;"> Set</button></td>
 	</tr>
 
         <tr>
-          <td><span class="border" style="display:inline-block;">
-	      <strong>Service Time of Selected Nodes : </strong>
-              <select name="node-action" style="margin-left:5px;">
-                <option value="" selected="selected">Select</option>
-                <option value="start_time">Start</option>
-                <option value="stop_time">Stop</option>
-                <option value="end_time">End</option>
-              </select>
-            </span>
-            <input type="text" id="svc_time" value="" style="min-width:3em;" size="4" />
-	    <input type="checkbox" id="svc_time_now" name="svc-time-now" />
-	    <label for="svc_time_now">Now</label>
-          </td>
+          <td><span style="display:inline-block;">
+	      <strong>Service Time of Selected Nodes : </strong></td>
+          <td><select name="node-action" style="margin-left:5px;">
+              <option value="" selected="selected">Select</option>
+              <option value="start_time">Start</option>
+              <option value="stop_time">Stop</option>
+              <option value="end_time">End</option>
+            </select>
+          </span>
+          <input type="text" id="svc_time" value="" style="min-width:3em;" size="4" />
+	  <input type="checkbox" id="svc_time_now" name="svc-time-now" />
+	  <label for="svc_time_now">Now</label></td>
           <td>
             <button type="button" id="node_execute" name="node-execute" style="margin-left:5px;">
               Set</button>
           </td>
         </tr>
 
+	<tr>
+          <td><span><strong>CPUs of Selected Nodes : </strong></span></td>
+          <td><div style="float:left;">
+              <input type="text" id="cpus" name="cpus" value=""
+                     style="min-width:3em;" size="4" />
+	      <input type="checkbox" id="use_all_cpus" name="use-all-cpus" />
+	      <label for="use_all_cpus">All</label></div></td>
+	  <td><button type="button" id="set_cpus" style="margin:5px auto;">Set</button></td>
+	</tr>
+
         <tr>
-          <td><span><strong>Sort Nodes by : </strong></span>
-          <select name="sort-key" id="sort_key" style="margin-left:5px;">
+          <td><span><strong>Sort Nodes by : </strong></span></td>
+          <td><select name="sort-key" id="sort_key" style="margin-left:5px;">
               <option value="" select="select">Select</option>
               <option value="ip_addr">IP Address</option>
               <option value="name">Name</option>
               <option value="cpu_time">CPU Time</option>
               <option value="done">Jobs Done</option>
               <option value="update_time">Last Update</option>
-            </select>
-          <td><button style="margin:5px auto;" type="button" id="update">Sort</button></td>
+            </select></td>
+          <td><button type="button" id="update" style="margin:5px auto;">Sort</button></td>
         </tr>
 
       </table>

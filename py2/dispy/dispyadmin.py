@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 """
 This file is part of dispy project.
 See http://dispy.sourceforge.net for details.
@@ -99,8 +99,7 @@ class DispyAdminServer(object):
             return
 
         def do_GET(self):
-            parsed_path = urlparse(self.path)
-            path = parsed_path.path.lstrip('/')
+            path = urlparse(self.path).path.lstrip('/')
             if path == '' or path == 'index.html':
                 path = 'admin.html'
             path = os.path.join(self.DocumentRoot, path)
@@ -121,8 +120,7 @@ class DispyAdminServer(object):
                 self.send_response(200)
                 self.send_header('Content-Type', content_type)
                 if content_type == 'text/css' or content_type == 'text/javascript':
-                    # self.send_header('Cache-Control', 'private, max-age=86400')
-                    self.send_header('Cache-Control', 'private, max-age=30')
+                    self.send_header('Cache-Control', 'private, max-age=86400')
                 self.end_headers()
                 self.wfile.write(data.encode())
                 return
@@ -217,17 +215,18 @@ class DispyAdminServer(object):
                 for item in form.list:
                     if item.name == 'uid':
                         uid = item.value.strip()
-                        break
-                now = time.time()
+                    elif item.name == 'poll_interval':
+                        try:
+                            poll_interval = int(item.value)
+                            assert poll_interval >= 5
+                        except Exception:
+                            self.send_error(400, 'invalid poll interval')
+                            return
                 # TODO: only allow from http server?
-                if (self._ctx.client_uid and uid != self._ctx.client_uid and
-                    ((now - self._ctx.client_uid_time) < 3600)):
+                uid = self._ctx.set_uid(self.client_address[0], poll_interval, uid)
+                if not uid:
                     self.send_error(400, 'invalid uid')
                     return
-                if not uid:
-                    uid = hashlib.sha1(os.urandom(20)).hexdigest()
-                self._ctx.client_uid = uid
-                self._ctx.client_uid_time = time.time()
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
                 self.end_headers()
@@ -294,7 +293,7 @@ class DispyAdminServer(object):
                     elif item.name == 'control':
                         control = item.value
                     elif item.name == 'time':
-                        svc_time = item.value
+                        svc_time = item.value.strip()
                     elif item.name == 'uid':
                         uid = item.value.strip()
                 if uid != self._ctx.client_uid:
@@ -310,28 +309,35 @@ class DispyAdminServer(object):
                 return
 
             elif client_request == 'set_cpus':
-                host = None
+                hosts = []
                 cpus = None
                 uid = None
                 for item in form.list:
-                    if item.name == 'host':
-                        host = item.value.strip()
+                    if item.name == 'hosts':
+                        hosts = [str(host) for host in json.loads(item.value)]
+                        if not hosts:
+                            self.send_error(400, 'invalid nodes')
+                            return
                     elif item.name == 'cpus':
-                        try:
-                            cpus = int(item.value.strip())
-                        except Exception:
-                            pass
+                        cpus = item.value
+                        if cpus is not None:
+                            try:
+                                cpus = int(item.value)
+                            except Exception:
+                                self.send_error(400, 'invalid CPUs')
+                                return
                     elif item.name == 'uid':
                         uid = item.value.strip()
-                if (host and cpus and uid == self._ctx.client_uid and
-                    Task(self._ctx.set_cpus, host, cpus).value() == 0):
-                    self._ctx.client_uid_time = time.time()
-                    self.send_response(200)
-                    self.send_header('Content-Type', 'application/json; charset=utf-8')
-                    self.end_headers()
-                    self.wfile.write(json.dumps(0).encode())
-                else:
-                    self.send_error(400)
+                if uid != self._ctx.client_uid:
+                    self.send_error(400, 'invalid uid')
+                    return
+                for host in hosts:
+                    Task(self._ctx.set_cpus, host, cpus)
+                self._ctx.client_uid_time = time.time()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(json.dumps(0).encode())
                 return
 
             elif client_request == 'serve_clients':
@@ -448,8 +454,9 @@ class DispyAdminServer(object):
         self._httpd_thread = threading.Thread(target=self._server.serve_forever)
         self._httpd_thread.daemon = True
         self._httpd_thread.start()
-        logger.info('Started HTTP%s server at %s', 's' if certfile else '',
-                    ':'.join(map(str, self._server.socket.getsockname())))
+        self.client_host = self._server.socket.getsockname()[0]
+        logger.info('Started HTTP%s server at %s:%s', 's' if certfile else '',
+                    self.client_host, self._server.socket.getsockname()[1])
 
     def tcp_server(self, addrinfo, task=None):
         task.set_daemon()
@@ -461,7 +468,7 @@ class DispyAdminServer(object):
         except Exception:
             logger.warning('Could not bind TCP server to %s:%s', addrinfo.ip, self.info_port)
             raise StopIteration
-        logger.debug('dispyadmin TCP server at %s:%s', addrinfo.ip, self.info_port)
+        logger.info('dispyadmin TCP server at %s:%s', addrinfo.ip, self.info_port)
         sock.listen(16)
 
         while 1:
@@ -610,7 +617,8 @@ class DispyAdminServer(object):
                 raise StopIteration(0)
             else:
                 node._priv.sign = sign
-                raise StopIteration(yield self.get_node_info(node, task=task))
+                ret = yield self.get_node_info(node, task=task)
+                raise StopIteration(ret)
         else:
             node._priv.auth = auth
             self.set_node_info(node, info)
@@ -649,7 +657,7 @@ class DispyAdminServer(object):
         try:
             yield sock.connect((node.ip_addr, node._priv.port))
             yield sock.sendall(node._priv.auth)
-            yield sock.send_msg('SET_CPUS:' + serialize({'cpus': cpus}))
+            yield sock.send_msg('SET_CPUS:'.encode() + serialize({'cpus': cpus}))
             resp = yield sock.recv_msg()
             info = deserialize(resp)
             node.cpus = info['cpus']
@@ -671,7 +679,8 @@ class DispyAdminServer(object):
         try:
             yield sock.connect((node.ip_addr, node._priv.port))
             yield sock.sendall(node._priv.auth)
-            yield sock.send_msg('SERVICE_TIME:' + serialize({'control': control, 'time': time}))
+            yield sock.send_msg('SERVICE_TIME:'.encode() +
+                                serialize({'control': control, 'time': time}))
             resp = yield sock.recv_msg()
             info = deserialize(resp)
             node.service_start = info['service_start']
@@ -695,13 +704,13 @@ class DispyAdminServer(object):
         try:
             yield sock.connect((node.ip_addr, node._priv.port))
             yield sock.sendall(node._priv.auth)
-            yield sock.send_msg('SERVE_CLIENTS:' + serialize({'serve': serve}))
+            yield sock.send_msg('SERVE_CLIENTS:'.encode() + serialize({'serve': serve}))
             resp = yield sock.recv_msg()
             info = deserialize(resp)
             node.serve = info['serve']
             resp = 0
         except Exception:
-            dispy.logger.debug('Setting serve %s to %s failed', host, serve)
+            dispy.logger.debug('Setting serve clients %s to %s failed', host, serve)
             resp = -1
         finally:
             sock.close()
@@ -720,8 +729,8 @@ class DispyAdminServer(object):
             if isinstance(info, dict):
                 self.set_node_info(node, info)
         except Exception:
-            logger.debug('Could not update node at %s:%s', node.ip_addr, node._priv.port)
             # TODO: remove node if update is long ago?
+            pass
         finally:
             sock.close()
 
@@ -737,49 +746,83 @@ class DispyAdminServer(object):
             return 0
         elif interval >= 5:
             self.poll_interval = interval
-            self.timer.resume()
+            self.timer.resume(update=interval)
             return 0
         else:
             return -1
 
+    def set_uid(self, client_host, poll_interval, uid=None):
+        now = time.time()
+        try:
+            poll_interval = int(poll_interval)
+            assert poll_interval >= 5
+        except Exception:
+            return None
+
+        if ((uid == self.client_uid) or (not self.client_uid) or
+            (self.client_host == client_host) or
+            ((now - self.client_uid_time) > min(5 * self.poll_interval, 600))):
+            if not uid:
+                uid = hashlib.sha1(os.urandom(20)).hexdigest()
+            self.client_uid = uid
+            self.client_uid_time = now
+            self.client_host = client_host
+            if self.poll_interval != poll_interval:
+                self.poll_interval = poll_interval
+            self.timer.resume(update=poll_interval)
+            return uid
+        else:
+            logger.warning('Ignoring client at %s; currently controlled by client at %s',
+                           client_host, self.client_host)
+            return None
+
+    def discover_nodes(self, task=None):
+        addrinfos = list(self.addrinfos.values())
+        for addrinfo in addrinfos:
+            info_msg = {'ip_addr': addrinfo.ip, 'port': self.info_port,
+                        'sign': self.sign, 'version': _dispy_version}
+            bc_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
+            bc_sock.settimeout(MsgTimeout)
+            ttl_bin = struct.pack('@i', 1)
+            if addrinfo.family == socket.AF_INET:
+                if self.ipv4_udp_multicast:
+                    bc_sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, ttl_bin)
+                else:
+                    bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            else:  # addrinfo.family == socket.AF_INET6
+                bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, ttl_bin)
+                bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF,
+                                   addrinfo.ifn)
+            bc_sock.bind((addrinfo.ip, 0))
+            try:
+                yield bc_sock.sendto('NODE_INFO:' + serialize(info_msg),
+                                     (addrinfo.broadcast, self.node_port))
+            except Exception:
+                pass
+            bc_sock.close()
+
     def timer_proc(self, task=None):
         task.set_daemon()
 
-        last_ping = 0
-        addrinfos = list(self.addrinfos.values())
+        Task(self.discover_nodes)
+        last_ping = time.time()
+        interval = self.poll_interval
         while 1:
-            yield task.sleep(self.poll_interval)
             now = time.time()
+            if (now - last_ping) >= self.ping_interval:
+                Task(self.discover_nodes)
+                last_ping = now
+                if (now - self.client_uid_time) > (5 * self.ping_interval):
+                    interval *= 2
             with self.lock:
                 nodes = list(self.nodes.values())
             # TODO: it may be better to have nodes send updates periodically
             for node in nodes:
                 if node._priv.auth:
                     Task(self.update_node_info, node)
-            if (now - last_ping) >= self.ping_interval:
-                last_ping = now
-                for addrinfo in addrinfos:
-                    info_msg = {'ip_addr': addrinfo.ip, 'port': self.info_port,
-                                'sign': self.sign, 'version': _dispy_version}
-                    bc_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
-                    bc_sock.settimeout(MsgTimeout)
-                    ttl_bin = struct.pack('@i', 1)
-                    if addrinfo.family == socket.AF_INET:
-                        if self.ipv4_udp_multicast:
-                            bc_sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, ttl_bin)
-                        else:
-                            bc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                    else:  # addrinfo.family == socket.AF_INET6
-                        bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, ttl_bin)
-                        bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF,
-                                           addrinfo.ifn)
-                    bc_sock.bind((addrinfo.ip, 0))
-                    try:
-                        yield bc_sock.sendto('NODE_INFO:' + serialize(info_msg),
-                                             (addrinfo.broadcast, self.node_port))
-                    except Exception:
-                        pass
-                    bc_sock.close()
+            update = yield task.sleep(interval)
+            if update:
+                interval = update
 
     def shutdown(self, wait=True):
         """This method should be called by user program to close the
@@ -873,7 +916,7 @@ if __name__ == '__main__':
             if secret:
                 server.set_secret(secret)
         elif cmd == 'scan':
-            server.timer.resume()
+            Task(server.discover_nodes)
         elif cmd == 'quit' or cmd == 'exit':
             break
         else:

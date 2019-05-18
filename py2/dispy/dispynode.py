@@ -806,14 +806,14 @@ class _DispyNode(object):
         self.serve = serve
         self.timer_task = Task(self.timer_proc)
         self.service_start = self.service_stop = self.service_end = None
-        if isinstance(service_start, int) and (isinstance(service_stop, int) or
-                                               isinstance(service_end, int)):
+        if isinstance(service_start, int):
             self.service_start = service_start
-            if isinstance(service_stop, int):
-                self.service_stop = service_stop
-            if isinstance(service_end, int):
-                self.service_end = service_end
-            Task(self.service_schedule)
+        if isinstance(service_stop, int):
+            self.service_stop = service_stop
+        if isinstance(service_end, int):
+            self.service_end = service_end
+
+        self.service_schedule_task = Task(self.service_schedule)
         self.client_shutdown = client_shutdown
 
         self.__init_modules = dict(sys.modules)
@@ -953,7 +953,7 @@ class _DispyNode(object):
             except (EnvironmentError, OSError):
                 yield sock.connect((addr, msg['port']))
             try:
-                yield sock.send_msg(b'NODE_INFO:' + serialize(info))
+                yield sock.send_msg('NODE_INFO:' + serialize(info))
             except Exception:
                 dispynode_logger.debug(traceback.format_exc())
                 pass
@@ -983,12 +983,6 @@ class _DispyNode(object):
                 udp_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
             except Exception:
                 pass
-
-        if not addrinfo.bind_addr:
-            Task(self.broadcast_ping_msg)
-            addrinfo = None
-        else:
-            Task(self.broadcast_ping_msg, [addrinfo])
 
         while 1:
             msg, addr = yield udp_sock.recvfrom(1000)
@@ -2053,15 +2047,19 @@ class _DispyNode(object):
                 yield self.broadcast_ping_msg(task=task)
 
     def set_cpus(self, cpus):
-        if not isinstance(cpus, int):
-            return -1
-        if cpus >= 0:
-            if cpus > multiprocessing.cpu_count():
-                return -1
+        max_cpus = multiprocessing.cpu_count()
+        if cpus is None:
+            cpus = max_cpus
         else:
-            cpus += multiprocessing.cpu_count()
-            if cpus < 0:
+            if not isinstance(cpus, int):
                 return -1
+            if cpus >= 0:
+                if cpus > max_cpus:
+                    return -1
+            else:
+                cpus += max_cpus
+                if cpus < 0:
+                    return -1
 
         if cpus == self.num_cpus:
             return 0
@@ -2090,57 +2088,77 @@ class _DispyNode(object):
     def service_available(self):
         if self.serve == 0:
             return False
-        if not self.service_start:
-            return True
         now = int(time.time())
+        if self.service_start:
+            if self.service_start >= now:
+                return False
         if self.service_stop:
-            if (self.service_start <= now < self.service_stop):
-                return True
-        elif not self.service_end or (self.service_start <= now < self.service_end):
-            return True
-        return False
+            if self.service_stop <= now:
+                return False
+        elif self.service_end:
+            if self.service_end <= now:
+                return False
+        return True
 
     def service_control(self, control, service_time):
-        if service_time:
+        if service_time is None:
+            service_time = time.time()
+        elif service_time == '0':
+            service_time = None
+        else:
             bod = time.localtime()
             bod = (int(time.time()) - (bod.tm_hour * 3600) - (bod.tm_min * 60))
             try:
                 service_time = time.strptime(service_time, '%H:%M')
                 service_time = bod + (service_time.tm_hour * 3600) + (service_time.tm_min * 60)
-                if service_time < (time.time() + 60):
-                    service_time += 24 * 3600
             except Exception:
                 return -1
-        else:
-            service_time = time.time()
 
         if control == 'start_time':
-            if self.service_stop and self.service_stop < service_time:
-                return -1
-            if self.service_end and self.service_end < service_time:
-                return -1
+            if service_time:
+                if ((self.service_stop and self.service_stop < service_time) or
+                    (self.service_end and self.service_end < service_time)):
+                    service_time -= 24 * 3600
             self.service_start = service_time
         elif control == 'stop_time':
-            if self.service_start and self.service_start > service_time:
-                return -1
-            if self.service_end and self.service_end < service_time:
-                return -1
+            if service_time:
+                if self.service_start and self.service_start > service_time:
+                    service_time += 24 * 3600
+                if self.service_end and self.service_end < service_time:
+                    return -1
             self.service_stop = service_time
         elif control == 'end_time':
-            if self.service_stop and self.service_stop > service_time:
-                return -1
+            if service_time:
+                if ((self.service_start and self.service_start > service_time) or
+                    (self.service_stop and self.service_stop > service_time)):
+                    service_time += 24 * 3600
             self.service_end = service_time
         else:
             return -1
+        self.service_schedule_task.resume(update=True)
         return {'service_start': self.service_start, 'service_stop': self.service_stop,
                 'service_end': self.service_end}
 
     def service_schedule(self, task=None):
         task.set_daemon()
+        yield task.sleep(2)
         while 1:
+            if self.service_start:
+                now = int(time.time())
+                if self.service_start > (now + 60):
+                    res = yield task.sleep(self.service_start - now)
+                    if res:
+                        continue
+            if self.service_available():
+                yield self.broadcast_ping_msg(task=task)
+
             if self.service_stop:
                 now = int(time.time())
-                yield task.sleep(self.service_stop - now)
+                if self.service_stop > (now + 60):
+                    res = yield task.sleep(self.service_stop - now)
+                    if res:
+                        continue
+
                 dispynode_logger.debug('Stopping service')
                 addrinfo = self.scheduler['addrinfo']
                 sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_STREAM),
@@ -2157,19 +2175,23 @@ class _DispyNode(object):
 
             if self.service_end:
                 now = int(time.time())
-                yield task.sleep(self.service_end - now)
+                if self.service_end > (now + 60):
+                    res = yield task.sleep(self.service_end - now)
+                    if res:
+                        continue
                 dispynode_logger.debug('Shutting down service')
                 self.shutdown('close')
 
-            # advance times for next day
-            self.service_start += 24 * 3600
-            if self.service_stop:
-                self.service_stop += 24 * 3600
-            if self.service_end:
-                self.service_end += 24 * 3600
-            now = int(time.time())
-            yield task.sleep(self.service_start - now)
-            yield self.broadcast_ping_msg(task=task)
+            if self.service_start or self.service_stop or self.service_end:
+                # advance times for next day
+                if self.service_start:
+                    self.service_start += 24 * 3600
+                if self.service_stop:
+                    self.service_stop += 24 * 3600
+                if self.service_end:
+                    self.service_end += 24 * 3600
+            else:
+                yield task.sleep()
 
     def __job_program(self, _job, job_info):
 

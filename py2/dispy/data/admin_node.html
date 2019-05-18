@@ -30,7 +30,7 @@
         $.ajax({
           url: '/get_uid',
           method: 'POST',
-          data: {uid: uid},
+          data: {uid: uid, poll_interval: poll_interval / 1000},
           timeout: 2000
         })
           .done(function(uid) {
@@ -40,7 +40,6 @@
             $('#host').val(host);
             if (!host) {
               $('#node').hide();
-              $('#timeout_div').hide();
             } else {
               $('#host').attr('size', Math.max($('#host').attr('size'), host.length));
               node_info(host);
@@ -66,8 +65,6 @@
           $('#messages').append('<li style="color:red">' +
                                 'Failed to get information about node.</li>');
           $('#node').hide();
-          $('#timeout_div').hide();
-          $('#jobs').hide();
           return;
         }
         if (dispy_node.ip_addr != node.ip_addr) {
@@ -79,7 +76,6 @@
         $('#node_ip_addr').text(node.ip_addr);
         $('#node_name').text(node.name);
         $('#node_cpus').text(node.cpus + ' of ' + node.max_cpus);
-        $('#serve').text(node.serve);
         if (node.avail_info) {
           $('#node_cpu_usage').text(node.avail_info.cpu.toFixed(2) + ' %%');
           $('#node_avail_memory').text(formatBytes(node.avail_info.memory));
@@ -120,9 +116,12 @@
           }
           $('#svc_end_time').val(service_time);
         }
+        if (node.serve != null) {
+          $('#serve_clients').val(node.serve);
+        }
+        
         if ($('#node').is(':hidden')) {
           $('#node').show();
-          $('#timeout_div').show();
         }
       }
 
@@ -152,24 +151,16 @@
           return;
         }
         var nodes = [dispy_node.ip_addr];
-        if (time.length > 0) {
-          let hhmm = time.split(':');
-          if (hhmm.length != 2 || !$.isNumeric(hhmm[0]) || !$.isNumeric(hhmm[1])) {
-            $('#messages').append('<li style="color:red">Service time must be in ' +
-                                  'HH:MM format.</li>');
-            return;
-          }
-          let hh = parseInt(hhmm[0]), mm = parseInt(hhmm[1]);
-          if (hh < 0 || hh >= 24 || mm < 0 || mm >= 60) {
-            $('#messages').append('<li style="color:red">Invalid service time ' + time +
-                                  'ignored.</li>');
-            return;
-          }
-        }
+        var button = $('#svc_' + control);
+        button.attr('disabled', true);
+        setTimeout(function() {
+          button.attr('disabled', false);
+        }, 2000);
         $.ajax({
           url: 'service_time',
           method: 'POST',
-          data: {hosts: JSON.stringify(nodes), control: control, time: time, uid: dispy_uid},
+          data: {hosts: JSON.stringify(nodes), control: control + '_time', time: time,
+                 uid: dispy_uid},
           timeout: 1000
         })
           .done(function(node) {
@@ -200,9 +191,8 @@
               interval = poll_interval / 1000;
             }
             interval = parseInt(interval);
-            if (timer != null) {
+            if (timer) {
               clearTimeout(timer);
-              timer = null;
             }
             if (interval < 5) {
               $('#messages').append('<li style="color:red">poll interval must be >= 5</li>');
@@ -211,6 +201,10 @@
           }
 
           if (poll_interval != (1000 * interval)) {
+            $('#poll_interval').attr('disabled', true);
+            setTimeout(function() {
+              $('#poll_interval').attr('disabled', false);
+            }, 2000);
             $.ajax({
               url: 'poll_interval',
               method: 'POST',
@@ -224,9 +218,8 @@
                   poll_interval = 1000 * interval;
                 }
                 if (dispy_node.ip_addr) {
-                  if (timer != null) {
+                  if (timer) {
                     clearTimeout(timer);
-                    timer = null;
                   }
                   timer = setTimeout(function() { node_info(dispy_node.ip_addr) },
                                      Math.min(3000, poll_interval / 2.0));
@@ -245,20 +238,34 @@
         });
 
         $('#set_cpus').click(function() {
-          let cpus = $('#cpus').val();
-          $('#use_all_cpus').prop('checked', false);
+          let cpus = $('#use_all_cpus').prop('checked');
+          if (cpus) {
+            $('#use_all_cpus').prop('checked', false);
+            cpus = '';
+          } else {
+            cpus = $('#cpus').val().trim();
+            if (!cpus) {
+              $('#messages').append('<li style="color:red">Invalid CPUs.</li>');
+              return false;
+            }
+          }
+          var nodes = [dispy_node.ip_addr];
+          $('#set_cpus').attr('disabled', true);
+          setTimeout(function() {
+            $('#set_cpus').attr('disabled', false);
+          }, 2000);
           $.ajax({
             url: 'set_cpus',
             method: 'POST',
             dataType: 'json',
-            data: {uid: dispy_uid, host: dispy_node.ip_addr, cpus: cpus},
+            data: {hosts: JSON.stringify(nodes), cpus: cpus, uid: dispy_uid},
             timeout: Math.min(5000, poll_interval)
           })
             .done(function(status) {
               $('#cpus').val('');
             })
             .fail(function(jqXHR, textStatus, errorThrown) {
-              $('#messages').append('<li style="color:red">CPU update failed: ' +
+              $('#messages').append('<li style="color:red">Setting CPUs failed: ' +
                                     textStatus + '</li>');
             });
         });
@@ -272,7 +279,7 @@
           } else {
             time = $('#svc_start_time').val();
           }
-          control_service_time('start_time', time);
+          control_service_time('start', time);
         });
 
         $('#svc_stop').click(function() {
@@ -284,7 +291,7 @@
           } else {
             time = $('#svc_stop_time').val();
           }
-          control_service_time('stop_time', time);
+          control_service_time('stop', time);
         });
 
         $('#svc_end').click(function() {
@@ -296,22 +303,26 @@
           } else {
             time = $('#svc_end_time').val();
           }
-          control_service_time('end_time', time);
+          control_service_time('end', time);
         });
 
-        $('#set_serve').click(function() {
+        $('#set_serve_clients').click(function() {
           $('#messages').html('');
-          let serve = $('#serve').val();
-          if (!$.isNumeric(serve)) {
+          let serve_clients = $('#serve_clients').val();
+          if (!$.isNumeric(serve_clients)) {
             $('#messages').append('<li style="color:red">Invalid value for ' +
                                   '# of clients to run ignored.</li>');
             return;
           }
 
+          $('#set_serve_clients').attr('disabled', true);
+          setTimeout(function() {
+            $('#set_serve_clients').attr('disabled', false);
+          }, 2000);
           $.ajax({
             url: 'serve_clients',
             method: 'POST',
-            data: {host: dispy_node.ip_addr, serve: serve, uid: dispy_uid},
+            data: {host: dispy_node.ip_addr, serve: serve_clients, uid: dispy_uid},
             timeout: 1000
           })
             .fail(function(jqXHR, textStatus, errorThrown) {
@@ -323,12 +334,11 @@
 
         $('#change_host').click(function() {
           let host = $('#host').val();
-          if (host.length == 0 || host != dispy_node.ip_addr) {
+          if (host.length == 0 || host == dispy_node.ip_addr) {
             return;
           }
-          if (timer != null) {
+          if (timer) {
             clearTimeout(timer);
-            timer = null;
           }
           node_info(host);
         });
@@ -395,7 +405,7 @@
           <td><input type="text" id="poll_interval_value" value="%(POLL_INTERVAL)s"
                      style="width:3em;" maxlength="6" />
             <div style="float:right;">
-	      <input type="checkbox" id="poll_now" name="poll-now">
+	      <input type="checkbox" id="poll_now" name="poll-now" />
 	        <label for="poll_now">Now</label></div></td>
           <td><button type="button" id="poll_interval" style="margin:5px auto;">Update</button></td>
         </tr>
@@ -439,8 +449,9 @@
 	</tr>
 	<tr>
           <td><strong># of Clients to Run : </strong><br /><span>(and Quit)</span></td>
-          <td><input type="text" id="serve" value="" style="min-width:3em;" size="4" /></td>
-	  <td><button type="button" id="set_serve" style="margin:5px auto;">Set</button></td>
+          <td><input type="text" id="serve_clients" value="" name="serve-clients"
+                     style="min-width:3em;" size="4" /></td>
+	  <td><button type="button" id="set_serve_clients" style="margin:5px auto;">Set</button></td>
 	</tr>
 	<tr>
           <td><strong>Name or IP of Node to Show : </strong></td>
@@ -452,7 +463,8 @@
       <hr style="margin:10px;" />
 
       <div>
-        <ul id="messages" style="margin:1em auto;display:inline-block;text-align:left;"></ul>
+        <ul id="messages" style="margin:1em auto;display:inline-block;text-align:left;">
+        </ul>
       </div>
 
     </div>
