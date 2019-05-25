@@ -21,6 +21,8 @@ import traceback
 import pycos
 from pycos import Task, AsyncSocket, serialize, deserialize
 import dispy
+import dispy.config
+from dispy.config import MsgTimeout
 from dispy import DispyJob, DispyNodeAvailInfo, logger, _dispy_version, MsgTimeout
 
 if sys.version_info.major > 2:
@@ -396,9 +398,11 @@ class DispyAdminServer(object):
             self.send_error(400)
             return
 
-    def __init__(self, DocumentRoot, secret='', http_host='localhost', http_port=8181,
-                 info_port=51347, node_port=51348, poll_interval=60, ping_interval=600,
-                 ip_addrs=[], ipv4_udp_multicast=False, certfile=None, keyfile=None):
+    def __init__(self, DocumentRoot, secret='', http_host='localhost',
+                 http_port=int(dispy.config.HTTPServerPort),
+                 info_port=int(dispy.config.ClientPort), node_port=int(dispy.config.NodePort),
+                 poll_interval=60, ping_interval=600, ip_addrs=[], ipv4_udp_multicast=False,
+                 certfile=None, keyfile=None):
         self.lock = threading.Lock()
         self.client_uid = None
         self.client_uid_time = 0
@@ -407,11 +411,11 @@ class DispyAdminServer(object):
         if poll_interval < 1:
             logger.warning('invalid poll_interval value %s; it must be at least 1', poll_interval)
             poll_interval = 1
-        self.info_port = info_port
+        self.info_port = int(info_port)
         self.poll_interval = poll_interval
         self.ping_interval = ping_interval
         self.secret = secret
-        self.node_port = node_port
+        self.node_port = int(node_port)
         self.keyfile = keyfile
         self.certfile = certfile
         self.ipv4_udp_multicast = bool(ipv4_udp_multicast)
@@ -851,9 +855,9 @@ if __name__ == '__main__':
                         help='name or IP address where http server starts')
     parser.add_argument('--http_port', dest='http_port', default='8181',
                         help='port number where http server starts')
-    parser.add_argument('--info_port', dest='info_port', default='51347',
+    parser.add_argument('--info_port', dest='info_port', default=dispy.config.ClientPort,
                         help='port number where nodes send information (same as client port)')
-    parser.add_argument('--node_port', dest='node_port', default='51348',
+    parser.add_argument('--node_port', dest='node_port', default=dispy.config.NodePort,
                         help='port number where nodes run')
     parser.add_argument('--poll_interval', dest='poll_interval', default='60',
                         help='interval to collect latest status from nodes')

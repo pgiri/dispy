@@ -39,8 +39,10 @@ except ImportError:
 
 import pycos
 import dispy
+import dispy.config as Config
+from dispy.config import MsgTimeout, MaxFileSize
 from dispy import _JobReply, DispyJob, DispyNodeAvailInfo, _Function, _Compute, _XferFile, \
-     _dispy_version, auth_code, num_min, _same_file, MsgTimeout
+     _dispy_version, auth_code, num_min, _same_file
 from pycos import Task, Pycos, AsyncSocket, serialize, deserialize
 
 __author__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
@@ -54,7 +56,6 @@ __status__ = "Production"
 __version__ = _dispy_version
 __all__ = []
 
-MaxFileSize = 0
 # Messages logged with 'dispynode_logger' in computations are shown at
 # node (whereas 'print' statements are sent back to client with
 # job.stdout)
@@ -605,7 +606,7 @@ class _DispyNode(object):
             self.name = self.addrinfos.values()[0].ip
 
         if node_port is None:
-            node_port = 51348
+            node_port = Config.NodePort
         self.port = node_port
         self.keyfile = keyfile
         self.certfile = certfile
@@ -756,7 +757,7 @@ class _DispyNode(object):
             self.ping_interval = None
         self.pulse_interval = self.ping_interval
         if not scheduler_port:
-            scheduler_port = 51347
+            scheduler_port = Config.ClientPort
 
         self.scheduler = {'ip_addr': dispy._node_ipaddr(scheduler_node) if scheduler_node else None,
                           'port': scheduler_port, 'auth': set(), 'addrinfo': None}
@@ -918,7 +919,7 @@ class _DispyNode(object):
             for scheduler_ip_addr in scheduler_ip_addrs:
                 if not isinstance(scheduler_ip_addr, str):
                     continue
-                if re.match('\d+\.', scheduler_ip_addr):
+                if re.match(r'\d+\.', scheduler_ip_addr):
                     sock_family = socket.AF_INET
                 else:
                     sock_family = socket.AF_INET6
@@ -1608,10 +1609,10 @@ class _DispyNode(object):
 
             elif msg == 'NODE_STATUS:':
                 if req == self.admin_auth:
-                    info = serialize(self.status_info())
+                    info = self.status_info()
                 else:
                     info = -1
-                yield conn.send_msg(info)
+                yield conn.send_msg(serialize(info))
                 conn.close()
                 raise StopIteration
 
@@ -2765,6 +2766,7 @@ class _DispyNode(object):
 
             elif cmd == 'release':
                 Task(release)
+
             else:
                 print('\n  Serving %d CPUs%s%s%s' %
                       (self.avail_cpus + len(self.job_infos), service_from, service_to,
@@ -2797,8 +2799,8 @@ if __name__ == '__main__':
                         help='IP address to use (may be needed in case of multiple interfaces)')
     parser.add_argument('--ext_ip_addr', dest='ext_ip_addrs', action='append', default=[],
                         help='External IP address to use (needed in case of NAT firewall/gateway)')
-    parser.add_argument('-p', '--node_port', dest='node_port', type=int, default=51348,
-                        help='port number to use')
+    parser.add_argument('-p', '--node_port', dest='node_port', type=int,
+                        default=Config.NodePort, help='port number to use')
     parser.add_argument('--ipv4_udp_multicast', dest='ipv4_udp_multicast', action='store_true',
                         default=False, help='use multicast for IPv4 UDP instead of broadcast')
     parser.add_argument('--name', dest='name', default='',
@@ -2807,8 +2809,8 @@ if __name__ == '__main__':
                         help='path prefix where files sent by dispy are stored')
     parser.add_argument('--scheduler_node', dest='scheduler_node', default='',
                         help='name or IP address of scheduler to announce when starting')
-    parser.add_argument('--scheduler_port', dest='scheduler_port', type=int, default=51347,
-                        help='port number used by scheduler')
+    parser.add_argument('--scheduler_port', dest='scheduler_port', type=int,
+                        default=Config.ClientPort, help='port number used by scheduler')
     parser.add_argument('--max_file_size', dest='max_file_size', default=str(MaxFileSize),
                         help='maximum file size of any file transferred (use 0 for unlimited size)')
     parser.add_argument('--zombie_interval', dest='zombie_interval', type=float, default=60.0,

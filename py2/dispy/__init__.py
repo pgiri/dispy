@@ -37,6 +37,8 @@ except ImportError:
 
 import pycos
 from pycos import Task, Pycos, AsyncSocket, Singleton, serialize, deserialize
+import dispy.config as Config
+from dispy.config import MsgTimeout
 
 __author__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __email__ = "pgiri@yahoo.com"
@@ -51,9 +53,6 @@ __version__ = "4.11.0"
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
 _dispy_version = __version__
-MsgTimeout = 10
-IPV6_MULTICAST_GROUP = 'ff05::b409:3171:9705:6159:5134:70'
-IPV4_MULTICAST_GROUP = '239.255.51.34'
 
 
 class DispyJob(object):
@@ -330,7 +329,7 @@ def host_addrinfo(host=None, socket_family=None, ipv4_multicast=False):
             self.ip = ip
             self.ifn = ifn
             if family == socket.AF_INET and ipv4_multicast:
-                self.broadcast = IPV4_MULTICAST_GROUP
+                self.broadcast = Config.IPv4MulticastGroup
             else:
                 self.broadcast = broadcast
             self.netmask = netmask
@@ -405,9 +404,9 @@ def host_addrinfo(host=None, socket_family=None, ipv4_multicast=False):
                             iface_infos.append(addrinfo)
                     else:  # sock_family == socket.AF_INET6
                         addr = str(link['addr'])
-                        broadcast = link.get('broadcast', IPV6_MULTICAST_GROUP)
+                        broadcast = link.get('broadcast', Config.IPv6MulticastGroup)
                         if broadcast.startswith(addr):
-                            broadcast = IPV6_MULTICAST_GROUP
+                            broadcast = Config.IPv6MulticastGroup
                         if_sfx = ['']
                         if not ifn and ('%' not in addr.split(':')[-1]):
                             if_sfx.append('%' + iface)
@@ -454,7 +453,7 @@ def host_addrinfo(host=None, socket_family=None, ipv4_multicast=False):
                     addr = addr[-1][0]
                 else:  # sock_family == socket.AF_INET6
                     addr = canonical_ipv6(addr[-1][0])
-                    broadcast = IPV6_MULTICAST_GROUP
+                    broadcast = Config.IPv6MulticastGroup
                     logger.warning('IPv6 may not work without "netifaces" package!')
                 addrinfo = AddrInfo(sock_family, addr, ifn, broadcast, netmask)
                 if hosts:
@@ -541,7 +540,7 @@ class _Node(object):
     def __init__(self, ip_addr, port, cpus, sign, secret, platform='',
                  keyfile=None, certfile=None):
         self.ip_addr = ip_addr
-        if re.match('\d+\.', ip_addr):
+        if re.match(r'\d+\.', ip_addr):
             self.sock_family = socket.AF_INET
         else:
             self.sock_family = socket.AF_INET6
@@ -849,12 +848,12 @@ class _Cluster(object):
                 if shared:
                     port = 0
                 else:
-                    port = 51347
+                    port = Config.ClientPort
             self.port = port
             if node_port:
                 node_port = int(node_port)
             else:
-                node_port = 51348
+                node_port = Config.NodePort
             self.node_port = node_port
 
             self._nodes = {}
@@ -1456,7 +1455,7 @@ class _Cluster(object):
         ping_msg['ip_addrs'] = [addrinfo.ext_ip_addr for addrinfo in self.addrinfos.values()]
         if not port:
             port = self.node_port
-        if re.match('\d+\.', ip_addr):
+        if re.match(r'\d+\.', ip_addr):
             sock_family = socket.AF_INET
         else:
             sock_family = socket.AF_INET6
@@ -1974,7 +1973,6 @@ class _Cluster(object):
                            _job.uid, node.ip_addr, cluster._compute.name)
             logger.debug(traceback.format_exc())
             self.delete_node(node)
-            self._nodes.pop(node.ip_addr, None)
             if self._sched_jobs.pop(_job.uid, None) == _job:
                 if not _job.pinned:
                     cluster._jobs.insert(0, _job)
@@ -2410,7 +2408,7 @@ class JobCluster(object):
           only in the case of first instance.
           If no value for @ip_addr is given (default), IP address associated
           with the 'hostname' is used.
-          If no value for @port is given (default), number 51347 is used.
+          If no value for @port is given (default), Config.ClientPort is used.
 
         @ext_ip_addr is the IP address of NAT firewall/gateway if
           dispy client is behind that firewall/gateway.
@@ -2418,7 +2416,7 @@ class JobCluster(object):
         @node_port indicates port on which node servers are listening
           for ping messages. The client (JobCluster instance) broadcasts
           ping requests to this port.
-          If no value for @node_port is given (default), number 51348 is used.
+          If no value for @node_port is given (default), Config.NodePort is used.
 
         @dest_path indicates path of directory to which files are
           transferred to a server node when executing a job.  If
@@ -2991,7 +2989,7 @@ class SharedJobCluster(JobCluster):
     The behaviour is same as for JobCluster.
     """
     def __init__(self, computation, nodes=None, depends=[], callback=None, cluster_status=None,
-                 ip_addr=None, port=51347, scheduler_node=None, scheduler_port=None,
+                 ip_addr=None, port=None, scheduler_node=None, scheduler_port=None,
                  ext_ip_addr=None, loglevel=logger.INFO, setup=None, cleanup=True, dest_path=None,
                  poll_interval=None, reentrant=False, exclusive=False,
                  secret='', keyfile=None, certfile=None, recover_file=None):
@@ -3032,7 +3030,7 @@ class SharedJobCluster(JobCluster):
         self._cluster.job_uid = None
 
         if not scheduler_port:
-            scheduler_port = 51349
+            scheduler_port = Config.SharedSchedulerPort
 
         # wait until tcp server has started
         while not self._cluster.port:

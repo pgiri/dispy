@@ -13,6 +13,8 @@ import struct
 import time
 
 import dispy
+import dispy.config as Config
+from dispy.config import MsgTimeout
 import pycos
 from pycos import Task, serialize, deserialize, AsyncSocket
 
@@ -38,9 +40,9 @@ class DispyNetRelay(object):
     """Internal use only.
     """
 
-    def __init__(self, ip_addrs=[], node_port=51348, relay_port=0,
-                 scheduler_nodes=[], scheduler_port=51347, ipv4_udp_multicast=False,
-                  secret='', certfile=None, keyfile=None):
+    def __init__(self, ip_addrs=[], node_port=Config.NodePort, relay_port=0,
+                 scheduler_nodes=[], scheduler_port=Config.ClientPort,
+                 ipv4_udp_multicast=False, secret='', certfile=None, keyfile=None):
         self.ipv4_udp_multicast = bool(ipv4_udp_multicast)
         addrinfos = []
         if not ip_addrs:
@@ -104,7 +106,7 @@ class DispyNetRelay(object):
             msg['scheduler_ip_addr'] = scheduler_ip_addr
             sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_STREAM),
                                keyfile=self.keyfile, certfile=self.certfile)
-            sock.settimeout(dispy.MsgTimeout)
+            sock.settimeout(MsgTimeout)
             try:
                 yield sock.connect((scheduler_ip_addr, msg['port']))
                 yield sock.send_msg('RELAY_INFO:'.encode() + serialize(msg))
@@ -196,7 +198,7 @@ class DispyNetRelay(object):
         tcp_sock.listen(8)
 
         def tcp_req(conn, addr, task=None):
-            conn.settimeout(dispy.MsgTimeout)
+            conn.settimeout(MsgTimeout)
             try:
                 msg = yield conn.recvall(auth_len)
                 msg = yield conn.recv_msg()
@@ -231,7 +233,7 @@ class DispyNetRelay(object):
             relay['relay'] = 'y'
             sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_STREAM),
                                keyfile=self.keyfile, certfile=self.certfile)
-            sock.settimeout(dispy.MsgTimeout)
+            sock.settimeout(MsgTimeout)
             yield sock.connect((msg['ip_addr'], msg['port']))
             yield sock.sendall(dispy.auth_code(self.secret, msg['sign']))
             yield sock.send_msg('PING:'.encode() + serialize(relay))
@@ -285,9 +287,9 @@ if __name__ == '__main__':
                         help='IP address to use (may be needed in case of multiple interfaces)')
     parser.add_argument('--scheduler_node', dest='scheduler_nodes', default=[], action='append',
                         help='name or IP address of scheduler to announce when starting')
-    parser.add_argument('--scheduler_port', dest='scheduler_port', type=int, default=51347,
-                        help='port number used by scheduler')
-    parser.add_argument('--node_port', dest='node_port', type=int, default=51348,
+    parser.add_argument('--scheduler_port', dest='scheduler_port', type=int,
+                        default=Config.ClientPort, help='port number used by scheduler')
+    parser.add_argument('--node_port', dest='node_port', type=int, default=Config.NodePort,
                         help='port number used by nodes')
     parser.add_argument('--relay_port', dest='relay_port', type=int, default=0,
                         help='port number to listen (instead of node_port) '
