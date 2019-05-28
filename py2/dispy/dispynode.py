@@ -39,7 +39,7 @@ except ImportError:
 
 import pycos
 import dispy
-import dispy.config as Config
+import dispy.config
 from dispy.config import MsgTimeout, MaxFileSize
 from dispy import _JobReply, DispyJob, DispyNodeAvailInfo, _Function, _Compute, _XferFile, \
      _dispy_version, auth_code, num_min, _same_file
@@ -550,11 +550,11 @@ class _DispyNode(object):
     Internal use only.
     """
 
-    def __init__(self, cpus, ip_addrs=[], ext_ip_addrs=[], node_port=None,
-                 name='', scheduler_node=None, scheduler_port=None, ipv4_udp_multicast=False,
-                 dest_path_prefix='', clean=False, secret='', keyfile=None, certfile=None,
-                 admin_secret='', zombie_interval=60, ping_interval=None, force_cleanup=False,
-                 serve=-1, service_start=None, service_stop=None, service_end=None, safe_setup=True,
+    def __init__(self, cpus, ip_addrs=[], ext_ip_addrs=[], name='', scheduler_node=None,
+                 ipv4_udp_multicast=False, dest_path_prefix='', clean=False,
+                 secret='', keyfile=None, certfile=None, admin_secret='', zombie_interval=60,
+                 ping_interval=None, force_cleanup=False, serve=-1,
+                 service_start=None, service_stop=None, service_end=None, safe_setup=True,
                  daemon=False, client_shutdown=False):
         assert 0 < cpus <= multiprocessing.cpu_count()
         self.num_cpus = cpus
@@ -605,9 +605,7 @@ class _DispyNode(object):
         if not self.name:
             self.name = self.addrinfos.values()[0].ip
 
-        if node_port is None:
-            node_port = Config.NodePort
-        self.port = node_port
+        self.port = eval(dispy.config.NodePort)
         self.keyfile = keyfile
         self.certfile = certfile
         if self.keyfile:
@@ -756,8 +754,7 @@ class _DispyNode(object):
         else:
             self.ping_interval = None
         self.pulse_interval = self.ping_interval
-        if not scheduler_port:
-            scheduler_port = Config.ClientPort
+        scheduler_port = eval(dispy.config.ClientPort)
 
         self.scheduler = {'ip_addr': dispy._node_ipaddr(scheduler_node) if scheduler_node else None,
                           'port': scheduler_port, 'auth': set(), 'addrinfo': None}
@@ -2799,8 +2796,8 @@ if __name__ == '__main__':
                         help='IP address to use (may be needed in case of multiple interfaces)')
     parser.add_argument('--ext_ip_addr', dest='ext_ip_addrs', action='append', default=[],
                         help='External IP address to use (needed in case of NAT firewall/gateway)')
-    parser.add_argument('-p', '--node_port', dest='node_port', type=int,
-                        default=Config.NodePort, help='port number to use')
+    parser.add_argument('-p', '--dispy_port', dest='dispy_port', type=int,
+                        default=dispy.config.DispyPort, help='dispy port number')
     parser.add_argument('--ipv4_udp_multicast', dest='ipv4_udp_multicast', action='store_true',
                         default=False, help='use multicast for IPv4 UDP instead of broadcast')
     parser.add_argument('--name', dest='name', default='',
@@ -2809,8 +2806,6 @@ if __name__ == '__main__':
                         help='path prefix where files sent by dispy are stored')
     parser.add_argument('--scheduler_node', dest='scheduler_node', default='',
                         help='name or IP address of scheduler to announce when starting')
-    parser.add_argument('--scheduler_port', dest='scheduler_port', type=int,
-                        default=Config.ClientPort, help='port number used by scheduler')
     parser.add_argument('--max_file_size', dest='max_file_size', default=str(MaxFileSize),
                         help='maximum file size of any file transferred (use 0 for unlimited size)')
     parser.add_argument('--zombie_interval', dest='zombie_interval', type=float, default=60.0,
@@ -2856,8 +2851,7 @@ if __name__ == '__main__':
         cfg.read(_dispy_config['config'])
         cfg = dict(cfg.items('DEFAULT'))
         cfg['cpus'] = int(cfg['cpus'])
-        cfg['node_port'] = int(cfg['node_port'])
-        cfg['scheduler_port'] = int(cfg['scheduler_port'])
+        cfg['dispy_port'] = int(cfg['dispy_port'])
         cfg['ipv4_udp_multicast'] = cfg['ipv4_udp_multicast'] == 'True'
         cfg['zombie_interval'] = float(cfg['zombie_interval'])
         cfg['ping_interval'] = int(cfg['ping_interval']) if cfg['ping_interval'] else None
@@ -2898,6 +2892,10 @@ if __name__ == '__main__':
         dispynode_logger.setLevel(dispynode_logger.INFO)
     del _dispy_config['loglevel']
 
+    if _dispy_config['dispy_port'] == dispy.config.DispyPort:
+        print('\n  NOTE: Using dispy port %s, which is different from earlier versions\n' %
+              dispy.config.DispyPort)
+    dispy.config.DispyPort = _dispy_config.pop('dispy_port')
     cpus = multiprocessing.cpu_count()
     if _dispy_config['cpus']:
         if _dispy_config['cpus'] > 0:

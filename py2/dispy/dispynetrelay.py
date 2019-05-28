@@ -13,7 +13,7 @@ import struct
 import time
 
 import dispy
-import dispy.config as Config
+import dispy.config
 from dispy.config import MsgTimeout
 import pycos
 from pycos import Task, serialize, deserialize, AsyncSocket
@@ -36,8 +36,7 @@ class DispyNetRelay(object):
     """Internal use only.
     """
 
-    def __init__(self, ip_addrs=[], node_port=Config.NodePort, relay_port=0,
-                 scheduler_nodes=[], scheduler_port=Config.ClientPort,
+    def __init__(self, ip_addrs=[], relay_port=0, scheduler_nodes=[], scheduler_port=0,
                  ipv4_udp_multicast=False, secret='', certfile=None, keyfile=None):
         self.ipv4_udp_multicast = bool(ipv4_udp_multicast)
         addrinfos = []
@@ -51,13 +50,11 @@ class DispyNetRelay(object):
                 continue
             addrinfos.append(addrinfo)
 
-        self.node_port = node_port
-        if not relay_port:
-            relay_port = node_port
+        self.node_port = eval(dispy.config.NodePort)
+        self.scheduler_port = scheduler_port
         self.relay_port = relay_port
         self.ip_addrs = set()
         self.scheduler_ip_addr = None
-        self.scheduler_port = scheduler_port
         self.secret = secret
         if certfile:
             self.certfile = os.path.abspath(certfile)
@@ -188,7 +185,7 @@ class DispyNetRelay(object):
         task.set_daemon()
         auth_len = len(dispy.auth_code('', ''))
         tcp_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_STREAM),
-                                   keyfile=self.keyfile, certfile=self.certfile)
+                               keyfile=self.keyfile, certfile=self.certfile)
         tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         tcp_sock.bind((addrinfo.ip, self.relay_port))
         tcp_sock.listen(8)
@@ -283,13 +280,13 @@ if __name__ == '__main__':
                         help='IP address to use (may be needed in case of multiple interfaces)')
     parser.add_argument('--scheduler_node', dest='scheduler_nodes', default=[], action='append',
                         help='name or IP address of scheduler to announce when starting')
+    parser.add_argument('-p', '--dispy_port', dest='dispy_port', type=int,
+                        default=dispy.config.DispyPort, help='dispy port number used')
+    parser.add_argument('--relay_port', dest='relay_port', type=int,
+                        default=eval(dispy.config.NodePort), help='port number to listen '
+                        '(instead of node port) for connection from client')
     parser.add_argument('--scheduler_port', dest='scheduler_port', type=int,
-                        default=Config.ClientPort, help='port number used by scheduler')
-    parser.add_argument('--node_port', dest='node_port', type=int, default=Config.NodePort,
-                        help='port number used by nodes')
-    parser.add_argument('--relay_port', dest='relay_port', type=int, default=0,
-                        help='port number to listen (instead of node_port) '
-                        'for connection from client')
+                        default=eval(dispy.config.ClientPort), help='port number used by scheduler')
     parser.add_argument('-s', '--secret', dest='secret', default='',
                         help='authentication secret for handshake with dispy clients')
     parser.add_argument('--certfile', dest='certfile', default='',
@@ -308,6 +305,11 @@ if __name__ == '__main__':
         logger.setLevel(logger.INFO)
     del config['loglevel']
     daemon = config.pop('daemon')
+
+    if config['dispy_port'] == dispy.config.DispyPort:
+        print('\n  NOTE: Using dispy port %s, which is different from earlier versions\n' %
+              dispy.config.DispyPort)
+    dispy.config.DispyPort = config.pop('dispy_port')
 
     DispyNetRelay(**config)
 

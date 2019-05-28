@@ -40,7 +40,7 @@ import pycos
 from pycos import Task, Pycos, AsyncSocket, Singleton, serialize, deserialize
 import dispy
 import dispy.httpd
-import dispy.config as Config
+import dispy.config
 from dispy.config import MsgTimeout, MaxFileSize
 from dispy import _Compute, DispyJob, _DispyJob_, _Function, _Node, DispyNode, NodeAllocate, \
     _JobReply, auth_code, num_min, _parse_node_allocs, _XferFile, _dispy_version, \
@@ -59,8 +59,9 @@ __all__ = []
 
 # PyPI / pip packaging adjusts assertion below for Python 3.7+
 assert sys.version_info.major == 3 and sys.version_info.minor < 7, \
-    ('"%s" is not suitable for Python version %s.%s; use file installed by pip instead' %
-     (__file__, sys.version_info.major, sys.version_info.minor))
+    ('\n\n  This file is not suitable for Python version %s.%s directly;\n'
+     '  see installation instructions at %s\n' %
+     (sys.version_info.major, sys.version_info.minor, __url__))
 
 
 class _Cluster(object):
@@ -124,12 +125,11 @@ class _Scheduler(object, metaclass=Singleton):
     See dispy's JobCluster and SharedJobCluster for documentation.
     """
 
-    def __init__(self, nodes=[], ip_addrs=[], ext_ip_addrs=[], port=None, node_port=None,
-                 scheduler_port=None, ipv4_udp_multicast=False, scheduler_alg=None,
+    def __init__(self, nodes=[], ip_addrs=[], ext_ip_addrs=[], ipv4_udp_multicast=False,
                  pulse_interval=None, ping_interval=None, cooperative=False, cleanup_nodes=False,
                  node_secret='', cluster_secret='', node_keyfile=None, node_certfile=None,
                  cluster_keyfile=None, cluster_certfile=None, dest_path_prefix=None, clean=False,
-                 zombie_interval=60, http_server=False):
+                 scheduler_alg=None, zombie_interval=60, http_server=False):
         self.ipv4_udp_multicast = bool(ipv4_udp_multicast)
         self.addrinfos = {}
         if not ip_addrs:
@@ -155,18 +155,12 @@ class _Scheduler(object, metaclass=Singleton):
         if not self.addrinfos:
             raise Exception('No valid IP address found')
 
-        if not port:
-            port = Config.ClientPort
-        if not node_port:
-            node_port = Config.NodePort
-        if not scheduler_port:
-            scheduler_port = Config.SharedSchedulerPort
+        self.port = eval(dispy.config.ClientPort)
+        self.node_port = eval(dispy.config.NodePort)
+        self.scheduler_port = eval(dispy.config.SharedSchedulerPort)
+
         if not nodes:
             nodes = ['*']
-
-        self.port = port
-        self.node_port = node_port
-        self.scheduler_port = scheduler_port
         self._node_allocs = _parse_node_allocs(nodes)
         self._nodes = {}
         self.node_secret = node_secret
@@ -2148,12 +2142,8 @@ if __name__ == '__main__':
     parser.add_argument('--ext_ip_addr', action='append', dest='ext_ip_addrs', default=[],
                         help='External IP address to use (needed in case of NAT firewall/gateway);'
                         ' repeat for multiple interfaces')
-    parser.add_argument('-p', '--port', dest='port', type=int, default=Config.ClientPort,
-                        help='port number for UDP data and job results')
-    parser.add_argument('--node_port', dest='node_port', type=int, default=Config.NodePort,
-                        help='port number used by nodes')
-    parser.add_argument('--scheduler_port', dest='scheduler_port', type=int,
-                        default=Config.SharedSchedulerPort, help='port number for scheduler')
+    parser.add_argument('-p', '--port', dest='dispy_port', type=int, default=dispy.config.DispyPort,
+                        help='dispy port number')
     parser.add_argument('--ipv4_udp_multicast', dest='ipv4_udp_multicast', action='store_true',
                         default=False, help='use multicast for IPv4 UDP instead of broadcast')
     parser.add_argument('--node_secret', dest='node_secret', default='',
@@ -2214,9 +2204,7 @@ if __name__ == '__main__':
                          [_.strip() for _ in cfg['ip_addrs'][1:-1].split(',')]
         cfg['ext_ip_addrs'] = [] if cfg['ext_ip_addrs'] == '[]' else \
                              [_.strip() for _ in cfg['ext_ip_addrs'][1:-1].split(',')]
-        cfg['port'] = int(cfg['port'])
-        cfg['node_port'] = int(cfg['node_port'])
-        cfg['scheduler_port'] = int(cfg['scheduler_port'])
+        cfg['dispy_port'] = int(cfg['dispy_port'])
         cfg['ipv4_udp_multicast'] = cfg['ipv4_udp_multicast'] == 'True'
         cfg['pulse_interval'] = float(cfg['pulse_interval'])
         cfg['ping_interval'] = float(cfg['ping_interval'])
@@ -2252,6 +2240,10 @@ if __name__ == '__main__':
         logger.setLevel(logger.INFO)
     del config['loglevel']
 
+    if config['dispy_port'] == dispy.config.DispyPort:
+        print('\n  NOTE: Using dispy port %s, which is different from earlier versions\n' %
+              dispy.config.DispyPort)
+    dispy.config.DispyPort = config.pop('dispy_port')
     if config['zombie_interval']:
         config['zombie_interval'] = float(config['zombie_interval'])
         if config['zombie_interval'] < 1:

@@ -37,7 +37,7 @@ except ImportError:
 
 import pycos
 from pycos import Task, Pycos, AsyncSocket, Singleton, serialize, deserialize
-import dispy.config as Config
+import dispy.config
 from dispy.config import MsgTimeout
 
 __author__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
@@ -329,7 +329,7 @@ def host_addrinfo(host=None, socket_family=None, ipv4_multicast=False):
             self.ip = ip
             self.ifn = ifn
             if family == socket.AF_INET and ipv4_multicast:
-                self.broadcast = Config.IPv4MulticastGroup
+                self.broadcast = dispy.config.IPv4MulticastGroup
             else:
                 self.broadcast = broadcast
             self.netmask = netmask
@@ -404,9 +404,9 @@ def host_addrinfo(host=None, socket_family=None, ipv4_multicast=False):
                             iface_infos.append(addrinfo)
                     else:  # sock_family == socket.AF_INET6
                         addr = str(link['addr'])
-                        broadcast = link.get('broadcast', Config.IPv6MulticastGroup)
+                        broadcast = link.get('broadcast', dispy.config.IPv6MulticastGroup)
                         if broadcast.startswith(addr):
-                            broadcast = Config.IPv6MulticastGroup
+                            broadcast = dispy.config.IPv6MulticastGroup
                         if_sfx = ['']
                         if not ifn and ('%' not in addr.split(':')[-1]):
                             if_sfx.append('%' + iface)
@@ -453,7 +453,7 @@ def host_addrinfo(host=None, socket_family=None, ipv4_multicast=False):
                     addr = addr[-1][0]
                 else:  # sock_family == socket.AF_INET6
                     addr = canonical_ipv6(addr[-1][0])
-                    broadcast = Config.IPv6MulticastGroup
+                    broadcast = dispy.config.IPv6MulticastGroup
                     logger.warning('IPv6 may not work without "netifaces" package!')
                 addrinfo = AddrInfo(sock_family, addr, ifn, broadcast, netmask)
                 if hosts:
@@ -801,9 +801,8 @@ class _Cluster(object):
     """
     __metaclass__ = Singleton
 
-    def __init__(self, ip_addr=None, ext_ip_addr=None, port=None, node_port=None,
-                 ipv4_udp_multicast=False, shared=False, secret='', keyfile=None, certfile=None,
-                 recover_file=None):
+    def __init__(self, ip_addr=None, ext_ip_addr=None, ipv4_udp_multicast=False, shared=False,
+                 secret='', keyfile=None, certfile=None, recover_file=None):
         if not hasattr(self, 'pycos'):
             self.pycos = Pycos()
             logger.info('dispy client version: %s', __version__)
@@ -842,19 +841,14 @@ class _Cluster(object):
             if not self.addrinfos:
                 raise Exception('No valid IP address found')
 
-            if port:
-                port = int(port)
+            if shared:
+                self.port = 0
             else:
-                if shared:
-                    port = 0
-                else:
-                    port = Config.ClientPort
-            self.port = port
-            if node_port:
-                node_port = int(node_port)
-            else:
-                node_port = Config.NodePort
-            self.node_port = node_port
+                self.port = eval(dispy.config.ClientPort)
+                if self.port == 61590:
+                    print('\n\n  NOTE: Default dispy port %s is different from earlier versions\n' %
+                          dispy.config.DispyPort)
+            self.node_port = eval(dispy.config.NodePort)
 
             self._nodes = {}
             self.secret = secret
@@ -2353,7 +2347,7 @@ class JobCluster(object):
     """
 
     def __init__(self, computation, nodes=None, depends=[], callback=None, cluster_status=None,
-                 ip_addr=None, port=None, node_port=None, ext_ip_addr=None,
+                 ip_addr=None, dispy_port=None, ext_ip_addr=None,
                  ipv4_udp_multicast=False, dest_path=None, loglevel=logger.INFO,
                  setup=None, cleanup=True, ping_interval=None, pulse_interval=None,
                  poll_interval=None, reentrant=False, secret='', keyfile=None, certfile=None,
@@ -2403,20 +2397,15 @@ class JobCluster(object):
           node may be different from the status indicated at the time
           status function is called.
 
-        @ip_addr and @port indicate the address where the cluster will bind to.
-          If multiple instances of JobCluster are used, these arguments are used
-          only in the case of first instance.
-          If no value for @ip_addr is given (default), IP address associated
-          with the 'hostname' is used.
-          If no value for @port is given (default), Config.ClientPort is used.
+        @ip_addr is host name or IP address used by this cluster. If no value
+          for @ip_addr is given (default), IP address associated with the
+          'hostname' is used.
+
+        @dispy_port is dispy's port number used by this client to receive job
+        results from nodes (which use 'dispy_port + 1' port).
 
         @ext_ip_addr is the IP address of NAT firewall/gateway if
           dispy client is behind that firewall/gateway.
-
-        @node_port indicates port on which node servers are listening
-          for ping messages. The client (JobCluster instance) broadcasts
-          ping requests to this port.
-          If no value for @node_port is given (default), Config.NodePort is used.
 
         @dest_path indicates path of directory to which files are
           transferred to a server node when executing a job.  If
@@ -2614,8 +2603,13 @@ class JobCluster(object):
         else:
             raise Exception('"cleanup" must be Python (partial) function')
 
-        self._cluster = _Cluster(ip_addr=ip_addr, port=port, node_port=node_port,
-                                 ext_ip_addr=ext_ip_addr, ipv4_udp_multicast=ipv4_udp_multicast,
+        if isinstance(dispy_port, int):
+            dispy.config.DispyPort = dispy_port
+        else:
+            raise Exception('"dispy_port" is not a valid port number')
+
+        self._cluster = _Cluster(ip_addr=ip_addr, ext_ip_addr=ext_ip_addr,
+                                 ipv4_udp_multicast=ipv4_udp_multicast,
                                  shared=shared, secret=secret, keyfile=keyfile, certfile=certfile,
                                  recover_file=recover_file)
         atexit.register(self.shutdown)
@@ -2989,7 +2983,7 @@ class SharedJobCluster(JobCluster):
     The behaviour is same as for JobCluster.
     """
     def __init__(self, computation, nodes=None, depends=[], callback=None, cluster_status=None,
-                 ip_addr=None, port=None, scheduler_node=None, scheduler_port=None,
+                 ip_addr=None, dispy_port=None, scheduler_node=None,
                  ext_ip_addr=None, loglevel=logger.INFO, setup=None, cleanup=True, dest_path=None,
                  poll_interval=None, reentrant=False, exclusive=False,
                  secret='', keyfile=None, certfile=None, recover_file=None):
@@ -3012,9 +3006,11 @@ class SharedJobCluster(JobCluster):
         if ext_ip_addr:
             ext_ip_addr = host_addrinfo(host=ext_ip_addr).ip
 
-        JobCluster.__init__(self, computation, depends=depends,
-                            callback=callback, cluster_status=cluster_status,
-                            ip_addr=ip_addr, port=port, ext_ip_addr=ext_ip_addr,
+        if isinstance(dispy_port, int):
+            dispy.config.DispyPort = dispy_port
+
+        JobCluster.__init__(self, computation, depends=depends, callback=callback,
+                            cluster_status=cluster_status, ip_addr=ip_addr, ext_ip_addr=ext_ip_addr,
                             loglevel=loglevel, setup=setup, cleanup=cleanup, dest_path=dest_path,
                             poll_interval=poll_interval, reentrant=reentrant,
                             secret=secret, keyfile=keyfile, certfile=certfile,
@@ -3029,8 +3025,7 @@ class SharedJobCluster(JobCluster):
         self._cluster._scheduler.value()
         self._cluster.job_uid = None
 
-        if not scheduler_port:
-            scheduler_port = Config.SharedSchedulerPort
+        scheduler_port = eval(dispy.config.SharedSchedulerPort)
 
         # wait until tcp server has started
         while not self._cluster.port:
