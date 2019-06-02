@@ -59,10 +59,12 @@
         var rows = '';
         var jobs_done = 0;
         var cpu_time = 0;
+        var num_nodes = 0;
 
         $.each(sorted_nodes, function(idx, node) {
           jobs_done += node.jobs_done;
           cpu_time += node.cpu_time;
+          num_nodes += 1;
           rows += '<tr>' +
             '<td><input type="checkbox" name="node_select" value="' + node.ip_addr + '" /></td>' +
             '<td><a href="admin_node.html?host=' + node.ip_addr + '" ' + 'title="Manage ' +
@@ -80,10 +82,10 @@
             node.cpu_time.toFixed(2) + '</td><td>' +
             (new Date(node.update_time * 1000)).toLocaleTimeString() + '</td></tr>';
         });
+        $('#nodes').html(rows);
         $('#cpu_time').text(cpu_time.toFixed(2));
         $('#jobs_done').text(jobs_done);
-        $('#num_nodes').text(sorted_nodes.length);
-        $('#nodes').html(rows);
+        $('#num_nodes').text(num_nodes);
       }
 
      function cluster_status(request) {
@@ -192,7 +194,7 @@
                 if (timer) {
                   clearTimeout(timer);
                 }
-                timer = setTimeout(function() { cluster_status('update') }, 
+                timer = setTimeout(function() { cluster_status('update') },
                                    Math.min(3000, poll_interval / 2.0));
               })
           }
@@ -263,8 +265,6 @@
             data: {hosts: JSON.stringify(nodes), control: node_action, time: time, uid: dispy_uid},
             timeout: Math.min(3000, poll_interval / 2.)
           })
-            .done(function(status) {
-            })
           .fail(function(jqXHR, textStatus, errorThrown) {
               $('#messages').append('<li style="color:red">Setting sertice time failed: ' +
                                     textStatus + '</li>');
@@ -342,7 +342,8 @@
       <table class="border alt"
         style="background:transparent;margin:10px auto;font-weight:bold;text-align:right;">
         <tr>
-           <td>Admin Secret : </td><td id="secret"></td>
+          <td style="border-top: 1px solid #bcd;"># of Nodes : </td>
+          <td style="border-top: 1px solid #bcd;" id="num_nodes"></td>
         </tr>
         <tr>
           <td style="border-top: 1px solid #bcd;">CPU Time Sec : </td>
@@ -351,10 +352,6 @@
         <tr>
           <td style="border-top: 1px solid #bcd;">Jobs Done : </td>
           <td style="border-top: 1px solid #bcd;" id="jobs_done"></td>
-        </tr>
-        <tr>
-          <td style="border-top: 1px solid #bcd;"># of Nodes : </td>
-          <td style="border-top: 1px solid #bcd;" id="num_nodes"></td>
         </tr>
       </table>
 
@@ -386,7 +383,10 @@
         <tr>
           <td><span><strong>Poll Interval Seconds :</strong></span></td>
           <td><input type="text" id="poll_interval_value" value="%(POLL_INTERVAL)s"
-                   style="width:3em;" maxlength="6" /></td>
+                     style="width:3em;" maxlength="6" />
+	    <input type="checkbox" id="poll_now" name="poll-now" />
+	    <label for="poll_now">Now</label>
+          </td>
           <td><button type="button" id="poll_interval" style="margin:5px auto;">Update</button></td>
 	</tr>
 
@@ -408,6 +408,19 @@
           </td>
           <td><button type="button" id="set_secret"style="margin:5px auto;"> Set</button></td>
 	</tr>
+
+        <tr>
+          <td><span><strong>Sort Nodes by : </strong></span></td>
+          <td><select name="sort-key" id="sort_key" style="margin-left:5px;">
+              <option value="" select="select">Select</option>
+              <option value="ip_addr">IP Address</option>
+              <option value="name">Name</option>
+              <option value="cpu_time">CPU Time</option>
+              <option value="jobs_done">Jobs Done</option>
+              <option value="update_time">Last Update</option>
+            </select></td>
+          <td><button type="button" id="update" style="margin:5px auto;">Sort</button></td>
+        </tr>
 
         <tr>
           <td><span style="display:inline-block;">
@@ -437,19 +450,6 @@
 	      <label for="use_all_cpus">All</label></div></td>
 	  <td><button type="button" id="set_cpus" style="margin:5px auto;">Set</button></td>
 	</tr>
-
-        <tr>
-          <td><span><strong>Sort Nodes by : </strong></span></td>
-          <td><select name="sort-key" id="sort_key" style="margin-left:5px;">
-              <option value="" select="select">Select</option>
-              <option value="ip_addr">IP Address</option>
-              <option value="name">Name</option>
-              <option value="cpu_time">CPU Time</option>
-              <option value="done">Jobs Done</option>
-              <option value="update_time">Last Update</option>
-            </select></td>
-          <td><button type="button" id="update" style="margin:5px auto;">Sort</button></td>
-        </tr>
 
       </table>
 
