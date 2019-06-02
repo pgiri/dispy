@@ -611,7 +611,7 @@ class DispyAdminServer(object):
             node.cpus = info['cpus']
             node.max_cpus = info['max_cpus']
         except Exception:
-            sign  = info.decode()
+            sign = info.decode()
             if node._priv.sign == sign:
                 node.update_time = time.time()
                 raise StopIteration(0)

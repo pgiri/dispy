@@ -374,9 +374,11 @@ class DispyHTTPServer(object):
             http_callback = functools.partial(self.cluster_status, cluster_info)
             if cluster.status_callback:
                 client_callback = cluster.status_callback
+
                 def chain_callbacks(status, node, job):
                     http_callback(status, node, job)
                     client_callback(status, node, job)
+
                 cluster.status_callback = chain_callbacks
             else:
                 cluster.status_callback = http_callback
