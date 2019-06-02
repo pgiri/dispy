@@ -278,7 +278,13 @@ def _node_ipaddr(node):
     if node.find('*') >= 0:
         return node
     try:
-        info = socket.getaddrinfo(node, None)[0]
+        info = None
+        for addr in socket.getaddrinfo(node, None):
+            if addr[1] != socket.SOCK_STREAM:
+                continue
+            if not info or addr[0] == socket.AF_INET:
+                info = addr
+        assert info
     except Exception:
         return None
 
@@ -846,7 +852,7 @@ class _Cluster(object):
             else:
                 self.port = eval(dispy.config.ClientPort)
                 if self.port == 61590:
-                    print('\n\n  NOTE: Default dispy port %s is different from earlier versions\n' %
+                    print('\n  NOTE: Default dispy port %s is different from earlier versions\n' %
                           dispy.config.DispyPort)
             self.node_port = eval(dispy.config.NodePort)
 
@@ -2605,8 +2611,8 @@ class JobCluster(object):
 
         if isinstance(dispy_port, int):
             dispy.config.DispyPort = dispy_port
-        else:
-            raise Exception('"dispy_port" is not a valid port number')
+        elif dispy_port is not None:
+            raise Exception('"dispy_port" %s is not a valid port number' % dispy_port)
 
         self._cluster = _Cluster(ip_addr=ip_addr, ext_ip_addr=ext_ip_addr,
                                  ipv4_udp_multicast=ipv4_udp_multicast,
