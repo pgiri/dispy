@@ -41,7 +41,7 @@ import pycos
 import dispy
 import dispy.config
 from dispy.config import MsgTimeout, MaxFileSize
-from dispy import _JobReply, DispyJob, DispyNodeAvailInfo, _Function, _Compute, _XferFile, \
+from dispy import _JobReply, DispyJob, DispyNodeAvailInfo, _Compute, _XferFile, \
      _dispy_version, auth_code, num_min, _same_file
 from pycos import Task, Pycos, AsyncSocket, serialize, deserialize
 
@@ -136,15 +136,10 @@ def dispy_send_file(path, relay=False, timeout=MsgTimeout):
     Return value of 0 indicates successfull transfer.
     """
 
-    if not os.path.isfile(path):
+    try:
+        xf = _XferFile(path)
+    except Exception:
         return -1
-    path = os.path.abspath(path)
-    cwd = os.getcwd()
-    if path.startswith(cwd):
-        dst = os.path.dirname(path[len(cwd):].lstrip(os.sep))
-    else:
-        dst = '.'
-    xf = _XferFile(path, dst)
     if MaxFileSize and xf.stat_buf.st_size > MaxFileSize:
         return -1
     sock = socket.socket(__dispy_sock_family, socket.SOCK_STREAM)
@@ -386,6 +381,7 @@ def _dispy_setup_process(compute, pipe, client_globals):
     _dispy_terminate_proc = globals()['_dispy_terminate_proc']
     globals().update(client_globals)
     globals().pop('reply_Q', None)
+    setup_args = client_globals.pop('setup_args')
     dispynode_logger.setLevel(client_globals.pop('loglevel'))
 
     if compute.code:
@@ -403,11 +399,10 @@ def _dispy_setup_process(compute, pipe, client_globals):
 
     init_vars = set(globals().keys())
     if compute.setup:
-        localvars = {'_dispy_setup_status': 0, '_dispy_setup_args': compute.setup.args,
-                     '_dispy_setup_kwargs': compute.setup.kwargs}
+        localvars = {'_dispy_setup_status': 0, '_dispy_setup_args': setup_args}
         try:
-            exec('_dispy_setup_status = %s(*_dispy_setup_args, **_dispy_setup_kwargs)' %
-                 compute.setup.name, globals(), localvars)
+            exec('_dispy_setup_status = %s(*_dispy_setup_args)' %
+                 compute.setup, globals(), localvars)
             _dispy_setup_status = localvars['_dispy_setup_status']
         except Exception:
             dispynode_logger.debug(traceback.format_exc())
@@ -519,12 +514,10 @@ def _dispy_setup_process(compute, pipe, client_globals):
         elif msg['req'] == 'quit':
             break
 
-    if isinstance(compute.cleanup, _Function):
-        localvars = {'_dispy_cleanup_args': compute.cleanup.args,
-                     '_dispy_cleanup_kwargs': compute.cleanup.kwargs}
+    if isinstance(compute.cleanup, str):
+        localvars = {'_dispy_cleanup_args': setup_args}
         try:
-            exec('%s(*_dispy_cleanup_args, **_dispy_cleanup_kwargs)' %
-                 compute.cleanup.name, globals(), localvars)
+            exec('%s(*_dispy_cleanup_args)' % compute.cleanup, globals(), localvars)
         except Exception:
             dispynode_logger.debug('"cleanup" for computation "%s" failed: %s',
                                    compute.id, traceback.format_exc())
@@ -547,6 +540,7 @@ class _Client(object):
         self.last_pulse = time.time()
         self.zombie = False
         self.setup_proc = None
+        self.setup_args = ()
         self.parent_pipe = self.child_pipe = None
         self.use_setup_proc = False
         self.sock_family = None
@@ -783,13 +777,13 @@ class _DispyNode(object):
         config = os.path.join(self.dest_path_prefix, 'config.pkl')
         with open(config, 'wb') as fd:
             pickle.dump({
-                    'ip_addrs': [addrinfo.ip for addrinfo in self.addrinfos.values()],
-                    'ext_ip_addrs': [addrinfo.ext_ip_addr for addrinfo in self.addrinfos.values()],
-                    'port': self.port, 'avail_cpus': self.avail_cpus,
-                    'sign': self.sign, 'secret': self.secret, 'auth': self.auth,
-                    'keyfile': self.keyfile, 'certfile': self.certfile, 'pid': self.pid,
-                    'ppid': ppid, 'create_time': create_time
-                    }, fd)
+                'ip_addrs': [addrinfo.ip for addrinfo in self.addrinfos.values()],
+                'ext_ip_addrs': [addrinfo.ext_ip_addr for addrinfo in self.addrinfos.values()],
+                'port': self.port, 'avail_cpus': self.avail_cpus,
+                'sign': self.sign, 'secret': self.secret, 'auth': self.auth,
+                'keyfile': self.keyfile, 'certfile': self.certfile, 'pid': self.pid,
+                'ppid': ppid, 'create_time': create_time
+            }, fd)
             os.chmod(config, stat.S_IRUSR | stat.S_IWUSR)
 
         # prepend current directory in sys.path so computations can
@@ -1355,8 +1349,10 @@ class _DispyNode(object):
 
             client = None
             try:
-                compute_id = deserialize(msg)
-                client = self.clients[compute_id]
+                msg = deserialize(msg)
+                client = self.clients[msg['compute_id']]
+                client.setup_args = msg['setup_args']
+                assert isinstance(client.setup_args, tuple)
                 compute = client.compute
             except Exception:
                 raise StopIteration(client, 'invalid computation')
@@ -1390,6 +1386,7 @@ class _DispyNode(object):
 
                 # TODO: use this only for function computations?
                 client.globals['loglevel'] = dispynode_logger.level
+                client.globals['setup_args'] = client.setup_args
                 client.parent_pipe, client.child_pipe = multiprocessing.Pipe(duplex=True)
                 args = (client.compute, client.child_pipe, client.globals)
                 client.setup_proc = multiprocessing.Process(target=_dispy_setup_process, args=args)
@@ -1447,13 +1444,11 @@ class _DispyNode(object):
                     compute.code = marshal.dumps(compute.code)
                 if compute.setup:
                     init_vars = set(globalvars.keys())
-                    localvars = {'_dispy_setup_status': 0,
-                                 '_dispy_setup_args': compute.setup.args,
-                                 '_dispy_setup_kwargs': compute.setup.kwargs}
+                    localvars = {'_dispy_setup_status': 0, '_dispy_setup_args': client.setup_args}
                     os.chdir(compute.dest_path)
                     sys.path.insert(0, compute.dest_path)
-                    exec('_dispy_setup_status = %s(*_dispy_setup_args, **_dispy_setup_kwargs)' %
-                         compute.setup.name, globalvars, localvars)
+                    exec('_dispy_setup_status = %s(*_dispy_setup_args)' %
+                         compute.setup, globalvars, localvars)
                     try:
                         sys.path.remove(compute.dest_path)
                     except Exception:
@@ -1473,7 +1468,7 @@ class _DispyNode(object):
                             sys.modules.pop(module, None)
                     sys.modules.update(self.__init_modules)
 
-            if client.setup_proc and isinstance(compute.cleanup, _Function):
+            if client.setup_proc and isinstance(compute.cleanup, str):
                 compute.cleanup = True
             raise StopIteration(None, 'ACK')
 
@@ -2308,7 +2303,6 @@ class _DispyNode(object):
                             client.parent_pipe.send({'req': 'wait_pid', 'pid': job_info.pid,
                                                      'job_reply': job_info.job_reply})
                     else:
-                        dispynode_logger.info('job proc for %s: %s' % (job_info.pid, proc.status()))
                         job_info.proc = proc
                 continue
 
@@ -2459,23 +2453,21 @@ class _DispyNode(object):
         self.clients_done += 1
         self.scheduler['auth'].discard(compute.auth)
 
-        if isinstance(compute.cleanup, _Function):
+        if isinstance(compute.cleanup, str):
             os.chdir(compute.dest_path)
             try:
                 globalvars = dict(self.__init_globals)
                 globalvars.update(client.globals)
-                localvars = {'_dispy_cleanup_args': compute.cleanup.args,
-                             '_dispy_cleanup_kwargs': compute.cleanup.kwargs}
+                localvars = {'_dispy_cleanup_args': client.setup_args}
                 if self.client_shutdown:
                     globalvars['dispynode_shutdown'] = lambda: setattr(self, 'serve', 0)
                 if isinstance(compute.code, bytes):
                     exec(marshal.loads(compute.code), globalvars)
                 else:
                     exec(compute.code, globalvars)
-                exec('%s(*_dispy_cleanup_args, **_dispy_cleanup_kwargs)' %
-                     compute.cleanup.name, globalvars, localvars)
+                exec('%s(*_dispy_cleanup_args)' % compute.cleanup, globalvars, localvars)
             except Exception:
-                dispynode_logger.debug('Cleanup "%s" failed', compute.cleanup.name)
+                dispynode_logger.debug('Cleanup "%s" failed', compute.cleanup)
                 dispynode_logger.debug(traceback.format_exc())
 
             os.chdir(self.dest_path_prefix)
@@ -2892,7 +2884,7 @@ if __name__ == '__main__':
     del _dispy_config['loglevel']
 
     if _dispy_config['dispy_port'] == dispy.config.DispyPort:
-        print('\n  NOTE: Using dispy port %s, which is different from earlier versions\n' %
+        print('\n  NOTE: Using dispy port %s (was 51347 in earlier versions)\n' %
               dispy.config.DispyPort)
     dispy.config.DispyPort = _dispy_config.pop('dispy_port')
     cpus = multiprocessing.cpu_count()

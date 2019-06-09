@@ -10,10 +10,11 @@
 
 def setup(data_file):
     # read data in file to global variable
-    global data, algorithms, hashlib
+    global data, algorithms, hashlib, time, file_name
 
-    import hashlib
+    import hashlib, time
     data = open(data_file).read()  # read file in to memory; data_file can now be deleted
+    file_name = data_file
     if sys.version_info.major > 2:
         data = data.encode() # convert to bytes
         algorithms = list(hashlib.algorithms_guaranteed)
@@ -26,31 +27,47 @@ def setup(data_file):
 
     # 'os' module is already available (loaded by dispynode)
     if os.name == 'nt':  # remove modules under Windows
-        del hashlib
+        del hashlib, time
     return 0
 
-def cleanup():
-    global data, algorithms, hashlib
-    del data, algorithms
+# 'cleanup' should have same argument as 'setup'
+def cleanup(data_file):
+    global data, algorithms, hashlib, time, file_name
+    del data, algorithms, file_name
     if os.name != 'nt':
-        del hashlib
+        del hashlib, time
 
 def compute(n):
-    global hashlib
+    global hashlib, time
     if os.name == 'nt': # Under Windows modules must be loaded in jobs
-        import hashlib
+        import hashlib, time
     # 'data' and 'algorithms' global variables are initialized in 'setup'
     alg = algorithms[n % len(algorithms)]
     csum = getattr(hashlib, alg)()
     csum.update(data)
-    return (alg, csum.hexdigest())
+    time.sleep(2)
+    return (dispy_node_ip_addr, file_name, alg, csum.hexdigest())
 
 if __name__ == '__main__':
-    import dispy, sys, functools
-    # if no data file name is given, use this file as data file
-    data_file = sys.argv[1] if len(sys.argv) > 1 else sys.argv[0]
-    cluster = dispy.JobCluster(compute, depends=[data_file],
-                               setup=functools.partial(setup, data_file), cleanup=cleanup)
+    import dispy, sys, os, glob
+
+    # each node processes a file in 'data_files' with 'NodeAllocate.allocate'
+    data_files = glob.glob(os.path.join(os.path.dirname(sys.argv[0]), '*.py'))
+    node_id = 0
+
+    # sub-class NodeAllocate to use node (and computation) specific 'depends'
+    # and 'setup_args'
+    class NodeAllocate(dispy.NodeAllocate):
+        def allocate(self, cluster, ip_addr, name, cpus, avail_info=None, platform='*'):
+            global node_id
+            data_file = data_files[node_id % len(data_files)]
+            node_id += 1
+            print('Node %s (%s) processes "%s"' % (ip_addr, name, data_file))
+            self.depends = [data_file] # 'depends' must be a list
+            self.setup_args = (data_file,) # 'setup_args' must be a tuple
+            return cpus
+
+    cluster = dispy.JobCluster(compute, nodes=[NodeAllocate('*')], setup=setup, cleanup=cleanup)
     jobs = []
     for n in range(10):
         job = cluster.submit(n)
@@ -59,7 +76,7 @@ if __name__ == '__main__':
     for job in jobs:
         job()
         if job.status == dispy.DispyJob.Finished:
-            print('%s: %s : %s' % (job.id, job.result[0], job.result[1]))
+            print('%s: "%s" %s: %s' % job.result)
         else:
             print(job.exception)
     cluster.print_status()

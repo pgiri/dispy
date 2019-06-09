@@ -2235,7 +2235,7 @@ if __name__ == '__main__':
     del config['loglevel']
 
     if config['dispy_port'] == dispy.config.DispyPort:
-        print('\n  NOTE: Using dispy port %s, which is different from earlier versions\n' %
+        print('\n  NOTE: Using dispy port %s (was 51347 in earlier versions)\n' %
               dispy.config.DispyPort)
     dispy.config.DispyPort = config.pop('dispy_port')
     if config['zombie_interval']:

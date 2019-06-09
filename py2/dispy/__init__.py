@@ -53,7 +53,7 @@ __version__ = "4.11.0"
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
 _dispy_version = __version__
-
+logger = pycos.Logger('dispy')
 
 class DispyJob(object):
     """Job scheduled for execution with dispy.
@@ -194,7 +194,15 @@ class NodeAllocate(object):
     This class can be specialized (inherited) to override, for
     example, 'allocate' method.
     """
-    def __init__(self, host, port=None, cpus=0):
+    def __init__(self, host, port=None, cpus=0, depends=[], setup_args=()):
+        if isinstance(depends, list):
+            for dep in depends:
+                if not os.path.isfile(dep):
+                    raise Exception('dependency "%s" is not a valid file' % dep)
+        else:
+            raise Exception('"depends" must be a list')
+        if not isinstance(setup_args, tuple):
+            raise Exception('"setup_args" must be a tuple')
         self.ip_addr = _node_ipaddr(host)
         if not self.ip_addr:
             logger.warning('host "%s" is invalid', host)
@@ -216,6 +224,8 @@ class NodeAllocate(object):
                 logger.warning('Invalid cpus for "%s" ignored', host)
                 cpus = 0
         self.cpus = cpus
+        self.depends = depends
+        self.setup_args = setup_args
 
     def allocate(self, cluster, ip_addr, name, cpus, avail_info=None, platform=''):
         """When a node is found, dispy calls this method with the
@@ -491,13 +501,6 @@ def host_addrinfo(host=None, socket_family=None, ipv4_multicast=False):
     return best
 
 
-# This tuple stores information about partial functions; for
-# now 'setup' and 'cleanup' functions can be partial functions.
-# TODO: useful to have 'compute' as partial function as well?
-_Function = collections.namedtuple('_Function', ['name', 'args', 'kwargs'])
-logger = pycos.Logger('dispy')
-
-
 class _Compute(object):
     """Internal use only.
     """
@@ -511,11 +514,12 @@ class _Compute(object):
         self.id = None
         self.code = ''
         self.dest_path = None
-        self.xfer_files = set()
+        self.xfer_files = []
         self.reentrant = False
         self.exclusive = True
         self.setup = None
         self.cleanup = None
+        self.setup_args_count = 0
         self.scheduler_ip_addr = None
         self.scheduler_port = None
         self.node_ip_addr = None
@@ -528,9 +532,29 @@ class _Compute(object):
 class _XferFile(object):
     """Internal use only.
     """
-    def __init__(self, name, dest_path, compute_id=None):
+    def __init__(self, dep, compute_id=None):
+        cwd = os.getcwd()
+        if isinstance(dep, basestring):
+            name = os.path.abspath(dep)
+            if name.startswith(cwd):
+                dst = os.path.dirname(name[len(cwd):].lstrip(os.sep))
+            else:
+                dst = '.'
+        else:
+            assert inspect.ismodule(dep)
+            name = dep.__file__
+            if name.endswith('.pyc'):
+                name = name[:-1]
+            assert name.endswith('.py')
+            if name.startswith(cwd):
+                dst = os.path.dirname(name[len(cwd):].lstrip(os.sep))
+            elif dep.__package__:
+                dst = dep.__package__.replace('.', os.sep)
+            else:
+                dst = os.path.dirname(dep.__name__.replace('.', os.sep))
+
         self.name = name
-        self.dest_path = dest_path
+        self.dest_path = dst
         self.compute_id = compute_id
         self.stat_buf = os.stat(name)
         self.sep = os.sep
@@ -569,7 +593,7 @@ class _Node(object):
         self.tx = 0
         self.rx = 0
 
-    def setup(self, compute, exclusive=True, task=None):
+    def setup(self, depends, setup_args, compute, exclusive=True, task=None):
         # generator
         compute.scheduler_ip_addr = self.scheduler_ip_addr
         compute.node_ip_addr = self.ip_addr
@@ -583,14 +607,39 @@ class _Node(object):
             raise StopIteration(-1)
         if not self.cpus:
             self.cpus = cpus
-        for xf in compute.xfer_files:
+
+        if not isinstance(setup_args, tuple):
+            if (isinstance(setup_args, list) and
+                len(setup_args) == compute.setup_args_count):
+                print('\n  "setup_args" is a list; converting to tuple as required\n')
+                setup_args = tuple(setup_args)
+            else:
+                print('\n  using "setup_args" as tuple as required\n')
+                setup_args = (setup_args,)
+
+        if not isinstance(depends, list):
+            depends = list(depends)
+        for i in range(len(depends)):
+            dep = depends[i]
+            if isinstance(dep, _XferFile):
+                continue
+            try:
+                depends[i] = _XferFile(dep, compute.id)
+            except Exception:
+                logger.error('Dependency "%s" is not a valid file?', depends[i])
+                logger.debug(traceback.format_exc())
+                yield self.close(compute, task=task)
+                raise StopIteration(-1)
+
+        for xf in compute.xfer_files + depends:
             resp = yield self.xfer_file(xf, task=task)
             if resp < 0:
                 logger.error('Could not transfer file "%s"', xf.name)
                 yield self.close(compute, task=task)
                 raise StopIteration(resp)
 
-        resp = yield self.send('SETUP:' + serialize(compute.id), timeout=0, task=task)
+        msg = serialize({'compute_id': compute.id, 'setup_args': setup_args})
+        resp = yield self.send('SETUP:'.encode() + msg, timeout=0, task=task)
         if not isinstance(resp, int) or resp < 0:
             logger.warning('Setup of computation "%s" on %s failed: %s',
                            compute.name, self.ip_addr, resp)
@@ -691,41 +740,15 @@ class _DispyJob_(object):
         self.pinned = None
         self.xfer_files = []
         self.code = ''
-        depend_ids = set()
-        cwd = os.getcwd()
         for dep in job_deps:
             if isinstance(dep, basestring) or inspect.ismodule(dep):
-                if inspect.ismodule(dep):
-                    name = dep.__file__
-                    if name.endswith('.pyc'):
-                        name = name[:-1]
-                    if not name.endswith('.py'):
-                        logger.warning('Invalid module "%s" - must be python source.', dep)
-                        continue
-                    if name.startswith(cwd):
-                        dst = os.path.dirname(name[len(cwd):].lstrip(os.sep))
-                    elif dep.__package__:
-                        dst = dep.__package__.replace('.', os.sep)
-                    else:
-                        dst = os.path.dirname(dep.__name__.replace('.', os.sep))
-                else:
-                    name = os.path.abspath(dep)
-                    if name.startswith(cwd):
-                        dst = os.path.dirname(name[len(cwd):].lstrip(os.sep))
-                    else:
-                        dst = '.'
-                if name in depend_ids:
-                    continue
-                self.xfer_files.append(_XferFile(name, dst, compute_id))
-                depend_ids.add(name)
+                self.xfer_files.append(_XferFile(dep, compute_id))
             elif (inspect.isfunction(dep) or inspect.isclass(dep) or
                   (hasattr(dep, '__class__') and hasattr(dep, '__module__'))):
                 if inspect.isfunction(dep) or inspect.isclass(dep):
                     pass
                 elif hasattr(dep, '__class__') and inspect.isclass(dep.__class__):
                     dep = dep.__class__
-                if id(dep) in depend_ids:
-                    continue
                 try:
                     lines = inspect.getsourcelines(dep)[0]
                 except Exception:
@@ -733,7 +756,6 @@ class _DispyJob_(object):
                     continue
                 lines[0] = lines[0].lstrip()
                 self.code += '\n' + ''.join(lines)
-                depend_ids.add(id(dep))
             else:
                 logger.warning('Invalid job depends element "%s"; ignoring it.', dep)
 
@@ -852,7 +874,7 @@ class _Cluster(object):
             else:
                 self.port = eval(dispy.config.ClientPort)
                 if self.port == 61590:
-                    print('\n  NOTE: Default dispy port %s is different from earlier versions\n' %
+                    print('\n  NOTE: Using dispy port %s (was 51347 in earlier versions)\n' %
                           dispy.config.DispyPort)
             self.node_port = eval(dispy.config.NodePort)
 
@@ -875,7 +897,6 @@ class _Cluster(object):
             for ext_ip_addr in self.addrinfos:
                 self.sign.update(ext_ip_addr.encode())
             self.sign = self.sign.hexdigest()
-
             self.auth = auth_code(self.secret, self.sign)
 
             if isinstance(recover_file, str):
@@ -1204,7 +1225,7 @@ class _Cluster(object):
             node.cpus = cpus
             if cpus > node.avail_cpus:
                 node.avail_cpus = cpus
-                node_computations = []
+                setup_computations = []
                 for cluster in self._clusters.itervalues():
                     if cluster in node.clusters:
                         continue
@@ -1216,10 +1237,11 @@ class _Cluster(object):
                         if cpus <= 0:
                             continue
                         node.cpus = min(node.avail_cpus, cpus)
-                        node_computations.append(compute)
+                        setup_computations.append((node_alloc.depends, node_alloc.setup_args,
+                                                   compute))
                         break
-                if node_computations:
-                    Task(self.setup_node, node, node_computations)
+                if setup_computations:
+                    Task(self.setup_node, node, setup_computations)
                 yield self._sched_event.set()
             else:
                 node.avail_cpus = cpus
@@ -1610,7 +1632,7 @@ class _Cluster(object):
                 self.timer_task.resume(True)
 
         Task(self.discover_nodes, cluster, cluster._node_allocs)
-        compute_nodes = []
+        node_setups = []
         for ip_addr, node in self._nodes.iteritems():
             if cluster in node.clusters:
                 continue
@@ -1620,9 +1642,9 @@ class _Cluster(object):
                 if cpus <= 0:
                     continue
                 node.cpus = min(node.avail_cpus, cpus)
-                compute_nodes.append(node)
-        for node in compute_nodes:
-            Task(self.setup_node, node, [compute])
+                node_setups.append((node, node_alloc.depends, node_alloc.setup_args))
+        for node, depends, setup_args in node_setups:
+            Task(self.setup_node, node, [(depends, setup_args, compute)])
         yield None
 
     def del_cluster(self, cluster, task=None):
@@ -1671,10 +1693,10 @@ class _Cluster(object):
         # TODO: prune nodes in shelf
         self.shelf.sync()
 
-    def setup_node(self, node, computations, task=None):
+    def setup_node(self, node, setup_computations, task=None):
         # generator
         task.set_daemon()
-        for compute in computations:
+        for depends, setup_args, compute in setup_computations:
             # NB: to avoid computation being sent multiple times, we
             # add to cluster's _dispy_nodes before sending computation
             # to node
@@ -1694,7 +1716,7 @@ class _Cluster(object):
             shelf_compute['nodes'].append(node.ip_addr)
             self.shelf['compute_%s' % compute.id] = shelf_compute
             self.shelf.sync()
-            res = yield node.setup(compute, exclusive=True, task=task)
+            res = yield node.setup(depends, setup_args, compute, exclusive=True, task=task)
             if res or compute.id not in self._clusters:
                 cluster._dispy_nodes.pop(node.ip_addr, None)
                 logger.warning('Failed to setup %s for compute "%s": %s',
@@ -1760,7 +1782,7 @@ class _Cluster(object):
                         self.worker_Q.put((cluster.status_callback,
                                            (DispyNode.Closed, dispy_node, None)))
             node.auth = auth
-        node_computations = []
+        setup_computations = []
         node.name = info['name']
         node.scheduler_ip_addr = info['scheduler_ip_addr']
         for cluster in self._clusters.itervalues():
@@ -1773,10 +1795,10 @@ class _Cluster(object):
                 if cpus <= 0:
                     continue
                 node.cpus = min(node.avail_cpus, cpus)
-                node_computations.append(compute)
+                setup_computations.append((node_alloc.depends, node_alloc.setup_args, compute))
                 break
-        if node_computations:
-            Task(self.setup_node, node, node_computations)
+        if setup_computations:
+            Task(self.setup_node, node, setup_computations)
 
     def delete_node(self, node):
         if node.pending_jobs:
@@ -2574,40 +2596,32 @@ class JobCluster(object):
 
         if setup:
             if inspect.isfunction(setup):
+                if setup.func_defaults:
+                    print('\n  dispy does not support calling "setup" with keyword arguments\n')
                 depends.append(setup)
-                compute.setup = _Function(setup.func_name, (), {})
+                compute.setup = setup.func_name
+                compute.setup_args_count = setup.func_code.co_argcount
             elif isinstance(setup, functools.partial):
-                depends.append(setup.func)
-                if setup.args:
-                    args = setup.args
-                else:
-                    args = ()
-                if setup.keywords:
-                    kwargs = setup.keywords
-                else:
-                    kwargs = {}
-                compute.setup = _Function(setup.func.func_name, args, kwargs)
+                raise Exception('"setup" must be Python function; '
+                                'partial functions are not valid since version 4.11.0')
             else:
-                raise Exception('"setup" must be Python (partial) function')
+                raise Exception('"setup" must be Python function')
 
         if inspect.isfunction(cleanup):
+            if cleanup.func_defaults:
+                print('\n  dispy does not support calling "cleanup" with keyword arguments\n')
+            if setup and setup.func_code.co_argcount != cleanup.func_code.co_argcount:
+                raise Exception('"cleanup" must take same arguments as "setup"')
             depends.append(cleanup)
-            compute.cleanup = _Function(cleanup.func_name, (), {})
+            compute.cleanup = cleanup.func_name
+            compute.setup_args_count = cleanup.func_code.co_argcount
         elif isinstance(cleanup, functools.partial):
-            depends.append(cleanup.func)
-            if cleanup.args:
-                args = cleanup.args
-            else:
-                args = ()
-            if cleanup.keywords:
-                kwargs = cleanup.keywords
-            else:
-                kwargs = {}
-            compute.cleanup = _Function(cleanup.func.func_name, args, kwargs)
+            raise Exception('"cleanup" must be Python function; '
+                            'partial functions are not valid since version 4.11.0')
         elif isinstance(cleanup, bool):
             compute.cleanup = cleanup
         else:
-            raise Exception('"cleanup" must be Python (partial) function')
+            raise Exception('"cleanup" must be Python function')
 
         if isinstance(dispy_port, int):
             dispy.config.DispyPort = dispy_port
@@ -2620,57 +2634,32 @@ class JobCluster(object):
                                  recover_file=recover_file)
         atexit.register(self.shutdown)
 
-        depend_ids = {}
-        cwd = self._cluster.dest_path
         for dep in depends:
-            if isinstance(dep, basestring) or inspect.ismodule(dep):
-                if inspect.ismodule(dep):
-                    name = dep.__file__
-                    if name.endswith('.pyc'):
-                        name = name[:-1]
-                    if not name.endswith('.py'):
-                        logger.warning('Invalid module "%s" - must be python source.', dep)
-                        continue
-                    if name.startswith(cwd):
-                        dst = os.path.dirname(name[len(cwd):].lstrip(os.sep))
-                    elif dep.__package__:
-                        dst = dep.__package__.replace('.', os.sep)
-                    else:
-                        dst = os.path.dirname(dep.__name__.replace('.', os.sep))
-                else:
-                    if os.path.isfile(dep):
-                        name = os.path.abspath(dep)
-                    elif compute.type == _Compute.prog_type:
-                        for p in os.environ['PATH'].split(os.pathsep):
-                            f = os.path.join(p, dep)
-                            if os.path.isfile(f):
-                                logger.debug('Assuming "%s" is program "%s"', dep, f)
-                                name = f
-                                break
-                    else:
-                        raise Exception('Path "%s" is not valid' % dep)
-                    if name.startswith(cwd):
-                        dst = os.path.dirname(name[len(cwd):].lstrip(os.sep))
-                    else:
-                        dst = '.'
-                if name in depend_ids:
-                    continue
+            if isinstance(dep, basestring):
+                if not os.path.isfile(dep) and compute.type == _Compute.prog_type:
+                    for p in os.environ['PATH'].split(os.pathsep):
+                        f = os.path.join(p, dep)
+                        if os.path.isfile(f):
+                            logger.debug('Assuming "%s" is program "%s"', dep, f)
+                            dep = f
+                            break
                 try:
-                    with open(name, 'rb') as fd:
-                        pass
-                    xf = _XferFile(name, dst, compute.id)
-                    compute.xfer_files.add(xf)
-                    depend_ids[name] = dep
+                    compute.xfer_files.append(_XferFile(dep, compute.id))
                 except Exception:
-                    raise Exception('File "%s" is not valid' % name)
+                    raise Exception('File "%s" is not valid' % dep)
+
+            elif inspect.ismodule(dep):
+                try:
+                    compute.xfer_files.append(_XferFile(dep, compute.id))
+                except Exception:
+                    raise Exception('File "%s" is not valid' % dep)
+
             elif (inspect.isfunction(dep) or inspect.isclass(dep) or
                   (hasattr(dep, '__class__') and hasattr(dep, '__module__'))):
                 if inspect.isfunction(dep) or inspect.isclass(dep):
                     pass
                 elif hasattr(dep, '__class__') and inspect.isclass(dep.__class__):
                     dep = dep.__class__
-                if id(dep) in depend_ids:
-                    continue
                 try:
                     lines = inspect.getsourcelines(dep)[0]
                 except Exception:
@@ -2678,7 +2667,6 @@ class JobCluster(object):
                     raise
                 lines[0] = lines[0].lstrip()
                 compute.code += '\n' + ''.join(lines)
-                depend_ids[id(dep)] = id(dep)
             elif isinstance(dep, functools.partial):
                 try:
                     lines = inspect.getsourcelines(dep.func)[0]
@@ -2687,7 +2675,6 @@ class JobCluster(object):
                     raise
                 lines[0] = lines[0].lstrip()
                 compute.code += '\n' + ''.join(lines)
-                depend_ids[id(dep)] = id(dep)
             else:
                 raise Exception('Invalid dependency: %s' % dep)
         if compute.code:
@@ -2846,13 +2833,7 @@ class JobCluster(object):
         instance of DispyNode (e.g., as received in cluster status
         callback) or IP address or host name.
         """
-        cwd = self._cluster.dest_path
-        path = os.path.abspath(path)
-        if path.startswith(cwd):
-            dst = os.path.dirname(path[len(cwd):].lstrip(os.sep))
-        else:
-            dst = '.'
-        xf = _XferFile(path, dst, self._compute.id)
+        xf = _XferFile(path, self._compute.id)
         return Task(self._cluster.send_file, self, node, xf).value()
 
     @property
@@ -3423,13 +3404,7 @@ class SharedJobCluster(JobCluster):
         if not node:
             return -1
 
-        cwd = self._cluster.dest_path
-        path = os.path.abspath(path)
-        if path.startswith(cwd):
-            dst = os.path.dirname(path[len(cwd):].lstrip(os.sep))
-        else:
-            dst = '.'
-        xf = _XferFile(path, dst, self._compute.id)
+        xf = _XferFile(path, self._compute.id)
         sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM), blocking=True,
                            keyfile=self._cluster.keyfile, certfile=self._cluster.certfile)
         sock.settimeout(MsgTimeout)
