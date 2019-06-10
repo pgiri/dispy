@@ -318,8 +318,9 @@ def _parse_node_allocs(nodes):
         elif isinstance(node, str):
             node_allocs.append(NodeAllocate(node))
         elif isinstance(node, dict):
-            node_allocs.append(NodeAllocate(node.get('host', '*'), node.get('port', None),
-                                            node.get('cpus', 0)))
+            node_allocs.append(NodeAllocate(node.get('host', '*'), port=node.get('port', None),
+                                            cpus=node.get('cpus', 0), depends=node.get('depends', []),
+                                            setup_args=node.get('setup_args', ())))
         elif isinstance(node, tuple):
             node_allocs.append(NodeAllocate(*node))
         elif isinstance(node, list):
@@ -870,7 +871,7 @@ class _Cluster(object):
                 raise Exception('No valid IP address found')
 
             if shared:
-                self.port = 0
+                self.port = int(dispy.config.SharedSchedulerClientPort)
             else:
                 self.port = eval(dispy.config.ClientPort)
                 if self.port == 61590:
@@ -2970,7 +2971,7 @@ class SharedJobCluster(JobCluster):
     The behaviour is same as for JobCluster.
     """
     def __init__(self, computation, nodes=None, depends=[], callback=None, cluster_status=None,
-                 ip_addr=None, dispy_port=None, scheduler_node=None,
+                 ip_addr=None, client_port=0, dispy_port=None, scheduler_node=None,
                  ext_ip_addr=None, loglevel=logger.INFO, setup=None, cleanup=True, dest_path=None,
                  poll_interval=None, reentrant=False, exclusive=False,
                  secret='', keyfile=None, certfile=None, recover_file=None):
@@ -2989,10 +2990,14 @@ class SharedJobCluster(JobCluster):
         node_allocs = _parse_node_allocs(nodes)
         if not node_allocs:
             raise Exception('"nodes" argument is invalid')
-        node_allocs = [(na.ip_addr, na.port, na.cpus) for na in node_allocs]
+        # TODO: warn if 'depends' is set / send files to scheduler?
+        node_allocs = [{'host': na.ip_addr, 'port': na.port, 'cpus': na.cpus,
+                        'setup_args': na.setup_args} for na in node_allocs]
         if ext_ip_addr:
             ext_ip_addr = host_addrinfo(host=ext_ip_addr).ip
 
+        if isinstance(client_port, int):
+            dispy.config.SharedSchedulerClientPort = client_port
         if isinstance(dispy_port, int):
             dispy.config.DispyPort = dispy_port
 

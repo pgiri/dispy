@@ -41,7 +41,7 @@ import dispy
 import dispy.httpd
 import dispy.config
 from dispy.config import MsgTimeout, MaxFileSize
-from dispy import _Compute, DispyJob, _DispyJob_, _Function, _Node, DispyNode, NodeAllocate, \
+from dispy import _Compute, DispyJob, _DispyJob_, _Node, DispyNode, NodeAllocate, \
     _JobReply, auth_code, num_min, _parse_node_allocs, _XferFile, _dispy_version, \
     _same_file, _node_ipaddr
 
@@ -522,7 +522,7 @@ class _Scheduler(object):
             node.cpus = cpus
             if cpus > node.avail_cpus:
                 node.avail_cpus = cpus
-                node_computations = []
+                setup_computations = []
                 for cluster in self._clusters.itervalues():
                     if cluster in node.clusters:
                         continue
@@ -533,10 +533,10 @@ class _Scheduler(object):
                         if cpus <= 0:
                             continue
                         node.cpus = min(node.avail_cpus, cpus)
-                        node_computations.append(compute)
+                        setup_computations.append((node_alloc.depends, node_alloc.setup_args, compute))
                         break
-                if node_computations:
-                    Task(self.setup_node, node, node_computations)
+                if setup_computations:
+                    Task(self.setup_node, node, setup_computations)
                 yield self._sched_event.set()
             else:
                 node.avail_cpus = cpus
@@ -1285,7 +1285,7 @@ class _Scheduler(object):
         # TODO: should we allow clients to add new nodes, or use only
         # the nodes initially created with command-line?
         self.send_ping_cluster(cluster._node_allocs, set(cluster._dispy_nodes.iterkeys()))
-        compute_nodes = []
+        node_setups = []
         for ip_addr, node in self._nodes.iteritems():
             if cluster in node.clusters:
                 continue
@@ -1295,9 +1295,9 @@ class _Scheduler(object):
                     continue
                 if cluster.exclusive or self.cooperative:
                     node.cpus = min(node.avail_cpus, cpus)
-                compute_nodes.append(node)
-        for node in compute_nodes:
-            Task(self.setup_node, node, [compute])
+                node_setups.append((node, node_alloc.depends, node_alloc.setup_args))
+        for node, depends, setup_args in node_setups:
+            Task(self.setup_node, node, [(depends, setup_args, compute)])
 
     def cleanup_computation(self, cluster, terminate_pending=False, task=None):
         # generator
@@ -1370,10 +1370,10 @@ class _Scheduler(object):
             self.httpd.del_cluster(cluster)
         Task(self.schedule_cluster)
 
-    def setup_node(self, node, computes, task=None):
+    def setup_node(self, node, setup_computations, task=None):
         # generator
         task.set_daemon()
-        for compute in computes:
+        for depends, setup_args, compute in setup_computations:
             # NB: to avoid computation being sent multiple times, we
             # add to cluster's _dispy_nodes before sending computation
             # to node
@@ -1388,11 +1388,12 @@ class _Scheduler(object):
                 dispy_node.rx = node.rx
             dispy_node.avail_cpus = node.avail_cpus
             dispy_node.avail_info = node.avail_info
-            r = yield node.setup(compute, exclusive=cluster.exclusive, task=task)
-            if r or compute.id not in self._clusters:
+            res = yield node.setup(depends, setup_args, compute, exclusive=cluster.exclusive,
+                                   task=task)
+            if res or compute.id not in self._clusters:
                 cluster._dispy_nodes.pop(node.ip_addr, None)
                 logger.warning('Failed to setup %s for computation "%s": %s',
-                               node.ip_addr, compute.name, r)
+                               node.ip_addr, compute.name, res)
                 Task(node.close, compute)
             else:
                 dispy_node.update_time = time.time()
@@ -1444,7 +1445,7 @@ class _Scheduler(object):
                     Task(self.send_node_status, cluster, dispy_node, DispyNode.Closed)
                 self.reschedule_jobs(dead_jobs)
             node.auth = auth
-        node_computations = []
+        setup_computations = []
         node.name = info['name']
         node.scheduler_ip_addr = info['scheduler_ip_addr']
         for cluster in self._clusters.itervalues():
@@ -1454,10 +1455,11 @@ class _Scheduler(object):
             for node_alloc in cluster._node_allocs:
                 cpus = node_alloc.allocate(cluster, node.ip_addr, node.name, node.avail_cpus)
                 if cpus > 0:
-                    node_computations.append(compute)
+                    node.cpus = min(node.avail_cpus, cpus)
+                    setup_computations.append((node_alloc.depends, node_alloc.setup_args, compute))
                     break
-        if node_computations:
-            Task(self.setup_node, node, node_computations)
+        if setup_computations:
+            Task(self.setup_node, node, setup_computations)
 
     def send_job_result(self, uid, cluster, result, resending=False, task=None):
         # generator
