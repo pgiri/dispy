@@ -197,7 +197,7 @@ class NodeAllocate(object):
     def __init__(self, host, port=None, cpus=0, depends=[], setup_args=()):
         if isinstance(depends, list):
             for dep in depends:
-                if not os.path.isfile(dep):
+                if not isinstance(dep, _XferFile) and not os.path.isfile(dep):
                     raise Exception('dependency "%s" is not a valid file' % dep)
         else:
             raise Exception('"depends" must be a list')
@@ -870,13 +870,10 @@ class _Cluster(object):
             if not self.addrinfos:
                 raise Exception('No valid IP address found')
 
-            if shared:
-                self.port = int(dispy.config.SharedSchedulerClientPort)
-            else:
-                self.port = eval(dispy.config.ClientPort)
-                if self.port == 61590:
-                    print('\n  NOTE: Using dispy port %s (was 51347 in earlier versions)\n' %
-                          dispy.config.DispyPort)
+            self.port = eval(dispy.config.ClientPort)
+            if self.port == 61590:
+                print('\n  NOTE: Using dispy port %s (was 51347 in earlier versions)\n' %
+                      dispy.config.DispyPort)
             self.node_port = eval(dispy.config.NodePort)
 
             self._nodes = {}
@@ -1633,7 +1630,6 @@ class _Cluster(object):
                 self.timer_task.resume(True)
 
         Task(self.discover_nodes, cluster, cluster._node_allocs)
-        node_setups = []
         for ip_addr, node in self._nodes.iteritems():
             if cluster in node.clusters:
                 continue
@@ -1643,9 +1639,8 @@ class _Cluster(object):
                 if cpus <= 0:
                     continue
                 node.cpus = min(node.avail_cpus, cpus)
-                node_setups.append((node, node_alloc.depends, node_alloc.setup_args))
-        for node, depends, setup_args in node_setups:
-            Task(self.setup_node, node, [(depends, setup_args, compute)])
+                Task(self.setup_node, node, [(node_alloc.depends, node_alloc.setup_args, compute)])
+                break
         yield None
 
     def del_cluster(self, cluster, task=None):
@@ -1783,6 +1778,7 @@ class _Cluster(object):
                         self.worker_Q.put((cluster.status_callback,
                                            (DispyNode.Closed, dispy_node, None)))
             node.auth = auth
+
         setup_computations = []
         node.name = info['name']
         node.scheduler_ip_addr = info['scheduler_ip_addr']
@@ -2562,25 +2558,6 @@ class JobCluster(object):
                                 'it must take excatly 3 arguments')
         self.status_callback = cluster_status
 
-        if hasattr(self, 'scheduler_ip_addr'):
-            shared = True
-            self._node_allocs = []
-        else:
-            shared = False
-            if not nodes:
-                nodes = ['*']
-            elif not isinstance(nodes, list):
-                if isinstance(nodes, str):
-                    nodes = [nodes]
-                else:
-                    raise Exception('"nodes" must be list of IP addresses or host names')
-            self._node_allocs = _parse_node_allocs(nodes)
-            if not self._node_allocs:
-                raise Exception('"nodes" argument is invalid')
-            self._node_allocs = sorted(self._node_allocs,
-                                       key=lambda node_alloc: node_alloc.ip_rex, reverse=True)
-        self._dispy_nodes = {}
-
         if inspect.isfunction(computation) or inspect.ismethod(computation):
             func = computation
             compute = _Compute(_Compute.func_type, func.func_name)
@@ -2624,11 +2601,41 @@ class JobCluster(object):
         else:
             raise Exception('"cleanup" must be Python function')
 
+        self._dispy_nodes = {}
+        if not nodes:
+            nodes = ['*']
+        elif not isinstance(nodes, list):
+            if isinstance(nodes, str):
+                nodes = [nodes]
+            else:
+                raise Exception('"nodes" must be list of IP addresses or host names')
+        self._node_allocs = _parse_node_allocs(nodes)
+        if not self._node_allocs:
+            raise Exception('"nodes" argument is invalid')
+        self._node_allocs = sorted(self._node_allocs, key=lambda na: na.ip_rex, reverse=True)
+        for na in self._node_allocs:
+            if not isinstance(na.depends, list):
+                na.depends = list(na.depends)
+            for i in range(len(na.depends)):
+                dep = na.depends[i]
+                if isinstance(dep, _XferFile):
+                    continue
+                try:
+                    na.depends[i] = _XferFile(dep, compute.id)
+                except Exception:
+                    logger.error('Dependency "%s" is not a valid file?', na.depends[i])
+                    logger.debug(traceback.format_exc())
+                    raise StopIteration(-1)
+
         if isinstance(dispy_port, int):
             dispy.config.DispyPort = dispy_port
         elif dispy_port is not None:
             raise Exception('"dispy_port" %s is not a valid port number' % dispy_port)
 
+        if hasattr(self, 'scheduler_ip_addr'):
+            shared = True
+        else:
+            shared = False
         self._cluster = _Cluster(ip_addr=ip_addr, ext_ip_addr=ext_ip_addr,
                                  ipv4_udp_multicast=ipv4_udp_multicast,
                                  shared=shared, secret=secret, keyfile=keyfile, certfile=certfile,
@@ -2971,7 +2978,7 @@ class SharedJobCluster(JobCluster):
     The behaviour is same as for JobCluster.
     """
     def __init__(self, computation, nodes=None, depends=[], callback=None, cluster_status=None,
-                 ip_addr=None, client_port=0, dispy_port=None, scheduler_node=None,
+                 ip_addr=None, dispy_port=None, client_port=None, scheduler_node=None,
                  ext_ip_addr=None, loglevel=logger.INFO, setup=None, cleanup=True, dest_path=None,
                  poll_interval=None, reentrant=False, exclusive=False,
                  secret='', keyfile=None, certfile=None, recover_file=None):
@@ -2979,6 +2986,14 @@ class SharedJobCluster(JobCluster):
         self.scheduler_ip_addr = _node_ipaddr(scheduler_node)
         self.addrinfo = host_addrinfo(host=ip_addr)
         self.addrinfo.family = socket.getaddrinfo(self.scheduler_ip_addr, None)[0][0]
+        if ext_ip_addr:
+            ext_ip_addr = host_addrinfo(host=ext_ip_addr).ip
+
+        if isinstance(dispy_port, int):
+            dispy.config.DispyPort = dispy_port
+
+        if isinstance(client_port, int):
+            dispy.config.ClientPort = str(client_port)
 
         if not nodes:
             nodes = ['*']
@@ -2987,21 +3002,8 @@ class SharedJobCluster(JobCluster):
                 nodes = [nodes]
             else:
                 raise Exception('"nodes" must be list of IP addresses or host names')
-        node_allocs = _parse_node_allocs(nodes)
-        if not node_allocs:
-            raise Exception('"nodes" argument is invalid')
-        # TODO: warn if 'depends' is set / send files to scheduler?
-        node_allocs = [{'host': na.ip_addr, 'port': na.port, 'cpus': na.cpus,
-                        'setup_args': na.setup_args} for na in node_allocs]
-        if ext_ip_addr:
-            ext_ip_addr = host_addrinfo(host=ext_ip_addr).ip
 
-        if isinstance(client_port, int):
-            dispy.config.SharedSchedulerClientPort = client_port
-        if isinstance(dispy_port, int):
-            dispy.config.DispyPort = dispy_port
-
-        JobCluster.__init__(self, computation, depends=depends, callback=callback,
+        JobCluster.__init__(self, computation, nodes=nodes, depends=depends, callback=callback,
                             cluster_status=cluster_status, ip_addr=ip_addr, ext_ip_addr=ext_ip_addr,
                             loglevel=loglevel, setup=setup, cleanup=cleanup, dest_path=dest_path,
                             poll_interval=poll_interval, reentrant=reentrant,
@@ -3016,13 +3018,11 @@ class SharedJobCluster(JobCluster):
         Task(_terminate_scheduler, self).value()
         self._cluster._scheduler.value()
         self._cluster.job_uid = None
-
-        scheduler_port = eval(dispy.config.SharedSchedulerPort)
-
         # wait until tcp server has started
         while not self._cluster.port:
             time.sleep(0.1)
 
+        scheduler_port = eval(dispy.config.SharedSchedulerPort)
         sock = socket.socket(self.addrinfo.family, socket.SOCK_STREAM)
         sock = AsyncSocket(sock, blocking=True, keyfile=keyfile, certfile=certfile)
         sock.connect((self.scheduler_ip_addr, scheduler_port))
@@ -3051,7 +3051,10 @@ class SharedJobCluster(JobCluster):
         try:
             sock.connect((self.scheduler_ip_addr, self.scheduler_port))
             sock.sendall(self._scheduler_auth)
-            req = {'compute': self._compute, 'node_allocs': node_allocs,
+            req = {'compute': self._compute,
+                   'node_allocs': [{'host': na.ip_addr, 'port': na.port, 'cpus': na.cpus,
+                                    'depends': na.depends, 'setup_args': na.setup_args}
+                                   for na in self._node_allocs],
                    'exclusive': bool(exclusive)}
             sock.send_msg('COMPUTE:' + serialize(req))
             reply = sock.recv_msg()
@@ -3066,7 +3069,14 @@ class SharedJobCluster(JobCluster):
         finally:
             sock.close()
 
-        for xf in self._compute.xfer_files:
+        node_depends = []
+        for na in self._node_allocs:
+            for dep in na.depends:
+                dep.compute_id = self._compute.id
+            node_depends.extend(na.depends)
+
+        for xf in self._compute.xfer_files + node_depends:
+            assert isinstance(xf, _XferFile)
             xf.compute_id = self._compute.id
             logger.debug('Sending file "%s"', xf.name)
             sock = socket.socket(self.addrinfo.family, socket.SOCK_STREAM)

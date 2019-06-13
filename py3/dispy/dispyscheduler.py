@@ -72,8 +72,10 @@ class _Cluster(object):
         # self.name = compute.name
         self.name = '%s @ %s' % (compute.name, compute.scheduler_ip_addr)
         self._node_allocs = _parse_node_allocs(node_allocs)
-        self._node_allocs = sorted(self._node_allocs,
-                                   key=lambda node_alloc: node_alloc.ip_rex, reverse=True)
+        self._node_allocs = sorted(self._node_allocs, key=lambda na: na.ip_rex, reverse=True)
+        for na in self._node_allocs:
+            for dep in na.depends:
+                dep.compute_id = compute.id
         self.scheduler = scheduler
         self.status_callback = None
         self.pending_jobs = 0
@@ -539,7 +541,8 @@ class _Scheduler(object, metaclass=Singleton):
                         if cpus <= 0:
                             continue
                         node.cpus = min(node.avail_cpus, cpus)
-                        setup_computations.append((node_alloc.depends, node_alloc.setup_args, compute))
+                        setup_computations.append((node_alloc.depends, node_alloc.setup_args,
+                                                   compute))
                         break
                 if setup_computations:
                     Task(self.setup_node, node, setup_computations)
@@ -656,10 +659,12 @@ class _Scheduler(object, metaclass=Singleton):
                 exclusive = req['exclusive']
             except Exception:
                 return serialize(('Invalid computation').encode())
+            compute.id = id(compute)
             for xf in compute.xfer_files:
                 if MaxFileSize and xf.stat_buf.st_size > MaxFileSize:
                     return serialize(('File "%s" is too big; limit is %s' %
                                       (xf.name, MaxFileSize)).encode())
+                xf.compute_id = compute.id
             if self.terminate:
                 return serialize(('Scheduler is closing').encode())
             if self.cleanup_nodes and not compute.cleanup:
@@ -690,7 +695,6 @@ class _Scheduler(object, metaclass=Singleton):
             else:
                 cluster.dest_path = tempfile.mkdtemp(prefix=compute.name + '_', dir=dest)
 
-            compute.id = id(compute)
             cluster.client_job_result_port = compute.job_result_port
             cluster.client_ip_addr = compute.scheduler_ip_addr
             cluster.client_port = compute.scheduler_port
@@ -1291,7 +1295,6 @@ class _Scheduler(object, metaclass=Singleton):
         # TODO: should we allow clients to add new nodes, or use only
         # the nodes initially created with command-line?
         self.send_ping_cluster(cluster._node_allocs, set(cluster._dispy_nodes.keys()))
-        node_setups = []
         for ip_addr, node in self._nodes.items():
             if cluster in node.clusters:
                 continue
@@ -1301,9 +1304,8 @@ class _Scheduler(object, metaclass=Singleton):
                     continue
                 if cluster.exclusive or self.cooperative:
                     node.cpus = min(node.avail_cpus, cpus)
-                node_setups.append((node, node_alloc.depends, node_alloc.setup_args))
-        for node, depends, setup_args in node_setups:
-            Task(self.setup_node, node, [(depends, setup_args, compute)])
+                Task(self.setup_node, node, [(node_alloc.depends, node_alloc.setup_args, compute)])
+                break
 
     def cleanup_computation(self, cluster, terminate_pending=False, task=None):
         # generator
@@ -1451,6 +1453,7 @@ class _Scheduler(object, metaclass=Singleton):
                     Task(self.send_node_status, cluster, dispy_node, DispyNode.Closed)
                 self.reschedule_jobs(dead_jobs)
             node.auth = auth
+
         setup_computations = []
         node.name = info['name']
         node.scheduler_ip_addr = info['scheduler_ip_addr']
