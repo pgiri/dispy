@@ -407,7 +407,7 @@ def host_addrinfo(host=None, socket_family=None, ipv4_multicast=False):
                         addr = str(link['addr'])
                         broadcast = link.get('broadcast', '<broadcast>')
                         # Windows seems to have broadcast same as addr
-                        if broadcast.startswith(addr):
+                        if broadcast == addr and os.name == 'nt':
                             broadcast = '<broadcast>'
                         try:
                             addrs = socket.getaddrinfo(addr, None, sock_family, socket.SOCK_STREAM)
