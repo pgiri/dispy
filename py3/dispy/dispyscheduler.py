@@ -27,15 +27,6 @@ try:
 except ImportError:
     netifaces = None
 
-# 'httpd' module may not be available at sys.path[0] as 'dispy.py' is
-# installed in same directory as this script is; prepend directory
-# where httpd.py module is installed to sys.path.
-for path in sys.path:
-    if os.path.isfile(os.path.join(path, 'dispy', 'httpd.py')):
-        sys.path.insert(0, path)
-        break
-del path
-
 import pycos
 from pycos import Task, Pycos, AsyncSocket, Singleton, serialize, deserialize
 import dispy

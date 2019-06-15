@@ -55,9 +55,8 @@ setup(
         'dispy' : ['data/*', 'examples/*', 'doc/*'],
     },
     install_requires=['pycos >= 4.8.11'],
-    scripts=[os.path.join(base_dir, 'dispy', script) for script in \
-             ['dispynode.py', 'dispynetrelay.py', 'dispyscheduler.py']] + \
-            [os.path.join(base_dir, script) for script in ['dispy.py']],
+    scripts=[os.path.join(base_dir, 'dispy', script) for script in
+             ['dispynode.py', 'dispynetrelay.py', 'dispyscheduler.py', 'dispy_cmd.py']],
     license='Apache 2.0',
     platforms='any',
     classifiers=[
