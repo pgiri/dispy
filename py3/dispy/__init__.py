@@ -1302,11 +1302,12 @@ class _Cluster(object, metaclass=Singleton):
                 info = deserialize(msg[len(b'NODE_STATUS:'):])
                 cluster = self._clusters[info['compute_id']]
                 assert info['auth'] == cluster._compute.auth
+                status = info['status']
             except Exception:
                 logger.debug('Invalid node status from %s:%s ignored', addr[0], addr[1])
                 # logger.debug(traceback.format_exc())
             else:
-                if info['status'] == DispyNode.AvailInfo:
+                if status == DispyNode.AvailInfo:
                     dispy_node = cluster._dispy_nodes.get(info['ip_addr'], None)
                     if dispy_node:
                         dispy_node.avail_info = info['avail_info']
@@ -1316,7 +1317,7 @@ class _Cluster(object, metaclass=Singleton):
                             self.worker_Q.put((cluster.status_callback,
                                                (DispyNode.AvailInfo, dispy_node, None)))
 
-                elif info['status'] == DispyNode.Initialized:
+                elif status == DispyNode.Initialized:
                     dispy_node = info['dispy_node']
                     dispy_node.update_time = time.time()
                     node = self._nodes.get(dispy_node.ip_addr, None)
@@ -1330,16 +1331,16 @@ class _Cluster(object, metaclass=Singleton):
                         self._nodes[node.ip_addr] = node
                     node.auth = info.get('node_auth', None)
                     node.port = info.get('node_port', 0)
-                    dispy_node.status = info['status']
+                    dispy_node.status = status
                     cluster._dispy_nodes[dispy_node.ip_addr] = dispy_node
                     if cluster.status_callback:
                         self.worker_Q.put((cluster.status_callback,
                                            (DispyNode.Initialized, dispy_node, None)))
 
-                elif info['status'] == DispyNode.Closed:
+                elif status == DispyNode.Closed:
                     dispy_node = cluster._dispy_nodes.get(info['ip_addr'], None)
                     if dispy_node:
-                        dispy_node.status = info['status']
+                        dispy_node.status = status
                         dispy_node.tx = info['tx']
                         dispy_node.rx = info['rx']
                         dispy_node.avail_cpus = dispy_node.cpus = 0
@@ -1350,7 +1351,7 @@ class _Cluster(object, metaclass=Singleton):
                     if node:
                         node.auth = None
 
-                elif info['status'] == 'node_cpus':
+                elif status == 'node_cpus':
                     cpus = info.get('node_cpus', None)
                     dispy_node = cluster._dispy_nodes.get(info['ip_addr'], None)
                     if dispy_node and isinstance(cpus, int) and cpus >= 0:
