@@ -34,7 +34,7 @@ import dispy.config
 from dispy.config import MsgTimeout, MaxFileSize
 from dispy import _Compute, DispyJob, _DispyJob_, _Node, DispyNode, NodeAllocate, \
     _JobReply, auth_code, num_min, _parse_node_allocs, _XferFile, _dispy_version, \
-    _same_file, _node_ipaddr
+    _same_file, _node_ipaddr, logger
 
 __author__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __email__ = "pgiri@yahoo.com"
@@ -525,7 +525,8 @@ class _Scheduler(object):
                                                    node.avail_cpus)
                         if cpus <= 0:
                             continue
-                        node.cpus = min(node.avail_cpus, cpus)
+                        if cluster.exclusive or self.cooperative:
+                            node.cpus = min(node.avail_cpus, cpus)
                         setup_computations.append((node_alloc.depends, node_alloc.setup_args,
                                                    compute))
                         break
@@ -1060,12 +1061,13 @@ class _Scheduler(object):
                 req = deserialize(req)
                 cluster = self._clusters[req['compute_id']]
                 assert cluster.client_auth == req['auth']
-                # for shared cluster, changing cpus may not be valid, as we
-                # don't maintain cpus per cluster
-                resp = yield self.set_node_cpus(req['node'], req['cpus'])
+                if cluster.exclusive or self.cooperative:
+                    resp = yield self.set_node_cpus(req['node'], req['cpus'])
+                else:
+                    resp = -1
             except Exception:
                 logger.debug(traceback.format_exc())
-                resp = (None, -1)
+                resp = -1
             resp = serialize(resp)
 
         else:
@@ -1351,8 +1353,6 @@ class _Scheduler(object):
             for i in reversed(drop_jobs):
                 node.pending_jobs.remove(i)
             node.clusters.discard(cluster)
-            if cluster.exclusive:
-                node.cpus = node.avail_cpus
             close_nodes.append((Task(node.close, compute, terminate_pending=terminate_pending),
                                 dispy_node))
         cluster._dispy_nodes.clear()
@@ -1448,10 +1448,12 @@ class _Scheduler(object):
             compute = cluster._compute
             for node_alloc in cluster._node_allocs:
                 cpus = node_alloc.allocate(cluster, node.ip_addr, node.name, node.avail_cpus)
-                if cpus > 0:
+                if cpus <= 0:
+                    continue
+                if cluster.exclusive or self.cooperative:
                     node.cpus = min(node.avail_cpus, cpus)
-                    setup_computations.append((node_alloc.depends, node_alloc.setup_args, compute))
-                    break
+                setup_computations.append((node_alloc.depends, node_alloc.setup_args, compute))
+                break
         if setup_computations:
             Task(self.setup_node, node, setup_computations)
 
@@ -1554,26 +1556,35 @@ class _Scheduler(object):
         sock.close()
 
     def send_node_status(self, cluster, dispy_node, status, task=None):
-        if cluster.status_callback:
-            dispy_node.update_time = time.time()
-            cluster.status_callback(status, dispy_node, None)
-        sock = socket.socket(cluster.client_sock_family, socket.SOCK_STREAM)
-        sock = AsyncSocket(sock, keyfile=self.cluster_keyfile, certfile=self.cluster_certfile)
-        sock.settimeout(MsgTimeout)
-        status_info = {'compute_id': cluster._compute.id,
+        status_info = {'compute_id': cluster._compute.id, 'ip_addr': dispy_node.ip_addr,
                        'status': status, 'auth': cluster.client_auth}
-        if status == DispyNode.Initialized:
+        if status == DispyNode.AvailInfo:
+            status_info['avail_info'] = dispy_node.avail_info
+            status_info['tx'] = dispy_node.tx
+            status_info['rx'] = dispy_node.rx
+        elif status == DispyNode.Initialized:
             status_info['dispy_node'] = dispy_node
             node = self._nodes.get(dispy_node.ip_addr, None)
             if node:
                 status_info['node_auth'] = node.auth
                 status_info['node_port'] = node.port
+        elif status == DispyNode.Closed:
+            status_info['tx'] = dispy_node.tx
+            status_info['rx'] = dispy_node.rx
+        elif status == 'node_cpus':
+            status_info['node_cpus'] = dispy_node.cpus
+            status = None
         else:
-            status_info['ip_addr'] = dispy_node.ip_addr
-            if status == DispyNode.AvailInfo:
-                status_info['avail_info'] = dispy_node.avail_info
-                status_info['tx'] = dispy_node.tx
-                status_info['rx'] = dispy_node.rx
+            logger.warning('Ignoring invalid node status %s to %s', status, dispy_node.ip_addr)
+            raise StopIteration
+
+        if cluster.status_callback:
+            dispy_node.update_time = time.time()
+            cluster.status_callback(status, dispy_node, None)
+
+        sock = socket.socket(cluster.client_sock_family, socket.SOCK_STREAM)
+        sock = AsyncSocket(sock, keyfile=self.cluster_keyfile, certfile=self.cluster_certfile)
+        sock.settimeout(MsgTimeout)
         try:
             yield sock.connect((cluster.client_ip_addr, cluster.client_job_result_port))
             yield sock.send_msg('NODE_STATUS:' + serialize(status_info))
@@ -2038,20 +2049,19 @@ class _Scheduler(object):
             raise StopIteration(-1)
         node = self._nodes.get(_node_ipaddr(node), None)
         if node is None:
-            reply = (None, -1)
-        else:
-            if cpus >= 0:
-                node.cpus = min(node.avail_cpus, cpus)
-            elif (node.avail_cpus + cpus) >= 0:
-                node.cpus = node.avail_cpus + cpus
-            cpus = node.cpus
-            for cluster in node.clusters:
-                dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
-                if dispy_node:
-                    dispy_node.cpus = cpus
-            yield self._sched_event.set()
-            reply = (node.ip_addr, node.cpus)
-        raise StopIteration(reply)
+            raise StopIteration(-1)
+        if cpus >= 0:
+            node.cpus = min(node.avail_cpus, cpus)
+        elif (node.avail_cpus + cpus) >= 0:
+            node.cpus = node.avail_cpus + cpus
+        cpus = node.cpus
+        for cluster in node.clusters:
+            dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
+            if dispy_node:
+                dispy_node.cpus = cpus
+                Task(self.send_node_status, cluster, dispy_node, 'node_cpus')
+        yield self._sched_event.set()
+        raise StopIteration(0)
 
     def shutdown(self):
         def _shutdown(self, task=None):
@@ -2115,7 +2125,7 @@ class _Scheduler(object):
 if __name__ == '__main__':
     import argparse
 
-    logger = pycos.Logger('dispyscheduler')
+    logger.name = 'dispyscheduler'
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', dest='config', default='',

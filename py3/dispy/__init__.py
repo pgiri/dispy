@@ -612,7 +612,10 @@ class _Node(object):
         except Exception:
             logger.warning('Transfer of computation "%s" to %s failed', compute.name, self.ip_addr)
             raise StopIteration(-1)
-        if not self.cpus:
+        self.avail_cpus = cpus
+        if self.cpus:
+            self.cpus = min(self.avail_cpus, self.cpus)
+        else:
             self.cpus = cpus
 
         if not isinstance(setup_args, tuple):
@@ -727,6 +730,8 @@ class _Node(object):
         except Exception:
             logger.debug('Deleting computation %s/%s from %s failed',
                          compute.id, compute.name, self.ip_addr)
+        if not self.clusters:
+            self.cpus = self.avail_cpus
 
 
 class _DispyJob_(object):
@@ -1310,6 +1315,7 @@ class _Cluster(object, metaclass=Singleton):
                         if cluster.status_callback:
                             self.worker_Q.put((cluster.status_callback,
                                                (DispyNode.AvailInfo, dispy_node, None)))
+
                 elif info['status'] == DispyNode.Initialized:
                     dispy_node = info['dispy_node']
                     dispy_node.update_time = time.time()
@@ -1324,13 +1330,18 @@ class _Cluster(object, metaclass=Singleton):
                         self._nodes[node.ip_addr] = node
                     node.auth = info.get('node_auth', None)
                     node.port = info.get('node_port', 0)
+                    dispy_node.status = info['status']
                     cluster._dispy_nodes[dispy_node.ip_addr] = dispy_node
                     if cluster.status_callback:
                         self.worker_Q.put((cluster.status_callback,
                                            (DispyNode.Initialized, dispy_node, None)))
+
                 elif info['status'] == DispyNode.Closed:
                     dispy_node = cluster._dispy_nodes.get(info['ip_addr'], None)
                     if dispy_node:
+                        dispy_node.status = info['status']
+                        dispy_node.tx = info['tx']
+                        dispy_node.rx = info['rx']
                         dispy_node.avail_cpus = dispy_node.cpus = 0
                         if cluster.status_callback:
                             self.worker_Q.put((cluster.status_callback,
@@ -1338,6 +1349,16 @@ class _Cluster(object, metaclass=Singleton):
                     node = self._nodes.get(info['ip_addr'], None)
                     if node:
                         node.auth = None
+
+                elif info['status'] == 'node_cpus':
+                    cpus = info.get('node_cpus', None)
+                    dispy_node = cluster._dispy_nodes.get(info['ip_addr'], None)
+                    if dispy_node and isinstance(cpus, int) and cpus >= 0:
+                        dispy_node.cpus = cpus
+                        if cluster.status_callback:
+                            self.worker_Q.put((cluster.status_callback,
+                                               (DispyNode.AvailInfo, dispy_node, None)))
+
                 else:
                     logger.warning('Invalid node status %s from %s:%s ignored',
                                    info['status'], addr[0], addr[1])
@@ -3379,9 +3400,6 @@ class SharedJobCluster(JobCluster):
     def set_node_cpus(self, node, cpus):
         """Similar to 'set_node_cpus' of JobCluster.
         """
-        # setting a node's cpus may affect other clients, so (for now) disable it.
-        return -1
-
         if isinstance(node, DispyNode):
             node = node.ip_addr
         elif isinstance(node, str):
@@ -3399,10 +3417,6 @@ class SharedJobCluster(JobCluster):
             sock.send_msg(b'SET_NODE_CPUS:' + serialize(req))
             reply = sock.recv_msg()
             reply = deserialize(reply)
-            if isinstance(reply, tuple) and reply[0]:
-                node = self._dispy_nodes.get(reply[0], None)
-                if node:
-                    node.cpus = reply[1]
         except Exception:
             logger.warning('Could not connect to scheduler to add node')
             return -1
