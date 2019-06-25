@@ -49,7 +49,7 @@ def compute(n):
     return (dispy_node_ip_addr, file_name, alg, csum.hexdigest())
 
 if __name__ == '__main__':
-    import dispy, sys, os, glob
+    import dispy, sys, os, glob, time
 
     # each node processes a file in 'data_files' with 'NodeAllocate.allocate'
     data_files = glob.glob(os.path.join(os.path.dirname(sys.argv[0]), '*.py'))
@@ -68,6 +68,9 @@ if __name__ == '__main__':
             return cpus
 
     cluster = dispy.JobCluster(compute, nodes=[NodeAllocate('*')], setup=setup, cleanup=cleanup)
+    # wait until (enough) nodes to be setup; alternately, 'cluster_status' can
+    # be used to process nodes found
+    time.sleep(5)
     jobs = []
     for n in range(10):
         job = cluster.submit(n)
