@@ -2884,8 +2884,8 @@ if __name__ == '__main__':
     del _dispy_config['loglevel']
 
     if _dispy_config['dispy_port'] == dispy.config.DispyPort:
-        print('\n  NOTE: Using dispy port %s (was 51347 in earlier versions)\n' %
-              dispy.config.DispyPort)
+        print('\n  NOTE: Using dispy port %s (was 51348 in earlier versions)\n' %
+              eval(dispy.config.NodePort))
     dispy.config.DispyPort = _dispy_config.pop('dispy_port')
     cpus = multiprocessing.cpu_count()
     if _dispy_config['cpus']:
