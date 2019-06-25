@@ -86,6 +86,13 @@ To install dispy, run::
 
    python -m pip install dispy
 
+Release Notes
+-------------
+
+Short summary of changes for each release can be found at `News
+<https://sourceforge.net/p/dispy/news/>`_. Detailed logs / changes are at
+github `commits <https://github.com/pgiri/dispy/commits/master>`_.
+
 Authors
 -------
 * Giridhar Pemmasani
