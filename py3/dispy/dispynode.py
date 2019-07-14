@@ -28,6 +28,7 @@ import struct
 import hashlib
 import re
 import errno
+import gc
 try:
     import psutil
 except ImportError:
@@ -231,6 +232,9 @@ def _dispy_job_func(__dispy_job_name, __dispy_job_code, __dispy_job_globals,
     __dispy_job_reply.stderr = sys.stderr.getvalue()
     __dispy_job_reply.end_time = time.time()
     reply_Q.put(__dispy_job_reply)
+
+    # Automatic gc may not be called before the child process exits
+    gc.collect()
 
 
 def _dispy_terminate_proc(proc_pid, task=None):
