@@ -1069,9 +1069,10 @@ class _DispyNode(object):
                 client = self.clients[_job.compute_id]
                 compute = client.compute
                 assert compute.scheduler_ip_addr == self.scheduler['ip_addr']
-            except Exception:
+            except Exception as e:
+                dispynode_logger.debug('job_request fail %s', e)
                 try:
-                    yield conn.send_msg('NAK'.encode())
+                    yield conn.send_msg(('NAK %s' % e).encode())
                 except Exception:
                     pass
                 raise StopIteration
