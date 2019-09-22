@@ -2042,9 +2042,15 @@ class _DispyNode(object):
                         yield sock.connect((compute.scheduler_ip_addr, compute.scheduler_port))
                         yield sock.send_msg('TERMINATED:'.encode() + serialize(info))
                     except Exception:
-                        pass
+                        dispynode_logger.info('Fail to terminate Zombie %s', ee)
                     finally:
                         sock.close()
+
+                    # Delete node otherwise the zombie nodes keep consuming
+                    # jobs without doing real computation
+                    dispynode_logger.info('Terminate Zombie')
+                    raise StopIteration
+
                 if (not self.scheduler['auth']):
                     self.pulse_interval = self.ping_interval
                     yield self.broadcast_ping_msg(task=task)
