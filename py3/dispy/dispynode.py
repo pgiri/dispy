@@ -28,6 +28,7 @@ import struct
 import hashlib
 import re
 import errno
+import gc
 try:
     import psutil
 except ImportError:
@@ -231,6 +232,9 @@ def _dispy_job_func(__dispy_job_name, __dispy_job_code, __dispy_job_globals,
     __dispy_job_reply.stderr = sys.stderr.getvalue()
     __dispy_job_reply.end_time = time.time()
     reply_Q.put(__dispy_job_reply)
+
+    # Automatic gc may not be called before the child process exits
+    gc.collect()
 
 
 def _dispy_terminate_proc(proc_pid, task=None):
@@ -1065,9 +1069,10 @@ class _DispyNode(object):
                 client = self.clients[_job.compute_id]
                 compute = client.compute
                 assert compute.scheduler_ip_addr == self.scheduler['ip_addr']
-            except Exception:
+            except Exception as e:
+                dispynode_logger.debug('job_request fail %s', e)
                 try:
-                    yield conn.send_msg('NAK'.encode())
+                    yield conn.send_msg(('NAK %s' % e).encode())
                 except Exception:
                     pass
                 raise StopIteration
@@ -2037,9 +2042,15 @@ class _DispyNode(object):
                         yield sock.connect((compute.scheduler_ip_addr, compute.scheduler_port))
                         yield sock.send_msg('TERMINATED:'.encode() + serialize(info))
                     except Exception:
-                        pass
+                        dispynode_logger.info('Fail to terminate Zombie %s', ee)
                     finally:
                         sock.close()
+
+                    # Delete node otherwise the zombie nodes keep consuming
+                    # jobs without doing real computation
+                    dispynode_logger.info('Terminate Zombie')
+                    raise StopIteration
+
                 if (not self.scheduler['auth']):
                     self.pulse_interval = self.ping_interval
                     yield self.broadcast_ping_msg(task=task)
