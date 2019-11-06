@@ -21,7 +21,9 @@ import traceback
 import pycos
 from pycos import Task, AsyncSocket, serialize, deserialize
 import dispy
-from dispy import DispyJob, DispyNodeAvailInfo, logger, _dispy_version, MsgTimeout
+import dispy.config
+from dispy.config import MsgTimeout
+from dispy import DispyJob, DispyNodeAvailInfo, logger, _dispy_version
 
 if sys.version_info.major > 2:
     from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -396,9 +398,12 @@ class DispyAdminServer(object):
             self.send_error(400)
             return
 
-    def __init__(self, DocumentRoot, secret='', http_host='localhost', http_port=8181,
-                 info_port=51347, node_port=51348, poll_interval=60, ping_interval=600,
-                 ip_addrs=[], ipv4_udp_multicast=False, certfile=None, keyfile=None):
+    def __init__(self, DocumentRoot, secret='', http_host='localhost',
+                 poll_interval=60, ping_interval=600, ip_addrs=[], ipv4_udp_multicast=False,
+                 certfile=None, keyfile=None):
+        http_port = dispy.config.HTTPServerPort
+        self.node_port = eval(dispy.config.NodePort)
+        self.info_port = eval(dispy.config.ClientPort)
         self.lock = threading.Lock()
         self.client_uid = None
         self.client_uid_time = 0
@@ -407,11 +412,9 @@ class DispyAdminServer(object):
         if poll_interval < 1:
             logger.warning('invalid poll_interval value %s; it must be at least 1', poll_interval)
             poll_interval = 1
-        self.info_port = info_port
         self.poll_interval = poll_interval
         self.ping_interval = ping_interval
         self.secret = secret
-        self.node_port = node_port
         self.keyfile = keyfile
         self.certfile = certfile
         self.ipv4_udp_multicast = bool(ipv4_udp_multicast)
@@ -428,7 +431,6 @@ class DispyAdminServer(object):
             self.addrinfos[addrinfo.ip] = addrinfo
         if not self.addrinfos:
             raise Exception('No valid IP address found')
-        self.http_port = http_port
         self.sign = hashlib.sha1(os.urandom(20))
         for ip_addr in self.addrinfos:
             self.sign.update(ip_addr.encode())
@@ -849,12 +851,13 @@ if __name__ == '__main__':
                     help='"secret" to access cluster (must be same as "admin_secret" to dispynode)')
     parser.add_argument('--http_host', dest='http_host', default='localhost',
                         help='name or IP address where http server starts')
-    parser.add_argument('--http_port', dest='http_port', default='8181',
-                        help='port number where http server starts')
-    parser.add_argument('--info_port', dest='info_port', default='51347',
+    parser.add_argument('--http_port', dest='http_port', default=dispy.config.HTTPServerPort,
+                        type=int, help='port number where http server starts')
+    parser.add_argument('--info_port', dest='info_port', default=eval(dispy.config.ClientPort),
+                        type=int,
                         help='port number where nodes send information (same as client port)')
-    parser.add_argument('--node_port', dest='node_port', default='51348',
-                        help='port number where nodes run')
+    parser.add_argument('--node_port', dest='node_port', default=eval(dispy.config.NodePort),
+                        type=int, help='port number where nodes run')
     parser.add_argument('--poll_interval', dest='poll_interval', default='60',
                         help='interval to collect latest status from nodes')
     parser.add_argument('--ping_interval', dest='ping_interval', default='600',
@@ -884,9 +887,6 @@ if __name__ == '__main__':
         if cfg['ip_addrs']:
             cfg['ip_addrs'] = eval(cfg['ip_addrs'])
         config = cfg
-    config['http_port'] = int(config['http_port'])
-    config['info_port'] = int(config['info_port'])
-    config['node_port'] = int(config['node_port'])
     config['poll_interval'] = int(config['poll_interval'])
     config['ping_interval'] = int(config['ping_interval'])
     config.pop('config', None)
@@ -900,6 +900,9 @@ if __name__ == '__main__':
         cfg.close()
         exit(0)
 
+    dispy.config.HTTPServerPort = int(config.pop('http_port'))
+    dispy.config.ClientPort = str(int(config.pop('info_port')))
+    dispy.config.NodePort = str(int(config.pop('node_port')))
     server = DispyAdminServer(DocumentRoot, **config)
     while 1:
         try:
