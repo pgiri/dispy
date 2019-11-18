@@ -18,7 +18,7 @@ if len(sys.argv) > 1 and sys.argv[1] == 'sdist':
     assert os.path.isdir('py3')
     shutil.rmtree('py3.7', ignore_errors=True)
     shutil.copytree('py3', 'py3.7')
-    for path in ['py3.7', os.path.join('py3.7', 'dispy')]:
+    for path in ['py3.7']:
         for filename in os.listdir(path):
             if filename.endswith('.py'):
                 filename = os.path.join(path, filename)
@@ -33,7 +33,7 @@ if len(sys.argv) > 1 and sys.argv[1] == 'sdist':
                     fd.write(''.join(lines))
                 os.chmod(filename, sbuf.st_mode)
 
-with open(os.path.join(base_dir, 'dispy', '__init__.py')) as fd:
+with open(os.path.join(base_dir, '__init__.py')) as fd:
     regex = re.compile(r'^__version__ = "([\d\.]+)"$')
     for line in fd:
         match = regex.match(line)
@@ -49,13 +49,13 @@ setup(
     url='http://dispy.sourceforge.net',
     author='Giridhar Pemmasani',
     author_email='pgiri@yahoo.com',
-    package_dir={'':base_dir},
+    package_dir={'dispy': base_dir},
     packages=['dispy'],
     package_data = {
-        'dispy' : ['data/*', 'examples/*', 'doc/*'],
+        'dispy' : ['data/*', 'examples/*'],
     },
-    install_requires=['pycos >= 4.8.11'],
-    scripts=[os.path.join(base_dir, 'dispy', script) for script in
+    install_requires=['pycos >= 4.8.13'],
+    scripts=[os.path.join(base_dir, script) for script in
              ['dispynode.py', 'dispynetrelay.py', 'dispyscheduler.py', 'dispy_cmd.py']],
     license='Apache 2.0',
     platforms='any',
