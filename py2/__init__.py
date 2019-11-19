@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python
 
 """
 dispy: Distribute computations among CPUs/cores on a single machine or machines
@@ -21,7 +21,7 @@ import shelve
 import datetime
 import atexit
 import functools
-import queue
+import Queue as queue
 import numbers
 import collections
 import struct
@@ -48,17 +48,12 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "Apache 2.0"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.11.0"
+__version__ = "4.11.1"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
 _dispy_version = __version__
 logger = pycos.Logger('dispy')
-# PyPI / pip packaging adjusts assertion below for Python 3.7+
-assert sys.version_info.major == 3 and sys.version_info.minor < 7, \
-    ('\n\n  This file is not suitable for Python version %s.%s directly;\n'
-     '  see installation instructions at %s\n' %
-     (sys.version_info.major, sys.version_info.minor, __url__))
 
 
 class DispyJob(object):
@@ -283,7 +278,7 @@ def _same_file(tgt, xf):
 
 
 def auth_code(secret, sign):
-    return hashlib.sha1((secret + sign).encode()).hexdigest().encode()
+    return hashlib.sha1(secret + sign).hexdigest()
 
 
 def _node_ipaddr(node):
@@ -541,7 +536,7 @@ class _XferFile(object):
     """
     def __init__(self, dep, compute_id=None):
         cwd = os.getcwd()
-        if isinstance(dep, str):
+        if isinstance(dep, basestring):
             name = os.path.abspath(dep)
             if name.startswith(cwd):
                 dst = os.path.dirname(name[len(cwd):].lstrip(os.sep))
@@ -605,7 +600,7 @@ class _Node(object):
         compute.scheduler_ip_addr = self.scheduler_ip_addr
         compute.node_ip_addr = self.ip_addr
         compute.exclusive = exclusive
-        reply = yield self.send(b'COMPUTE:' + serialize(compute), task=task)
+        reply = yield self.send('COMPUTE:' + serialize(compute), task=task)
         try:
             cpus = deserialize(reply)
             assert isinstance(cpus, int) and cpus > 0
@@ -651,8 +646,6 @@ class _Node(object):
         msg = serialize({'compute_id': compute.id, 'setup_args': setup_args})
         resp = yield self.send('SETUP:'.encode() + msg, timeout=0, task=task)
         if not isinstance(resp, int) or resp < 0:
-            if isinstance(resp, bytearray):
-                resp = resp.decode()
             logger.warning('Setup of computation "%s" on %s failed: %s',
                            compute.name, self.ip_addr, resp)
             yield self.close(compute, task=task)
@@ -681,7 +674,7 @@ class _Node(object):
         finally:
             sock.close()
 
-        if resp == b'ACK':
+        if resp == 'ACK':
             resp = len(msg)
             self.tx += len(msg)
         raise StopIteration(resp)
@@ -694,7 +687,7 @@ class _Node(object):
         try:
             yield sock.connect((self.ip_addr, self.port))
             yield sock.sendall(self.auth)
-            yield sock.send_msg(b'FILEXFER:' + serialize(xf))
+            yield sock.send_msg('FILEXFER:' + serialize(xf))
             recvd = yield sock.recv_msg()
             recvd = deserialize(recvd)
             with open(xf.name, 'rb') as fd:
@@ -726,7 +719,7 @@ class _Node(object):
         req = {'compute_id': compute.id, 'auth': compute.auth, 'node_ip_addr': self.ip_addr,
                'terminate_pending': terminate_pending}
         try:
-            yield self.send(b'CLOSE:' + serialize(req), reply=True, task=task)
+            yield self.send('CLOSE:' + serialize(req), reply=True, task=task)
         except Exception:
             logger.debug('Deleting computation %s/%s from %s failed',
                          compute.id, compute.name, self.ip_addr)
@@ -749,13 +742,13 @@ class _DispyJob_(object):
         self._kwargs = self.job._kwargs
         self.uid = None
         self.compute_id = compute_id
-        self.hash = ''.join(hex(_)[2:] for _ in os.urandom(10))
+        self.hash = os.urandom(10).encode('hex')
         self.node = None
         self.pinned = None
         self.xfer_files = []
         self.code = ''
         for dep in job_deps:
-            if isinstance(dep, str) or inspect.ismodule(dep):
+            if isinstance(dep, basestring) or inspect.ismodule(dep):
                 self.xfer_files.append(_XferFile(dep, compute_id))
             elif (inspect.isfunction(dep) or inspect.isclass(dep) or
                   (hasattr(dep, '__class__') and hasattr(dep, '__module__'))):
@@ -775,14 +768,14 @@ class _DispyJob_(object):
 
     def __getstate__(self):
         state = {'uid': self.uid, 'hash': self.hash, 'compute_id': self.compute_id,
-                 '_args': self._args if isinstance(self._args, bytes) else serialize(self._args),
-                 '_kwargs': self._kwargs if isinstance(self._kwargs, bytes)
+                 '_args': self._args if isinstance(self._args, str) else serialize(self._args),
+                 '_kwargs': self._kwargs if isinstance(self._kwargs, str)
                                          else serialize(self._kwargs),
                  'xfer_files': self.xfer_files, 'code': self.code}
         return state
 
     def __setstate__(self, state):
-        for k, v in state.items():
+        for k, v in state.iteritems():
             setattr(self, k, v)
 
     def __lt__(self, other):
@@ -802,7 +795,7 @@ class _DispyJob_(object):
                 logger.warning('Transfer of file "%s" to %s failed', xf.name, self.node.ip_addr)
                 raise Exception(-1)
             tx += sent
-        resp = yield self.node.send(b'JOB:' + serialize(self), task=task)
+        resp = yield self.node.send('JOB:' + serialize(self), task=task)
         # TODO: deal with NAKs (reschedule?)
         if isinstance(resp, int) and resp >= 0:
             tx += resp
@@ -838,9 +831,10 @@ class _JobReply(object):
         self.end_time = 0
 
 
-class _Cluster(object, metaclass=Singleton):
+class _Cluster(object):
     """Internal use only.
     """
+    __metaclass__ = Singleton
 
     def __init__(self, ip_addr=None, ext_ip_addr=None, ipv4_udp_multicast=False, shared=False,
                  secret='', keyfile=None, certfile=None, recover_file=None):
@@ -868,6 +862,9 @@ class _Cluster(object, metaclass=Singleton):
                 if not addrinfo:
                     logger.warning('Ignoring invalid ip_addr %s', ip_addr)
                     continue
+                if addrinfo.family == socket.AF_INET6 and not hasattr(socket, 'inet_pton'):
+                    if os.name == 'nt':
+                        raise Exception('"win_inet_pton" module is required for IPv6')
                 if ext_ip_addr:
                     ext_ip_addr = _node_ipaddr(ext_ip_addr)
                     if not ext_ip_addr:
@@ -954,13 +951,6 @@ class _Cluster(object, metaclass=Singleton):
             for bind_addr, addrinfo in udp_addrinfos.items():
                 self.udp_tasks.append(Task(self.udp_server, bind_addr, addrinfo, port_bound_event))
 
-            # Under Windows dispynode may send objects with
-            # '__mp_main__' scope, so make an alias to '__main__'.
-            # TODO: Make alias even if client is not Windows? It is
-            # possible the client is not Windows, but a node is.
-            if os.name == 'nt' and '__mp_main__' not in sys.modules:
-                sys.modules['__mp_main__'] = sys.modules['__main__']
-
     def udp_server(self, bind_addr, addrinfo, port_bound_event, task=None):
         # generator
         task.set_daemon()
@@ -1001,9 +991,9 @@ class _Cluster(object, metaclass=Singleton):
                 msg, addr = yield udp_sock.recvfrom(1000)
             except GeneratorExit:
                 break
-            if msg.startswith(b'PING:'):
+            if msg.startswith('PING:'):
                 try:
-                    info = deserialize(msg[len(b'PING:'):])
+                    info = deserialize(msg[len('PING:'):])
                     if info['version'] != _dispy_version:
                         logger.warning('Ignoring %s due to version mismatch', addr[0])
                         continue
@@ -1027,7 +1017,7 @@ class _Cluster(object, metaclass=Singleton):
                 try:
                     yield sock.connect((info['ip_addr'], info['port']))
                     yield sock.sendall(auth)
-                    yield sock.send_msg(b'PING:' + serialize(msg))
+                    yield sock.send_msg('PING:' + serialize(msg))
                 except GeneratorExit:
                     break
                 except Exception:
@@ -1035,9 +1025,9 @@ class _Cluster(object, metaclass=Singleton):
                 finally:
                     sock.close()
 
-            elif msg.startswith(b'TERMINATED:'):
+            elif msg.startswith('TERMINATED:'):
                 try:
-                    info = deserialize(msg[len(b'TERMINATED:'):])
+                    info = deserialize(msg[len('TERMINATED:'):])
                     assert info['ip_addr']
                     # socket.inet_aton(status['ip_addr'])
                 except Exception:
@@ -1090,23 +1080,23 @@ class _Cluster(object, metaclass=Singleton):
         # generator
         conn.settimeout(MsgTimeout)
         msg = yield conn.recv_msg()
-        if msg.startswith(b'JOB_REPLY:'):
+        if msg.startswith('JOB_REPLY:'):
             try:
-                info = deserialize(msg[len(b'JOB_REPLY:'):])
+                info = deserialize(msg[len('JOB_REPLY:'):])
             except Exception:
                 logger.warning('Invalid job reply from %s:%s ignored', addr[0], addr[1])
             else:
                 yield self.job_reply_process(info, len(msg), conn, addr)
             conn.close()
 
-        elif msg.startswith(b'PULSE:'):
-            msg = msg[len(b'PULSE:'):]
+        elif msg.startswith('PULSE:'):
+            msg = msg[len('PULSE:'):]
             try:
                 info = deserialize(msg)
                 node = self._nodes[info['ip_addr']]
                 assert 0 <= info['cpus'] <= node.cpus
                 node.last_pulse = time.time()
-                yield conn.send_msg(b'PULSE')
+                yield conn.send_msg('PULSE')
                 if info['avail_info']:
                     node.avail_info = info['avail_info']
                     for cluster in node.clusters:
@@ -1123,11 +1113,11 @@ class _Cluster(object, metaclass=Singleton):
                 # logger.debug(traceback.format_exc())
             conn.close()
 
-        elif msg.startswith(b'JOB_STATUS:'):
+        elif msg.startswith('JOB_STATUS:'):
             conn.close()
             # message from dispyscheduler
             try:
-                info = deserialize(msg[len(b'JOB_STATUS:'):])
+                info = deserialize(msg[len('JOB_STATUS:'):])
                 _job = self._sched_jobs[info['uid']]
                 assert _job.hash == info['hash']
             except Exception:
@@ -1154,10 +1144,10 @@ class _Cluster(object, metaclass=Singleton):
                             if cluster.status_callback:
                                 self.worker_Q.put((cluster.status_callback,
                                                    (job.status, dispy_node, copy.copy(job))))
-        elif msg.startswith(b'PONG:'):
+        elif msg.startswith('PONG:'):
             conn.close()
             try:
-                info = deserialize(msg[len(b'PONG:'):])
+                info = deserialize(msg[len('PONG:'):])
                 if info['version'] != _dispy_version:
                     logger.warning('Ignoring node %s due to version mismatch: %s != %s',
                                    info['ip_addr'], info['version'], _dispy_version)
@@ -1170,11 +1160,11 @@ class _Cluster(object, metaclass=Singleton):
             else:
                 self.add_node(info)
 
-        elif msg.startswith(b'PING:'):
+        elif msg.startswith('PING:'):
             sock_family = conn.family
             conn.close()
             try:
-                info = deserialize(msg[len(b'PING:'):])
+                info = deserialize(msg[len('PING:'):])
                 if info['version'] != _dispy_version:
                     logger.warning('Ignoring %s due to version mismatch', addr[0])
                     raise StopIteration
@@ -1199,15 +1189,15 @@ class _Cluster(object, metaclass=Singleton):
             try:
                 yield sock.connect((info['ip_addr'], info['port']))
                 yield sock.sendall(auth)
-                yield sock.send_msg(b'PING:' + serialize(msg))
+                yield sock.send_msg('PING:' + serialize(msg))
             except Exception:
                 logger.debug(traceback.format_exc())
             finally:
                 sock.close()
 
-        elif msg.startswith(b'FILEXFER:'):
+        elif msg.startswith('FILEXFER:'):
             try:
-                xf = deserialize(msg[len(b'FILEXFER:'):])
+                xf = deserialize(msg[len('FILEXFER:'):])
                 msg = yield conn.recv_msg()
                 job_reply = deserialize(msg)
             except Exception:
@@ -1216,10 +1206,10 @@ class _Cluster(object, metaclass=Singleton):
                 yield self.file_xfer_process(job_reply, xf, conn, addr)
             conn.close()
 
-        elif msg.startswith(b'NODE_CPUS:'):
+        elif msg.startswith('NODE_CPUS:'):
             conn.close()
             try:
-                info = deserialize(msg[len(b'NODE_CPUS:'):])
+                info = deserialize(msg[len('NODE_CPUS:'):])
                 node = self._nodes.get(info['ip_addr'], None)
                 if not node:
                     raise StopIteration
@@ -1240,7 +1230,7 @@ class _Cluster(object, metaclass=Singleton):
             if cpus > node.avail_cpus:
                 node.avail_cpus = cpus
                 setup_computations = []
-                for cluster in self._clusters.values():
+                for cluster in self._clusters.itervalues():
                     if cluster in node.clusters:
                         continue
                     compute = cluster._compute
@@ -1264,10 +1254,10 @@ class _Cluster(object, metaclass=Singleton):
                 if dispy_node:
                     dispy_node.cpus = cpus
 
-        elif msg.startswith(b'TERMINATED:'):
+        elif msg.startswith('TERMINATED:'):
             conn.close()
             try:
-                info = deserialize(msg[len(b'TERMINATED:'):])
+                info = deserialize(msg[len('TERMINATED:'):])
             except Exception:
                 # logger.debug(traceback.format_exc())
                 pass
@@ -1281,7 +1271,7 @@ class _Cluster(object, metaclass=Singleton):
                     raise StopIteration
                 logger.debug('Removing node %s', node.ip_addr)
                 if node.clusters:
-                    dead_jobs = [_job for _job in self._sched_jobs.values()
+                    dead_jobs = [_job for _job in self._sched_jobs.itervalues()
                                  if _job.node is not None and _job.node.ip_addr == node.ip_addr]
                     clusters = list(node.clusters)
                     node.clusters = set()
@@ -1295,11 +1285,11 @@ class _Cluster(object, metaclass=Singleton):
                                                (DispyNode.Closed, dispy_node, None)))
                     self.reschedule_jobs(dead_jobs)
 
-        elif msg.startswith(b'NODE_STATUS:'):
+        elif msg.startswith('NODE_STATUS:'):
             conn.close()
             # this message is from dispyscheduler for SharedJobCluster
             try:
-                info = deserialize(msg[len(b'NODE_STATUS:'):])
+                info = deserialize(msg[len('NODE_STATUS:'):])
                 cluster = self._clusters[info['compute_id']]
                 assert info['auth'] == cluster._compute.auth
                 status = info['status']
@@ -1364,23 +1354,23 @@ class _Cluster(object, metaclass=Singleton):
                     logger.warning('Invalid node status %s from %s:%s ignored',
                                    info['status'], addr[0], addr[1])
 
-        elif msg.startswith(b'SCHEDULED:'):
+        elif msg.startswith('SCHEDULED:'):
             try:
-                info = deserialize(msg[len(b'SCHEDULED:'):])
+                info = deserialize(msg[len('SCHEDULED:'):])
                 assert self.shared
                 cluster = self._clusters.get(info['compute_id'], None)
                 assert info['pulse_interval'] is None or info['pulse_interval'] >= 1
                 self.pulse_interval = info['pulse_interval']
                 self.timer_task.resume(True)
-                yield conn.send_msg(b'ACK')
+                yield conn.send_msg('ACK')
                 cluster._scheduled_event.set()
             except Exception:
-                yield conn.send_msg(b'NAK')
+                yield conn.send_msg('NAK')
             conn.close()
 
-        elif msg.startswith(b'RELAY_INFO:'):
+        elif msg.startswith('RELAY_INFO:'):
             try:
-                info = deserialize(msg[len(b'RELAY_INFO:'):])
+                info = deserialize(msg[len('RELAY_INFO:'):])
                 assert info['version'] == _dispy_version
                 msg = {'sign': self.sign, 'ip_addrs': [info['scheduler_ip_addr']],
                        'port': self.port}
@@ -1416,7 +1406,7 @@ class _Cluster(object, metaclass=Singleton):
             if self.pulse_interval and (now - last_pulse_time) >= self.pulse_interval:
                 last_pulse_time = now
                 if self.shared:
-                    clusters = list(self._clusters.values())
+                    clusters = self._clusters.values()
                     for cluster in clusters:
                         msg = {'client_ip_addr': cluster._compute.scheduler_ip_addr,
                                'client_port': cluster._compute.job_result_port}
@@ -1426,20 +1416,20 @@ class _Cluster(object, metaclass=Singleton):
                         try:
                             yield sock.connect((cluster.scheduler_ip_addr, cluster.scheduler_port))
                             yield sock.sendall(cluster._scheduler_auth)
-                            yield sock.send_msg(b'PULSE:' + serialize(msg))
+                            yield sock.send_msg('PULSE:' + serialize(msg))
                         except Exception:
                             pass
                         sock.close()
                 else:
                     dead_nodes = {}
-                    for node in self._nodes.values():
+                    for node in self._nodes.itervalues():
                         if node.busy and node.last_pulse is not None and \
                            (node.last_pulse + (5 * self.pulse_interval)) <= now:
                             logger.warning('Node %s is not responding; removing it (%s, %s, %s)',
                                            node.ip_addr, node.busy, node.last_pulse, now)
                             dead_nodes[node.ip_addr] = node
                     if dead_nodes:
-                        for node in dead_nodes.values():
+                        for node in dead_nodes.itervalues():
                             clusters = list(node.clusters)
                             node.clusters = set()
                             for cluster in clusters:
@@ -1451,18 +1441,18 @@ class _Cluster(object, metaclass=Singleton):
                                     self.worker_Q.put((cluster.status_callback,
                                                        (DispyNode.Closed, dispy_node, None)))
                             del self._nodes[node.ip_addr]
-                        dead_jobs = [_job for _job in self._sched_jobs.values()
+                        dead_jobs = [_job for _job in self._sched_jobs.itervalues()
                                      if _job.node is not None and _job.node.ip_addr in dead_nodes]
                         self.reschedule_jobs(dead_jobs)
 
             if self.ping_interval and (now - last_ping_time) >= self.ping_interval:
                 last_ping_time = now
-                for cluster in self._clusters.values():
+                for cluster in self._clusters.itervalues():
                     Task(self.discover_nodes, cluster, cluster._node_allocs)
 
             if self.poll_interval and (now - last_poll_time) >= self.poll_interval:
                 last_poll_time = now
-                for cluster in self._clusters.values():
+                for cluster in self._clusters.itervalues():
                     Task(self.poll_job_results, cluster)
 
     def file_xfer_process(self, job_reply, xf, sock, addr):
@@ -1516,9 +1506,9 @@ class _Cluster(object, metaclass=Singleton):
                                keyfile=self.keyfile, certfile=self.certfile)
         tcp_sock.settimeout(MsgTimeout)
         try:
-            yield tcp_sock.connect((ip_addr, port))
-            yield tcp_sock.sendall(b'x' * len(self.auth))
-            yield tcp_sock.send_msg(b'PING:' + serialize(ping_msg))
+            yield tcp_sock.connect((ip_addr, int(port)))
+            yield tcp_sock.sendall('x' * len(self.auth))
+            yield tcp_sock.send_msg('PING:' + serialize(ping_msg))
         except Exception:
             pass
         tcp_sock.close()
@@ -1545,7 +1535,7 @@ class _Cluster(object, metaclass=Singleton):
                 bc_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, addrinfo.ifn)
             bc_sock.bind((addrinfo.ip, 0))
             try:
-                yield bc_sock.sendto(b'PING:' + serialize(ping_msg), (addrinfo.broadcast, port))
+                yield bc_sock.sendto('PING:' + serialize(ping_msg), (addrinfo.broadcast, port))
             except Exception:
                 pass
             bc_sock.close()
@@ -1576,7 +1566,7 @@ class _Cluster(object, metaclass=Singleton):
             sock.settimeout(MsgTimeout)
             try:
                 req = {'compute_id': cluster._compute.id, 'auth': cluster._compute.auth}
-                reply = yield node.send(b'PENDING_JOBS:' + serialize(req))
+                reply = yield node.send('PENDING_JOBS:' + serialize(req))
                 reply = deserialize(reply)
             except Exception:
                 logger.debug(traceback.format_exc())
@@ -1596,7 +1586,7 @@ class _Cluster(object, metaclass=Singleton):
                     req = {'compute_id': cluster._compute.id, 'auth': cluster._compute.auth,
                            'uid': uid, 'hash': _job.hash}
                     yield conn.sendall(node.auth)
-                    yield conn.send_msg(b'RETRIEVE_JOB:' + serialize(req))
+                    yield conn.send_msg('RETRIEVE_JOB:' + serialize(req))
                     msg = yield conn.recv_msg()
                     reply = deserialize(msg)
                 except Exception:
@@ -1663,7 +1653,7 @@ class _Cluster(object, metaclass=Singleton):
                 self.timer_task.resume(True)
 
         Task(self.discover_nodes, cluster, cluster._node_allocs)
-        for ip_addr, node in self._nodes.items():
+        for ip_addr, node in self._nodes.iteritems():
             if cluster in node.clusters:
                 continue
             for node_alloc in cluster._node_allocs:
@@ -1690,7 +1680,7 @@ class _Cluster(object, metaclass=Singleton):
             yield sock.sendall(cluster._scheduler_auth)
             req = {'compute_id': cluster._compute.id, 'auth': cluster._compute.auth,
                    'terminate_pending': cluster._complete.is_set()}
-            yield sock.send_msg(b'CLOSE:' + serialize(req))
+            yield sock.send_msg('CLOSE:' + serialize(req))
             sock.close()
         else:
             cid = cluster._compute.id
@@ -1700,7 +1690,7 @@ class _Cluster(object, metaclass=Singleton):
             # yield); otherwise, scheduler may access removed cluster
             # through node.clusters
             close_nodes = []
-            for dispy_node in cluster._dispy_nodes.values():
+            for dispy_node in cluster._dispy_nodes.itervalues():
                 node = self._nodes.get(dispy_node.ip_addr, None)
                 if not node:
                     continue
@@ -1798,7 +1788,7 @@ class _Cluster(object, metaclass=Singleton):
             logger.debug('Node %s rediscovered', info['ip_addr'])
             node.port = info['port']
             if node.auth is not None:
-                dead_jobs = [_job for _job in self._sched_jobs.values()
+                dead_jobs = [_job for _job in self._sched_jobs.itervalues()
                              if _job.node is not None and _job.node.ip_addr == node.ip_addr]
                 self.reschedule_jobs(dead_jobs)
                 node.busy = 0
@@ -1815,7 +1805,7 @@ class _Cluster(object, metaclass=Singleton):
         setup_computations = []
         node.name = info['name']
         node.scheduler_ip_addr = info['scheduler_ip_addr']
-        for cluster in self._clusters.values():
+        for cluster in self._clusters.itervalues():
             if cluster in node.clusters:
                 continue
             compute = cluster._compute
@@ -1863,9 +1853,9 @@ class _Cluster(object, metaclass=Singleton):
                 func(*args)
             except Exception:
                 if isinstance(func, types.FunctionType):
-                    name = func.__name__
+                    name = func.func_name
                 elif isinstance(getattr(func, 'func', None), types.FunctionType):
-                    name = func.func.__name__
+                    name = func.func.func_name
                 else:
                     name = ''
                 logger.warning('Callback %s failed: %s', name, traceback.format_exc())
@@ -1916,7 +1906,7 @@ class _Cluster(object, metaclass=Singleton):
                 node.cpu_time += reply.end_time - reply.start_time
                 node.last_pulse = time.time()
                 self._sched_event.set()
-            yield sock.send_msg(b'ACK')
+            yield sock.send_msg('ACK')
             raise StopIteration
         if node:
             node.last_pulse = time.time()
@@ -1976,7 +1966,7 @@ class _Cluster(object, metaclass=Singleton):
                 self.worker_Q.put((cluster.status_callback, (reply.status, dispy_node,
                                                              copy.copy(job))))
             self._sched_event.set()
-        yield sock.send_msg(b'ACK')
+        yield sock.send_msg('ACK')
 
     def reschedule_jobs(self, dead_jobs):
         if not dead_jobs:
@@ -1996,7 +1986,7 @@ class _Cluster(object, metaclass=Singleton):
                 dispy_job.ip_addr = None
                 _job.node = None
                 # TODO: call 'status_callback'?
-                # _job.hash = ''.join(hex(x)[2:] for x in os.urandom(10))
+                # _job.hash = os.urandom(10).encode('hex')
                 cluster._jobs.append(_job)
             else:
                 dispy_job = _job.job
@@ -2067,17 +2057,17 @@ class _Cluster(object, metaclass=Singleton):
         if ret or not self._abandoned_jobs:
             return ret
         cid = cluster._compute.id
-        for _job in self._abandoned_jobs.values():
+        for _job in self._abandoned_jobs.itervalues():
             if _job.compute_id == cid:
                 _job.finish(DispyJob.Abandoned)
-        self._abandoned_jobs = {uid: _job for uid, _job in self._abandoned_jobs.items()
+        self._abandoned_jobs = {uid: _job for uid, _job in self._abandoned_jobs.iteritems()
                                 if _job.compute_id != cid}
         return 0
 
     def load_balance_schedule(self):
         host = None
         load = 1.0
-        for node in self._nodes.values():
+        for node in self._nodes.itervalues():
             if node.busy >= node.cpus:
                 continue
             if node.pending_jobs:
@@ -2093,7 +2083,7 @@ class _Cluster(object, metaclass=Singleton):
     def _schedule_jobs(self, task=None):
         # generator
         while not self.terminate:
-            # n = sum(len(cluster._jobs) for cluster in self._clusters.values())
+            # n = sum(len(cluster._jobs) for cluster in self._clusters.itervalues())
             node = self.select_job_node()
             if not node:
                 self._sched_event.clear()
@@ -2123,7 +2113,7 @@ class _Cluster(object, metaclass=Singleton):
         self._sched_jobs = {}
         for udp_task in self.udp_tasks:
             udp_task.terminate()
-        for cid in list(self._clusters.keys()):
+        for cid in self._clusters.keys():
             cluster = self._clusters[cid]
             if not hasattr(cluster, '_compute'):
                 # cluster is closed
@@ -2141,7 +2131,7 @@ class _Cluster(object, metaclass=Singleton):
                         dispy_node.update_time = time.time()
                         self.worker_Q.put((cluster.status_callback,
                                            (status, dispy_node, copy.copy(dispy_job))))
-            for dispy_node in cluster._dispy_nodes.values():
+            for dispy_node in cluster._dispy_nodes.itervalues():
                 node = self._nodes.get(dispy_node.ip_addr, None)
                 if not node:
                     continue
@@ -2215,7 +2205,7 @@ class _Cluster(object, metaclass=Singleton):
         # don't send this status - when job is terminated status/callback get called
         logger.debug('Job %s / %s is being terminated', _job.job.id, _job.uid)
         try:
-            resp = yield _job.node.send(b'TERMINATE_JOB:' + serialize(_job), reply=False, task=task)
+            resp = yield _job.node.send('TERMINATE_JOB:' + serialize(_job), reply=False, task=task)
         except Exception:
             resp = -1
         if resp < 0:
@@ -2353,7 +2343,7 @@ class _Cluster(object, metaclass=Singleton):
                 yield sock.connect((node.ip_addr, node.port))
                 yield sock.sendall(node.auth)
                 req = {'compute_id': cluster._compute.id, 'auth': cluster._compute.auth}
-                yield sock.send_msg(b'JOBS:' + serialize(req))
+                yield sock.send_msg('JOBS:' + serialize(req))
                 info = yield sock.recv_msg()
                 _jobs = [self._sched_jobs.get(uid, None) for uid in deserialize(info)]
                 jobs = [_job.job for _job in _jobs if _job]
@@ -2362,7 +2352,7 @@ class _Cluster(object, metaclass=Singleton):
                 jobs = []
             sock.close()
         else:
-            jobs = [_job.job for _job in self._sched_jobs.values()
+            jobs = [_job.job for _job in self._sched_jobs.itervalues()
                     if _job.node == node and _job.compute_id == cluster._compute.id]
 
         raise StopIteration(jobs)
@@ -2372,7 +2362,7 @@ class _Cluster(object, metaclass=Singleton):
         if not self.shared:
             if self.terminate:
                 return
-            if any(cluster._pending_jobs for cluster in self._clusters.values()):
+            if any(cluster._pending_jobs for cluster in self._clusters.itervalues()):
                 return
             logger.debug('Shutting down scheduler ...')
             self.terminate = True
@@ -2593,7 +2583,7 @@ class JobCluster(object):
 
         if inspect.isfunction(computation) or inspect.ismethod(computation):
             func = computation
-            compute = _Compute(_Compute.func_type, func.__name__)
+            compute = _Compute(_Compute.func_type, func.func_name)
             lines = inspect.getsourcelines(func)[0]
             lines[0] = lines[0].lstrip()
             compute.code = ''.join(lines)
@@ -2607,11 +2597,11 @@ class JobCluster(object):
 
         if setup:
             if inspect.isfunction(setup):
-                if setup.__defaults__:
+                if setup.func_defaults:
                     print('\n  dispy does not support calling "setup" with keyword arguments\n')
                 depends.append(setup)
-                compute.setup = setup.__name__
-                compute.setup_args_count = setup.__code__.co_argcount
+                compute.setup = setup.func_name
+                compute.setup_args_count = setup.func_code.co_argcount
             elif isinstance(setup, functools.partial):
                 raise Exception('"setup" must be Python function; '
                                 'partial functions are not valid since version 4.11.0')
@@ -2619,13 +2609,13 @@ class JobCluster(object):
                 raise Exception('"setup" must be Python function')
 
         if inspect.isfunction(cleanup):
-            if cleanup.__defaults__:
+            if cleanup.func_defaults:
                 print('\n  dispy does not support calling "cleanup" with keyword arguments\n')
-            if setup and setup.__code__.co_argcount != cleanup.__code__.co_argcount:
+            if setup and setup.func_code.co_argcount != cleanup.func_code.co_argcount:
                 raise Exception('"cleanup" must take same arguments as "setup"')
             depends.append(cleanup)
-            compute.cleanup = cleanup.__name__
-            compute.setup_args_count = cleanup.__code__.co_argcount
+            compute.cleanup = cleanup.func_name
+            compute.setup_args_count = cleanup.func_code.co_argcount
         elif isinstance(cleanup, functools.partial):
             raise Exception('"cleanup" must be Python function; '
                             'partial functions are not valid since version 4.11.0')
@@ -2676,7 +2666,7 @@ class JobCluster(object):
         atexit.register(self.shutdown)
 
         for dep in depends:
-            if isinstance(dep, str):
+            if isinstance(dep, basestring):
                 if not os.path.isfile(dep) and compute.type == _Compute.prog_type:
                     for p in os.environ['PATH'].split(os.pathsep):
                         f = os.path.join(p, dep)
@@ -2723,7 +2713,7 @@ class JobCluster(object):
             code = compile(compute.code, '<string>', 'exec')
             del code
         if dest_path:
-            if not isinstance(dest_path, str):
+            if not isinstance(dest_path, basestring):
                 raise Exception('Invalid dest_path: it must be a string')
             dest_path = dest_path.strip()
             # we should check for absolute path in dispynode.py as well
@@ -2898,7 +2888,7 @@ class JobCluster(object):
         Return cluster status (ClusterStatus structure).
         """
         def _status(self, task=None):
-            yield ClusterStatus(list(self._dispy_nodes.values()), self._pending_jobs)
+            yield ClusterStatus(self._dispy_nodes.values(), self._pending_jobs)
         return Task(_status, self).value()
 
     def print_status(self, wall_time=None):
@@ -3062,7 +3052,7 @@ class SharedJobCluster(JobCluster):
         sock.sendall(self._cluster.auth)
         req = {'version': _dispy_version, 'ip_addr': ext_ip_addr,
                'scheduler_ip_addr': self.scheduler_ip_addr}
-        sock.send_msg(b'CLIENT:' + serialize(req))
+        sock.send_msg('CLIENT:' + serialize(req))
         reply = sock.recv_msg()
         sock.close()
         reply = deserialize(reply)
@@ -3089,7 +3079,7 @@ class SharedJobCluster(JobCluster):
                                     'depends': na.depends, 'setup_args': na.setup_args}
                                    for na in self._node_allocs],
                    'exclusive': bool(exclusive)}
-            sock.send_msg(b'COMPUTE:' + serialize(req))
+            sock.send_msg('COMPUTE:' + serialize(req))
             reply = sock.recv_msg()
             reply = deserialize(reply)
             if isinstance(reply, dict):
@@ -3118,7 +3108,7 @@ class SharedJobCluster(JobCluster):
             try:
                 sock.connect((self.scheduler_ip_addr, self.scheduler_port))
                 sock.sendall(self._scheduler_auth)
-                sock.send_msg(b'FILEXFER:' + serialize(xf))
+                sock.send_msg('FILEXFER:' + serialize(xf))
                 recvd = sock.recv_msg()
                 recvd = deserialize(recvd)
                 sent = 0
@@ -3145,10 +3135,10 @@ class SharedJobCluster(JobCluster):
         sock.connect((self.scheduler_ip_addr, self.scheduler_port))
         sock.sendall(self._scheduler_auth)
         req = {'compute_id': self._compute.id, 'auth': self._compute.auth}
-        sock.send_msg(b'SCHEDULE:' + serialize(req))
+        sock.send_msg('SCHEDULE:' + serialize(req))
         resp = sock.recv_msg()
         sock.close()
-        if resp == b'ACK':
+        if resp == 'ACK':
             self._scheduled_event.wait()
             logger.debug('Computation %s created with %s', self._compute.name, self._compute.id)
         else:
@@ -3210,7 +3200,7 @@ class SharedJobCluster(JobCluster):
                 sock.settimeout(MsgTimeout)
                 sock.connect((self.scheduler_ip_addr, self.scheduler_port))
                 sock.sendall(self._scheduler_auth)
-                sock.send_msg(b'FILEXFER:' + serialize(xf))
+                sock.send_msg('FILEXFER:' + serialize(xf))
                 recvd = sock.recv_msg()
                 recvd = deserialize(recvd)
                 sent = 0
@@ -3233,7 +3223,7 @@ class SharedJobCluster(JobCluster):
             sock.connect((self.scheduler_ip_addr, self.scheduler_port))
             sock.sendall(self._scheduler_auth)
             req = {'node': node, 'job': _job, 'auth': self._compute.auth}
-            sock.send_msg(b'JOB:' + serialize(req))
+            sock.send_msg('JOB:' + serialize(req))
             msg = sock.recv_msg()
             _job.uid = deserialize(msg)
             if _job.uid:
@@ -3241,7 +3231,7 @@ class SharedJobCluster(JobCluster):
                 self._cluster._sched_jobs[_job.uid] = _job
                 self._pending_jobs += 1
                 self._complete.clear()
-                sock.send_msg(b'ACK')
+                sock.send_msg('ACK')
                 if self.status_callback:
                     self._cluster.worker_Q.put((self.status_callback,
                                                 (DispyJob.Created, None, copy.copy(_job.job))))
@@ -3279,7 +3269,7 @@ class SharedJobCluster(JobCluster):
             sock.connect((self.scheduler_ip_addr, self.scheduler_port))
             sock.sendall(self._scheduler_auth)
             req = {'uid': _job.uid, 'compute_id': self._compute.id, 'auth': self._compute.auth}
-            sock.send_msg(b'TERMINATE_JOB:' + serialize(req))
+            sock.send_msg('TERMINATE_JOB:' + serialize(req))
         except Exception:
             logger.warning('Could not connect to scheduler to terminate job')
             return -1
@@ -3306,7 +3296,7 @@ class SharedJobCluster(JobCluster):
             sock.sendall(self._scheduler_auth)
             req = {'compute_id': self._compute.id, 'auth': self._compute.auth,
                    'node_alloc': node_allocs}
-            sock.send_msg(b'ALLOCATE_NODE:' + serialize(req))
+            sock.send_msg('ALLOCATE_NODE:' + serialize(req))
             reply = sock.recv_msg()
             reply = deserialize(reply)
         except Exception:
@@ -3332,7 +3322,7 @@ class SharedJobCluster(JobCluster):
             sock.connect((self.scheduler_ip_addr, self.scheduler_port))
             sock.sendall(self._scheduler_auth)
             req = {'compute_id': self._compute.id, 'auth': self._compute.auth, 'node': node}
-            sock.send_msg(b'DEALLOCATE_NODE:' + serialize(req))
+            sock.send_msg('DEALLOCATE_NODE:' + serialize(req))
             reply = sock.recv_msg()
             reply = deserialize(reply)
         except Exception:
@@ -3359,7 +3349,7 @@ class SharedJobCluster(JobCluster):
             sock.sendall(self._scheduler_auth)
             req = {'compute_id': self._compute.id, 'auth': self._compute.auth, 'node': node,
                    'terminate_pending': terminate_pending}
-            sock.send_msg(b'CLOSE_NODE:' + serialize(req))
+            sock.send_msg('CLOSE_NODE:' + serialize(req))
             reply = sock.recv_msg()
             reply = deserialize(reply)
         except Exception:
@@ -3386,7 +3376,7 @@ class SharedJobCluster(JobCluster):
             sock.sendall(self._scheduler_auth)
             req = {'compute_id': self._compute.id, 'auth': self._compute.auth,
                    'node': node, 'get_uids': True, 'from_node': bool(from_node)}
-            sock.send_msg(b'NODE_JOBS:' + serialize(req))
+            sock.send_msg('NODE_JOBS:' + serialize(req))
             reply = sock.recv_msg()
             job_uids = deserialize(reply)
             _jobs = [self._cluster._sched_jobs.get(uid, None) for uid in job_uids]
@@ -3415,7 +3405,7 @@ class SharedJobCluster(JobCluster):
             sock.sendall(self._scheduler_auth)
             req = {'compute_id': self._compute.id, 'auth': self._compute.auth, 'node': node,
                    'cpus': cpus}
-            sock.send_msg(b'SET_NODE_CPUS:' + serialize(req))
+            sock.send_msg('SET_NODE_CPUS:' + serialize(req))
             reply = sock.recv_msg()
             reply = deserialize(reply)
         except Exception:
@@ -3452,7 +3442,7 @@ class SharedJobCluster(JobCluster):
         try:
             sock.connect((self.scheduler_ip_addr, self.scheduler_port))
             sock.sendall(self._scheduler_auth)
-            sock.send_msg(b'SENDFILE:' + serialize({'node': node, 'xf': xf}))
+            sock.send_msg('SENDFILE:' + serialize({'node': node, 'xf': xf}))
             recvd = sock.recv_msg()
             recvd = deserialize(recvd)
             sent = 0
@@ -3524,7 +3514,7 @@ def recover_jobs(recover_file=None, timeout=None, terminate_pending=False):
         print('Could not open recover file "%s"' % recover_file)
         return []
 
-    for key, val in shelf.items():
+    for key, val in shelf.iteritems():
         if key.startswith('node_'):
             shelf_nodes[key[len('node_'):]] = val
         elif key.startswith('compute_'):
@@ -3544,7 +3534,7 @@ def recover_jobs(recover_file=None, timeout=None, terminate_pending=False):
         return []
 
     nodes = {}
-    for ip_addr, info in shelf_nodes.items():
+    for ip_addr, info in shelf_nodes.iteritems():
         node = _Node(ip_addr, info['port'], 0, '', cluster['secret'], platform='',
                      keyfile=cluster['keyfile'], certfile=cluster['certfile'])
         node.auth = info['auth']
@@ -3556,14 +3546,14 @@ def recover_jobs(recover_file=None, timeout=None, terminate_pending=False):
         # generator
         conn.settimeout(MsgTimeout)
         msg = yield conn.recv_msg()
-        if msg.startswith(b'JOB_REPLY:'):
+        if msg.startswith('JOB_REPLY:'):
             try:
-                reply = deserialize(msg[len(b'JOB_REPLY:'):])
+                reply = deserialize(msg[len('JOB_REPLY:'):])
             except Exception:
                 logger.warning('Invalid job reply from %s:%s ignored', addr[0], addr[1])
                 conn.close()
                 raise StopIteration
-            yield conn.send_msg(b'ACK')
+            yield conn.send_msg('ACK')
             logger.debug('Received reply for job %s', reply.uid)
             job = DispyJob(None, (), {})
             job.result = deserialize(reply.result)
@@ -3617,7 +3607,7 @@ def recover_jobs(recover_file=None, timeout=None, terminate_pending=False):
         raise StopIteration
 
     def resend_requests(pending, task=None):
-        for compute_id, compute in list(computes.items()):
+        for compute_id, compute in computes.items():
             if pending['timeout'] is not None and \
                ((time.time() - pending['start_time']) > pending['timeout']):
                 break
@@ -3627,7 +3617,7 @@ def recover_jobs(recover_file=None, timeout=None, terminate_pending=False):
                 if not node:
                     continue
                 try:
-                    reply = yield node.send(b'RESEND_JOB_RESULTS:' + serialize(req))
+                    reply = yield node.send('RESEND_JOB_RESULTS:' + serialize(req))
                     reply = deserialize(reply)
                     assert isinstance(reply, int)
                 except Exception:
@@ -3638,7 +3628,7 @@ def recover_jobs(recover_file=None, timeout=None, terminate_pending=False):
                 if reply == 0:
                     req['node_ip_addr'] = ip_addr
                     try:
-                        yield node.send(b'CLOSE:' + serialize(req), reply=True, task=task)
+                        yield node.send('CLOSE:' + serialize(req), reply=True, task=task)
                     except Exception:
                         pass
                 else:
@@ -3658,7 +3648,7 @@ def recover_jobs(recover_file=None, timeout=None, terminate_pending=False):
 
     pending['complete'].wait()
 
-    for compute_id, compute in computes.items():
+    for compute_id, compute in computes.iteritems():
         req = {'compute_id': compute_id, 'auth': compute['auth'],
                'terminate_pending': terminate_pending}
         for ip_addr in compute['nodes']:
@@ -3668,7 +3658,7 @@ def recover_jobs(recover_file=None, timeout=None, terminate_pending=False):
             if node.scheduler_ip_addr:
                 continue
             req['node_ip_addr'] = ip_addr
-            Task(node.send, b'CLOSE:' + serialize(req), reply=True)
+            Task(node.send, 'CLOSE:' + serialize(req), reply=True)
 
     if terminate_pending:
         # wait a bit to get cancelled job results
