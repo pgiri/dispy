@@ -1381,8 +1381,8 @@ class _Scheduler(object):
                 dispy_node.rx = node.rx
             dispy_node.avail_cpus = node.avail_cpus
             dispy_node.avail_info = node.avail_info
-            res = yield node.setup(depends, setup_args, compute, exclusive=cluster.exclusive,
-                                   task=task)
+            res = yield node.setup(depends, setup_args, compute, resetup=False,
+                                   exclusive=cluster.exclusive, task=task)
             if res or compute.id not in self._clusters:
                 cluster._dispy_nodes.pop(node.ip_addr, None)
                 logger.warning('Failed to setup %s for computation "%s": %s',

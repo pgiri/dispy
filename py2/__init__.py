@@ -48,7 +48,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "Apache 2.0"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.11.1"
+__version__ = "4.12.0"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
@@ -290,9 +290,7 @@ def _node_ipaddr(node):
         return node
     try:
         info = None
-        for addr in socket.getaddrinfo(node, None):
-            if addr[1] != socket.SOCK_STREAM:
-                continue
+        for addr in socket.getaddrinfo(node, None, 0, socket.SOCK_STREAM):
             if not info or addr[0] == socket.AF_INET:
                 info = addr
         assert info
@@ -595,23 +593,24 @@ class _Node(object):
         self.tx = 0
         self.rx = 0
 
-    def setup(self, depends, setup_args, compute, exclusive=True, task=None):
+    def setup(self, depends, setup_args, compute, resetup=False, exclusive=True, task=None):
         # generator
-        compute.scheduler_ip_addr = self.scheduler_ip_addr
-        compute.node_ip_addr = self.ip_addr
-        compute.exclusive = exclusive
-        reply = yield self.send('COMPUTE:' + serialize(compute), task=task)
-        try:
-            cpus = deserialize(reply)
-            assert isinstance(cpus, int) and cpus > 0
-        except Exception:
-            logger.warning('Transfer of computation "%s" to %s failed', compute.name, self.ip_addr)
-            raise StopIteration(-1)
-        self.avail_cpus = cpus
-        if self.cpus:
-            self.cpus = min(self.avail_cpus, self.cpus)
-        else:
-            self.cpus = cpus
+        if not resetup:
+            compute.scheduler_ip_addr = self.scheduler_ip_addr
+            compute.node_ip_addr = self.ip_addr
+            compute.exclusive = exclusive
+            reply = yield self.send('COMPUTE:' + serialize(compute), task=task)
+            try:
+                cpus = deserialize(reply)
+                assert isinstance(cpus, int) and cpus > 0
+            except Exception:
+                logger.warning('Transfer of computation "%s" to %s failed', compute.name, self.ip_addr)
+                raise StopIteration(-1)
+            self.avail_cpus = cpus
+            if self.cpus:
+                self.cpus = min(self.avail_cpus, self.cpus)
+            else:
+                self.cpus = cpus
 
         if not isinstance(setup_args, tuple):
             if (isinstance(setup_args, list) and
@@ -713,11 +712,11 @@ class _Node(object):
             sock.close()
         raise StopIteration(resp)
 
-    def close(self, compute, terminate_pending=False, task=None):
+    def close(self, compute, terminate_pending=False, close=True, task=None):
         # generator
         logger.debug('Closing node %s for %s / %s', self.ip_addr, compute.name, compute.id)
         req = {'compute_id': compute.id, 'auth': compute.auth, 'node_ip_addr': self.ip_addr,
-               'terminate_pending': terminate_pending}
+               'terminate_pending': terminate_pending, 'close': close}
         try:
             yield self.send('CLOSE:' + serialize(req), reply=True, task=task)
         except Exception:
@@ -1354,6 +1353,21 @@ class _Cluster(object):
                     logger.warning('Invalid node status %s from %s:%s ignored',
                                    info['status'], addr[0], addr[1])
 
+        elif msg.startswith('NODE_CLOSED:'):
+            conn.close()
+            try:
+                info = deserialize(msg[len('NODE_CLOSED:'):])
+                cluster = self._clusters[info['compute_id']]
+                assert info['auth'] == cluster._compute.auth
+                node = self._nodes[info['node_addr']]
+                assert node.auth == info['node_auth']
+                closed = cluster._nodes_closed.get(node.ip_addr, None)
+                if isinstance(closed, pycos.Event):
+                    closed.set()
+            except Exception:
+                logger.debug(traceback.format_exc())
+                pass
+
         elif msg.startswith('SCHEDULED:'):
             try:
                 info = deserialize(msg[len('SCHEDULED:'):])
@@ -1712,7 +1726,7 @@ class _Cluster(object):
         # TODO: prune nodes in shelf
         self.shelf.sync()
 
-    def setup_node(self, node, setup_computations, task=None):
+    def setup_node(self, node, setup_computations, resetup=False, task=None):
         # generator
         task.set_daemon()
         for depends, setup_args, compute in setup_computations:
@@ -1720,7 +1734,7 @@ class _Cluster(object):
             # add to cluster's _dispy_nodes before sending computation
             # to node
             cluster = self._clusters.get(compute.id, None)
-            if not cluster or node.ip_addr in cluster._dispy_nodes:
+            if not cluster:
                 continue
             dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
             if not dispy_node:
@@ -1735,7 +1749,8 @@ class _Cluster(object):
             shelf_compute['nodes'].append(node.ip_addr)
             self.shelf['compute_%s' % compute.id] = shelf_compute
             self.shelf.sync()
-            res = yield node.setup(depends, setup_args, compute, exclusive=True, task=task)
+            res = yield node.setup(depends, setup_args, compute, resetup=resetup,
+                                   exclusive=True, task=task)
             if res or compute.id not in self._clusters:
                 cluster._dispy_nodes.pop(node.ip_addr, None)
                 logger.warning('Failed to setup %s for compute "%s": %s',
@@ -2006,8 +2021,8 @@ class _Cluster(object):
     def run_job(self, _job, cluster, task=None):
         # generator
         node = _job.node
-        dispy_node = cluster._dispy_nodes[node.ip_addr]
         try:
+            dispy_node = cluster._dispy_nodes[node.ip_addr]
             tx = yield _job.run(task=task)
             dispy_node.tx += tx
         except (EnvironmentError, OSError):
@@ -2029,6 +2044,9 @@ class _Cluster(object):
             if self._sched_jobs.pop(_job.uid, None) == _job:
                 dispy_job = _job.job
                 self.finish_job(cluster, _job, DispyJob.Cancelled)
+                if node.ip_addr not in cluster._dispy_nodes:
+                    # node may have closed
+                    raise StopIteration
                 if cluster.status_callback and dispy_node:
                     dispy_node.update_time = time.time()
                     self.worker_Q.put((cluster.status_callback,
@@ -2253,7 +2271,7 @@ class _Cluster(object):
         node.clusters.discard(cluster)
         yield 0
 
-    def close_node(self, cluster, node, terminate_pending, task=None):
+    def close_node(self, cluster, node, terminate_pending, close=True, task=None):
         # generator
         if isinstance(node, DispyNode):
             node = cluster._dispy_nodes.get(node.ip_addr, None)
@@ -2275,7 +2293,48 @@ class _Cluster(object):
         if jobs:
             node.pending_jobs = [_job for _job in node.pending_jobs
                                  if _job.compute_id != cluster._compute.id]
-        yield node.close(cluster._compute, terminate_pending=terminate_pending)
+        yield node.close(cluster._compute, terminate_pending=terminate_pending, close=close, task=task)
+        raise StopIteration(0)
+
+    def resetup_node(self, cluster, node, terminate_pending, task=None):
+        # generator
+        if isinstance(node, DispyNode):
+            node = cluster._dispy_nodes.get(node.ip_addr, None)
+        elif isinstance(node, str):
+            node = cluster._dispy_nodes.get(_node_ipaddr(node), None)
+        else:
+            node = None
+        if node:
+            node = self._nodes.get(node.ip_addr, None)
+        if not node:
+            raise StopIteration(-1)
+
+        closed = cluster._nodes_closed.get(node.ip_addr, None)
+        if isinstance(closed, pycos.Event):
+            closed.clear()
+        else:
+            closed = pycos.Event()
+            cluster._nodes_closed[node.ip_addr] = closed
+        status = yield self.close_node(cluster, node.ip_addr, terminate_pending, close=False,
+                                       task=task)
+        if status:
+            raise StopIteration(status)
+
+        yield closed.wait()
+        compute = cluster._compute
+        if not compute:
+            raise StopIteration(-1)
+        setup_computations = []
+        for node_alloc in cluster._node_allocs:
+            cpus = node_alloc.allocate(cluster, node.ip_addr, node.name, node.avail_cpus,
+                                       avail_info=node.avail_info, platform=node.platform)
+            if cpus <= 0:
+                continue
+            node.cpus = min(node.avail_cpus, cpus)
+            node.clusters.add(cluster)
+            setup_computations.append((node_alloc.depends, node_alloc.setup_args, compute))
+            break
+        yield self.setup_node(node, setup_computations, resetup=True, task=task)
 
     def set_node_cpus(self, cluster, node, cpus, task=None):
         # generator
@@ -2624,6 +2683,7 @@ class JobCluster(object):
         else:
             raise Exception('"cleanup" must be Python function')
 
+        self._nodes_closed = {}
         self._dispy_nodes = {}
         if not nodes:
             nodes = ['*']
@@ -2845,6 +2905,13 @@ class JobCluster(object):
         """
         return Task(self._cluster.close_node, self, node, terminate_pending).value()
 
+    def resetup_node(self, node, terminate_pending=False):
+        """Close given node for this cluster without releasing it and then
+        run 'setup' again with new arguments so node can be reused with
+        new effects from 'setup'.
+        """
+        return Task(self._cluster.resetup_node, self, node, terminate_pending).value()
+
     def node_jobs(self, node, from_node=False):
         """Returns list of jobs currently running on given node, given
         as host name or IP address.
@@ -2967,6 +3034,8 @@ class JobCluster(object):
             if not terminate and not ret:
                 return False
             self._complete.set()
+            for na in self._node_allocs:
+                na.cpus = 0
             Task(self._cluster.del_cluster, self).value()
             self._compute = None
             return True

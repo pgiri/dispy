@@ -381,7 +381,7 @@ def _dispy_setup_process(compute, pipe, client_globals):
     _dispy_terminate_proc = globals()['_dispy_terminate_proc']
     globals().update(client_globals)
     globals().pop('reply_Q', None)
-    setup_args = client_globals.pop('setup_args')
+    setup_args = client_globals.pop('setup_args', ())
     dispynode_logger.setLevel(client_globals.pop('loglevel'))
 
     if compute.code:
@@ -537,13 +537,26 @@ class _Client(object):
         self.file_uses = {}
         self.pending_jobs = 0
         self.pending_results = 0
+        self.jobs_done = pycos.Event()
         self.last_pulse = time.time()
         self.zombie = False
         self.setup_proc = None
-        self.setup_args = ()
+        self.setup_args = None
+        self.cleanup_args = None
         self.parent_pipe = self.child_pipe = None
         self.use_setup_proc = False
         self.sock_family = None
+        self.jobs_done.set()
+
+    def __getstate__(self):
+        state = dict(self.__dict__)
+        state.pop('jobs_done')
+        return state
+
+    def __setstate__(self, state):
+        for k, v in state.items():
+            setattr(self, k, v)
+        self.jobs_done = pycos.Event()
 
 
 class _DispyNode(object):
@@ -1117,6 +1130,7 @@ class _DispyNode(object):
 
                 self.avail_cpus -= 1
                 client.pending_jobs += 1
+                client.jobs_done.clear()
                 try:
                     if client.use_setup_proc:
                         args = {'req': 'job', 'job_reply': job_info.job_reply, 'code': _job.code,
@@ -1153,6 +1167,7 @@ class _DispyNode(object):
                 prog_thread = threading.Thread(target=self.__job_program, args=(_job, job_info))
                 self.avail_cpus -= 1
                 client.pending_jobs += 1
+                client.jobs_done.clear()
                 prog_thread.start()
                 raise StopIteration
 
@@ -1353,6 +1368,8 @@ class _DispyNode(object):
                 client = self.clients[msg['compute_id']]
                 client.setup_args = msg['setup_args']
                 assert isinstance(client.setup_args, tuple)
+                assert client.cleanup_args is None
+                client.cleanup_args = client.setup_args
                 compute = client.compute
             except Exception:
                 raise StopIteration(client, 'invalid computation')
@@ -1381,8 +1398,8 @@ class _DispyNode(object):
             client.globals['sgid'] = self.sgid
 
             setup_status = 0
-            if (self._safe_setup and (compute.setup or (not isinstance(compute.cleanup, bool))) or
-                self.suid is not None):
+            if (self._safe_setup and (compute.setup or isinstance(compute.cleanup, str) or
+                                      self.suid is not None)):
 
                 # TODO: use this only for function computations?
                 client.globals['loglevel'] = dispynode_logger.level
@@ -1391,7 +1408,7 @@ class _DispyNode(object):
                 args = (client.compute, client.child_pipe, client.globals)
                 client.setup_proc = multiprocessing.Process(target=_dispy_setup_process, args=args)
                 client.setup_proc.start()
-                compute.setup = None
+                compute.setup_args = None
                 for i in range(40):
                     if client.parent_pipe.poll():
                         msg = client.parent_pipe.recv()
@@ -1442,7 +1459,7 @@ class _DispyNode(object):
                     compute.code = compile(compute.code, '<string>', 'exec')
                     exec(compute.code, globalvars)
                     compute.code = marshal.dumps(compute.code)
-                if compute.setup:
+                if isinstance(compute.setup_args, tuple):
                     init_vars = set(globalvars.keys())
                     localvars = {'_dispy_setup_status': 0, '_dispy_setup_args': client.setup_args}
                     os.chdir(compute.dest_path)
@@ -1460,7 +1477,7 @@ class _DispyNode(object):
                     else:
                         raise StopIteration(client, '"setup" failed with %s' %
                                             localvars['_dispy_setup_status'])
-                    compute.setup = None
+                    compute.setup_args = None
                     os.chdir(self.dest_path_prefix)
 
                     for module in list(sys.modules.keys()):
@@ -1469,7 +1486,7 @@ class _DispyNode(object):
                     sys.modules.update(self.__init_modules)
 
             if client.setup_proc and isinstance(compute.cleanup, str):
-                compute.cleanup = True
+                client.cleanup_args = None
             raise StopIteration(None, 'ACK')
 
         def terminate_job(client, job_info, task=None):
@@ -1592,7 +1609,14 @@ class _DispyNode(object):
                 except Exception:
                     pass
                 if client.pending_results == 0:
-                    Task(self.cleanup_computation, client)
+                    Task(self.cleanup_computation, client, close=True)
+
+        def close_node(client, close, task=None):
+            task.set_daemon()
+            while 1:
+                yield client.jobs_done.wait()
+                if (yield self.cleanup_computation(client, close=close, task=task)) == 0:
+                    break
 
         # tcp_req starts
         try:
@@ -1691,7 +1715,7 @@ class _DispyNode(object):
             client, resp = yield setup_computation(msg, task=task)
             if client:
                 client.zombie = True
-                Task(self.cleanup_computation, client)
+                Task(self.cleanup_computation, client, close=True)
             yield conn.send_msg(resp.encode())
             conn.close()
         elif msg.startswith(b'CLOSE:'):
@@ -1701,6 +1725,7 @@ class _DispyNode(object):
                 compute_id = info['compute_id']
                 auth = info['auth']
                 terminate_pending = info.get('terminate_pending', False)
+                close = info.get('close', True)
             except Exception:
                 dispynode_logger.debug('Deleting computation failed with %s',
                                        traceback.format_exc())
@@ -1722,7 +1747,7 @@ class _DispyNode(object):
                         self.thread_lock.release()
                         for job_info in job_infos:
                             Task(terminate_job, client, job_info)
-                    Task(self.cleanup_computation, client)
+                    Task(close_node, client, close)
             yield conn.send_msg(b'ACK')
             conn.close()
         elif msg.startswith(b'TERMINATE_JOB:'):
@@ -2022,7 +2047,7 @@ class _DispyNode(object):
                 for client in zombies:
                     dispynode_logger.warning('Deleting zombie computation "%s"',
                                              client.compute.id)
-                    Task(self.cleanup_computation, client)
+                    Task(self.cleanup_computation, client, close=True)
                 for client in zombies:
                     compute = client.compute
                     addrinfo = self.addrinfos.get(compute.node_ip_addr, None)
@@ -2368,6 +2393,8 @@ class _DispyNode(object):
             self.avail_cpus += 1
             # assert self.avail_cpus <= self.num_cpus
             client.pending_jobs -= 1
+            if client.pending_jobs == 0:
+                client.jobs_done.set()
 
         sock = socket.socket(client.sock_family, socket.SOCK_STREAM)
         sock = AsyncSocket(sock, keyfile=self.keyfile, certfile=self.certfile)
@@ -2431,17 +2458,18 @@ class _DispyNode(object):
             sock.close()
 
         if client.pending_jobs == 0 and client.zombie:
-            Task(self.cleanup_computation, client)
+            Task(self.cleanup_computation, client, close=True)
         raise StopIteration(status)
 
-    def cleanup_computation(self, client, task=None):
+    def cleanup_computation(self, client, close=True, task=None):
         if not client.zombie or client.pending_jobs:
-            raise StopIteration
+            raise StopIteration(-1)
 
         compute = client.compute
-        if self.clients.pop(compute.id, None) != client:
+        if ((close and self.clients.pop(compute.id, None) != client) or
+            (not close and self.clients.get(compute.id, None) != client)):
             dispynode_logger.debug('Computation %s already closed?', compute.id)
-            raise StopIteration
+            raise StopIteration(0)
 
         parent_pipe, client.parent_pipe = client.parent_pipe, None
         if parent_pipe:
@@ -2449,33 +2477,6 @@ class _DispyNode(object):
                 parent_pipe.send({'req': 'quit'})
             except Exception:
                 dispynode_logger.debug(traceback.format_exc())
-
-        self.clients_done += 1
-        self.scheduler['auth'].discard(compute.auth)
-
-        if isinstance(compute.cleanup, str):
-            os.chdir(compute.dest_path)
-            try:
-                globalvars = dict(self.__init_globals)
-                globalvars.update(client.globals)
-                localvars = {'_dispy_cleanup_args': client.setup_args}
-                if self.client_shutdown:
-                    globalvars['dispynode_shutdown'] = lambda: setattr(self, 'serve', 0)
-                if isinstance(compute.code, bytes):
-                    exec(marshal.loads(compute.code), globalvars)
-                else:
-                    exec(compute.code, globalvars)
-                exec('%s(*_dispy_cleanup_args)' % compute.cleanup, globalvars, localvars)
-            except Exception:
-                dispynode_logger.debug('Cleanup "%s" failed', compute.cleanup)
-                dispynode_logger.debug(traceback.format_exc())
-
-            os.chdir(self.dest_path_prefix)
-            for module in list(sys.modules.keys()):
-                if module not in self.__init_modules:
-                    sys.modules.pop(module, None)
-            sys.modules.update(self.__init_modules)
-        client.globals.clear()
 
         if isinstance(client.setup_proc, multiprocessing.Process):
             for i in range(20):
@@ -2516,6 +2517,54 @@ class _DispyNode(object):
                     pass
                 client.child_pipe = None
 
+        if isinstance(compute.cleanup, str) and isinstance(client.cleanup_args, tuple):
+            os.chdir(compute.dest_path)
+            try:
+                globalvars = dict(self.__init_globals)
+                globalvars.update(client.globals)
+                localvars = {'_dispy_cleanup_args': client.cleanup_args}
+                if self.client_shutdown:
+                    globalvars['dispynode_shutdown'] = lambda: setattr(self, 'serve', 0)
+                if isinstance(compute.code, bytes):
+                    exec(marshal.loads(compute.code), globalvars)
+                else:
+                    exec(compute.code, globalvars)
+                exec('%s(*_dispy_cleanup_args)' % compute.cleanup, globalvars, localvars)
+            except Exception:
+                dispynode_logger.debug('Cleanup "%s" failed', compute.cleanup)
+                dispynode_logger.debug(traceback.format_exc())
+
+            os.chdir(self.dest_path_prefix)
+            for module in list(sys.modules.keys()):
+                if module not in self.__init_modules:
+                    sys.modules.pop(module, None)
+            sys.modules.update(self.__init_modules)
+        client.globals.clear()
+        client.cleanup_args = None
+
+        if not close:
+            client.zombie = False
+            addrinfo = self.addrinfos.get(compute.node_ip_addr, None)
+            try:
+                sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_STREAM),
+                                   keyfile=self.keyfile, certfile=self.certfile)
+                sock.settimeout(MsgTimeout)
+                info = {'node_addr': addrinfo.ext_ip_addr, 'node_auth': self.auth,
+                        'compute_id': compute.id, 'auth': compute.auth}
+                try:
+                    yield sock.connect((compute.scheduler_ip_addr, compute.scheduler_port))
+                    yield sock.send_msg('NODE_CLOSED:'.encode() + serialize(info))
+                except Exception:
+                    pass
+                finally:
+                    sock.close()
+            except Exception:
+                dispynode_logger.debug(traceback.format_exc())
+                pass
+            raise StopIteration(0)
+
+        self.clients_done += 1
+        self.scheduler['auth'].discard(compute.auth)
         dispynode_logger.debug('Computation "%s" from %s done',
                                compute.auth, compute.scheduler_ip_addr)
         if self.serve > 0:
@@ -2584,6 +2633,7 @@ class _DispyNode(object):
             except Exception:
                 # print(traceback.format_exc())
                 dispynode_logger.warning('Could not remove file "%s"', pkl_path)
+        raise StopIteration(0)
 
     def send_terminate(self, task=None):
         if self.scheduler['ip_addr'] and self.scheduler['addrinfo']:
@@ -2656,8 +2706,9 @@ class _DispyNode(object):
                         proc.wait()
             for cid, client in list(self.clients.items()):
                 client.pending_jobs = 0
+                client.jobs_done.set()
                 client.zombie = True
-                Task(self.cleanup_computation, client)
+                Task(self.cleanup_computation, client, close=True)
 
             yield self.send_terminate(task=task)
             self.sign = ''
@@ -2706,7 +2757,7 @@ class _DispyNode(object):
                     for client in list(self.clients.values()):
                         if client.pending_jobs == 0:
                             client.zombie = True
-                            Task(self.cleanup_computation, client)
+                            Task(self.cleanup_computation, client, close=True)
                 else:
                     print('   Scheduler (client) at %s is active, so computations are not closed' %
                           self.scheduler['ip_addr'])
