@@ -20,6 +20,7 @@ def setup(data_file):
         algorithms = list(hashlib.algorithms_guaranteed)
     else:
         algorithms = hashlib.algorithms
+    algorithms = [alg for alg in algorithms if (not alg.startswith('shake'))]
     # if running under Windows, modules can't be global, as they are not
     # serializable; instead, they must be loaded in 'compute' (jobs); under
     # Posix (Linux, OS X and other Unix variants), modules declared global in
