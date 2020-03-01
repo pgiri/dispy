@@ -386,11 +386,9 @@ def _dispy_setup_process(compute, pipe, client_globals):
 
     if compute.code:
         try:
-            compute.code = compile(compute.code, '<string>', 'exec')
-            exec(compute.code, globals())
-            if os.name == 'nt':
-                compute.code = marshal.dumps(compute.code)
-            else:
+            if compute.code:
+                exec(marshal.loads(compute.code), globals())
+            if os.name != 'nt':
                 compute.code = None
         except Exception:
             dispynode_logger.debug(traceback.format_exc())
@@ -1208,6 +1206,13 @@ class _DispyNode(object):
                             pass
                         raise StopIteration
             compute.xfer_files = set()
+            if compute.code:
+                try:
+                    compute.code = compile(compute.code, '<string>', 'exec')
+                except Exception:
+                    yield conn.send_msg(('Invalid computation code').encode())
+                    raise StopIteration
+                compute.code = marshal.dumps(compute.code)
             dest = compute.scheduler_ip_addr
             if os.name == 'nt':
                 dest = dest.replace(':', '_')
@@ -1372,6 +1377,7 @@ class _DispyNode(object):
                 client.cleanup_args = client.setup_args
                 compute = client.compute
             except Exception:
+                dispynode_logger.debug(traceback.format_exc())
                 raise StopIteration(client, 'invalid computation')
 
             client.globals['dispy_node_name'] = self.name
@@ -1400,7 +1406,6 @@ class _DispyNode(object):
             setup_status = 0
             if (self._safe_setup and (compute.setup or isinstance(compute.cleanup, str) or
                                       self.suid is not None)):
-
                 # TODO: use this only for function computations?
                 client.globals['loglevel'] = dispynode_logger.level
                 client.globals['setup_args'] = client.setup_args
@@ -1408,7 +1413,7 @@ class _DispyNode(object):
                 args = (client.compute, client.child_pipe, client.globals)
                 client.setup_proc = multiprocessing.Process(target=_dispy_setup_process, args=args)
                 client.setup_proc.start()
-                compute.setup_args = None
+                client.setup_args = None
                 for i in range(40):
                     if client.parent_pipe.poll():
                         msg = client.parent_pipe.recv()
@@ -1456,10 +1461,8 @@ class _DispyNode(object):
                 globalvars = dict(self.__init_globals)
                 globalvars.update(client.globals)
                 if compute.code:
-                    compute.code = compile(compute.code, '<string>', 'exec')
-                    exec(compute.code, globalvars)
-                    compute.code = marshal.dumps(compute.code)
-                if isinstance(compute.setup_args, tuple):
+                    exec(marshal.loads(compute.code), globalvars)
+                if isinstance(client.setup_args, tuple):
                     init_vars = set(globalvars.keys())
                     localvars = {'_dispy_setup_status': 0, '_dispy_setup_args': client.setup_args}
                     os.chdir(compute.dest_path)
@@ -1477,7 +1480,7 @@ class _DispyNode(object):
                     else:
                         raise StopIteration(client, '"setup" failed with %s' %
                                             localvars['_dispy_setup_status'])
-                    compute.setup_args = None
+                    client.setup_args = None
                     os.chdir(self.dest_path_prefix)
 
                     for module in list(sys.modules.keys()):
@@ -2525,10 +2528,8 @@ class _DispyNode(object):
                 localvars = {'_dispy_cleanup_args': client.cleanup_args}
                 if self.client_shutdown:
                     globalvars['dispynode_shutdown'] = lambda: setattr(self, 'serve', 0)
-                if isinstance(compute.code, bytes):
+                if compute.code:
                     exec(marshal.loads(compute.code), globalvars)
-                else:
-                    exec(compute.code, globalvars)
                 exec('%s(*_dispy_cleanup_args)' % compute.cleanup, globalvars, localvars)
             except Exception:
                 dispynode_logger.debug('Cleanup "%s" failed', compute.cleanup)
