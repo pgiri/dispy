@@ -2303,7 +2303,8 @@ class _Cluster(object, metaclass=Singleton):
         if jobs:
             node.pending_jobs = [_job for _job in node.pending_jobs
                                  if _job.compute_id != cluster._compute.id]
-        yield node.close(cluster._compute, terminate_pending=terminate_pending, close=close, task=task)
+        yield node.close(cluster._compute, terminate_pending=terminate_pending, close=close,
+                         task=task)
         raise StopIteration(0)
 
     def resetup_node(self, cluster, node, terminate_pending, task=None):
@@ -2913,14 +2914,16 @@ class JobCluster(object):
         """Close given node for this cluster. 'node' may be host name or IP
         address, or an instance of NodeAllocate.
         """
-        return Task(self._cluster.close_node, self, node, terminate_pending).value()
+        Task(self._cluster.close_node, self, node, terminate_pending)
+        return 0
 
     def resetup_node(self, node, terminate_pending=False):
         """Close given node for this cluster without releasing it and then
         run 'setup' again with new arguments so node can be reused with
         new effects from 'setup'.
         """
-        return Task(self._cluster.resetup_node, self, node, terminate_pending).value()
+        Task(self._cluster.resetup_node, self, node, terminate_pending)
+        return 0
 
     def node_jobs(self, node, from_node=False):
         """Returns list of jobs currently running on given node, given
@@ -3432,7 +3435,7 @@ class SharedJobCluster(JobCluster):
             reply = sock.recv_msg()
             reply = deserialize(reply)
         except Exception:
-            logger.warning('Could not connect to scheduler to add node')
+            logger.warning('Could not connect to scheduler to close node')
             reply = -1
         finally:
             sock.close()
