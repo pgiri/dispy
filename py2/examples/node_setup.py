@@ -13,10 +13,9 @@ def setup(data_file):
     global data, algorithms, hashlib, time, file_name
 
     import hashlib, time
-    data = open(data_file).read()  # read file in to memory; data_file can now be deleted
+    data = open(data_file, 'rb').read()  # read file in to memory; data_file can now be deleted
     file_name = data_file
     if sys.version_info.major > 2:
-        data = data.encode() # convert to bytes
         algorithms = list(hashlib.algorithms_guaranteed)
     else:
         algorithms = hashlib.algorithms
@@ -53,7 +52,7 @@ if __name__ == '__main__':
     import dispy, sys, os, glob, time
 
     # each node processes a file in 'data_files' with 'NodeAllocate.allocate'
-    data_files = glob.glob(os.path.join(os.path.dirname(sys.argv[0]), '*.py'))
+    data_files = glob.glob(os.path.join(os.path.abspath(os.path.dirname(sys.argv[0])), '*.py'))
     node_id = 0
 
     # sub-class NodeAllocate to use node (and computation) specific 'depends'

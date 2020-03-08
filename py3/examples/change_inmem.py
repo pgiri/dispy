@@ -1,34 +1,29 @@
-# Example program that uses 'setup' and 'cleanup' functions to
-# initialize/de-initialize global variables on each node before
-# computations are executed. Computations use data in global variables
-# instead of reading input for each job. The in-memory data is replaced
-# at 5th job to illustrate how to change working dataset.
+# In this example, which is a variation of 'node_setup.py',
+# dispy's "resetup_node" method is used to replace in-memory data to illustrate
+# how to change working dataset. Although "resetup_node" feature can be used
+# with any platform, this example doesn't work with Windows, as in-memory
+# feature doesn't work with Windows.
 
 def setup(data_file, n):
-    dispynode_logger.info('\n  Setup: %s, %s\n', data_file, n)
-    # read data in file to global variable
     global data, algorithms, hashlib, file_name
 
-    import hashlib
-    data = open(data_file).read()  # read file in to memory; data_file can now be deleted
+    import hashlib, os, sys
+    data = open(data_file, 'rb').read()  # read data in file to global variable
+    os.remove(data_file)  # data_file can now be deleted
     file_name = data_file
     if sys.version_info.major > 2:
-        data = data.encode() # convert to bytes
         algorithms = list(hashlib.algorithms_guaranteed)
     else:
         algorithms = hashlib.algorithms
     algorithms = [alg for alg in algorithms if (not alg.startswith('shake'))]
-
     return 0
 
 def cleanup(data_file, n):
-    dispynode_logger.info('\n  Cleanup: %s, %s\n', data_file, n)
     global data, algorithms, hashlib, file_name
     del data, algorithms, file_name
 
 def compute(i, n):
-    global hashlib
-    # 'data' and 'algorithms' global variables are initialized in 'setup'
+    # 'hashlib', 'data' and 'algorithms' global variables are initialized in 'setup'
     alg = algorithms[i % len(algorithms)]
     csum = getattr(hashlib, alg)()
     csum.update(data)
@@ -44,7 +39,7 @@ def job_status(job):
 
 if __name__ == '__main__':
     import dispy, sys, os, glob, random
-    data_files = glob.glob(os.path.join(os.path.dirname(sys.argv[0]), '*.py'))
+    data_files = glob.glob(os.path.join(os.path.abspath(os.path.dirname(sys.argv[0])), '*.py'))
     file_id = 0
     nodes = {}
 
@@ -52,10 +47,11 @@ if __name__ == '__main__':
         def allocate(self, cluster, ip_addr, name, cpus, avail_info=None, platform='*'):
             global file_id
             if len(nodes) == 2:
-                # use at most 2 nodes, to simplify this example
+                # use at most 2 nodes, to illustrate this example
                 return 0
             if platform.startswith('Windows'):
                 # In-memory is not supported with Windows
+                print('Ignoring node %s as in-memory data is not supported with Windows' % ip_addr)
                 return 0
             data_file = data_files[file_id % len(data_files)]
             file_id += 1
@@ -71,7 +67,7 @@ if __name__ == '__main__':
     for i in range(1, 7):
         job = cluster.submit(i, random.uniform(2, 5))
         job.id = i
-    cluster.wait()
+    cluster.wait()  # alternately, job_status above can decide when to call resetup_node
     for ip_addr in nodes:
         cluster.resetup_node(ip_addr)
     for i in range(i+1, i+7):
