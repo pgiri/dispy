@@ -305,10 +305,6 @@ if __name__ == '__main__':
         logger.setLevel(logger.INFO)
     del config['loglevel']
     daemon = config.pop('daemon')
-
-    if config['dispy_port'] == dispy.config.DispyPort:
-        print('\n  NOTE: Using dispy port %s, which is different from earlier versions\n' %
-              dispy.config.DispyPort)
     dispy.config.DispyPort = config.pop('dispy_port')
 
     DispyNetRelay(**config)

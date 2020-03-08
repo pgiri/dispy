@@ -879,9 +879,6 @@ class _Cluster(object, metaclass=Singleton):
                 raise Exception('No valid IP address found')
 
             self.port = eval(dispy.config.ClientPort)
-            if self.port == 61590:
-                print('\n  NOTE: Using dispy port %s (was 51347 in earlier versions)\n' %
-                      dispy.config.DispyPort)
             self.node_port = eval(dispy.config.NodePort)
 
             self._nodes = {}

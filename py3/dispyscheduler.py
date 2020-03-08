@@ -2246,9 +2246,6 @@ if __name__ == '__main__':
         logger.setLevel(logger.INFO)
     del config['loglevel']
 
-    if config['dispy_port'] == dispy.config.DispyPort:
-        print('\n  NOTE: Using dispy port %s (was 51349 in earlier versions)\n' %
-              eval(dispy.config.SharedSchedulerPort))
     dispy.config.DispyPort = config.pop('dispy_port')
     if config['zombie_interval']:
         config['zombie_interval'] = float(config['zombie_interval'])
