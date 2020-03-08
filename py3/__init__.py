@@ -1448,7 +1448,7 @@ class _Cluster(object, metaclass=Singleton):
                     dead_nodes = {}
                     for node in self._nodes.values():
                         if node.busy and node.last_pulse is not None and \
-                           (node.last_pulse + (5 * self.pulse_interval)) <= now:
+                           (node.last_pulse + (self.pulse_count * self.pulse_interval)) <= now:
                             logger.warning('Node %s is not responding; removing it (%s, %s, %s)',
                                            node.ip_addr, node.busy, node.last_pulse, now)
                             dead_nodes[node.ip_addr] = node
@@ -1666,6 +1666,8 @@ class _Cluster(object, metaclass=Singleton):
             info = {'name': compute.name, 'auth': compute.auth, 'nodes': []}
             self.shelf['compute_%s' % compute.id] = info
             self.shelf.sync()
+
+            self.pulse_count = compute.pulse_count
 
             if compute.pulse_interval:
                 self.pulse_interval = num_min(self.pulse_interval, compute.pulse_interval)
@@ -2467,7 +2469,7 @@ class JobCluster(object):
     def __init__(self, computation, nodes=None, depends=[], callback=None, cluster_status=None,
                  ip_addr=None, dispy_port=None, ext_ip_addr=None,
                  ipv4_udp_multicast=False, dest_path=None, loglevel=logger.INFO,
-                 setup=None, cleanup=True, ping_interval=None, pulse_interval=None,
+                 setup=None, cleanup=True, ping_interval=None, pulse_interval=None, pulse_count=None,
                  poll_interval=None, reentrant=False, secret='', keyfile=None, certfile=None,
                  recover_file=None):
         """Create an instance of cluster for a specific computation.
@@ -2553,11 +2555,14 @@ class JobCluster(object):
         every ping_interval seconds, dispy sends ping messages to find
         nodes that may have missed earlier ping messages.
 
-        @pulse_interval is number of seconds between 1 and 1000. If
+        @pulse_interval is number of seconds between 0.1 and 1000. If
         pulse_interval is set, dispy directs nodes to send 'pulse'
         messages to indicate they are computing submitted jobs. A node
-        is presumed dead if 5*pulse_interval elapses without a pulse
+        is presumed dead if poll_count*pulse_interval elapses without a pulse
         message. See 'reentrant' below.
+
+        @pulse_count is number of missing pulse messages untile node is
+        presumed dead. Defaults to 5.
 
         @poll_interval is number of seconds between 5 and 1000. If
         poll_interval is set, the client uses polling to check the
@@ -2600,10 +2605,20 @@ class JobCluster(object):
         if pulse_interval is not None:
             try:
                 pulse_interval = float(pulse_interval)
-                assert 1.0 <= pulse_interval <= 1000
+                assert 0.1 <= pulse_interval <= 1000
             except Exception:
-                raise Exception('Invalid pulse_interval; must be between 1 and 1000')
+                raise Exception('Invalid pulse_interval; must be between 0.1 and 1000')
         self.pulse_interval = pulse_interval
+
+        if pulse_count is not None:
+            try:
+                pulse_count = int(pulse_count)
+                assert 1 <= pulse_count <= 1000
+            except Exception:
+                raise Exception('Invalid pules_count; must be between 1 and 1000')
+        else:
+            pulse_count = 5
+        self.pulse_count = pulse_count
 
         if poll_interval is not None:
             try:
@@ -2798,6 +2813,7 @@ class JobCluster(object):
         compute.job_result_port = self._cluster.port
         compute.reentrant = reentrant
         compute.pulse_interval = pulse_interval
+        compute.pulse_count = pulse_count
 
         self._compute = compute
         self._pending_jobs = 0
