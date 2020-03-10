@@ -176,9 +176,9 @@ class _Scheduler(object, metaclass=Singleton):
         if pulse_interval:
             try:
                 self.pulse_interval = float(pulse_interval)
-                assert 1.0 <= self.pulse_interval <= 1000
+                assert 0.1 <= self.pulse_interval <= 1000
             except Exception:
-                raise Exception('Invalid pulse_interval; must be between 1 and 1000')
+                raise Exception('Invalid pulse_interval; must be between 0.1 and 1000')
         else:
             self.pulse_interval = None
 

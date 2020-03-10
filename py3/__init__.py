@@ -1380,7 +1380,7 @@ class _Cluster(object, metaclass=Singleton):
                 info = deserialize(msg[len(b'SCHEDULED:'):])
                 assert self.shared
                 cluster = self._clusters.get(info['compute_id'], None)
-                assert info['pulse_interval'] is None or info['pulse_interval'] >= 1
+                assert info['pulse_interval'] is None or info['pulse_interval'] >= 0.1
                 self.pulse_interval = info['pulse_interval']
                 self.timer_task.resume(True)
                 yield conn.send_msg(b'ACK')
@@ -2550,7 +2550,7 @@ class JobCluster(object):
         every ping_interval seconds, dispy sends ping messages to find
         nodes that may have missed earlier ping messages.
 
-        @pulse_interval is number of seconds between 1 and 1000. If
+        @pulse_interval is number of seconds between 0.1 and 1000. If
         pulse_interval is set, dispy directs nodes to send 'pulse'
         messages to indicate they are computing submitted jobs. A node
         is presumed dead if 5*pulse_interval elapses without a pulse
@@ -2597,9 +2597,9 @@ class JobCluster(object):
         if pulse_interval is not None:
             try:
                 pulse_interval = float(pulse_interval)
-                assert 1.0 <= pulse_interval <= 1000
+                assert 0.1 <= pulse_interval <= 1000
             except Exception:
-                raise Exception('Invalid pulse_interval; must be between 1 and 1000')
+                raise Exception('Invalid pulse_interval; must be between 0.1 and 1000')
         self.pulse_interval = pulse_interval
 
         if poll_interval is not None:
