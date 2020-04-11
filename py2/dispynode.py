@@ -1455,7 +1455,7 @@ class _DispyNode(object):
                 globalvars.update(client.globals)
                 if compute.code:
                     exec(marshal.loads(compute.code)) in globalvars
-                if isinstance(client.setup_args, tuple):
+                if compute.setup and isinstance(client.setup_args, tuple):
                     init_vars = set(globalvars.keys())
                     localvars = {'_dispy_setup_status': 0, '_dispy_setup_args': client.setup_args}
                     os.chdir(compute.dest_path)
