@@ -1071,14 +1071,23 @@ class _DispyNode(object):
     def tcp_req(self, conn, addr, task=None):
 
         def job_request(msg):
+            error = None
             try:
                 _job = deserialize(msg)
                 client = self.clients[_job.compute_id]
                 compute = client.compute
                 assert compute.scheduler_ip_addr == self.scheduler['ip_addr']
+            except IndexError:
+                error = ('Invalid computation (node %s may have closed computation due to zombie)' %
+                         compute.node_ip_addr)
+            except AssertionError:
+                error = 'Invalid scheduler for computation!'
             except Exception:
+                error = 'Invalid job (%s)' % traceback.format_exc()
+
+            if error:
                 try:
-                    yield conn.send_msg('NAK'.encode())
+                    yield conn.send_msg(error.encode())
                 except Exception:
                     pass
                 raise StopIteration
@@ -1092,7 +1101,7 @@ class _DispyNode(object):
             #     raise StopIteration
             if self.avail_cpus == 0:
                 try:
-                    yield conn.send_msg('NAK (all cpus busy)'.encode())
+                    yield conn.send_msg('All cpus busy'.encode())
                 except Exception:
                     pass
                 raise StopIteration
@@ -1100,7 +1109,8 @@ class _DispyNode(object):
             for xf in _job.xfer_files:
                 if MaxFileSize and xf.stat_buf.st_size > MaxFileSize:
                     try:
-                        yield conn.send_msg('NAK'.encode())
+                        yield conn.send_msg(('File %s must be less than %s in size' %
+                                             (xf.name, MaxFileSize)).encode())
                     except Exception:
                         pass
                     raise StopIteration
