@@ -1038,7 +1038,12 @@ class _Scheduler(object):
                 req = deserialize(req)
                 cluster = self._clusters[req['compute_id']]
                 assert cluster.client_auth == req['auth']
-                resp = yield self.deallocate_node(cluster, req['node'], task=task)
+                node = self._nodes.get(_node_ipaddr(req['node']), None)
+                if node:
+                    node.clusters.discard(cluster)
+                    resp = 0
+                else:
+                    resp = -1
                 resp = serialize(resp)
             except Exception:
                 resp = serialize(-1)
@@ -1985,16 +1990,8 @@ class _Scheduler(object):
         cluster._node_allocs = [na for na in cluster._node_allocs
                                 if na.ip_rex not in present and not present.add(na.ip_rex)]
         del present
-        self.add_cluster(cluster)
-        yield 0
-
-    def deallocate_node(self, cluster, node, task=None):
-        # generator
-        node = self._nodes.get(_node_ipaddr(node), None)
-        if node is None:
-            raise StopIteration(-1)
-        node.clusters.discard(cluster)
-        yield 0
+        yield self.add_cluster(cluster)
+        raise StopIteration(0)
 
     def close_node(self, cluster, node, terminate_pending, task=None):
         # generator

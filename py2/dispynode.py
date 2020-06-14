@@ -1077,6 +1077,14 @@ class _DispyNode(object):
                 error = 'Invalid scheduler for computation!'
             except Exception:
                 error = 'Invalid job (%s)' % traceback.format_exc()
+            else:
+                if self.avail_cpus == 0:
+                    error = 'All CPUs busy!'
+                else:
+                    for xf in _job.xfer_files:
+                        if MaxFileSize and xf.stat_buf.st_size > MaxFileSize:
+                            error = 'File %s must be less than %s in size' % (xf.name, MaxFileSize)
+                            break
 
             if error:
                 try:
@@ -1092,21 +1100,6 @@ class _DispyNode(object):
             #                            compute.scheduler_ip_addr, compute.scheduler_port,
             #                            self.scheduler['ip_addr'], self.scheduler['port'])
             #     raise StopIteration
-            if self.avail_cpus == 0:
-                try:
-                    yield conn.send_msg('All cpus busy'.encode())
-                except Exception:
-                    pass
-                raise StopIteration
-
-            for xf in _job.xfer_files:
-                if MaxFileSize and xf.stat_buf.st_size > MaxFileSize:
-                    try:
-                        yield conn.send_msg(('File %s must be less than %s in size' %
-                                             (xf.name, MaxFileSize)).encode())
-                    except Exception:
-                        pass
-                    raise StopIteration
 
             dispynode_logger.debug('New job id %s from %s/%s',
                                    _job.uid, addr[0], compute.scheduler_ip_addr)

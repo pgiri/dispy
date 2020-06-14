@@ -48,7 +48,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "Apache 2.0"
 __url__ = "http://dispy.sourceforge.net"
 __status__ = "Production"
-__version__ = "4.12.1"
+__version__ = "4.12.3"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
@@ -604,7 +604,8 @@ class _Node(object):
                 cpus = deserialize(reply)
                 assert isinstance(cpus, int) and cpus > 0
             except Exception:
-                logger.warning('Transfer of computation "%s" to %s failed', compute.name, self.ip_addr)
+                logger.warning('Transfer of computation "%s" to %s failed',
+                               compute.name, self.ip_addr)
                 raise StopIteration(-1)
             self.avail_cpus = cpus
             if self.cpus:
@@ -661,6 +662,7 @@ class _Node(object):
             yield sock.connect((self.ip_addr, self.port))
             yield sock.sendall(self.auth)
             yield sock.send_msg(msg)
+            self.tx += len(msg)
             if reply:
                 resp = yield sock.recv_msg()
             else:
@@ -675,7 +677,6 @@ class _Node(object):
 
         if resp == 'ACK':
             resp = len(msg)
-            self.tx += len(msg)
         raise StopIteration(resp)
 
     def xfer_file(self, xf, task=None):
@@ -686,7 +687,9 @@ class _Node(object):
         try:
             yield sock.connect((self.ip_addr, self.port))
             yield sock.sendall(self.auth)
-            yield sock.send_msg('FILEXFER:' + serialize(xf))
+            msg = 'FILEXFER:' + serialize(xf)
+            yield sock.send_msg(msg)
+            self.tx += len(msg)
             recvd = yield sock.recv_msg()
             recvd = deserialize(recvd)
             with open(xf.name, 'rb') as fd:
@@ -1564,7 +1567,8 @@ class _Cluster(object):
                     continue
                 port = node_alloc.port
                 Task(self.send_ping_node, ip_addr, port)
-        yield 0
+        yield None
+        raise StopIteration(0)
 
     def poll_job_results(self, cluster, task=None):
         # generator
@@ -2187,8 +2191,8 @@ class _Cluster(object):
         if cluster.status_callback:
             self.worker_Q.put((cluster.status_callback, (DispyJob.Created, None,
                                                          copy.copy(_job.job))))
-        self._sched_event.set()
-        yield 0
+        yield self._sched_event.set()
+        raise StopIteration(0)
 
     def cancel_job(self, job, task=None):
         # generator
@@ -2265,8 +2269,8 @@ class _Cluster(object):
             node = self._nodes.get(node.ip_addr, None)
         if not node:
             raise StopIteration(-1)
-        node.clusters.discard(cluster)
-        yield 0
+        yield node.clusters.discard(cluster)
+        raise StopIteration(0)
 
     def close_node(self, cluster, node, terminate_pending, close=True, task=None):
         # generator
@@ -2955,7 +2959,8 @@ class JobCluster(object):
         Return cluster status (ClusterStatus structure).
         """
         def _status(self, task=None):
-            yield ClusterStatus(self._dispy_nodes.values(), self._pending_jobs)
+            result = yield ClusterStatus(self._dispy_nodes.values(), self._pending_jobs)
+            raise StopIteration(result)
         return Task(_status, self).value()
 
     def print_status(self, wall_time=None):
