@@ -848,7 +848,8 @@ class _Cluster(object, metaclass=Singleton):
                  secret='', keyfile=None, certfile=None, recover_file=None):
         if not hasattr(self, 'pycos'):
             self.pycos = Pycos()
-            logger.info('dispy client version: %s', __version__)
+            logger.info('dispy client version: %s (Python %s)',
+                        __version__, platform.python_version())
             self.ipv4_udp_multicast = bool(ipv4_udp_multicast)
             self.addrinfos = {}
             if isinstance(ip_addr, list):

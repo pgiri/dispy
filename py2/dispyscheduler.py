@@ -21,6 +21,7 @@ import glob
 import cPickle as pickle
 import hashlib
 import struct
+import platform
 try:
     import netifaces
 except ImportError:
@@ -2291,7 +2292,8 @@ if __name__ == '__main__':
         except (Exception, KeyboardInterrupt):
             pass
 
-    logger.info('dispyscheduler version %s', _dispy_version)
+    logger.info('version: %s (Python %s), PID: %s',
+                _dispy_version, platform.python_version(), os.getpid())
     scheduler = _Scheduler(**config)
     if daemon:
         scheduler.job_scheduler_task.value()

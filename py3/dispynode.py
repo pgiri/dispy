@@ -3083,7 +3083,8 @@ if __name__ == '__main__':
 
     # TODO: reset these signals in processes that execute computations?
 
-    dispynode_logger.info('dispynode version: %s, PID: %s', _dispy_version, os.getpid())
+    dispynode_logger.info('version: %s (Python %s), PID: %s',
+                          _dispy_version, platform.python_version(), os.getpid())
     _dispy_node = _DispyNode(**_dispy_config)
 
     if _dispy_config['daemon']:

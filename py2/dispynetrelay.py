@@ -11,6 +11,7 @@ import socket
 import traceback
 import struct
 import time
+import platform
 
 import dispy
 import dispy.config
@@ -85,7 +86,8 @@ class DispyNetRelay(object):
                        'sign': None}
                 Task(self.verify_broadcast, addrinfo, msg)
 
-        logger.info('version %s started', dispy._dispy_version)
+        logger.info('version: %s (Python %s), PID: %s',
+                    dispy._dispy_version, platform.python_version(), os.getpid())
 
     def verify_broadcast(self, addrinfo, msg, task=None):
         if msg.get('relay', None):
