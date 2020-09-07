@@ -3033,7 +3033,7 @@ if __name__ == '__main__':
     except Exception:
         pass
 
-    if os.name == 'nt':
+    if os.name == 'nt' and not _dispy_config['daemon']:
         # Python 3 under Windows blocks multiprocessing.Process on reading
         # input; pressing "Enter" twice works (for one subprocess). Until
         # this is understood / fixed, disable reading input.
@@ -3044,9 +3044,11 @@ if __name__ == '__main__':
         # Update on Sep 30, 2018: While multiprocessing now works with
         # reading input, entering text seems to raise SIGINT or
         # SIGBREAK causing dispynode to quit, so leave it as daemon.
-        print('\n    Reading standard input disabled, as multiprocessing\n'
-              '    does not seem to work with reading input under Windows')
-        _dispy_config['daemon'] = True
+
+        # As of Aug 1, 2020, all seem okay with Python 3.8 and pywin32 228.
+        print('\n  In the past, reading input in non-daemon mode seemed to\n'
+              '  interfere with multiprocessing. Latest Python / pywin32\n'
+              '  seem to be working fine. In case of issues, use "--daemon" option.\n')
 
     if psutil:
         psutil.cpu_percent(0.1)
