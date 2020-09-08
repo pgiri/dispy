@@ -627,6 +627,7 @@ class _Node(object):
         for i in range(len(depends)):
             dep = depends[i]
             if isinstance(dep, _XferFile):
+                dep.compute_id = compute.id
                 continue
             try:
                 depends[i] = _XferFile(dep, compute.id)
