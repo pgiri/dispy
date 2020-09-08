@@ -2728,7 +2728,8 @@ class _DispyNode(object):
                 # print(traceback.format_exc())
                 pass
             if os.name == 'nt':
-                os.kill(self.pid, signal.SIGTERM)
+                os.kill(self.pid, signal.CTRL_C_EVENT)
+                print('\n\n   Under Windows extra Enter (input) may be required to quit!\n')
             else:
                 os.kill(self.pid, signal.SIGINT)
 
@@ -3087,7 +3088,7 @@ if __name__ == '__main__':
         del _dispy_config
         while 1:
             # wait a bit for any output for command is done
-            time.sleep(0.1)
+            time.sleep(0.2)
             try:
                 _dispy_cmd = raw_input(
                     '\nEnter "quit" or "exit" to terminate dispynode,\n'
