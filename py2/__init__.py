@@ -1,5 +1,3 @@
-#!/usr/bin/python
-
 """
 dispy: Distribute computations among CPUs/cores on a single machine or machines
 in cluster(s), grid, cloud etc. for parallel execution.  See

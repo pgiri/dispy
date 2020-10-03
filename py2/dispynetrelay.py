@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python2
 
 """
 dispynetrelay: Relay ping messages from client(s) to nodes

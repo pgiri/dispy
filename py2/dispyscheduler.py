@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python2
 
 """
 dispyscheduler: Schedule jobs to nodes running 'dispynode'; needed

@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python2
 
 """
 dispy: Distribute computations among CPUs/cores on a single machine or machines

@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/python2
 """
 This file is part of dispy project.
 See http://dispy.sourceforge.net for details.

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 """
 This file is part of dispy project.
 See http://dispy.sourceforge.net for details.
