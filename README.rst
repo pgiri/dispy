@@ -1,11 +1,10 @@
 dispy
 ######
 
-    This project is hosted at `Sourceforge <http://dispy.sourceforge.net>`_;
-    however, sourceforge is sometimes unreliable, so documentation has been
-    uploaded to `github <https://pgiri.github.io/dispy/index.html>`_ as well.
+    .. note:: Full documentation for dispy is now available at `dispy.org
+              <https://dispy.org>`_.
 
-`dispy <https://pgiri.github.io/dispy/index.html>`_ is a comprehensive, yet easy
+`dispy <https://dispy.org>`_ is a comprehensive, yet easy
 to use framework for creating and using compute clusters to execute computations
 in parallel across multiple processors in a single machine (SMP), among many
 machines in a cluster, grid or cloud.  dispy is well suited for data parallel
@@ -13,13 +12,13 @@ machines in a cluster, grid or cloud.  dispy is well suited for data parallel
 independently with no communication among computation tasks (except for
 computation tasks sending intermediate results to the client).
 
-dispy works with Python versions 2.7+ and 3.1+. It has been tested
-with Linux, OS X and Windows; it may work on other platforms too.
+dispy works with Python versions 2.7+ and 3.1+ on Linux, Mac OS X and Windows; it may
+work on other platforms (e.g., FreeBSD and other BSD variants) too.
 
 Features
 --------
 
-* dispy is implemented with `pycos <https://pgiri.github.io/pycos/index.html>`_,
+* dispy is implemented with `pycos <https://pycos.org>`_,
   an independent framework for asynchronous, concurrent, distributed, network
   programming with tasks (without threads). pycos uses non-blocking sockets with
   I/O notification mechanisms epoll, kqueue and poll, and Windows I/O Completion
@@ -29,7 +28,7 @@ Features
   etc., and message passing (for communicating with client and other computation
   tasks).  While dispy can be used to schedule jobs of a computation to get the
   results, pycos can be used to create `distributed communicating processes
-  <https://pgiri.github.io/pycos/dispycos.html>`_, for broad range of use cases.
+  <https://pycos.org/dispycos.html>`_, for broad range of use cases.
 
 * Computations (Python functions or standalone programs) and their
   dependencies (files, Python functions, classes, modules) are
@@ -68,17 +67,15 @@ Features
   ``SharedJobCluster`` and *dispyscheduler* program).
 
 * Cluster can be `monitored and managed
-  <https:/pgiri.github.io/dispy/httpd.html>`_ with web browser.
+  <https:/dispy.org/httpd.html>`_ with web browser.
 
 Dependencies
 ------------
 
-dispy requires pycos_ for concurrent, asynchronous network
-programming with tasks. pycos is automatically installed if
-dispy is installed with pip. Under Windows efficient polling notifier
-I/O Completion Ports (IOCP) is supported only if `pywin32
-<http://sourceforge.net/projects/pywin32/files/pywin32/>`_ is
-installed; otherwise, inefficient *select* notifier is used.
+dispy requires pycos_ for concurrent, asynchronous network programming with tasks. pycos is
+automatically installed if dispy is installed with pip. Under Windows efficient polling notifier
+I/O Completion Ports (IOCP) is supported only if `pywin32 <https://github.com/mhammond/pywin32>`_
+is installed; otherwise, inefficient *select* notifier is used.
 
 Installation
 ------------
@@ -90,7 +87,7 @@ Release Notes
 -------------
 
 Short summary of changes for each release can be found at `News
-<https://sourceforge.net/p/dispy/news/>`_. Detailed logs / changes are at
+<https://pycos.com/forum/viewforum.php?f=11>`_. Detailed logs / changes are at
 github `commits <https://github.com/pgiri/dispy/commits/master>`_.
 
 Authors
@@ -99,6 +96,6 @@ Authors
 
 Links
 -----
-* `Project page <https://pgiri.github.io/dispy/index.html>`_.
-* `Examples <https://pgiri.github.io/dispy/examples.html>`_.
-* `Source <https://github.com/pgiri/dispy>`_.
+* Documentation is at `dispy.org`_.
+* `Examples <https://dispy.org/examples.html>`_.
+* `Github (Code Respository) <https://github.com/pgiri/dispy>`_.
