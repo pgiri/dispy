@@ -2458,7 +2458,7 @@ class _Cluster(object, metaclass=Singleton):
         if self.pycos:
             self.pycos.finish()
             self.pycos = None
-        Singleton.empty(self.__class__)
+        Singleton.discard(self.__class__)
 
 
 class JobCluster(object):
