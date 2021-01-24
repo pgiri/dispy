@@ -47,7 +47,7 @@ setup(
     version=module_version,
     description='Distributed and Parallel Computing with/for Python.',
     keywords='distributed computing, parallel processing, mapreduce, hadoop, job scheduler',
-    url='http://dispy.sourceforge.net',
+    url='https://dispy.org',
     author='Giridhar Pemmasani',
     author_email='pgiri@yahoo.com',
     package_dir={'dispy': base_dir},
@@ -55,7 +55,7 @@ setup(
     package_data = {
         'dispy' : ['data/*', 'examples/*'],
     },
-    install_requires=['pycos >= 4.9.0'],
+    install_requires=['pycos >= 4.10.1'],
     scripts=[os.path.join(base_dir, script) for script in
              ['dispynode.py', 'dispynetrelay.py', 'dispyscheduler.py', 'dispy_cmd.py']],
     license='Apache 2.0',
