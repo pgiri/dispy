@@ -1,7 +1,6 @@
 #!/usr/bin/python3
 """
-This file is part of dispy project.
-See http://dispy.sourceforge.net for details.
+This file is part of dispy; see https://dispy.org for details.
 """
 
 import sys
@@ -38,7 +37,7 @@ __copyright__ = "Copyright 2019, Giridhar Pemmasani"
 __contributors__ = []
 __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "Apache 2.0"
-__url__ = "http://dispy.sourceforge.net"
+__url__ = "https://dispy.org"
 
 # Compatability function to work with both Python 2.7 and Python 3
 if sys.version_info.major >= 3:

@@ -1,6 +1,5 @@
 """
-This file is part of dispy project.
-See http://dispy.sourceforge.net for details.
+This file is part of dispy; see https://dispy.org for details.
 """
 
 import sys
@@ -31,7 +30,7 @@ __copyright__ = "Copyright 2015, Giridhar Pemmasani"
 __contributors__ = []
 __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "Apache 2.0"
-__url__ = "http://dispy.sourceforge.net"
+__url__ = "https://dispy.org"
 
 __all__ = ['DispyHTTPServer']
 

@@ -2,8 +2,7 @@
 
 """
 dispy: Distribute computations among CPUs/cores on a single machine or machines
-in cluster(s), grid, cloud etc. for parallel execution.  See
-http://dispy.sourceforge.net or https://pgiri.github.com/dispy for details.
+in cluster(s), grid, cloud etc. for parallel execution.  See https://dispy.org for details.
 """
 
 import os
@@ -18,7 +17,7 @@ __copyright__ = "Copyright 2011, Giridhar Pemmasani"
 __contributors__ = []
 __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "Apache 2.0"
-__url__ = "http://dispy.sourceforge.net"
+__url__ = "https://dispy.org"
 __status__ = "Production"
 __version__ = _dispy_version
 __all__ = []
