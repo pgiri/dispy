@@ -3087,21 +3087,20 @@ if __name__ == '__main__':
     else:
         del _dispy_config
         while 1:
-            # wait a bit for any output for command is done
-            time.sleep(0.2)
             try:
+                # wait a bit for any output for command is done
+                time.sleep(0.2)
                 _dispy_cmd = raw_input(
                     '\nEnter "quit" or "exit" to terminate dispynode,\n'
                     '  "stop" to stop service, "start" to restart service,\n'
                     '  "release" to check and close computation,\n'
                     '  "cpus" to change CPUs used, anything else to get status: ')
+                _dispy_cmd = _dispy_cmd.strip().lower()
+                _dispy_node.cmd_task.send(_dispy_cmd)
             except (Exception, KeyboardInterrupt):
                 if os.path.isfile(os.path.join(_dispy_node.dest_path_prefix, 'config.pkl')):
                     _dispy_node.shutdown('exit')
                 else:
                     break
-            else:
-                _dispy_cmd = _dispy_cmd.strip().lower()
-                _dispy_node.cmd_task.send(_dispy_cmd)
 
     _dispy_node.pycos.finish()
