@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 
 """
 dispynode: Execute computations on behalf of dispy clients;
