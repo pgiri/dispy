@@ -2732,6 +2732,7 @@ class _DispyNode(object):
                 print('\n\n   Under Windows extra Enter (input) may be required to quit!\n')
             else:
                 os.kill(self.pid, signal.SIGINT)
+                time.sleep(0.2)
 
         if self.sign:
             Task(_shutdown, self, how)
