@@ -4,6 +4,9 @@
 # with any platform, this example doesn't work with Windows, as in-memory
 # feature doesn't work with Windows.
 
+# this function is executed by a node to initialize for computation; in this case, this function
+# loads data in given file into global variable, which is available for computation jobs
+# (as read-only data)
 def setup(data_file, n):
     global data, algorithms, hashlib, file_name
 
@@ -18,10 +21,14 @@ def setup(data_file, n):
     algorithms = [alg for alg in algorithms if (not alg.startswith('shake'))]
     return 0
 
+# this function is executed by node when closing for computation (after all jobs are finished);
+# in this case, the function removes global variables initialized with 'setup'
 def cleanup(data_file, n):
     global data, algorithms, hashlib, file_name
     del data, algorithms, file_name
 
+# this function is executed by each computation job; in this case, the function uses
+# global variables (in memory) initialized in 'setup'.
 def compute(i, n):
     # 'hashlib', 'data' and 'algorithms' global variables are initialized in 'setup'
     alg = algorithms[i % len(algorithms)]
@@ -30,6 +37,7 @@ def compute(i, n):
     time.sleep(n)
     return (dispy_node_ip_addr, file_name, alg, csum.hexdigest())
 
+# this function is executed at client (this program) when a job's status has changed
 def job_status(job):
     if job.status == dispy.DispyJob.Finished:
         print('\njob %s finished by %s, %s of %s is %s' % (job.id, job.result[0], job.result[2],
