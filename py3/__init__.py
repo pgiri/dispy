@@ -859,6 +859,9 @@ class _Cluster(object, metaclass=Singleton):
             else:
                 ext_ip_addrs = [ext_ip_addr]
 
+            for i in range(len(ip_addrs), len(ext_ip_addrs)):
+                ip_addrs.append(ip_addrs[-1])
+
             for i in range(len(ip_addrs)):
                 ip_addr = ip_addrs[i]
                 if i < len(ext_ip_addrs):
