@@ -351,7 +351,6 @@ def host_addrinfo(host=None, socket_family=None, ipv4_multicast=False):
             else:
                 self.broadcast = broadcast
             self.netmask = netmask
-            self.ext_ip_addr = None
             if os.name == 'nt':
                 self.bind_addr = ip
             elif platform.system() in ('Darwin', 'DragonFlyBSD', 'FreeBSD', 'OpenBSD', 'NetBSD'):
@@ -849,39 +848,32 @@ class _Cluster(object, metaclass=Singleton):
             logger.info('dispy client version: %s (Python %s)',
                         __version__, platform.python_version())
             self.ipv4_udp_multicast = bool(ipv4_udp_multicast)
-            self.addrinfos = {}
+            self.addrinfos = []
             if isinstance(ip_addr, list):
                 ip_addrs = ip_addr
             else:
                 ip_addrs = [ip_addr]
-            if isinstance(ext_ip_addr, list):
-                ext_ip_addrs = ext_ip_addr
-            else:
-                ext_ip_addrs = [ext_ip_addr]
-
-            for i in range(len(ip_addrs), len(ext_ip_addrs)):
-                ip_addrs.append(ip_addrs[-1])
-
-            for i in range(len(ip_addrs)):
-                ip_addr = ip_addrs[i]
-                if i < len(ext_ip_addrs):
-                    ext_ip_addr = ext_ip_addrs[i]
-                else:
-                    ext_ip_addr = None
+            for ip_addr in ip_addrs:
                 addrinfo = host_addrinfo(host=ip_addr, ipv4_multicast=self.ipv4_udp_multicast)
                 if not addrinfo:
                     logger.warning('Ignoring invalid ip_addr %s', ip_addr)
                     continue
-                if ext_ip_addr:
-                    ext_ip_addr = _node_ipaddr(ext_ip_addr)
-                    if not ext_ip_addr:
-                        logger.warning('Ignoring invalid ext_ip_addr %s', ext_ip_addrs[i])
-                if not ext_ip_addr:
-                    ext_ip_addr = addrinfo.ip
-                addrinfo.ext_ip_addr = ext_ip_addr
-                self.addrinfos[addrinfo.ext_ip_addr] = addrinfo
+                self.addrinfos.append(addrinfo)
             if not self.addrinfos:
                 raise Exception('No valid IP address found')
+
+            self.ext_ip_addrs = []
+            if ext_ip_addr:
+                if isinstance(ext_ip_addr, list):
+                    ext_ip_addrs = ext_ip_addr
+                else:
+                    ext_ip_addrs = [ext_ip_addr]
+                for ext_ip_addr in ext_ip_addrs:
+                    ext_ip_addr = _node_ipaddr(ext_ip_addr)
+                    if ext_ip_addr:
+                        self.ext_ip_addrs.append(ext_ip_addr)
+                    else:
+                        logger.warning('Ignoring invalid ext_ip_addr %s', ext_ip_addr)
 
             self.port = eval(dispy.config.ClientPort)
             self.node_port = eval(dispy.config.NodePort)
@@ -902,8 +894,8 @@ class _Cluster(object, metaclass=Singleton):
             self._abandoned_jobs = {}
             self.terminate = False
             self.sign = hashlib.sha1(os.urandom(20))
-            for ext_ip_addr in self.addrinfos:
-                self.sign.update(ext_ip_addr.encode())
+            for addrinfo in self.addrinfos:
+                self.sign.update(addrinfo.ip.encode())
             self.sign = self.sign.hexdigest()
             self.auth = auth_code(self.secret, self.sign)
 
@@ -919,7 +911,8 @@ class _Cluster(object, metaclass=Singleton):
 
             try:
                 self.shelf = shelve.open(self.recover_file, flag='c', writeback=True)
-                self.shelf['_cluster'] = {'ip_addrs': ip_addrs, 'ext_ip_addrs': ext_ip_addrs,
+                self.shelf['_cluster'] = {'ip_addrs': [info.ip for info in self.addrinfos],
+                                          'ext_ip_addrs': self.ext_ip_addrs,
                                           'port': self.port, 'sign': self.sign,
                                           'secret': self.secret, 'auth': self.auth,
                                           'keyfile': self.keyfile, 'certfile': self.certfile}
@@ -946,7 +939,7 @@ class _Cluster(object, metaclass=Singleton):
             self.tcp_tasks = []
             self.udp_tasks = []
             udp_addrinfos = {}
-            for addrinfo in self.addrinfos.values():
+            for addrinfo in self.addrinfos:
                 self.tcp_tasks.append(Task(self.tcp_server, addrinfo, port_bound_event))
                 if self.shared:
                     continue
@@ -1024,7 +1017,7 @@ class _Cluster(object, metaclass=Singleton):
                 sock.settimeout(MsgTimeout)
                 msg = {'version': _dispy_version, 'port': self.port, 'sign': self.sign,
                        'node_ip_addr': info['ip_addr']}
-                msg['ip_addrs'] = [ai.ext_ip_addr for ai in self.addrinfos.values()]
+                msg['ip_addrs'] = self.ext_ip_addrs
                 try:
                     yield sock.connect((info['ip_addr'], info['port']))
                     yield sock.sendall(auth)
@@ -1196,7 +1189,7 @@ class _Cluster(object, metaclass=Singleton):
             sock.settimeout(MsgTimeout)
             msg = {'version': _dispy_version, 'port': self.port, 'sign': self.sign,
                    'node_ip_addr': info['ip_addr']}
-            msg['ip_addrs'] = [addrinfo.ext_ip_addr for addrinfo in self.addrinfos.values()]
+            msg['ip_addrs'] = self.ext_ip_addrs
             try:
                 yield sock.connect((info['ip_addr'], info['port']))
                 yield sock.sendall(auth)
@@ -1521,7 +1514,7 @@ class _Cluster(object, metaclass=Singleton):
     def send_ping_node(self, ip_addr, port=None, task=None):
         ping_msg = {'version': _dispy_version, 'sign': self.sign, 'port': self.port,
                     'node_ip_addr': ip_addr}
-        ping_msg['ip_addrs'] = [addrinfo.ext_ip_addr for addrinfo in self.addrinfos.values()]
+        ping_msg['ip_addrs'] = self.ext_ip_addrs
         if not port:
             port = self.node_port
         if re.match(r'\d+\.', ip_addr):
@@ -1544,9 +1537,9 @@ class _Cluster(object, metaclass=Singleton):
         if not port:
             port = self.node_port
         ping_msg = {'version': _dispy_version, 'sign': self.sign, 'port': self.port}
-        ping_msg['ip_addrs'] = [addrinfo.ext_ip_addr for addrinfo in self.addrinfos.values()]
+        ping_msg['ip_addrs'] = self.ext_ip_addrs
         if not addrinfos:
-            addrinfos = self.addrinfos.values()
+            addrinfos = self.addrinfos
         for addrinfo in addrinfos:
             bc_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
             bc_sock.settimeout(MsgTimeout)
