@@ -2226,6 +2226,9 @@ if __name__ == '__main__':
     cfg = config.pop('save_config', None)
     if cfg:
         import configparser
+        for key, val in list(config.items()):
+            if not isinstance(val, str):
+                config[key] = str(val)
         config = configparser.ConfigParser(config)
         cfg = open(cfg, 'w')
         config.write(cfg)

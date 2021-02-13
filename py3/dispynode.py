@@ -2929,6 +2929,9 @@ if __name__ == '__main__':
     cfg = _dispy_config.pop('save_config', None)
     if cfg:
         import configparser
+        for key, val in list(_dispy_config.items()):
+            if not isinstance(val, str):
+                _dispy_config[key] = str(val)
         _dispy_config = configparser.ConfigParser(_dispy_config)
         cfg = open(cfg, 'w')
         _dispy_config.write(cfg)
