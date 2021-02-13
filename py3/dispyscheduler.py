@@ -119,35 +119,32 @@ class _Scheduler(object, metaclass=Singleton):
     See dispy's JobCluster and SharedJobCluster for documentation.
     """
 
-    def __init__(self, nodes=[], ip_addrs=[], ext_ip_addrs=[], ipv4_udp_multicast=False,
+    def __init__(self, nodes=[], hosts=[], ext_hosts=[], ipv4_udp_multicast=False,
                  pulse_interval=None, ping_interval=None, cooperative=False, cleanup_nodes=False,
                  node_secret='', cluster_secret='', node_keyfile=None, node_certfile=None,
                  cluster_keyfile=None, cluster_certfile=None, dest_path_prefix=None, clean=False,
                  scheduler_alg=None, zombie_interval=60, http_server=False):
         self.ipv4_udp_multicast = bool(ipv4_udp_multicast)
-        self.addrinfos = {}
-        if not ip_addrs:
-            ip_addrs = [None]
-        for i in range(len(ip_addrs)):
-            ip_addr = ip_addrs[i]
-            if i < len(ext_ip_addrs):
-                ext_ip_addr = ext_ip_addrs[i]
-            else:
-                ext_ip_addr = None
-            addrinfo = dispy.host_addrinfo(host=ip_addr, ipv4_multicast=self.ipv4_udp_multicast)
+        self.addrinfos = []
+        if not hosts:
+            hosts = [None]
+        for host in hosts:
+            addrinfo = dispy.host_addrinfo(host=host, ipv4_multicast=self.ipv4_udp_multicast)
             if not addrinfo:
-                logger.warning('Ignoring invalid ip_addr %s', ip_addr)
+                logger.warning('Ignoring invalid host %s', host)
                 continue
-            if ext_ip_addr:
-                ext_ip_addr = dispy._node_ipaddr(ext_ip_addr)
-                if not ext_ip_addr:
-                    logger.warning('Ignoring invalid ext_ip_addr %s', ext_ip_addrs[i])
-            if not ext_ip_addr:
-                ext_ip_addr = addrinfo.ip
-            addrinfo.ext_ip_addr = ext_ip_addr
-            self.addrinfos[addrinfo.ext_ip_addr] = addrinfo
+            self.addrinfos.append(addrinfo)
         if not self.addrinfos:
             raise Exception('No valid IP address found')
+
+        self.ext_ip_addrs = []
+        if ext_hosts:
+            for ext_host in ext_hosts:
+                ext_ip_addr = dispy._node_ipaddr(ext_host)
+                if ext_ip_addr:
+                    self.ext_ip_addrs.append(ext_ip_addr)
+                else:
+                    logger.warning('Ignoring invalid ext_host %s', ext_host)
 
         self.port = eval(dispy.config.ClientPort)
         self.node_port = eval(dispy.config.NodePort)
@@ -217,16 +214,15 @@ class _Scheduler(object, metaclass=Singleton):
         self.done_jobs = {}
         self.terminate = False
         self.sign = hashlib.sha1(os.urandom(20))
-        for ext_ip_addr in self.addrinfos:
-            self.sign.update(ext_ip_addr.encode())
+        for addrinfo in self.addrinfos:
+            self.sign.update(addrinfo.ip.encode())
         self.sign = self.sign.hexdigest()
         self.cluster_auth = auth_code(self.cluster_secret, self.sign)
         self.node_auth = auth_code(self.node_secret, self.sign)
 
         with open(os.path.join(self.dest_path_prefix, 'config'), 'wb') as fd:
             config = {
-                'ip_addrs': [ai.ip for ai in self.addrinfos.values()],
-                'ext_ip_addrs': [ai.ext_ip_addr for ai in self.addrinfos.values()],
+                'host': [ai.ip for ai in self.addrinfos], 'ext_host': self.ext_ip_addrs,
                 'port': self.port, 'sign': self.sign,
                 'cluster_secret': self.cluster_secret, 'cluster_auth': self.cluster_auth,
                 'node_secret': self.node_secret, 'node_auth': self.node_auth
@@ -253,7 +249,7 @@ class _Scheduler(object, metaclass=Singleton):
         self.udp_tasks = []
         self.scheduler_tasks = []
         udp_addrinfos = {}
-        for addrinfo in self.addrinfos.values():
+        for addrinfo in self.addrinfos:
             self.tcp_tasks.append(Task(self.tcp_server, addrinfo))
             self.scheduler_tasks.append(Task(self.scheduler_server, addrinfo))
             if os.name == 'nt':
@@ -326,7 +322,7 @@ class _Scheduler(object, metaclass=Singleton):
                                    keyfile=self.node_keyfile, certfile=self.node_certfile)
                 sock.settimeout(MsgTimeout)
                 msg = {'port': self.port, 'sign': self.sign, 'version': _dispy_version}
-                msg['ip_addrs'] = [ai.ext_ip_addr for ai in self.addrinfos.values()]
+                msg['ip_addrs'] = self.ext_ip_addrs
                 try:
                     yield sock.connect((info['ip_addr'], info['port']))
                     yield sock.sendall(auth)
@@ -451,7 +447,7 @@ class _Scheduler(object, metaclass=Singleton):
                                    keyfile=self.node_keyfile, certfile=self.node_certfile)
                 sock.settimeout(MsgTimeout)
                 msg = {'port': self.port, 'sign': self.sign, 'version': _dispy_version}
-                msg['ip_addrs'] = [addrinfo.ext_ip_addr for addrinfo in self.addrinfos.values()]
+                msg['ip_addrs'] = self.ext_ip_addrs
                 try:
                     yield sock.connect((info['ip_addr'], info['port']))
                     yield sock.sendall(auth)
@@ -1227,7 +1223,7 @@ class _Scheduler(object, metaclass=Singleton):
     def send_ping_node(self, ip_addr, port=None, task=None):
         ping_msg = {'version': _dispy_version, 'sign': self.sign, 'port': self.port,
                     'node_ip_addr': ip_addr}
-        ping_msg['ip_addrs'] = [addrinfo.ext_ip_addr for addrinfo in self.addrinfos.values()]
+        ping_msg['ip_addrs'] = self.ext_ip_addrs
         if not port:
             port = self.node_port
         if re.match(r'\d+\.', ip_addr):
@@ -1250,9 +1246,9 @@ class _Scheduler(object, metaclass=Singleton):
         if not port:
             port = self.node_port
         ping_msg = {'version': _dispy_version, 'sign': self.sign, 'port': self.port}
-        ping_msg['ip_addrs'] = [addrinfo.ext_ip_addr for addrinfo in self.addrinfos.values()]
+        ping_msg['ip_addrs'] = self.ext_ip_addrs
         if not addrinfos:
-            addrinfos = list(self.addrinfos.values())
+            addrinfos = self.addrinfos
         for addrinfo in addrinfos:
             bc_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
             bc_sock.settimeout(MsgTimeout)
@@ -2138,14 +2134,14 @@ if __name__ == '__main__':
                         help='save configuration in given file and exit')
     parser.add_argument('-d', '--debug', action='store_true', dest='loglevel', default=False,
                         help='if given, debug messages are printed')
-    parser.add_argument('-n', '--nodes', action='append', dest='nodes', default=[],
-                        help='name or IP address used for all computations; '
+    parser.add_argument('-n', '--node', action='append', dest='nodes', default=[],
+                        help='node host name or IP address used for all computations; '
                         'repeat for multiple nodes')
-    parser.add_argument('-i', '--ip_addr', action='append', dest='ip_addrs', default=[],
-                        help='IP address to use; repeat for multiple interfaces')
-    parser.add_argument('--ext_ip_addr', action='append', dest='ext_ip_addrs', default=[],
-                        help='External IP address to use (needed in case of NAT firewall/gateway);'
-                        ' repeat for multiple interfaces')
+    parser.add_argument('-i', '--host', action='append', dest='hosts', default=[],
+                        help='host name or IP address to use; repeat for multiple interfaces')
+    parser.add_argument('--ext_host', action='append', dest='ext_hosts', default=[],
+                        help='External host name or IP address to use (needed in case of '
+                        'NAT firewall/gateway); repeat for multiple interfaces')
     parser.add_argument('-p', '--port', dest='dispy_port', type=int, default=dispy.config.DispyPort,
                         help='dispy port number')
     parser.add_argument('--ipv4_udp_multicast', dest='ipv4_udp_multicast', action='store_true',
@@ -2202,12 +2198,12 @@ if __name__ == '__main__':
         cfg = configparser.ConfigParser()
         cfg.read(config['config'])
         cfg = dict(cfg.items('DEFAULT'))
-        cfg['nodes'] = [] if cfg['nodes'] == '[]' else \
-                       [_.strip() for _ in cfg['nodes'][1:-1].split(',')]
-        cfg['ip_addrs'] = [] if cfg['ip_addrs'] == '[]' else \
-                         [_.strip() for _ in cfg['ip_addrs'][1:-1].split(',')]
-        cfg['ext_ip_addrs'] = [] if cfg['ext_ip_addrs'] == '[]' else \
-                             [_.strip() for _ in cfg['ext_ip_addrs'][1:-1].split(',')]
+        cfg['nodes'] = ([] if cfg['nodes'] == '[]' else
+                        [_.strip() for _ in cfg['nodes'][1:-1].split(',')])
+        cfg['hosts'] = ([] if cfg['hosts'] == '[]' else
+                        [_.strip() for _ in cfg['hosts'][1:-1].split(',')])
+        cfg['ext_hosts'] = ([] if cfg['ext_hosts'] == '[]' else
+                            [_.strip() for _ in cfg['ext_hosts'][1:-1].split(',')])
         cfg['dispy_port'] = int(cfg['dispy_port'])
         cfg['ipv4_udp_multicast'] = cfg['ipv4_udp_multicast'] == 'True'
         cfg['pulse_interval'] = float(cfg['pulse_interval'])
