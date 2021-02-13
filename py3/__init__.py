@@ -875,6 +875,7 @@ class _Cluster(object, metaclass=Singleton):
                     else:
                         logger.warning('Ignoring invalid ext_ip_addr %s', ext_ip_addr)
 
+            self.ip_addrs = list(self.ext_ip_addrs)
             self.port = eval(dispy.config.ClientPort)
             self.node_port = eval(dispy.config.NodePort)
 
@@ -1017,7 +1018,7 @@ class _Cluster(object, metaclass=Singleton):
                 sock.settimeout(MsgTimeout)
                 msg = {'version': _dispy_version, 'port': self.port, 'sign': self.sign,
                        'node_ip_addr': info['ip_addr']}
-                msg['ip_addrs'] = self.ext_ip_addrs
+                msg['ip_addrs'] = self.ip_addrs
                 try:
                     yield sock.connect((info['ip_addr'], info['port']))
                     yield sock.sendall(auth)
@@ -1064,6 +1065,7 @@ class _Cluster(object, metaclass=Singleton):
         if not self.port:
             self.port = sock.getsockname()[1]
         logger.debug('dispy client at %s:%s', addrinfo.ip, self.port)
+        self.ip_addrs.append(addrinfo.ip)
         sock.listen(128)
 
         while 1:
@@ -1189,7 +1191,7 @@ class _Cluster(object, metaclass=Singleton):
             sock.settimeout(MsgTimeout)
             msg = {'version': _dispy_version, 'port': self.port, 'sign': self.sign,
                    'node_ip_addr': info['ip_addr']}
-            msg['ip_addrs'] = self.ext_ip_addrs
+            msg['ip_addrs'] = self.ip_addrs
             try:
                 yield sock.connect((info['ip_addr'], info['port']))
                 yield sock.sendall(auth)
@@ -1514,7 +1516,7 @@ class _Cluster(object, metaclass=Singleton):
     def send_ping_node(self, ip_addr, port=None, task=None):
         ping_msg = {'version': _dispy_version, 'sign': self.sign, 'port': self.port,
                     'node_ip_addr': ip_addr}
-        ping_msg['ip_addrs'] = self.ext_ip_addrs
+        ping_msg['ip_addrs'] = self.ip_addrs
         if not port:
             port = self.node_port
         if re.match(r'\d+\.', ip_addr):
@@ -1537,7 +1539,7 @@ class _Cluster(object, metaclass=Singleton):
         if not port:
             port = self.node_port
         ping_msg = {'version': _dispy_version, 'sign': self.sign, 'port': self.port}
-        ping_msg['ip_addrs'] = self.ext_ip_addrs
+        ping_msg['ip_addrs'] = self.ip_addrs
         if not addrinfos:
             addrinfos = self.addrinfos
         for addrinfo in addrinfos:

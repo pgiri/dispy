@@ -896,10 +896,8 @@ class _DispyNode(object):
                                    self.avail_cpus, self.num_cpus, addr[0])
             return
 
-        scheduler_ip_addrs = info['ip_addrs'] + [addr[0]]
+        scheduler_ip_addrs = info['ip_addrs']
         scheduler_port = info['port']
-        if (not info.get('relay', None) and isinstance(addr, tuple) and isinstance(addr[0], str)):
-            scheduler_ip_addrs.append(addr[0])
         msg = {'port': self.port, 'sign': self.sign, 'version': _dispy_version}
         sign = info.get('sign', '')
         if sign:
@@ -933,8 +931,8 @@ class _DispyNode(object):
                                        keyfile=self.keyfile, certfile=self.certfile)
                     sock.settimeout(MsgTimeout)
                     try:
-                        yield sock.connect((scheduler_ip_addr, scheduler_port))
-                        msg['scheduler_ip_addr'] = scheduler_ip_addr
+                        yield sock.connect((sched_ip, scheduler_port))
+                        msg['scheduler_ip_addr'] = sched_ip
                         if sign:
                             yield sock.send_msg('PONG:'.encode() + serialize(msg))
                         else:

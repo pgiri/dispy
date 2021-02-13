@@ -140,6 +140,7 @@ class _Scheduler(object):
                 else:
                     logger.warning('Ignoring invalid ext_host %s', ext_host)
 
+        self.ip_addrs = list(self.ext_ip_addrs)
         self.port = eval(dispy.config.ClientPort)
         self.node_port = eval(dispy.config.NodePort)
         self.scheduler_port = eval(dispy.config.SharedSchedulerPort)
@@ -316,7 +317,7 @@ class _Scheduler(object):
                                    keyfile=self.node_keyfile, certfile=self.node_certfile)
                 sock.settimeout(MsgTimeout)
                 msg = {'port': self.port, 'sign': self.sign, 'version': _dispy_version}
-                msg['ip_addrs'] = self.ext_ip_addrs
+                msg['ip_addrs'] = self.ip_addrs
                 try:
                     yield sock.connect((info['ip_addr'], info['port']))
                     yield sock.sendall(auth)
@@ -354,6 +355,7 @@ class _Scheduler(object):
             logger.debug('Could not bind TCP to %s:%s', addrinfo.ip, self.port)
             raise StopIteration
         logger.debug('TCP server at %s:%s', addrinfo.ip, self.port)
+        self.ip_addrs.append(addrinfo.ip)
         sock.listen(32)
 
         while 1:
@@ -441,7 +443,7 @@ class _Scheduler(object):
                                    keyfile=self.node_keyfile, certfile=self.node_certfile)
                 sock.settimeout(MsgTimeout)
                 msg = {'port': self.port, 'sign': self.sign, 'version': _dispy_version}
-                msg['ip_addrs'] = self.ext_ip_addrs
+                msg['ip_addrs'] = self.ip_addrs
                 try:
                     yield sock.connect((info['ip_addr'], info['port']))
                     yield sock.sendall(auth)
@@ -1217,7 +1219,7 @@ class _Scheduler(object):
     def send_ping_node(self, ip_addr, port=None, task=None):
         ping_msg = {'version': _dispy_version, 'sign': self.sign, 'port': self.port,
                     'node_ip_addr': ip_addr}
-        ping_msg['ip_addrs'] = self.ext_ip_addrs
+        ping_msg['ip_addrs'] = self.ip_addrs
         if not port:
             port = self.node_port
         if re.match(r'\d+\.', ip_addr):
@@ -1240,7 +1242,7 @@ class _Scheduler(object):
         if not port:
             port = self.node_port
         ping_msg = {'version': _dispy_version, 'sign': self.sign, 'port': self.port}
-        ping_msg['ip_addrs'] = self.ext_ip_addrs
+        ping_msg['ip_addrs'] = self.ip_addrs
         if not addrinfos:
             addrinfos = self.addrinfos
         for addrinfo in addrinfos:
