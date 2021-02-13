@@ -889,14 +889,14 @@ class _DispyNode(object):
                     pass
                 sock.close()
 
-    def send_pong_msg(self, info, addr, task=None):
+    def send_pong_msg(self, info, addr):
         if (self.scheduler['auth'] or self.job_infos or not self.num_cpus or
             not self.service_available()):
             dispynode_logger.debug('Busy (%s/%s); ignoring ping message from %s',
                                    self.avail_cpus, self.num_cpus, addr[0])
-            raise StopIteration
+            return
 
-        scheduler_ip_addrs = info['ip_addrs']
+        scheduler_ip_addrs = info['ip_addrs'] + [addr[0]]
         scheduler_port = info['port']
         if (not info.get('relay', None) and isinstance(addr, tuple) and isinstance(addr[0], str)):
             scheduler_ip_addrs.append(addr[0])
@@ -927,20 +927,24 @@ class _DispyNode(object):
                     sock_family = socket.AF_INET6
                 if sock_family != addrinfo.family:
                     continue
-                msg['scheduler_ip_addr'] = scheduler_ip_addr
-                sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_STREAM),
-                                   keyfile=self.keyfile, certfile=self.certfile)
-                sock.settimeout(MsgTimeout)
-                try:
-                    yield sock.connect((scheduler_ip_addr, scheduler_port))
-                    if sign:
-                        yield sock.send_msg('PONG:'.encode() + serialize(msg))
-                    else:
-                        yield sock.send_msg('PING:'.encode() + serialize(msg))
-                except Exception:
-                    pass
-                finally:
-                    sock.close()
+
+                def send_pong(msg, addrinfo, sched_ip, task=None):
+                    sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_STREAM),
+                                       keyfile=self.keyfile, certfile=self.certfile)
+                    sock.settimeout(MsgTimeout)
+                    try:
+                        yield sock.connect((scheduler_ip_addr, scheduler_port))
+                        msg['scheduler_ip_addr'] = scheduler_ip_addr
+                        if sign:
+                            yield sock.send_msg('PONG:'.encode() + serialize(msg))
+                        else:
+                            yield sock.send_msg('PING:'.encode() + serialize(msg))
+                    except Exception:
+                        pass
+                    finally:
+                        sock.close()
+
+                Task(send_pong, msg, addrinfo, scheduler_ip_addr)
 
     def udp_server(self, addrinfo, task=None):
         task.set_daemon()
@@ -998,7 +1002,7 @@ class _DispyNode(object):
                 except Exception:
                     dispynode_logger.debug('Ignoring ping message from %s (%s)', addr[0], addr[1])
                     continue
-                Task(self.send_pong_msg, info, addr)
+                self.send_pong_msg(info, addr)
 
             elif msg.startswith('PULSE:'):
                 try:
@@ -1799,7 +1803,7 @@ class _DispyNode(object):
             try:
                 info = deserialize(msg[len('PING:'):])
                 if info['version'] == _dispy_version:
-                    Task(self.send_pong_msg, info, addr)
+                    self.send_pong_msg(info, addr)
             except Exception:
                 dispynode_logger.debug(traceback.format_exc())
             conn.close()
