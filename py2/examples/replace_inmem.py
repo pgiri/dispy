@@ -63,22 +63,24 @@ if __name__ == '__main__':
                 return 0
             data_file = data_files[file_id % len(data_files)]
             file_id += 1
-            nodes[ip_addr] = data_file
+            nodes[ip_addr] = data_file  # keep track of which node processes which file
             print('Node %s (%s) processes "%s"' % (ip_addr, name, data_file))
-            self.setup_args = (data_file, file_id)
+            # files are saved at server under computation's directory so send just basename
+            self.setup_args = (os.path.basename(data_file), file_id)
             self.depends = [data_file]
-            return max(2, cpus)  # use at most 2 cpus for illustration
+            return max(2, cpus)  # use at most 2 cpus (for illustration)
 
     cluster = dispy.JobCluster(compute, nodes=[NodeAllocate(host='*')],
                                setup=setup, cleanup=cleanup, callback=job_status,
                                loglevel=dispy.logger.DEBUG)
-    for i in range(1, 7):
+    for i in range(1, 7):  # submit 7 jobs
         job = cluster.submit(i, random.uniform(2, 5))
         job.id = i
     cluster.wait()  # alternately, job_status above can decide when to call resetup_node
-    for ip_addr in nodes:
+    # call 'resetup_node' on nodes to process more files
+    for ip_addr in nodes.keys():
         cluster.resetup_node(ip_addr)
-    for i in range(i+1, i+7):
+    for i in range(i+1, i+7):  # submit 7 more jobs
         job = cluster.submit(i, random.uniform(2, 5))
         job.id = i
     cluster.wait()

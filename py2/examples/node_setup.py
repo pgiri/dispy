@@ -64,7 +64,8 @@ if __name__ == '__main__':
             node_id += 1
             print('Node %s (%s) processes "%s"' % (ip_addr, name, data_file))
             self.depends = [data_file] # 'depends' must be a list
-            self.setup_args = (data_file,) # 'setup_args' must be a tuple
+            # files are saved at server under computation's directory so send just basename
+            self.setup_args = (os.path.basename(data_file),) # 'setup_args' must be a tuple
             return cpus
 
     cluster = dispy.JobCluster(compute, nodes=[NodeAllocate('*')], setup=setup, cleanup=cleanup)
