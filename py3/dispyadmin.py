@@ -398,7 +398,7 @@ class DispyAdminServer(object):
             return
 
     def __init__(self, DocumentRoot, secret='', http_host='localhost',
-                 poll_interval=60, ping_interval=600, ip_addrs=[], ipv4_udp_multicast=False,
+                 poll_interval=60, ping_interval=600, hosts=[], ipv4_udp_multicast=False,
                  certfile=None, keyfile=None):
         http_port = dispy.config.HTTPServerPort
         self.node_port = eval(dispy.config.NodePort)
@@ -417,29 +417,28 @@ class DispyAdminServer(object):
         self.keyfile = keyfile
         self.certfile = certfile
         self.ipv4_udp_multicast = bool(ipv4_udp_multicast)
-        self.addrinfos = {}
+        self.addrinfos = []
 
-        if not ip_addrs:
-            ip_addrs = [None]
-        for i in range(len(ip_addrs)):
-            ip_addr = ip_addrs[i]
-            addrinfo = dispy.host_addrinfo(host=ip_addr, ipv4_multicast=self.ipv4_udp_multicast)
+        if not hosts:
+            hosts = [None]
+        for host in hosts:
+            addrinfo = dispy.host_addrinfo(host=host, ipv4_multicast=self.ipv4_udp_multicast)
             if not addrinfo:
-                logger.warning('Ignoring invalid ip_addr %s', ip_addr)
+                logger.warning('Ignoring invalid host %s', host)
                 continue
-            self.addrinfos[addrinfo.ip] = addrinfo
+            self.addrinfos.append(addrinfo)
         if not self.addrinfos:
-            raise Exception('No valid IP address found')
+            raise Exception('No valid host name / IP address found')
         self.sign = hashlib.sha1(os.urandom(20))
-        for ip_addr in self.addrinfos:
-            self.sign.update(ip_addr.encode())
+        for addrinfo in self.addrinfos:
+            self.sign.update(addrinfo.ip.encode())
         self.sign = self.sign.hexdigest()
         self.auth = dispy.auth_code(self.secret, self.sign)
 
         self.tcp_tasks = []
         self.udp_tasks = []
         udp_addrinfos = {}
-        for addrinfo in self.addrinfos.values():
+        for addrinfo in self.addrinfos:
             self.tcp_tasks.append(Task(self.tcp_server, addrinfo))
             udp_addrinfos[addrinfo.bind_addr] = addrinfo
 
@@ -778,8 +777,7 @@ class DispyAdminServer(object):
             return None
 
     def discover_nodes(self, task=None):
-        addrinfos = list(self.addrinfos.values())
-        for addrinfo in addrinfos:
+        for addrinfo in list(self.addrinfos):
             info_msg = {'ip_addr': addrinfo.ip, 'port': self.info_port,
                         'sign': self.sign, 'version': _dispy_version}
             bc_sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
@@ -867,8 +865,8 @@ if __name__ == '__main__':
                         help='file containing SSL key')
     parser.add_argument('--ipv4_udp_multicast', dest='ipv4_udp_multicast', action='store_true',
                         default=False, help='use multicast for IPv4 UDP instead of broadcast')
-    parser.add_argument('-i', '--ip_addr', dest='ip_addrs', action='append', default=[],
-                        help='IP address to listen from nodes '
+    parser.add_argument('-i', '--host', dest='hosts', action='append', default=[],
+                        help='host name or IP address to listen from nodes '
                         '(may be needed in case of multiple interfaces)')
     parser.add_argument('-d', '--debug', action='store_true', dest='debug', default=False,
                         help='if given, debug messages are printed')
@@ -882,9 +880,9 @@ if __name__ == '__main__':
         cfg.read(config['config'])
         cfg = dict(cfg.items('DEFAULT'))
         cfg['ipv4_udp_multicast'] = cfg['ipv4_udp_multicast'] == 'True'
-        cfg['ip_addrs'] = cfg['ip_addrs'].strip()
-        if cfg['ip_addrs']:
-            cfg['ip_addrs'] = eval(cfg['ip_addrs'])
+        cfg['hosts'] = cfg['hosts'].strip()
+        if cfg['hosts']:
+            cfg['hosts'] = eval(cfg['hosts'])
         config = cfg
     config['poll_interval'] = int(config['poll_interval'])
     config['ping_interval'] = int(config['ping_interval'])
@@ -893,6 +891,9 @@ if __name__ == '__main__':
     cfg = config.pop('save_config', None)
     if cfg:
         import configparser
+        for key, val in list(config.items()):
+            if not isinstance(val, str):
+                config[key] = str(val)
         config = configparser.ConfigParser(config)
         cfg = open(cfg, 'w')
         config.write(cfg)
