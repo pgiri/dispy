@@ -841,7 +841,7 @@ class _Cluster(object, metaclass=Singleton):
     """Internal use only.
     """
 
-    def __init__(self, ip_addr=None, ext_ip_addr=None, ipv4_udp_multicast=False, shared=False,
+    def __init__(self, host=None, ext_host=None, ipv4_udp_multicast=False, shared=False,
                  secret='', keyfile=None, certfile=None, recover_file=None):
         if not hasattr(self, 'pycos'):
             self.pycos = Pycos()
@@ -849,33 +849,33 @@ class _Cluster(object, metaclass=Singleton):
                         __version__, platform.python_version())
             self.ipv4_udp_multicast = bool(ipv4_udp_multicast)
             self.addrinfos = []
-            if isinstance(ip_addr, list):
-                ip_addrs = ip_addr
+            if isinstance(host, list):
+                hosts = host
             else:
-                ip_addrs = [ip_addr]
-            for ip_addr in ip_addrs:
-                addrinfo = host_addrinfo(host=ip_addr, ipv4_multicast=self.ipv4_udp_multicast)
+                hosts = [host]
+            for host in hosts:
+                addrinfo = host_addrinfo(host=host, ipv4_multicast=self.ipv4_udp_multicast)
                 if not addrinfo:
-                    logger.warning('Ignoring invalid ip_addr %s', ip_addr)
+                    logger.warning('Ignoring invalid host %s', host)
                     continue
                 self.addrinfos.append(addrinfo)
             if not self.addrinfos:
                 raise Exception('No valid IP address found')
 
-            self.ext_ip_addrs = []
-            if ext_ip_addr:
-                if isinstance(ext_ip_addr, list):
-                    ext_ip_addrs = ext_ip_addr
+            self.ext_hosts = []
+            if ext_host:
+                if isinstance(ext_host, list):
+                    ext_hosts = ext_host
                 else:
-                    ext_ip_addrs = [ext_ip_addr]
-                for ext_ip_addr in ext_ip_addrs:
-                    ext_ip_addr = _node_ipaddr(ext_ip_addr)
-                    if ext_ip_addr:
-                        self.ext_ip_addrs.append(ext_ip_addr)
+                    ext_hosts = [ext_host]
+                for ext_host in ext_hosts:
+                    ext_host = _node_ipaddr(ext_host)
+                    if ext_host:
+                        self.ext_hosts.append(ext_host)
                     else:
-                        logger.warning('Ignoring invalid ext_ip_addr %s', ext_ip_addr)
+                        logger.warning('Ignoring invalid ext_host %s', ext_host)
 
-            self.ip_addrs = list(self.ext_ip_addrs)
+            self.ip_addrs = list(self.ext_hosts)
             self.port = eval(dispy.config.ClientPort)
             self.node_port = eval(dispy.config.NodePort)
 
@@ -912,8 +912,8 @@ class _Cluster(object, metaclass=Singleton):
 
             try:
                 self.shelf = shelve.open(self.recover_file, flag='c', writeback=True)
-                self.shelf['_cluster'] = {'ip_addrs': [info.ip for info in self.addrinfos],
-                                          'ext_ip_addrs': self.ext_ip_addrs,
+                self.shelf['_cluster'] = {'hosts': [info.ip for info in self.addrinfos],
+                                          'ext_hosts': self.ext_hosts,
                                           'port': self.port, 'sign': self.sign,
                                           'secret': self.secret, 'auth': self.auth,
                                           'keyfile': self.keyfile, 'certfile': self.certfile}
@@ -2463,7 +2463,7 @@ class JobCluster(object):
     """
 
     def __init__(self, computation, nodes=None, depends=[], callback=None, cluster_status=None,
-                 ip_addr=None, dispy_port=None, ext_ip_addr=None,
+                 host=None, dispy_port=None, ext_host=None, ip_addr=None, ext_ip_addr=None,
                  ipv4_udp_multicast=False, dest_path=None, loglevel=logger.INFO,
                  setup=None, cleanup=True, ping_interval=None, pulse_interval=None,
                  poll_interval=None, reentrant=False, secret='', keyfile=None, certfile=None,
@@ -2513,14 +2513,13 @@ class JobCluster(object):
           node may be different from the status indicated at the time
           status function is called.
 
-        @ip_addr is host name or IP address used by this cluster. If no value
-          for @ip_addr is given (default), IP address associated with the
-          'hostname' is used.
+        @host is (list of) host name or IP address used by this cluster. If no value
+          for @host is given (default), 'hostname' is used.
 
         @dispy_port is dispy's port number used by this client to receive job
         results from nodes (which use 'dispy_port + 1' port).
 
-        @ext_ip_addr is the IP address of NAT firewall/gateway if
+        @ext_host is (list of) host name or the IP address of NAT firewall/gateway if
           dispy client is behind that firewall/gateway.
 
         @dest_path indicates path of directory to which files are
@@ -2728,7 +2727,19 @@ class JobCluster(object):
             shared = True
         else:
             shared = False
-        self._cluster = _Cluster(ip_addr=ip_addr, ext_ip_addr=ext_ip_addr,
+        if ip_addr:
+            if host:
+                logger.warning('Ignoring "ip_addr" parameter')
+            else:
+                logger.warning('"ip_addr" is deprecated; use "host" instead')
+                host = ip_addr
+        if ext_ip_addr:
+            if ext_host:
+                logger.warning('Ignoring "ext_ip_addr" parameter')
+            else:
+                logger.warning('"ext_ip_addr" is deprecated; use "ext_host" instead')
+                ext_host = ext_ip_addr
+        self._cluster = _Cluster(host=host, ext_host=ext_host,
                                  ipv4_udp_multicast=ipv4_udp_multicast,
                                  shared=shared, secret=secret, keyfile=keyfile, certfile=certfile,
                                  recover_file=recover_file)
@@ -3082,16 +3093,27 @@ class SharedJobCluster(JobCluster):
     The behaviour is same as for JobCluster.
     """
     def __init__(self, computation, nodes=None, depends=[], callback=None, cluster_status=None,
-                 ip_addr=None, dispy_port=None, client_port=None, scheduler_node=None,
-                 ext_ip_addr=None, loglevel=logger.INFO, setup=None, cleanup=True, dest_path=None,
+                 host=None, dispy_port=None, client_port=None, scheduler_node=None,
+                 ext_host=None, ip_addr=None, ext_ip_addr=None, loglevel=logger.INFO,
+                 setup=None, cleanup=True, dest_path=None,
                  poll_interval=None, reentrant=False, exclusive=False,
                  secret='', keyfile=None, certfile=None, recover_file=None):
 
         self.scheduler_ip_addr = _node_ipaddr(scheduler_node)
         self.addrinfo = host_addrinfo(host=ip_addr)
         self.addrinfo.family = socket.getaddrinfo(self.scheduler_ip_addr, None)[0][0]
+        if ip_addr:
+            if host:
+                logger.warning('Ignoring "ip_addr" parameter')
+            else:
+                logger.warning('"ip_addr" is deprecated; use "host" instead')
+                host = ip_addr
         if ext_ip_addr:
-            ext_ip_addr = host_addrinfo(host=ext_ip_addr).ip
+            if ext_host:
+                logger.warning('Ignoring "ext_ip_addr" parameter')
+            else:
+                logger.warning('"ext_ip_addr" is deprecated; use "ext_host" instead')
+                ext_host = ext_ip_addr
 
         if isinstance(dispy_port, int):
             dispy.config.DispyPort = dispy_port
@@ -3108,7 +3130,7 @@ class SharedJobCluster(JobCluster):
                 raise Exception('"nodes" must be list of IP addresses or host names')
 
         JobCluster.__init__(self, computation, nodes=nodes, depends=depends, callback=callback,
-                            cluster_status=cluster_status, ip_addr=ip_addr, ext_ip_addr=ext_ip_addr,
+                            cluster_status=cluster_status, host=host, ext_host=ext_host,
                             loglevel=loglevel, setup=setup, cleanup=cleanup, dest_path=dest_path,
                             poll_interval=poll_interval, reentrant=reentrant,
                             secret=secret, keyfile=keyfile, certfile=certfile,
@@ -3131,7 +3153,7 @@ class SharedJobCluster(JobCluster):
         sock = AsyncSocket(sock, blocking=True, keyfile=keyfile, certfile=certfile)
         sock.connect((self.scheduler_ip_addr, scheduler_port))
         sock.sendall(self._cluster.auth)
-        req = {'version': _dispy_version, 'ip_addr': ext_ip_addr,
+        req = {'version': _dispy_version, 'ip_addr': ext_host,
                'scheduler_ip_addr': self.scheduler_ip_addr}
         sock.send_msg(b'CLIENT:' + serialize(req))
         reply = sock.recv_msg()
@@ -3140,14 +3162,14 @@ class SharedJobCluster(JobCluster):
         if reply['version'] != _dispy_version:
             raise Exception('dispyscheduler version "%s" is different from dispy version "%s"' %
                             reply['version'], _dispy_version)
-        ext_ip_addr = reply['ip_addr']
+        ext_host = reply['ip_addr']
 
         self.scheduler_port = reply['port']
         self._scheduler_auth = auth_code(secret, reply['sign'])
-        self._compute.scheduler_ip_addr = ext_ip_addr
+        self._compute.scheduler_ip_addr = ext_host
         self._compute.scheduler_port = self._cluster.port
         self._compute.job_result_port = self._cluster.port
-        self._compute.client_reply_addr = (ext_ip_addr, self._cluster.port)
+        self._compute.client_reply_addr = (ext_host, self._cluster.port)
 
         sock = AsyncSocket(socket.socket(self.addrinfo.family, socket.SOCK_STREAM), blocking=True,
                            keyfile=keyfile, certfile=certfile)
