@@ -128,25 +128,23 @@ class _Scheduler(object, metaclass=Singleton):
         self.addrinfos = []
         if not hosts:
             hosts = [None]
-        for host in hosts:
-            addrinfo = dispy.host_addrinfo(host=host, ipv4_multicast=self.ipv4_udp_multicast)
+        for i in range(len(hosts)):
+            addrinfo = dispy.host_addrinfo(host=hosts[i], ipv4_multicast=self.ipv4_udp_multicast)
             if not addrinfo:
                 logger.warning('Ignoring invalid host %s', host)
                 continue
+            if i < len(ext_hosts):
+                ext_host = dispy._node_ipaddr(ext_hosts[i])
+                if ext_host:
+                    addrinfo.ext_ip = ext_host
+                else:
+                    dispynode_logger.warning('Ignoring invalid ext_host %s', ext_hosts[i])
+
             self.addrinfos.append(addrinfo)
         if not self.addrinfos:
             raise Exception('No valid IP address found')
 
-        self.ext_ip_addrs = []
-        if ext_hosts:
-            for ext_host in ext_hosts:
-                ext_ip_addr = dispy._node_ipaddr(ext_host)
-                if ext_ip_addr:
-                    self.ext_ip_addrs.append(ext_ip_addr)
-                else:
-                    logger.warning('Ignoring invalid ext_host %s', ext_host)
-
-        self.ip_addrs = list(self.ext_ip_addrs)
+        self.ip_addrs = []
         self.port = eval(dispy.config.ClientPort)
         self.node_port = eval(dispy.config.NodePort)
         self.scheduler_port = eval(dispy.config.SharedSchedulerPort)
@@ -223,7 +221,8 @@ class _Scheduler(object, metaclass=Singleton):
 
         with open(os.path.join(self.dest_path_prefix, 'config'), 'wb') as fd:
             config = {
-                'host': [ai.ip for ai in self.addrinfos], 'ext_host': self.ext_ip_addrs,
+                'hosts': [ai.ip for ai in self.addrinfos],
+                'ext_hosts': [ai.ext_ip for ai in self.addrinfos],
                 'port': self.port, 'sign': self.sign,
                 'cluster_secret': self.cluster_secret, 'cluster_auth': self.cluster_auth,
                 'node_secret': self.node_secret, 'node_auth': self.node_auth
@@ -361,7 +360,7 @@ class _Scheduler(object, metaclass=Singleton):
             logger.debug('Could not bind TCP to %s:%s', addrinfo.ip, self.port)
             raise StopIteration
         logger.debug('TCP server at %s:%s', addrinfo.ip, self.port)
-        self.ip_addrs.append(addrinfo.ip)
+        self.ip_addrs.append(addrinfo.ext_ip)
         sock.listen(32)
 
         while 1:
@@ -586,6 +585,7 @@ class _Scheduler(object, metaclass=Singleton):
                 assert msg == 'ACK'.encode()
                 self.add_cluster(cluster)
             except Exception:
+                logger.debug(traceback.format_exc())
                 self._clusters.pop(cluster._compute.id, None)
                 logger.debug('Ignoring computation %s / %s from %s:%s',
                              cluster._compute.name, cluster._compute.id,
@@ -2142,7 +2142,7 @@ if __name__ == '__main__':
     parser.add_argument('-i', '--host', action='append', dest='hosts', default=[],
                         help='host name or IP address to use; repeat for multiple interfaces')
     parser.add_argument('--ext_host', action='append', dest='ext_hosts', default=[],
-                        help='External host name or IP address to use (needed in case of '
+                        help='external host name or IP address to use (needed in case of '
                         'NAT firewall/gateway); repeat for multiple interfaces')
     parser.add_argument('-p', '--port', dest='dispy_port', type=int, default=dispy.config.DispyPort,
                         help='dispy port number')

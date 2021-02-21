@@ -45,7 +45,7 @@ __maintainer__ = "Giridhar Pemmasani (pgiri@yahoo.com)"
 __license__ = "Apache 2.0"
 __url__ = "https://dispy.org"
 __status__ = "Production"
-__version__ = "4.12.4"
+__version__ = "4.13.0"
 
 __all__ = ['logger', 'DispyJob', 'DispyNode', 'NodeAllocate', 'JobCluster', 'SharedJobCluster']
 
@@ -345,6 +345,7 @@ def host_addrinfo(host=None, socket_family=None, ipv4_multicast=False):
         def __init__(self, family, ip, ifn, broadcast, netmask):
             self.family = family
             self.ip = ip
+            self.ext_ip = ip
             self.ifn = ifn
             if family == socket.AF_INET and ipv4_multicast:
                 self.broadcast = dispy.config.IPv4MulticastGroup
@@ -605,8 +606,8 @@ class _Node(object):
                 cpus = deserialize(reply)
                 assert isinstance(cpus, int) and cpus > 0
             except Exception:
-                logger.warning('Transfer of computation "%s" to %s failed',
-                               compute.name, self.ip_addr)
+                logger.warning('Transfer of computation "%s" to %s failed: %s',
+                               compute.name, self.ip_addr, reply)
                 raise StopIteration(-1)
             self.avail_cpus = cpus
             if self.cpus:
@@ -3076,14 +3077,14 @@ class JobCluster(object):
 class SharedJobCluster(JobCluster):
     """SharedJobCluster should be used (instead of JobCluster) if two
     or more processes can simultaneously use dispy. In this case,
-    'dispyscheduler' must be running on a node and 'scheduler_node'
+    'dispyscheduler' must be running on a node and 'scheduler_host'
     parameter should be set to that node's IP address or host name.
 
-    @scheduler_node is name or IP address where dispyscheduler is
+    @scheduler_host is name or IP address where dispyscheduler is
       running to which jobs are submitted.
 
     @scheduler_port is port where dispyscheduler is running at
-    @scheduler_node.
+    @scheduler_host.
 
     @port is port where this client will get job results from
     dispyscheduler.
@@ -3093,13 +3094,13 @@ class SharedJobCluster(JobCluster):
     The behaviour is same as for JobCluster.
     """
     def __init__(self, computation, nodes=None, depends=[], callback=None, cluster_status=None,
-                 host=None, dispy_port=None, client_port=None, scheduler_node=None,
+                 host=None, dispy_port=None, client_port=None, scheduler_host=None,
                  ext_host=None, ip_addr=None, ext_ip_addr=None, loglevel=logger.INFO,
                  setup=None, cleanup=True, dest_path=None,
                  poll_interval=None, reentrant=False, exclusive=False,
                  secret='', keyfile=None, certfile=None, recover_file=None):
 
-        self.scheduler_ip_addr = _node_ipaddr(scheduler_node)
+        self.scheduler_ip_addr = _node_ipaddr(scheduler_host)
         self.addrinfo = host_addrinfo(host=ip_addr)
         self.addrinfo.family = socket.getaddrinfo(self.scheduler_ip_addr, None)[0][0]
         if ip_addr:

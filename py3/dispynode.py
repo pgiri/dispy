@@ -562,7 +562,7 @@ class _DispyNode(object):
     Internal use only.
     """
 
-    def __init__(self, cpus, ip_addrs=[], ext_ip_addrs=[], name='', scheduler_node=None,
+    def __init__(self, cpus, hosts=[], ext_hosts=[], name='', scheduler_host=None,
                  ipv4_udp_multicast=False, dest_path_prefix='', clean=False,
                  secret='', keyfile=None, certfile=None, admin_secret='', zombie_interval=60,
                  ping_interval=None, force_cleanup=False, serve=-1,
@@ -576,19 +576,14 @@ class _DispyNode(object):
             self.name = socket.gethostname()
             if 'localhost' in self.name.lower():
                 self.name = ''
-        if not ip_addrs:
-            ip_addrs = [None]
+        if not hosts:
+            hosts = [None]
         self.ipv4_udp_multicast = bool(ipv4_udp_multicast)
-        self.addrinfos = {}
-        for i in range(len(ip_addrs)):
-            ip_addr = ip_addrs[i]
-            if i < len(ext_ip_addrs):
-                ext_ip_addr = ext_ip_addrs[i]
-            else:
-                ext_ip_addr = None
-            addrinfo = dispy.host_addrinfo(host=ip_addr, ipv4_multicast=self.ipv4_udp_multicast)
+        self.addrinfos = []
+        for i in range(len(hosts)):
+            addrinfo = dispy.host_addrinfo(host=hosts[i], ipv4_multicast=self.ipv4_udp_multicast)
             if not addrinfo or not addrinfo.ip:
-                dispynode_logger.warning('Ignoring invalid ip_addr %s', ip_addr)
+                dispynode_logger.warning('Ignoring invalid host %s', hosts[i])
                 continue
             if addrinfo.ip.startswith('127.') or addrinfo.ip.startswith('fe80'):
                 dispynode_logger.warning('node IP address %s seems to be loopback address; '
@@ -604,18 +599,19 @@ class _DispyNode(object):
                         if 'localhost' not in name.lower():
                             self.name = name
                             break
-            if ext_ip_addr:
-                ext_ip_addr = dispy._node_ipaddr(ext_ip_addr)
-                if not ext_ip_addr:
-                    dispynode_logger.warning('Ignoring invalid ext_ip_addr %s', ext_ip_addrs[i])
-            if not ext_ip_addr:
-                ext_ip_addr = addrinfo.ip
-            addrinfo.ext_ip_addr = ext_ip_addr
-            self.addrinfos[ext_ip_addr] = addrinfo
+            if i < len(ext_hosts):
+                ext_host = dispy._node_ipaddr(ext_hosts[i])
+                if ext_host:
+                    addrinfo.ext_ip = ext_host
+                else:
+                    dispynode_logger.warning('Ignoring invalid ext_host %s', ext_hosts[i])
+
+            self.addrinfos.append(addrinfo)
+
         if not self.addrinfos:
-            raise Exception('No valid ip_addr')
+            raise Exception('No valid host')
         if not self.name:
-            self.name = list(self.addrinfos.values())[0].ip
+            self.name = self.addrinfos[0].ip
 
         self.port = eval(dispy.config.NodePort)
         self.keyfile = keyfile
@@ -749,8 +745,8 @@ class _DispyNode(object):
         self.job_infos = {}
         self.terminate = False
         self.sign = hashlib.sha1(os.urandom(20))
-        for ext_ip_addr in self.addrinfos:
-            self.sign.update(ext_ip_addr.encode())
+        for addrinfo in self.addrinfos:
+            self.sign.update(addrinfo.ip.encode())
         self.sign = self.sign.hexdigest()
         self.secret = secret
         self.auth = auth_code(self.secret, self.sign)
@@ -768,7 +764,7 @@ class _DispyNode(object):
         self.pulse_interval = self.ping_interval
         scheduler_port = eval(dispy.config.ClientPort)
 
-        self.scheduler = {'ip_addr': dispy._node_ipaddr(scheduler_node) if scheduler_node else None,
+        self.scheduler = {'ip_addr': dispy._node_ipaddr(scheduler_host) if scheduler_host else None,
                           'port': scheduler_port, 'auth': set(), 'addrinfo': None}
         self.cpu_time = 0
         self.jobs_done = 0
@@ -788,8 +784,8 @@ class _DispyNode(object):
         config = os.path.join(self.dest_path_prefix, 'config.pkl')
         with open(config, 'wb') as fd:
             pickle.dump({
-                'ip_addrs': [addrinfo.ip for addrinfo in self.addrinfos.values()],
-                'ext_ip_addrs': [addrinfo.ext_ip_addr for addrinfo in self.addrinfos.values()],
+                'hosts': [addrinfo.ip for addrinfo in self.addrinfos],
+                'ext_hosts': [addrinfo.ext_ip for addrinfo in self.addrinfos],
                 'port': self.port, 'avail_cpus': self.avail_cpus,
                 'sign': self.sign, 'secret': self.secret, 'auth': self.auth,
                 'keyfile': self.keyfile, 'certfile': self.certfile, 'pid': self.pid,
@@ -834,7 +830,7 @@ class _DispyNode(object):
         self.__init_globals['_dispy_node'] = self
 
         udp_addrinfos = {}
-        for addrinfo in self.addrinfos.values():
+        for addrinfo in self.addrinfos:
             Task(self.tcp_server, addrinfo)
             udp_addrinfos[addrinfo.bind_addr] = addrinfo
 
@@ -845,13 +841,11 @@ class _DispyNode(object):
             self.cmd_task = Task(self.cmd_proc)
         dispynode_logger.info('"%s" serving %s cpus', self.name, self.num_cpus)
 
-    def broadcast_ping_msg(self, addrinfos=[], task=None):
+    def broadcast_ping_msg(self, task=None):
         if (self.scheduler['auth'] or self.job_infos or not self.avail_cpus or
             not self.service_available()):
             raise StopIteration
-        if not addrinfos:
-            addrinfos = self.addrinfos.values()
-        for addrinfo in addrinfos:
+        for addrinfo in self.addrinfos:
             sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
             sock.settimeout(MsgTimeout)
             ttl_bin = struct.pack('@i', 1)
@@ -863,7 +857,7 @@ class _DispyNode(object):
             else:  # addrinfo.family == socket.AF_INET6
                 sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, ttl_bin)
                 sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, addrinfo.ifn)
-            ping_msg = {'ip_addr': addrinfo.ext_ip_addr, 'port': self.port, 'sign': self.sign,
+            ping_msg = {'ip_addr': addrinfo.ext_ip, 'port': self.port, 'sign': self.sign,
                         'version': _dispy_version, 'scheduler_ip_addr': None}
             sock.bind((addrinfo.ip, 0))
             try:
@@ -877,7 +871,7 @@ class _DispyNode(object):
                 sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_DGRAM))
                 sock.settimeout(MsgTimeout)
                 ping_msg = {'scheduler_ip_addr': self.scheduler['ip_addr'],
-                            'ip_addr': addrinfo.ext_ip_addr, 'port': self.port,
+                            'ip_addr': addrinfo.ext_ip, 'port': self.port,
                             'sign': self.sign, 'version': _dispy_version}
                 try:
                     yield sock.sendto('PING:'.encode() + serialize(ping_msg),
@@ -921,10 +915,8 @@ class _DispyNode(object):
                 msg['avail_info'] = None
 
         # TODO: pick appropriate addrinfo based on netmask if available
-        addrinfos = list(self.addrinfos.values())
-
-        for addrinfo in addrinfos:
-            msg['ip_addr'] = addrinfo.ext_ip_addr
+        for addrinfo in self.addrinfos:
+            msg['ip_addr'] = addrinfo.ext_ip
             for scheduler_ip_addr in scheduler_ip_addrs:
                 if not isinstance(scheduler_ip_addr, str):
                     continue
@@ -957,7 +949,7 @@ class _DispyNode(object):
         task.set_daemon()
 
         def send_node_info(msg, addr, task=None):
-            info = {'ip_addr': addrinfo.ext_ip_addr, 'port': self.port, 'sign': self.sign,
+            info = {'ip_addr': addrinfo.ext_ip, 'port': self.port, 'sign': self.sign,
                     'version': _dispy_version}
             sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_STREAM),
                                keyfile=self.keyfile, certfile=self.certfile)
@@ -1116,9 +1108,14 @@ class _DispyNode(object):
                                    _job.uid, addr[0], compute.scheduler_ip_addr)
 
             addrinfo = self.scheduler['addrinfo']
-            reply = _JobReply(_job, addrinfo.ext_ip_addr)
+            reply = _JobReply(_job, addrinfo.ext_ip)
             job_info = _DispyJobInfo(reply, compute, _job.xfer_files)
-            job_info.addrinfo = self.addrinfos.get(compute.node_ip_addr, None)
+            for addrinfo in self.addrinfos:
+                if compute.node_ip_addr in (addrinfo.ip, addrinfo.ext_ip):
+                    break
+            else:
+                addrinfo = None
+            job_info.addrinfo = addrinfo
             job_info.job_reply.start_time = time.time()
             job_info.job_reply.status = DispyJob.Running
             self.thread_lock.acquire()
@@ -1180,7 +1177,11 @@ class _DispyNode(object):
             reply = None
             try:
                 compute = deserialize(msg)
-                addrinfo = self.addrinfos[compute.node_ip_addr]
+                for addrinfo in self.addrinfos:
+                    if compute.node_ip_addr in (addrinfo.ip, addrinfo.ext_ip):
+                        break
+                else:
+                    reply = 'Invalid node address: %s' % compute.node_ip_addr
             except Exception:
                 reply = ('Invalid computation request ignored').encode()
             else:
@@ -1991,7 +1992,7 @@ class _DispyNode(object):
                 if self.scheduler['auth']:
                     addrinfo = self.scheduler['addrinfo']
                     last_pulse_time = now
-                    info = {'ip_addr': addrinfo.ext_ip_addr, 'port': self.port,
+                    info = {'ip_addr': addrinfo.ext_ip, 'port': self.port,
                             'cpus': self.num_cpus - self.avail_cpus,
                             'scheduler_ip_addr': self.scheduler['ip_addr']}
                     if psutil:
@@ -2060,14 +2061,17 @@ class _DispyNode(object):
                     Task(self.cleanup_computation, client, close=True)
                 for client in zombies:
                     compute = client.compute
-                    addrinfo = self.addrinfos.get(compute.node_ip_addr, None)
-                    if not addrinfo:
+                    for addrinfo in self.addrinfos:
+                        if compute.node_ip_addr in (addrinfo.ip, addrinfo.ext_ip):
+                            break
+                    else:
+                        dispynode_logger.warning('%s is not valid address!', compute.node_ip_addr)
                         continue
                     sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_STREAM),
                                        keyfile=self.keyfile, certfile=self.certfile)
                     sock.settimeout(MsgTimeout)
                     dispynode_logger.debug('Sending TERMINATE to %s', compute.scheduler_ip_addr)
-                    info = {'ip_addr': addrinfo.ext_ip_addr, 'port': self.port, 'sign': self.sign}
+                    info = {'ip_addr': addrinfo.ext_ip, 'port': self.port, 'sign': self.sign}
                     try:
                         yield sock.connect((compute.scheduler_ip_addr, compute.scheduler_port))
                         yield sock.send_msg('TERMINATED:'.encode() + serialize(info))
@@ -2108,7 +2112,7 @@ class _DispyNode(object):
                 sock.settimeout(MsgTimeout)
                 try:
                     yield sock.connect((self.scheduler['ip_addr'], self.scheduler['port']))
-                    info = {'ip_addr': addrinfo.ext_ip_addr, 'sign': self.sign, 'cpus': cpus}
+                    info = {'ip_addr': addrinfo.ext_ip, 'sign': self.sign, 'cpus': cpus}
                     yield sock.send_msg('NODE_CPUS:'.encode() + serialize(info))
                 except Exception:
                     pass
@@ -2201,7 +2205,7 @@ class _DispyNode(object):
                 sock.settimeout(MsgTimeout)
                 try:
                     yield sock.connect((self.scheduler['ip_addr'], self.scheduler['port']))
-                    info = {'ip_addr': addrinfo.ext_ip_addr, 'sign': self.sign, 'cpus': 0}
+                    info = {'ip_addr': addrinfo.ext_ip, 'sign': self.sign, 'cpus': 0}
                     yield sock.send_msg('NODE_CPUS:'.encode() + serialize(info))
                 except Exception:
                     pass
@@ -2552,12 +2556,17 @@ class _DispyNode(object):
 
         if not close:
             client.zombie = False
-            addrinfo = self.addrinfos.get(compute.node_ip_addr, None)
+            for addrinfo in self.addrinfos:
+                if compute.node_ip_addr in (addrinfo.ip, addrinfo.ext_ip):
+                    break
+            else:
+                dispynode_logger.warning('%s is not valid address!', compute.node_ip_addr)
+                raise StopIteration(-1)
             try:
                 sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_STREAM),
                                    keyfile=self.keyfile, certfile=self.certfile)
                 sock.settimeout(MsgTimeout)
-                info = {'node_addr': addrinfo.ext_ip_addr, 'node_auth': self.auth,
+                info = {'node_addr': addrinfo.ext_ip, 'node_auth': self.auth,
                         'compute_id': compute.id, 'auth': compute.auth}
                 try:
                     yield sock.connect((compute.scheduler_ip_addr, compute.scheduler_port))
@@ -2650,7 +2659,7 @@ class _DispyNode(object):
                                keyfile=self.keyfile, certfile=self.certfile)
             sock.settimeout(MsgTimeout)
             dispynode_logger.debug('Sending TERMINATE to %s', self.scheduler['ip_addr'])
-            info = {'ip_addr': addrinfo.ext_ip_addr, 'port': self.port, 'sign': self.sign}
+            info = {'ip_addr': addrinfo.ext_ip, 'port': self.port, 'sign': self.sign}
             try:
                 yield sock.connect((self.scheduler['ip_addr'], self.scheduler['port']))
                 yield sock.send_msg('TERMINATED:'.encode() + serialize(info))
@@ -2659,7 +2668,7 @@ class _DispyNode(object):
             sock.close()
 
         udp_addrinfos = {}
-        for addrinfo in self.addrinfos.values():
+        for addrinfo in self.addrinfos:
             udp_addrinfos[addrinfo.bind_addr] = addrinfo
 
         for bind_addr, addrinfo in udp_addrinfos.items():
@@ -2674,7 +2683,7 @@ class _DispyNode(object):
             else:  # addrinfo.family == socket.AF_INET6
                 sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, ttl_bin)
                 sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, addrinfo.ifn)
-            info = {'ip_addr': addrinfo.ext_ip_addr, 'port': self.port, 'sign': self.sign}
+            info = {'ip_addr': addrinfo.ext_ip, 'port': self.port, 'sign': self.sign}
             try:
                 yield sock.sendto('TERMINATED:'.encode() + serialize(info),
                                   (addrinfo.broadcast, self.scheduler['port']))
@@ -2744,7 +2753,7 @@ class _DispyNode(object):
         def release(task=None):
             if self.scheduler['auth']:
                 addrinfo = self.scheduler['addrinfo']
-                info = {'ip_addr': addrinfo.ext_ip_addr, 'port': self.port,
+                info = {'ip_addr': addrinfo.ext_ip, 'port': self.port,
                         'cpus': self.num_cpus - self.avail_cpus,
                         'scheduler_ip_addr': self.scheduler['ip_addr']}
                 if psutil:
@@ -2843,10 +2852,12 @@ if __name__ == '__main__':
                         'that many cpus are not used')
     parser.add_argument('-d', '--debug', action='store_true', dest='loglevel', default=False,
                         help='if given, debug messages are printed')
-    parser.add_argument('-i', '--ip_addr', dest='ip_addrs', action='append', default=[],
-                        help='IP address to use (may be needed in case of multiple interfaces)')
-    parser.add_argument('--ext_ip_addr', dest='ext_ip_addrs', action='append', default=[],
-                        help='External IP address to use (needed in case of NAT firewall/gateway)')
+    parser.add_argument('-i', '--host', dest='hosts', action='append', default=[],
+                        help='host name or IP address to use '
+                        '(may be needed in case of multiple interfaces)')
+    parser.add_argument('--ext_host', dest='ext_hosts', action='append', default=[],
+                        help='external host name or IP address to use '
+                        '(needed in case of NAT firewall/gateway)')
     parser.add_argument('-p', '--dispy_port', dest='dispy_port', type=int,
                         default=dispy.config.DispyPort, help='dispy port number')
     parser.add_argument('--ipv4_udp_multicast', dest='ipv4_udp_multicast', action='store_true',
@@ -2855,8 +2866,8 @@ if __name__ == '__main__':
                         help='name asscoiated to this node; default is obtained with gethostname()')
     parser.add_argument('--dest_path_prefix', dest='dest_path_prefix', default='',
                         help='path prefix where files sent by dispy are stored')
-    parser.add_argument('--scheduler_node', dest='scheduler_node', default='',
-                        help='name or IP address of scheduler to announce when starting')
+    parser.add_argument('--scheduler_host', dest='scheduler_host', default='',
+                        help='host name or IP address of scheduler to announce when starting')
     parser.add_argument('--max_file_size', dest='max_file_size', default=str(MaxFileSize),
                         help='maximum file size of any file transferred (use 0 for unlimited size)')
     parser.add_argument('--zombie_interval', dest='zombie_interval', type=float, default=60.0,
@@ -2913,12 +2924,12 @@ if __name__ == '__main__':
         cfg['safe_setup'] = cfg['safe_setup'] == 'True'
         cfg['force_cleanup'] = cfg['force_cleanup'] == 'True'
         cfg['daemon'] = cfg['daemon'] == 'True'
-        cfg['ip_addrs'] = cfg['ip_addrs'].strip()
-        if cfg['ip_addrs']:
-            cfg['ip_addrs'] = eval(cfg['ip_addrs'])
-        cfg['ext_ip_addrs'] = cfg['ext_ip_addrs'].strip()
-        if cfg['ext_ip_addrs']:
-            cfg['ext_ip_addrs'] = eval(cfg['ext_ip_addrs'])
+        cfg['hosts'] = cfg['hosts'].strip()
+        if cfg['hosts']:
+            cfg['hosts'] = eval(cfg['hosts'])
+        cfg['ext_hosts'] = cfg['ext_hosts'].strip()
+        if cfg['ext_hosts']:
+            cfg['ext_hosts'] = eval(cfg['ext_hosts'])
         for key, value in _dispy_config.items():
             if _dispy_config[key] != parser.get_default(key) or key not in cfg:
                 cfg[key] = _dispy_config[key]
