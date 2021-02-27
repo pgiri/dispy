@@ -2669,7 +2669,7 @@ class _DispyNode(object):
             sock.close()
 
         udp_addrinfos = {}
-        for addrinfo in self.addrinfos.values():
+        for addrinfo in self.addrinfos:
             udp_addrinfos[addrinfo.bind_addr] = addrinfo
 
         for bind_addr, addrinfo in udp_addrinfos.items():
