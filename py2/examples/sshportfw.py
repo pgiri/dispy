@@ -11,7 +11,7 @@ if __name__ == '__main__':
 
     # start dispynode on each node with 'dispynode.py -i 54.204.242.185' (so dispynode
     # uses external IP address instead of default local IP address)
-    cluster = dispy.JobCluster(compute, nodes=nodes, ip_addr='127.0.0.1')
+    cluster = dispy.JobCluster(compute, nodes=nodes, host='127.0.0.1')
     jobs = []
     for i in range(1, 10):
         job = cluster.submit(i)
