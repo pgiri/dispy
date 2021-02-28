@@ -199,6 +199,14 @@ def _dispy_job_func(__dispy_job_name, __dispy_job_code, __dispy_job_globals,
         del sgid
     del suid
 
+    def sighandler(signum, frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGINT, sighandler)
+    if os.name == 'nt':
+        signal.signal(signal.SIGBREAK, sighandler)
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
     reply_Q = __dispy_job_globals.pop('reply_Q')
     globals().update(__dispy_job_globals)
     globals()['_dispy_job_func'] = None
@@ -232,7 +240,25 @@ def _dispy_terminate_proc(proc_pid, task=None):
     """
 
     def terminate_proc(how):
-        if psutil and isinstance(proc_pid, psutil.Process):
+        if isinstance(proc_pid, multiprocessing.Process):
+            proc = proc_pid
+            try:
+                if how == 0:
+                    if proc.is_alive():
+                        return 1
+                    else:
+                        return 0
+                elif how == 1:
+                    proc.terminate()
+                elif how == 2:
+                    kill = getattr(proc, 'kill', proc.terminate)
+                    kill()
+            except Exception:
+                dispynode_logger.debug(traceback.format_exc())
+                pass
+            return 1
+
+        elif psutil and isinstance(proc_pid, psutil.Process):
             proc = proc_pid
             try:
                 pid = proc.pid
@@ -270,24 +296,6 @@ def _dispy_terminate_proc(proc_pid, task=None):
                 dispynode_logger.info('Could not terminate PID %s: %s',
                                       proc.pid, traceback.format_exc())
                 return -1
-            return 1
-
-        elif isinstance(proc_pid, multiprocessing.Process):
-            proc = proc_pid
-            try:
-                if how == 0:
-                    if proc.is_alive():
-                        return 1
-                    else:
-                        return 0
-                elif how == 1:
-                    proc.terminate()
-                elif how == 2:
-                    kill = getattr(proc, 'kill', proc.terminate)
-                    kill()
-            except Exception:
-                dispynode_logger.debug(traceback.format_exc())
-                pass
             return 1
 
         elif isinstance(proc_pid, subprocess.Popen):
@@ -337,16 +345,33 @@ def _dispy_terminate_proc(proc_pid, task=None):
                 return -1
             return 1
 
-    how = 1
-    for i in range(20):
-        status = terminate_proc(how)
-        if how == 0 and status == 0:
-            raise StopIteration(0)
-        if i == 15:
+    if hasattr(proc_pid, 'pid'):
+        pid = proc_pid.pid
+    else:
+        pid = proc_pid
+    if not isinstance(pid, int):
+        dispynode_logger.warning('invalid job process to terminate: %s', type(proc_pid))
+        raise StopIteration(-1)
+    try:
+        if os.name == 'nt':
+            signum = signal.CTRL_BREAK_EVENT
+        else:
+            signum = signal.SIGINT
+        os.kill(pid, signum)
+    except Exception:
+        dispynode_logger.debug(traceback.format_exc())
+
+    for i in range(30):
+        if i == 10:
+            how = 0
+        elif i == 20:
             how = 2
         else:
             how = 0
-        yield task.sleep(0.3)
+        status = terminate_proc(how)
+        if how == 0 and status == 0:
+            raise StopIteration(0)
+        yield task.sleep(0.2)
     raise StopIteration(-1)
 
 
