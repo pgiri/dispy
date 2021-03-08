@@ -202,7 +202,6 @@ def _dispy_job_func(__dispy_job_name, __dispy_job_code, __dispy_job_globals,
             os.setregid(sgid, sgid)
             os.setreuid(suid, suid)
         del sgid
-    del suid
 
     def sighandler(signum, frame):
         raise KeyboardInterrupt
@@ -211,6 +210,7 @@ def _dispy_job_func(__dispy_job_name, __dispy_job_code, __dispy_job_globals,
     if os.name == 'nt':
         signal.signal(signal.SIGBREAK, sighandler)
     signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    del suid, sighandler
 
     reply_Q = __dispy_job_globals.pop('reply_Q')
     globals().update(__dispy_job_globals)
@@ -368,10 +368,10 @@ def _dispy_terminate_proc(proc_pid, task=None):
     except Exception:
         dispynode_logger.debug(traceback.format_exc())
 
-    for i in range(30):
-        if i == 10:
-            how = 0
-        elif i == 20:
+    for i in range(50):
+        if i == 25:
+            how = 1
+        elif i == 35:
             how = 2
         else:
             how = 0
