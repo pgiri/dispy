@@ -100,7 +100,7 @@ class DispyJob(object):
     # values in that order, as PriorityQueue sorts data.
     # Thus, if a job with provisional result is already in the queue
     # and a job is finished, finished/terminated job is processed (in
-    # callback) last.
+    # status notification) last.
     Cancelled = 8
     Terminated = 9
     Abandoned = 10
@@ -151,7 +151,7 @@ class DispyJob(object):
 class DispyNodeAvailInfo(object):
     """A node's status is represented as available CPU as percent, memory in
     bytes and disk as bytes. This information is passed to NodeAllocte.allocate
-    method and in cluster status callback with status DispyNode.AvailInfo.
+    method and in cluster status notification with status DispyNode.AvailInfo.
     """
     def __init__(self, cpu, memory, disk, swap):
         self.cpu = cpu
@@ -246,7 +246,7 @@ class NodeAllocate(object):
         return 0
 
 
-# a cluster's "status" function (not "cluster_status" callback)
+# a cluster's "status" function (not "cluster_status" notification)
 # returns this structure; "nodes" is list of DispyNode objects and
 # "jobs_pending" is number of jobs that are not done yet
 ClusterStatus = collections.namedtuple('ClusterStatus', ['nodes', 'jobs_pending'])
@@ -1107,13 +1107,13 @@ class _Cluster(object, metaclass=Singleton):
                 if info['avail_info']:
                     node.avail_info = info['avail_info']
                     for cluster in node.clusters:
-                        if cluster.status_callback:
+                        if cluster.cluster_status:
                             dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
                             if not dispy_node:
                                 continue
                             dispy_node.avail_info = info['avail_info']
                             dispy_node.update_time = node.last_pulse
-                            self.worker_Q.put((cluster.status_callback,
+                            self.worker_Q.put((cluster.cluster_status,
                                                (DispyNode.AvailInfo, dispy_node, None)))
             except Exception:
                 logger.warning('Ignoring pulse message from %s', addr[0])
@@ -1148,8 +1148,8 @@ class _Cluster(object, metaclass=Singleton):
                             if job.status == DispyJob.Running:
                                 dispy_node.busy += 1
                             dispy_node.update_time = time.time()
-                            if cluster.status_callback:
-                                self.worker_Q.put((cluster.status_callback,
+                            if cluster.cluster_status:
+                                self.worker_Q.put((cluster.cluster_status,
                                                    (job.status, dispy_node, copy.copy(job))))
         elif msg.startswith(b'PONG:'):
             conn.close()
@@ -1287,8 +1287,8 @@ class _Cluster(object, metaclass=Singleton):
                         if not dispy_node:
                             continue
                         dispy_node.avail_cpus = dispy_node.cpus = dispy_node.busy = 0
-                        if cluster.status_callback:
-                            self.worker_Q.put((cluster.status_callback,
+                        if cluster.cluster_status:
+                            self.worker_Q.put((cluster.cluster_status,
                                                (DispyNode.Closed, dispy_node, None)))
                     self.reschedule_jobs(dead_jobs)
 
@@ -1310,8 +1310,8 @@ class _Cluster(object, metaclass=Singleton):
                         dispy_node.avail_info = info['avail_info']
                         dispy_node.tx = info['tx']
                         dispy_node.rx = info['rx']
-                        if cluster.status_callback:
-                            self.worker_Q.put((cluster.status_callback,
+                        if cluster.cluster_status:
+                            self.worker_Q.put((cluster.cluster_status,
                                                (DispyNode.AvailInfo, dispy_node, None)))
 
                 elif status == DispyNode.Initialized:
@@ -1330,8 +1330,8 @@ class _Cluster(object, metaclass=Singleton):
                     node.port = info.get('node_port', 0)
                     dispy_node.status = status
                     cluster._dispy_nodes[dispy_node.ip_addr] = dispy_node
-                    if cluster.status_callback:
-                        self.worker_Q.put((cluster.status_callback,
+                    if cluster.cluster_status:
+                        self.worker_Q.put((cluster.cluster_status,
                                            (DispyNode.Initialized, dispy_node, None)))
 
                 elif status == DispyNode.Closed:
@@ -1341,8 +1341,8 @@ class _Cluster(object, metaclass=Singleton):
                         dispy_node.tx = info['tx']
                         dispy_node.rx = info['rx']
                         dispy_node.avail_cpus = dispy_node.cpus = 0
-                        if cluster.status_callback:
-                            self.worker_Q.put((cluster.status_callback,
+                        if cluster.cluster_status:
+                            self.worker_Q.put((cluster.cluster_status,
                                                (DispyNode.Closed, dispy_node, None)))
                     node = self._nodes.get(info['ip_addr'], None)
                     if node:
@@ -1353,8 +1353,8 @@ class _Cluster(object, metaclass=Singleton):
                     dispy_node = cluster._dispy_nodes.get(info['ip_addr'], None)
                     if dispy_node and isinstance(cpus, int) and cpus >= 0:
                         dispy_node.cpus = cpus
-                        if cluster.status_callback:
-                            self.worker_Q.put((cluster.status_callback,
+                        if cluster.cluster_status:
+                            self.worker_Q.put((cluster.cluster_status,
                                                (DispyNode.AvailInfo, dispy_node, None)))
 
                 else:
@@ -1459,8 +1459,8 @@ class _Cluster(object, metaclass=Singleton):
                                 if not dispy_node:
                                     continue
                                 dispy_node.avail_cpus = dispy_node.cpus = dispy_node.busy = 0
-                                if cluster.status_callback:
-                                    self.worker_Q.put((cluster.status_callback,
+                                if cluster.cluster_status:
+                                    self.worker_Q.put((cluster.cluster_status,
                                                        (DispyNode.Closed, dispy_node, None)))
                             del self._nodes[node.ip_addr]
                         dead_jobs = [_job for _job in self._sched_jobs.values()
@@ -1728,8 +1728,8 @@ class _Cluster(object, metaclass=Singleton):
             for close_task, dispy_node in close_nodes:
                 yield close_task.finish()
                 dispy_node.update_time = time.time()
-                if cluster.status_callback:
-                    self.worker_Q.put((cluster.status_callback,
+                if cluster.cluster_status:
+                    self.worker_Q.put((cluster.cluster_status,
                                        (DispyNode.Closed, dispy_node, None)))
         self.shelf.pop('compute_%s' % (cluster._compute.id), None)
         # TODO: prune nodes in shelf
@@ -1772,8 +1772,8 @@ class _Cluster(object, metaclass=Singleton):
                 dispy_node.update_time = time.time()
                 node.clusters.add(cluster)
                 self._sched_event.set()
-                if cluster.status_callback:
-                    self.worker_Q.put((cluster.status_callback,
+                if cluster.cluster_status:
+                    self.worker_Q.put((cluster.cluster_status,
                                        (DispyNode.Initialized, dispy_node, None)))
 
     def add_node(self, info):
@@ -1821,8 +1821,8 @@ class _Cluster(object, metaclass=Singleton):
                 node.clusters = set()
                 for cluster in clusters:
                     dispy_node = cluster._dispy_nodes.pop(node.ip_addr, None)
-                    if dispy_node and cluster.status_callback:
-                        self.worker_Q.put((cluster.status_callback,
+                    if dispy_node and cluster.cluster_status:
+                        self.worker_Q.put((cluster.cluster_status,
                                            (DispyNode.Closed, dispy_node, None)))
             node.auth = auth
 
@@ -1851,22 +1851,22 @@ class _Cluster(object, metaclass=Singleton):
             for _job in node.pending_jobs:
                 cluster = self._clusters[_job.compute_id]
                 self.finish_job(cluster, _job, DispyJob.Cancelled)
-                if cluster.status_callback:
+                if cluster.cluster_status:
                     dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
-                    self.worker_Q.put((cluster.status_callback,
+                    self.worker_Q.put((cluster.cluster_status,
                                        (DispyJob.Cancelled, dispy_node, _job.job)))
             node.pending_jobs = []
         # TODO: need to close computations on this node?
         for cluster in node.clusters:
             dispy_node = cluster._dispy_nodes.pop(node.ip_addr, None)
-            if dispy_node and cluster.status_callback:
-                self.worker_Q.put((cluster.status_callback,
+            if dispy_node and cluster.cluster_status:
+                self.worker_Q.put((cluster.cluster_status,
                                    (DispyNode.Closed, dispy_node, None)))
         node.clusters.clear()
         self._nodes.pop(node.ip_addr, None)
 
     def worker(self):
-        # used for user callbacks only
+        # used for user notification only
         while 1:
             item = self.worker_Q.get(block=True)
             if item is None:
@@ -1882,15 +1882,15 @@ class _Cluster(object, metaclass=Singleton):
                     name = func.func.__name__
                 else:
                     name = ''
-                logger.warning('Callback %s failed: %s', name, traceback.format_exc())
+                logger.warning('Status notification %s failed: %s', name, traceback.format_exc())
             self.worker_Q.task_done()
 
     def finish_job(self, cluster, _job, status):
         # assert status in (DispyJob.Finished, DispyJob.Terminated, DispyJob.Abandoned)
         job = _job.job
         _job.finish(status)
-        if cluster.callback:
-            self.worker_Q.put((cluster.callback, (copy.copy(job),)))
+        if cluster.job_status:
+            self.worker_Q.put((cluster.job_status, (copy.copy(job),)))
         if status != DispyJob.ProvisionalResult:
             # assert cluster._pending_jobs > 0
             cluster._pending_jobs -= 1
@@ -1942,8 +1942,8 @@ class _Cluster(object, metaclass=Singleton):
                 dispy_node = DispyNode(node.ip_addr, node.name, node.cpus)
                 dispy_node.update_time = time.time()
                 cluster._dispy_nodes[reply.ip_addr] = dispy_node
-                if cluster.status_callback:
-                    self.worker_Q.put((cluster.status_callback,
+                if cluster.cluster_status:
+                    self.worker_Q.put((cluster.cluster_status,
                                        (DispyNode.Initialized, dispy_node, None)))
             elif job.status == DispyJob.Abandoned:
                 pass
@@ -1961,8 +1961,8 @@ class _Cluster(object, metaclass=Singleton):
             dispy_node.rx += msg_len
         if reply.status == DispyJob.ProvisionalResult:
             self._sched_jobs[_job.uid] = _job
-            if cluster.callback:
-                self.worker_Q.put((cluster.callback, (copy.copy(job),)))
+            if cluster.job_status:
+                self.worker_Q.put((cluster.job_status, (copy.copy(job),)))
         else:
             if node and dispy_node:
                 if reply.status == DispyJob.Finished or reply.status == DispyJob.Terminated:
@@ -1986,9 +1986,9 @@ class _Cluster(object, metaclass=Singleton):
             job.exception = reply.exception
             job.end_time = reply.end_time
             self.finish_job(cluster, _job, reply.status)
-            if cluster.status_callback:
-                self.worker_Q.put((cluster.status_callback, (reply.status, dispy_node,
-                                                             copy.copy(job))))
+            if cluster.cluster_status:
+                self.worker_Q.put((cluster.cluster_status, (reply.status, dispy_node,
+                                                            copy.copy(job))))
             self._sched_event.set()
         yield sock.send_msg(b'ACK')
 
@@ -2009,7 +2009,7 @@ class _Cluster(object, metaclass=Singleton):
                 dispy_job.status = DispyJob.Created
                 dispy_job.ip_addr = None
                 _job.node = None
-                # TODO: call 'status_callback'?
+                # TODO: call 'status'?
                 # _job.hash = ''.join(hex(x)[2:] for x in os.urandom(10))
                 cluster._jobs.append(_job)
             else:
@@ -2022,8 +2022,8 @@ class _Cluster(object, metaclass=Singleton):
                     cluster.end_time = time.time()
                     cluster._complete.set()
 
-            if cluster.status_callback:
-                self.worker_Q.put((cluster.status_callback,
+            if cluster.cluster_status:
+                self.worker_Q.put((cluster.cluster_status,
                                    (DispyJob.Abandoned, dispy_node, copy.copy(dispy_job))))
         self._sched_event.set()
 
@@ -2056,9 +2056,9 @@ class _Cluster(object, metaclass=Singleton):
                 if node.ip_addr not in cluster._dispy_nodes:
                     # node may have closed
                     raise StopIteration
-                if cluster.status_callback and dispy_node:
+                if cluster.cluster_status and dispy_node:
                     dispy_node.update_time = time.time()
-                    self.worker_Q.put((cluster.status_callback,
+                    self.worker_Q.put((cluster.cluster_status,
                                        (DispyJob.Cancelled, dispy_node, dispy_job)))
                 node.busy -= 1
             self._sched_event.set()
@@ -2072,10 +2072,10 @@ class _Cluster(object, metaclass=Singleton):
                 _job.job.start_time = time.time()
                 dispy_node.busy += 1
                 dispy_node.update_time = time.time()
-                if cluster.status_callback:
-                    self.worker_Q.put((cluster.status_callback,
+                if cluster.cluster_status:
+                    self.worker_Q.put((cluster.cluster_status,
                                        (DispyJob.Running, dispy_node, copy.copy(_job.job))))
-        if (not cluster._compute.reentrant) and (not cluster.status_callback) and _job.job:
+        if (not cluster._compute.reentrant) and (not cluster.cluster_status) and _job.job:
             _job.job._args = ()
             _job.job._kwargs = {}
 
@@ -2152,11 +2152,11 @@ class _Cluster(object, metaclass=Singleton):
                     status = DispyJob.Cancelled
                 dispy_job = _job.job
                 self.finish_job(cluster, _job, status)
-                if cluster.status_callback:
+                if cluster.cluster_status:
                     dispy_node = cluster._dispy_nodes.get(_job.node.ip_addr, None)
                     if dispy_node:
                         dispy_node.update_time = time.time()
-                        self.worker_Q.put((cluster.status_callback,
+                        self.worker_Q.put((cluster.cluster_status,
                                            (status, dispy_node, copy.copy(dispy_job))))
             for dispy_node in cluster._dispy_nodes.values():
                 node = self._nodes.get(dispy_node.ip_addr, None)
@@ -2170,9 +2170,9 @@ class _Cluster(object, metaclass=Singleton):
                         status = DispyJob.Cancelled
                     dispy_job = _job.job
                     self.finish_job(cluster, _job, status)
-                    if cluster.status_callback:
+                    if cluster.cluster_status:
                         dispy_node.update_time = time.time()
-                        self.worker_Q.put((cluster.status_callback,
+                        self.worker_Q.put((cluster.cluster_status,
                                            (status, dispy_node, copy.copy(dispy_job))))
                 node.pending_jobs = []
             cluster._jobs = []
@@ -2196,9 +2196,9 @@ class _Cluster(object, metaclass=Singleton):
             cluster._jobs.append(_job)
         cluster._pending_jobs += 1
         cluster._complete.clear()
-        if cluster.status_callback:
-            self.worker_Q.put((cluster.status_callback, (DispyJob.Created, None,
-                                                         copy.copy(_job.job))))
+        if cluster.cluster_status:
+            self.worker_Q.put((cluster.cluster_status, (DispyJob.Created, None,
+                                                        copy.copy(_job.job))))
         yield self._sched_event.set()
         raise StopIteration(0)
 
@@ -2220,8 +2220,8 @@ class _Cluster(object, metaclass=Singleton):
                 cluster._jobs.remove(_job)
             dispy_job = _job.job
             self.finish_job(cluster, _job, DispyJob.Cancelled)
-            if cluster.status_callback:
-                self.worker_Q.put((cluster.status_callback, (DispyJob.Cancelled, None, dispy_job)))
+            if cluster.cluster_status:
+                self.worker_Q.put((cluster.cluster_status, (DispyJob.Cancelled, None, dispy_job)))
             logger.debug('Cancelled (removed) job %s', job.id)
             raise StopIteration(0)
         elif not (_job.job.status == DispyJob.Running or
@@ -2229,7 +2229,7 @@ class _Cluster(object, metaclass=Singleton):
             logger.warning('Job %s is not valid for cancel (%s)', job.id, _job.job.status)
             raise StopIteration(-1)
         _job.job.status = DispyJob.Cancelled
-        # don't send this status - when job is terminated status/callback get called
+        # don't send this status - when job is terminated status notification is sent
         logger.debug('Job %s / %s is being terminated', _job.job.id, _job.uid)
         try:
             resp = yield _job.node.send(b'TERMINATE_JOB:' + serialize(_job), reply=False, task=task)
@@ -2294,10 +2294,10 @@ class _Cluster(object, metaclass=Singleton):
             raise StopIteration(-1)
         node.clusters.discard(cluster)
         jobs = [_job for _job in node.pending_jobs if _job.compute_id == cluster._compute.id]
-        if cluster.status_callback:
+        if cluster.cluster_status:
             dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
             for _job in jobs:
-                self.worker_Q.put((cluster.status_callback,
+                self.worker_Q.put((cluster.cluster_status,
                                    (DispyJob.Cancelled, dispy_node, copy.copy(_job.job))))
         if jobs:
             node.pending_jobs = [_job for _job in node.pending_jobs
@@ -2463,10 +2463,10 @@ class JobCluster(object):
     """Create an instance of cluster for a specific computation.
     """
 
-    def __init__(self, computation, nodes=None, depends=[], callback=None, cluster_status=None,
+    def __init__(self, computation, nodes=None, depends=[], job_status=None, cluster_status=None,
                  host=None, dispy_port=None, ext_host=None, ip_addr=None, ext_ip_addr=None,
                  ipv4_udp_multicast=False, dest_path=None, loglevel=logger.INFO,
-                 setup=None, cleanup=True, ping_interval=None, pulse_interval=None,
+                 callback=None, setup=None, cleanup=True, ping_interval=None, pulse_interval=None,
                  poll_interval=None, reentrant=False, secret='', keyfile=None, certfile=None,
                  recover_file=None):
         """Create an instance of cluster for a specific computation.
@@ -2490,16 +2490,15 @@ class JobCluster(object):
           then the code for that object is transferred to the node executing
           a job for this cluster.
 
-       @callback is a function or class method. When a job's results
-          become available, dispy will call provided callback
+       @job_status is a function or class method. When a job's results
+          become available, dispy will call provided
           function/method with that job as the argument. If a job
           sends provisional results with 'dispy_provisional_result'
-          multiple times, then dispy will call provided callback each
+          multiple times, then dispy will call this function each
           such time. The (provisional) results of computation can be
-          retrieved with 'result' field of job, etc. While
-          computations are run on nodes in isolated environments,
-          callbacks are run in the context of user programs from which
-          (Shared)JobCluster is called - for example, callbacks can
+          retrieved with 'result' field of job, etc. This function runs
+          in the context of user programs from which
+          (Shared)JobCluster is called - for example, this function can
           access global variables in user programs.
 
         @cluster_status is a function or class method. When a node
@@ -2612,27 +2611,33 @@ class JobCluster(object):
         self.poll_interval = poll_interval
 
         if callback:
-            assert inspect.isfunction(callback) or inspect.ismethod(callback), \
-                'callback must be a function or method'
+            logger.warning('"callback" is deprecated; use "job_status" instead')
+            if job_status:
+                logger.warning('"callback" is ignored in favor of "job_status"')
+            else:
+                job_status = callback
+        if job_status:
+            assert inspect.isfunction(job_status) or inspect.ismethod(job_status), \
+                '"job_status" must be a function or method'
             try:
-                args = inspect.getargspec(callback)
-                if inspect.isfunction(callback):
+                args = inspect.getargspec(job_status)
+                if inspect.isfunction(job_status):
                     assert len(args.args) == 1
                 else:
                     assert len(args.args) == 2
                     if args.args[0] != 'self':
-                        logger.warning('First argument to callback method is not "self"')
+                        logger.warning('First argument to "job_status" method is not "self"')
                 assert args.varargs is None
                 assert args.keywords is None
                 assert args.defaults is None
             except Exception:
-                raise Exception('Invalid callback function; '
+                raise Exception('Invalid "job_status" function; '
                                 'it must take excatly one argument - an instance of DispyJob')
-        self.callback = callback
+        self.job_status = job_status
 
         if cluster_status:
             assert inspect.isfunction(cluster_status) or inspect.ismethod(cluster_status), \
-                'cluster_status must be a function or method'
+                '"cluster_status" must be a function or method'
             try:
                 args = inspect.getargspec(cluster_status)
                 if inspect.isfunction(cluster_status):
@@ -2640,14 +2645,14 @@ class JobCluster(object):
                 else:
                     assert len(args.args) == 4
                     if args.args[0] != 'self':
-                        logger.warning('First argument to cluster_status method is not "self"')
+                        logger.warning('First argument to "cluster_status" method is not "self"')
                 assert args.varargs is None
                 assert args.keywords is None
                 assert args.defaults is None
             except Exception:
-                raise Exception('Invalid cluster_status function; '
+                raise Exception('Invalid "cluster_status" function; '
                                 'it must take excatly 3 arguments')
-        self.status_callback = cluster_status
+        self.cluster_status = cluster_status
 
         if inspect.isfunction(computation) or inspect.ismethod(computation):
             func = computation
@@ -2791,8 +2796,7 @@ class JobCluster(object):
                 raise Exception('Invalid dependency: %s' % dep)
         if compute.code:
             # make sure code can be compiled
-            code = compile(compute.code, '<string>', 'exec')
-            del code
+            compile(compute.code, '<string>', 'exec')
         if dest_path:
             if not isinstance(dest_path, str):
                 raise Exception('Invalid dest_path: it must be a string')
@@ -2848,7 +2852,7 @@ class JobCluster(object):
     def submit_node(self, node, *args, **kwargs):
         """Submit a job for execution at 'node' with the given
         arguments. 'node' can be an instance of DispyNode (e.g., as
-        received in cluster/job status callback) or IP address or host
+        received in cluster/job status) or IP address or host
         name.
 
         Arguments should be serializable and should correspond to
@@ -2951,8 +2955,8 @@ class JobCluster(object):
 
     def send_file(self, path, node, relay=False):
         """Send file with given 'path' to 'node'.  'node' can be an
-        instance of DispyNode (e.g., as received in cluster status
-        callback) or IP address or host name.
+        instance of DispyNode (e.g., as received in cluster status) or
+        IP address or host name.
         """
         xf = _XferFile(path, self._compute.id)
         return Task(self._cluster.send_file, self, node, xf).value()
@@ -3093,10 +3097,10 @@ class SharedJobCluster(JobCluster):
     dispyscheduler must be called with appropriate pulse_interval.
     The behaviour is same as for JobCluster.
     """
-    def __init__(self, computation, nodes=None, depends=[], callback=None, cluster_status=None,
+    def __init__(self, computation, nodes=None, depends=[], job_status=None, cluster_status=None,
                  host=None, dispy_port=None, client_port=None, scheduler_host=None,
                  ext_host=None, ip_addr=None, ext_ip_addr=None, loglevel=logger.INFO,
-                 setup=None, cleanup=True, dest_path=None,
+                 callback=None, setup=None, cleanup=True, dest_path=None,
                  poll_interval=None, reentrant=False, exclusive=False,
                  secret='', keyfile=None, certfile=None, recover_file=None):
 
@@ -3130,7 +3134,13 @@ class SharedJobCluster(JobCluster):
             else:
                 raise Exception('"nodes" must be list of IP addresses or host names')
 
-        JobCluster.__init__(self, computation, nodes=nodes, depends=depends, callback=callback,
+        if callback:
+            logger.warning('"callback" is deprecated; use "job_status" instead')
+            if job_status:
+                logger.warning('"callback" is ignored in favor of "job_status"')
+            else:
+                job_status = callback
+        JobCluster.__init__(self, computation, nodes=nodes, depends=depends, job_status=job_status,
                             cluster_status=cluster_status, host=host, ext_host=ext_host,
                             loglevel=loglevel, setup=setup, cleanup=cleanup, dest_path=dest_path,
                             poll_interval=poll_interval, reentrant=reentrant,
@@ -3265,7 +3275,7 @@ class SharedJobCluster(JobCluster):
     def submit_node(self, node, *args, **kwargs):
         """Submit a job for execution at 'node' with the given
         arguments. 'node' can be an instance of DispyNode (e.g., as
-        received in cluster/job status callback) or IP address or host
+        received in cluster/job status) or IP address or host
         name.
 
         Arguments should be serializable and should correspond to
@@ -3336,8 +3346,8 @@ class SharedJobCluster(JobCluster):
                 self._pending_jobs += 1
                 self._complete.clear()
                 sock.send_msg(b'ACK')
-                if self.status_callback:
-                    self._cluster.worker_Q.put((self.status_callback,
+                if self.cluster_status:
+                    self._cluster.worker_Q.put((self.cluster_status,
                                                 (DispyJob.Created, None, copy.copy(_job.job))))
             else:
                 sock.send_msg('NAK'.encode())
@@ -3521,7 +3531,7 @@ class SharedJobCluster(JobCluster):
 
     def send_file(self, path, node, relay=False):
         """Send file with given 'path' to 'node'.  'node' can be an instance of
-        DispyNode (e.g., as received in cluster status callback) or IP address
+        DispyNode (e.g., as received in cluster status notification) or IP address
         or host name.  If 'relay=False', the file is sent directly to node. If
         'relay=True', file is sent through 'dispyscheduler', which is necessary
         if if nodes can't be reached directly from client, such as when SSL
