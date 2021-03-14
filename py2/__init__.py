@@ -1055,7 +1055,7 @@ class _Cluster(object):
             raise StopIteration
         if not self.port:
             self.port = sock.getsockname()[1]
-        logger.debug('dispy client at %s:%s', addrinfo.ip, self.port)
+        logger.info('dispy client at %s:%s', addrinfo.ip, self.port)
         self.ip_addrs.append(addrinfo.ip)
         sock.listen(128)
 
