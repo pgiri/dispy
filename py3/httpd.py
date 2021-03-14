@@ -370,17 +370,17 @@ class DispyHTTPServer(object):
         if cluster:
             cluster_info = self.__class__._ClusterInfo(cluster)
             self._clusters[cluster.name] = cluster_info
-            http_callback = functools.partial(self.cluster_status, cluster_info)
-            if cluster.status_callback:
-                client_callback = cluster.status_callback
+            http_status = functools.partial(self.cluster_status, cluster_info)
+            if cluster.cluster_status:
+                client_status = cluster.cluster_status
 
-                def chain_callbacks(status, node, job):
-                    http_callback(status, node, job)
-                    client_callback(status, node, job)
+                def chain_status(status, node, job):
+                    http_status(status, node, job)
+                    client_status(status, node, job)
 
-                cluster.status_callback = chain_callbacks
+                cluster.cluster_status = chain_status
             else:
-                cluster.status_callback = http_callback
+                cluster.cluster_status = http_status
         if not DocumentRoot:
             DocumentRoot = os.path.join(os.path.dirname(__file__), 'data')
         if poll_sec < 1:
@@ -448,8 +448,8 @@ class DispyHTTPServer(object):
             return
         cluster_info = self.__class__._ClusterInfo(cluster)
         self._clusters[cluster.name] = cluster_info
-        if cluster.status_callback is None:
-            cluster.status_callback = functools.partial(self.cluster_status, cluster_info)
+        if cluster.cluster_status is None:
+            cluster.cluster_status = functools.partial(self.cluster_status, cluster_info)
 
     def del_cluster(self, cluster):
         """When a cluster is no longer needed to be monitored with
