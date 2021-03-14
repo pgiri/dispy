@@ -1953,6 +1953,9 @@ class _Cluster(object):
             self._sched_jobs[_job.uid] = _job
             if cluster.job_status:
                 self.worker_Q.put((cluster.job_status, (copy.copy(job),)))
+            if cluster.cluster_status:
+                self.worker_Q.put((cluster.cluster_status, (reply.status, dispy_node,
+                                                            copy.copy(job))))
         else:
             if node and dispy_node:
                 if reply.status == DispyJob.Finished or reply.status == DispyJob.Terminated:
