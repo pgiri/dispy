@@ -10,7 +10,7 @@
 # 'lower_bound', more jobs are submitted, up to 'upper_bound'. Adjust bounds as
 # appropriate; e.g., 'lower_bound' should be at least as many CPUs available in
 # the cluster, and 'uppper_bound' to, say, 3x that. Use NodeAlloate or
-# cluster_status callback to dynamically update bounds depending on available
+# cluster_status to dynamically update bounds depending on available
 # CPUs in cluster.
 
 # Note also that submitting even not that many jobs but with large arguemnts
@@ -24,7 +24,7 @@ def compute(n):  # executed on nodes
     return n
 
 # dispy calls this function to indicate change in job status
-def job_callback(job): # executed at the client
+def job_status(job): # executed at the client
     global pending_jobs, jobs_cond
     if (job.status == dispy.DispyJob.Finished  # most usual case
         or job.status in (dispy.DispyJob.Terminated, dispy.DispyJob.Cancelled,
@@ -50,15 +50,15 @@ if __name__ == '__main__':
     # find number of actual processors dispy uses
     lower_bound, upper_bound = 50, 100
     # use Condition variable to protect access to pending_jobs, as
-    # 'job_callback' is executed in another thread
+    # 'job_status' is executed in another thread
     jobs_cond = threading.Condition()
-    cluster = dispy.JobCluster(compute, callback=job_callback)
+    cluster = dispy.JobCluster(compute, job_status=job_status)
     pending_jobs = {}
     # submit 1000 jobs
     for i in range(1000):
         job = cluster.submit(random.uniform(3, 7))
         jobs_cond.acquire()
-        # there is a chance the job may have finished and job_callback called by
+        # there is a chance the job may have finished and job_status called by
         # this time, so put it in 'pending_jobs' only if job is pending
         if job.status == dispy.DispyJob.Created or job.status == dispy.DispyJob.Running:
             pending_jobs[i] = job

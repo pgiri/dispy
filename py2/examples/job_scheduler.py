@@ -1,4 +1,4 @@
-# This program registers 'cluster_callback' which schedules
+# This program registers 'cluster_status' which schedules
 # computations when a processor is available.
 
 # job computation runs at dispynode servers
@@ -15,12 +15,12 @@ def compute(path):
     return csum.hexdigest()
 
 
-# 'cluster_status' callback function. It is called by dispy (client)
+# 'cluster_status' notification function. It is executed by dispy
 # to indicate node / job status changes. Here node iniitialization and
 # job done status are used to schedule jobs, so at most one job is
 # running on a node (even if a node has more than one processor). Data
 # files are assumed to be 'data000', 'data001' etc.
-def status_cb(status, node, job):
+def cluster_status(status, node, job):
     if status == dispy.DispyJob.Finished:
         print('sha1sum for %s: %s' % (job.id, job.result))
     elif status == dispy.DispyJob.Terminated:
@@ -42,7 +42,7 @@ def status_cb(status, node, job):
 
 if __name__ == '__main__':
     import dispy, sys, os
-    cluster = dispy.JobCluster(compute, cluster_status=status_cb)
+    cluster = dispy.JobCluster(compute, cluster_status=cluster_status)
     submitted = 0
     while True:
         try:

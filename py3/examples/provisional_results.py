@@ -20,9 +20,9 @@ def compute(n): # executed on nodes
     return (name, cur_best)
 
 # dispy calls this function to indicate change in job status
-def job_callback(job): # executed at the client
-    if job.status == dispy.DispyJob.ProvisionalResult or \
-       job.status == dispy.DispyJob.Finished:
+def job_status(job): # executed at the client
+    if (job.status == dispy.DispyJob.ProvisionalResult or
+        job.status == dispy.DispyJob.Finished):
         print('best value from %s: %s' % (job.result[0], job.result[1]))
         if job.result[1] < 0.005:
             # acceptable result; terminate jobs
@@ -34,7 +34,7 @@ def job_callback(job): # executed at the client
                     cluster.cancel(j)
 
 if __name__ == '__main__':
-    cluster = dispy.JobCluster(compute, callback=job_callback)
+    cluster = dispy.JobCluster(compute, job_status=job_status)
     jobs = []
     for n in range(4):
         job = cluster.submit(random.randint(50,100))

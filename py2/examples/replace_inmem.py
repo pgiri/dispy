@@ -71,7 +71,7 @@ if __name__ == '__main__':
             return max(2, cpus)  # use at most 2 cpus (for illustration)
 
     cluster = dispy.JobCluster(compute, nodes=[NodeAllocate(host='*')],
-                               setup=setup, cleanup=cleanup, callback=job_status,
+                               setup=setup, cleanup=cleanup, job_status=job_status,
                                loglevel=dispy.logger.DEBUG)
     for i in range(1, 7):  # submit 7 jobs
         job = cluster.submit(i, random.uniform(2, 5))
