@@ -2,7 +2,7 @@ Metadata-Version: 1.0
 Name: dispy
 Version: 4.8.6
 Summary: Distributed and parallel computing with/for Python.
-Home-page: http://dispy.sourceforge.net
+Home-page: https://dispy.org
 Author: Giridhar Pemmasani
 Author-email: pgiri@yahoo.com
 License: Apache 2.0 License: https://www.apache.org/licenses/LICENSE-2.0
@@ -14,7 +14,7 @@ Description: dispy is a comprehensive, yet easy to use framework for
        a computation (Python function or standalone program) is
        evaluated with different (large) datasets independently.
         
-       See http://dispy.sourceforge.net for details.
+       See https://dispy.org for details.
 
 Requires-Dist: pycos (>=4.6.5)
 Platform: any
