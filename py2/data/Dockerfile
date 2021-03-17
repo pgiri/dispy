@@ -1,8 +1,6 @@
-# File to build docker (https://www.docker.com) images to run
-# dispynode containers.
+# File to build docker (https://www.docker.com) images to run dispynode containers.
 
-# This file builds dispy (http://dispy.sourceforge.net) with Python 2
-# using latest Ubuntu Linux.
+# This file builds dispy (https://dispy.org) with Python 2 using latest Ubuntu Linux.
 
 FROM ubuntu:latest
 
