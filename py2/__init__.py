@@ -477,24 +477,34 @@ def host_addrinfo(host=None, socket_family=None, ipv4_multicast=False):
                 addrinfos.append(addrinfo)
 
     best = None
+    if not host:
+        host = socket.gethostname()
     for sock_family in socket_families:
+        host_addr = None
+        if host:
+            try:
+                host_addr = socket.getaddrinfo(host, None, sock_family,
+                                               socket.SOCK_STREAM)[0][-1][0]
+                if sock_family == socket.AF_INET6:
+                    host_addr = canonical_ipv6(host_addr)
+            except Exception:
+                pass
         for addrinfo in addrinfos:
             if addrinfo.ip in hosts:
                 return addrinfo
             if addrinfo.family != sock_family:
                 continue
-            if addrinfo.family == socket.AF_INET:
-                if not best or (len(best.ip) < len(addrinfo.ip)) or best.ip.startswith('127'):
+            if addrinfo.ip == host_addr:
+                if (not best) or not (host_addr.startswith('127.') or
+                                      host_addr.startswith('fe80:') or host_addr == '::1'):
                     best = addrinfo
-            else:
-                if addrinfo.ip.startswith('fd'):
-                    # TODO: How to detect / avoid temporary addresses (privacy extensions)?
-                    if addrinfo.ifn:
-                        return addrinfo
-                if not best or (len(best.ip) < len(addrinfo.ip)) or best.ip.startswith('fe80'):
+            if ((addrinfo.family == socket.AF_INET6 and addrinfo.ip.startswith('fd')) or
+                (addrinfo.family == socket.AF_INET)):
+                if (not best or best.ip.startswith('fe80:') or best.ip == '::1' or
+                    best.ip.startswith('127.')) or (not best.ifn and addrinfo.ifn):
                     best = addrinfo
-        if best and best.family == socket.AF_INET and (not best.ip.startswith('127')):
-            return best
+            elif not best:
+                best = addrinfo
     return best
 
 
