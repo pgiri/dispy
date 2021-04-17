@@ -1381,8 +1381,6 @@ class _Scheduler(object, metaclass=Singleton):
             # add to cluster's _dispy_nodes before sending computation
             # to node
             cluster = self._clusters[compute.id]
-            if node.ip_addr in cluster._dispy_nodes:
-                continue
             dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
             if not dispy_node:
                 dispy_node = DispyNode(node.ip_addr, node.name, node.cpus)
