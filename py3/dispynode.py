@@ -208,7 +208,7 @@ def _dispy_job_func(__dispy_job_name, __dispy_job_code, __dispy_job_globals,
 
     signal.signal(signal.SIGINT, sighandler)
     if os.name == 'nt':
-        signal.signal(signal.SIGBREAK, sighandler)
+        signal.signal(signal.SIGBREAK, signal.SIG_IGN)
     signal.signal(signal.SIGTERM, signal.SIG_DFL)
     del suid, sighandler
 
@@ -334,7 +334,7 @@ def _dispy_terminate_proc(proc_pid, task=None):
                         return 1
                 # TODO: kill with 0 to check if process is running where possible
             if os.name == 'nt':
-                signals = [signal.CTRL_BREAK_EVENT, signal.CTRL_BREAK_EVENT, signal.SIGTERM]
+                signals = [signal.CTRL_BREAK_EVENT, signal.CTRL_C_EVENT, signal.SIGTERM]
             else:
                 signals = [0, signal.SIGTERM, signal.SIGKILL]
             try:
@@ -361,7 +361,7 @@ def _dispy_terminate_proc(proc_pid, task=None):
         raise StopIteration(-1)
     try:
         if os.name == 'nt':
-            signum = signal.CTRL_BREAK_EVENT
+            signum = signal.CTRL_C_EVENT
         else:
             signum = signal.SIGINT
         os.kill(pid, signum)
