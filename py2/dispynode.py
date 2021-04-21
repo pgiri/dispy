@@ -203,7 +203,7 @@ def _dispy_job_func(__dispy_job_name, __dispy_job_code, __dispy_job_globals,
 
     signal.signal(signal.SIGINT, sighandler)
     if os.name == 'nt':
-        signal.signal(signal.SIGBREAK, signal.SIG_IGN)
+        signal.signal(signal.SIGBREAK, sighandler)
     signal.signal(signal.SIGTERM, signal.SIG_DFL)
     del suid, sighandler
 
@@ -327,7 +327,9 @@ def _dispy_terminate_proc(proc_pid, task=None):
                         return 1
                 # TODO: kill with 0 to check if process is running where possible
             if os.name == 'nt':
-                signals = [signal.CTRL_BREAK_EVENT, signal.CTRL_C_EVENT, signal.SIGTERM]
+                signals = [signal.SIGTERM, signal.SIGTERM, signal.SIGTERM]
+                if how == 0:
+                    return -1
             else:
                 signals = [0, signal.SIGTERM, signal.SIGKILL]
             try:
@@ -342,6 +344,9 @@ def _dispy_terminate_proc(proc_pid, task=None):
             except Exception:
                 dispynode_logger.debug('Terminatnig PID %s with %s failed: %s',
                                        pid, how, traceback.format_exc())
+                if os.name == 'nt':
+                    dispynode_logger.warning('Killing processes with PID is not likely to '
+                                             'work with Windows; install "psutil" module')
                 return -1
             return 1
 
@@ -352,14 +357,12 @@ def _dispy_terminate_proc(proc_pid, task=None):
     if not isinstance(pid, int):
         dispynode_logger.warning('invalid job process to terminate: %s', type(proc_pid))
         raise StopIteration(-1)
-    try:
-        if os.name == 'nt':
-            signum = signal.CTRL_C_EVENT
-        else:
-            signum = signal.SIGINT
-        os.kill(pid, signum)
-    except Exception:
-        dispynode_logger.debug(traceback.format_exc())
+
+    if os.name != 'nt':
+        try:
+            os.kill(pid, signal.SIGINT)
+        except Exception:
+            dispynode_logger.debug(traceback.format_exc())
 
     for i in range(50):
         if i == 25:
@@ -368,6 +371,8 @@ def _dispy_terminate_proc(proc_pid, task=None):
             how = 2
         else:
             how = 0
+            if os.name == 'nt' and ((i % 10) == 0):
+                how = 1
         status = terminate_proc(how)
         if how == 0 and status == 0:
             raise StopIteration(0)
