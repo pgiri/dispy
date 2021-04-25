@@ -180,6 +180,7 @@ class _DispyJobInfo(object):
         self.addrinfo = None
         self.pid = None
         self.proc = None
+        self.intr_event = None
 
 
 def _dispy_job_func(__dispy_job_name, __dispy_job_code, __dispy_job_globals,
@@ -212,6 +213,27 @@ def _dispy_job_func(__dispy_job_name, __dispy_job_code, __dispy_job_globals,
     globals()['_dispy_job_func'] = None
     sys.stdout = io.StringIO()
     sys.stderr = io.StringIO()
+
+    intr_event = __dispy_job_globals.pop('intr_event', None)
+    if intr_event:
+        def intr_main(event):
+            import thread
+            event.wait()
+            thread.interrupt_main()
+            time.sleep(5)
+            __dispy_job_reply.status = DispyJob.Terminated
+            __dispy_job_reply.result = serialize(None)
+            __dispy_job_reply.stdout = sys.stdout.getvalue()
+            __dispy_job_reply.stderr = sys.stderr.getvalue()
+            __dispy_job_reply.end_time = time.time()
+            reply_Q.put(__dispy_job_reply)
+            os._exit(0)
+
+        intr_thread = threading.Thread(target=intr_main, args=(intr_event,))
+        intr_thread.daemon = True
+        intr_thread.start()
+        del intr_thread, intr_event
+
     try:
         if __dispy_job_code[0]:
             exec(marshal.loads(__dispy_job_code[0])) in globals()
@@ -365,14 +387,12 @@ def _dispy_terminate_proc(proc_pid, task=None):
             dispynode_logger.debug(traceback.format_exc())
 
     for i in range(50):
-        if i == 25:
+        if i == 30:
             how = 1
-        elif i == 35:
+        elif i == 40:
             how = 2
         else:
             how = 0
-            if os.name == 'nt' and ((i % 10) == 0):
-                how = 1
         status = terminate_proc(how)
         if how == 0 and status == 0:
             raise StopIteration(0)
@@ -503,6 +523,7 @@ def _dispy_setup_process(compute, pipe, client_globals):
         if msg['req'] == 'job':
             job_reply = msg['job_reply']
             client_globals['__dispy_job_reply'] = job_reply
+            client_globals['intr_event'] = msg.get('intr_event', None)
             args = (compute.name, (compute.code, msg['code']), client_globals,
                     msg['args'], msg['kwargs'])
             job_proc = multiprocessing.Process(target=_dispy_job_func, args=args)
@@ -1156,13 +1177,19 @@ class _DispyNode(object):
                 self.avail_cpus -= 1
                 client.pending_jobs += 1
                 client.jobs_done.clear()
+                if os.name == 'nt':
+                    job_info.intr_event = multiprocessing.Event()
                 try:
                     if client.use_setup_proc:
                         args = {'req': 'job', 'job_reply': job_info.job_reply, 'code': _job.code,
                                 'args': _job._args, 'kwargs': _job._kwargs}
+                        if os.name == 'nt':
+                            args['intr_event'] = job_info.intr_event
                         client.parent_pipe.send(args)
                     else:
                         client.globals['__dispy_job_reply'] = job_info.job_reply
+                        if job_info.intr_event:
+                            client.globals['intr_event'] = job_info.intr_event
                         args = (compute.name, (compute.code, _job.code),
                                 client.globals, _job._args, _job._kwargs)
                         os.chdir(compute.dest_path)
@@ -1536,6 +1563,8 @@ class _DispyNode(object):
             dispynode_logger.debug('Terminating job %s of "%s" (%s)',
                                    job_info.job_reply.uid, compute.name, pid)
             job_info.job_reply.status = DispyJob.Terminated
+            if job_info.intr_event:
+                job_info.intr_event.set()
             if client.use_setup_proc:
                 client.parent_pipe.send({'req': 'terminate_job', 'pid': job_info.pid,
                                          'job_reply': job_info.job_reply})
@@ -2771,7 +2800,7 @@ class _DispyNode(object):
                 # print(traceback.format_exc())
                 pass
             if os.name == 'nt':
-                os.kill(self.pid, signal.CTRL_C_EVENT)
+                os.kill(self.pid, signal.CTRL_BREAK_EVENT)
                 print('\n\n   Under Windows extra Enter (input) may be required to quit!\n')
             else:
                 os.kill(self.pid, signal.SIGINT)
