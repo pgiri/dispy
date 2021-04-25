@@ -1664,8 +1664,10 @@ class _Scheduler(object):
         if not dead_jobs:
             return
         for _job in dead_jobs:
-            cluster = self._clusters[_job.compute_id]
-            del self._sched_jobs[_job.uid]
+            self._sched_jobs.pop(_job.uid, None)
+            cluster = self._clusters.get(_job.compute_id, None)
+            if not cluster:
+                continue
             if cluster._compute.reentrant and not _job.pinned:
                 logger.debug('Rescheduling job %s from %s', _job.uid, _job.node.ip_addr)
                 _job.job.status = DispyJob.Created

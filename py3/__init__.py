@@ -2009,8 +2009,10 @@ class _Cluster(object, metaclass=Singleton):
         if not dead_jobs:
             return
         for _job in dead_jobs:
-            cluster = self._clusters[_job.compute_id]
-            del self._sched_jobs[_job.uid]
+            elf._sched_jobs.pop(_job.uid, None)
+            cluster = self._clusters.get(_job.compute_id, None)
+            if not cluster:
+                continue
             dispy_node = cluster._dispy_nodes.get(_job.node.ip_addr, None)
             if dispy_node:
                 dispy_node.cpus = 0
