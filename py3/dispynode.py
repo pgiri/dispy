@@ -222,17 +222,11 @@ def _dispy_job_func(__dispy_job_name, __dispy_job_code, __dispy_job_globals,
     intr_event = __dispy_job_globals.pop('intr_event', None)
     if intr_event:
         def intr_main(event):
-            import _thread
+            import time, _thread
             event.wait()
             _thread.interrupt_main()
             time.sleep(5)
-            __dispy_job_reply.status = DispyJob.Terminated
-            __dispy_job_reply.result = serialize(None)
-            __dispy_job_reply.stdout = sys.stdout.getvalue()
-            __dispy_job_reply.stderr = sys.stderr.getvalue()
-            __dispy_job_reply.end_time = time.time()
-            reply_Q.put(__dispy_job_reply)
-            os._exit(0)
+            os._exit(1)
 
         intr_thread = threading.Thread(target=intr_main, args=(intr_event,))
         intr_thread.daemon = True
