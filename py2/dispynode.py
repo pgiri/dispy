@@ -1171,13 +1171,13 @@ class _DispyNode(object):
                 self.avail_cpus -= 1
                 client.pending_jobs += 1
                 client.jobs_done.clear()
-                if os.name == 'nt':
+                if os.name == 'nt' or (self.suid or self.sgid):
                     job_info.intr_event = multiprocessing.Event()
                 try:
                     if client.use_setup_proc:
                         args = {'req': 'job', 'job_reply': job_info.job_reply, 'code': _job.code,
                                 'args': _job._args, 'kwargs': _job._kwargs}
-                        if os.name == 'nt':
+                        if job_info.intr_event:
                             args['intr_event'] = job_info.intr_event
                         client.parent_pipe.send(args)
                     else:
@@ -1557,8 +1557,6 @@ class _DispyNode(object):
             dispynode_logger.debug('Terminating job %s of "%s" (%s)',
                                    job_info.job_reply.uid, compute.name, pid)
             job_info.job_reply.status = DispyJob.Terminated
-            if job_info.intr_event:
-                job_info.intr_event.set()
             if client.use_setup_proc:
                 client.parent_pipe.send({'req': 'terminate_job', 'pid': job_info.pid,
                                          'job_reply': job_info.job_reply})
@@ -1578,14 +1576,9 @@ class _DispyNode(object):
             else:
                 proc_pid = pid
 
-            suid = client.globals.get('suid', None)
-            if suid is None:
-                status = yield _dispy_terminate_proc(proc_pid, task=task)
-            else:
-                # TODO: terminating process must be parent of process being
-                # killed, so creating suid process won't work!
-                status = -1
-
+            if job_info.intr_event:
+                job_info.intr_event.set()
+            status = yield _dispy_terminate_proc(proc_pid, task=task)
             if status:
                 dispynode_logger.debug('Terminating job %s (PID %s) failed',
                                        job_info.job_reply.uid, pid)
