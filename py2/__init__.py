@@ -1276,21 +1276,7 @@ class _Cluster(object):
                 if auth != node.auth:
                     logger.warning('Invalid signature from %s', node.ip_addr)
                     raise StopIteration
-                logger.debug('Removing node %s', node.ip_addr)
-                if node.clusters:
-                    dead_jobs = [_job for _job in self._sched_jobs.itervalues()
-                                 if _job.node is not None and _job.node.ip_addr == node.ip_addr]
-                    clusters = list(node.clusters)
-                    node.clusters = set()
-                    for cluster in clusters:
-                        dispy_node = cluster._dispy_nodes.pop(node.ip_addr, None)
-                        if not dispy_node:
-                            continue
-                        dispy_node.avail_cpus = dispy_node.cpus = dispy_node.busy = 0
-                        if cluster.cluster_status:
-                            self.worker_Q.put((cluster.cluster_status,
-                                               (DispyNode.Closed, dispy_node, None)))
-                    self.reschedule_jobs(dead_jobs)
+                self.delete_node(node)
 
         elif msg.startswith('NODE_STATUS:'):
             conn.close()
@@ -1845,24 +1831,29 @@ class _Cluster(object):
             Task(self.setup_node, node, setup_computations)
 
     def delete_node(self, node):
-        if node.pending_jobs:
-            # TODO: instead of discarding pending jobs, maintain them
-            # elsewhere, while cluster is alive?
-            for _job in node.pending_jobs:
-                cluster = self._clusters[_job.compute_id]
-                self.finish_job(cluster, _job, DispyJob.Cancelled)
+        if node.clusters:
+            dead_jobs = [_job for _job in self._sched_jobs.itervalues()
+                         if _job.node is not None and _job.node.ip_addr == node.ip_addr]
+            clusters = list(node.clusters)
+            node.clusters.clear()
+            for cluster in clusters:
+                dispy_node = cluster._dispy_nodes.pop(node.ip_addr, None)
+                if not dispy_node:
+                    continue
+                dispy_node.avail_cpus = dispy_node.cpus = dispy_node.busy = 0
                 if cluster.cluster_status:
-                    dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
                     self.worker_Q.put((cluster.cluster_status,
-                                       (DispyJob.Cancelled, dispy_node, _job.job)))
-            node.pending_jobs = []
-        # TODO: need to close computations on this node?
-        for cluster in node.clusters:
-            dispy_node = cluster._dispy_nodes.pop(node.ip_addr, None)
-            if dispy_node and cluster.cluster_status:
+                                       (DispyNode.Closed, dispy_node, None)))
+            self.reschedule_jobs(dead_jobs)
+
+        for _job in node.pending_jobs:
+            cluster = self._clusters[_job.compute_id]
+            self.finish_job(cluster, _job, DispyJob.Cancelled)
+            if cluster.cluster_status:
+                dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
                 self.worker_Q.put((cluster.cluster_status,
-                                   (DispyNode.Closed, dispy_node, None)))
-        node.clusters.clear()
+                                   (DispyJob.Cancelled, dispy_node, _job.job)))
+        node.pending_jobs = []
         self._nodes.pop(node.ip_addr, None)
 
     def worker(self):
@@ -2801,7 +2792,7 @@ class JobCluster(object):
                 raise Exception('Invalid dependency: %s' % dep)
         if compute.code:
             # make sure code can be compiled
-            code = compile(compute.code, '<string>', 'exec')
+            compile(compute.code, '<string>', 'exec')
             del code
         if dest_path:
             if not isinstance(dest_path, basestring):
