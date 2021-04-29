@@ -329,14 +329,12 @@ class _Scheduler(object):
             elif msg.startswith('TERMINATED:'):
                 try:
                     info = deserialize(msg[len('TERMINATED:'):])
-                    # logger.debug('TERMINATED: %s', str(info))
-                    assert info['ip_addr']
+                    node = self._nodes[info['ip_addr']]
+                    assert node.auth == auth_code(self.secret, info['sign'])
                 except Exception:
                     # logger.debug(traceback.format_exc())
-                    continue
-                auth = auth_code(self.node_secret, info['sign'])
-                node = self._nodes.get(info['ip_addr'], None)
-                if node and node.auth == auth:
+                    pass
+                else:
                     self.delete_node(node)
 
             else:
@@ -466,29 +464,13 @@ class _Scheduler(object):
             conn.close()
             try:
                 info = deserialize(msg[len('TERMINATED:'):])
-                node = self._nodes.get(info['ip_addr'], None)
-                if not node:
-                    raise StopIteration
-                auth = auth_code(self.node_secret, info['sign'])
-                if auth != node.auth:
-                    logger.warning('Invalid signature from %s', node.ip_addr)
-                    raise StopIteration
-                logger.debug('Removing node %s', node.ip_addr)
-                del self._nodes[node.ip_addr]
-                if node.clusters:
-                    dead_jobs = [_job for _job in self._sched_jobs.itervalues()
-                                 if _job.node is not None and _job.node.ip_addr == node.ip_addr]
-                    clusters = list(node.clusters)
-                    node.clusters.clear()
-                    for cluster in clusters:
-                        dispy_node = cluster._dispy_nodes.pop(node.ip_addr, None)
-                        if not dispy_node:
-                            continue
-                        Task(self.send_node_status, cluster, dispy_node, DispyNode.Closed)
-                    self.reschedule_jobs(dead_jobs)
+                node = self._nodes[info['ip_addr']]
+                assert node.auth == auth_code(self.secret, info['sign'])
             except Exception:
                 # logger.debug(traceback.format_exc())
                 pass
+            else:
+                self.delete_node(node)
 
         elif msg.startswith('NODE_CPUS:'):
             conn.close()
@@ -1513,26 +1495,30 @@ class _Scheduler(object):
         raise StopIteration(status)
 
     def delete_node(self, node):
-        if node.pending_jobs:
-            # TODO: instead of discarding pending jobs, maintain them
-            # elsewhere, while cluster is alive?
-            for _job in node.pending_jobs:
-                cluster = self._clusters[_job.compute_id]
-                self.finish_job(cluster, _job, DispyJob.Cancelled)
-                if cluster.status_callback:
-                    dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
-                    self.worker_Q.put((cluster.status_callback,
-                                       (DispyJob.Cancelled, dispy_node, _job.job)))
-            node.pending_jobs = []
-        # TODO: need to close computations on this node?
-        for cluster in node.clusters:
-            dispy_node = cluster._dispy_nodes.pop(node.ip_addr, None)
-            if dispy_node and cluster.status_callback:
-                self.worker_Q.put((cluster.status_callback,
-                                   (DispyNode.Closed, dispy_node, None)))
-        node.clusters.clear()
+        if node.clusters:
+            dead_jobs = [_job for _job in self._sched_jobs.itervalues()
+                         if _job.node is not None and _job.node.ip_addr == node.ip_addr]
+            clusters = list(node.clusters)
+            node.clusters.clear()
+            for cluster in clusters:
+                dispy_node = cluster._dispy_nodes.pop(node.ip_addr, None)
+                if not dispy_node:
+                    continue
+                dispy_node.avail_cpus = dispy_node.cpus = dispy_node.busy = 0
+                if cluster.cluster_status:
+                    self.worker_Q.put((cluster.cluster_status,
+                                       (DispyNode.Closed, dispy_node, None)))
+            self.reschedule_jobs(dead_jobs)
+
+        for _job in node.pending_jobs:
+            cluster = self._clusters[_job.compute_id]
+            self.finish_job(cluster, _job, DispyJob.Cancelled)
+            if cluster.cluster_status:
+                dispy_node = cluster._dispy_nodes.get(node.ip_addr, None)
+                self.worker_Q.put((cluster.cluster_status,
+                                   (DispyJob.Cancelled, dispy_node, _job.job)))
+        node.pending_jobs = []
         self._nodes.pop(node.ip_addr, None)
-        logger.debug('%s deleted', node.ip_addr)
 
     def send_job_status(self, cluster, _job, task=None):
         if cluster.status_callback:

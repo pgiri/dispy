@@ -1044,15 +1044,12 @@ class _Cluster(object, metaclass=Singleton):
             elif msg.startswith(b'TERMINATED:'):
                 try:
                     info = deserialize(msg[len(b'TERMINATED:'):])
-                    assert info['ip_addr']
-                    # socket.inet_aton(status['ip_addr'])
+                    node = self._nodes[info['ip_addr']]
+                    assert node.auth == auth_code(self.secret, info['sign'])
                 except Exception:
                     # logger.debug(traceback.format_exc())
-                    logger.debug('Ignoring node %s', addr[0])
-                    continue
-                auth = auth_code(self.secret, info['sign'])
-                node = self._nodes.get(info['ip_addr'], None)
-                if node and node.auth == auth:
+                    pass
+                else:
                     self.delete_node(node)
 
             else:
@@ -1275,17 +1272,12 @@ class _Cluster(object, metaclass=Singleton):
             conn.close()
             try:
                 info = deserialize(msg[len(b'TERMINATED:'):])
+                node = self._nodes[info['ip_addr']]
+                assert node.auth == auth_code(self.secret, info['sign'])
             except Exception:
                 # logger.debug(traceback.format_exc())
                 pass
             else:
-                node = self._nodes.pop(info['ip_addr'], None)
-                if not node:
-                    raise StopIteration
-                auth = auth_code(self.secret, info['sign'])
-                if auth != node.auth:
-                    logger.warning('Invalid signature from %s', node.ip_addr)
-                    raise StopIteration
                 self.delete_node(node)
 
         elif msg.startswith(b'NODE_STATUS:'):
