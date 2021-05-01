@@ -1,4 +1,4 @@
-DispyPort = 61590
+DispyPort = 9700
 HTTPServerPort = 8181
 IPv6MulticastGroup = 'ff05::b409:3171:9705:5134:6159'
 IPv4MulticastGroup = '239.255.61.59'
