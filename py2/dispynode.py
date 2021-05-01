@@ -1171,18 +1171,15 @@ class _DispyNode(object):
                 self.avail_cpus -= 1
                 client.pending_jobs += 1
                 client.jobs_done.clear()
-                if os.name == 'nt' or (self.suid or self.sgid):
-                    job_info.intr_event = multiprocessing.Event()
                 try:
                     if client.use_setup_proc:
                         args = {'req': 'job', 'job_reply': job_info.job_reply, 'code': _job.code,
                                 'args': _job._args, 'kwargs': _job._kwargs}
-                        if job_info.intr_event:
-                            args['intr_event'] = job_info.intr_event
                         client.parent_pipe.send(args)
                     else:
                         client.globals['__dispy_job_reply'] = job_info.job_reply
-                        if job_info.intr_event:
+                        if os.name == 'nt' or (self.suid or self.sgid):
+                            job_info.intr_event = multiprocessing.Event()
                             client.globals['intr_event'] = job_info.intr_event
                         args = (compute.name, (compute.code, _job.code),
                                 client.globals, _job._args, _job._kwargs)
