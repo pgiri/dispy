@@ -198,15 +198,15 @@ def _dispy_job_func(__dispy_job_name, __dispy_job_code, __dispy_job_globals,
             os.setregid(sgid, sgid)
             os.setreuid(suid, suid)
         del sgid
+    del suid
 
-    def sighandler(signum, frame):
-        raise KeyboardInterrupt
+    if os.name != 'nt':
+        def sighandler(signum, frame):
+            raise KeyboardInterrupt
 
-    signal.signal(signal.SIGINT, sighandler)
-    if os.name == 'nt':
-        signal.signal(signal.SIGBREAK, sighandler)
-    signal.signal(signal.SIGTERM, signal.SIG_DFL)
-    del suid, sighandler
+        signal.signal(signal.SIGINT, sighandler)
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        del sighandler
 
     reply_Q = __dispy_job_globals.pop('reply_Q')
     globals().update(__dispy_job_globals)
@@ -346,6 +346,7 @@ def _dispy_terminate_proc(proc_pid, task=None):
                 signals = [signal.SIGTERM, signal.SIGTERM, signal.SIGTERM]
                 if how == 0:
                     return -1
+                signals = [signal.CTRL_BREAK_EVENT, signal.CTRL_BREAK_EVENT, signal.SIGTERM]
             else:
                 signals = [0, signal.SIGTERM, signal.SIGKILL]
             try:
@@ -469,12 +470,11 @@ def _dispy_setup_process(compute, pipe, client_globals):
     setup_pid = os.getpid()
     wait_nohang = getattr(os, 'WNOHANG', None)
 
-    def sighandler(signum, frame):
-        dispynode_logger.debug('setup_process received signal %s', signum)
+    if os.name != 'nt':
+        def sighandler(signum, frame):
+            dispynode_logger.debug('setup_process received signal %s', signum)
 
-    signal.signal(signal.SIGINT, sighandler)
-    if os.name == 'nt':
-        signal.signal(signal.SIGBREAK, sighandler)
+        signal.signal(signal.SIGINT, sighandler)
 
     def terminate_job(msg):
         proc_pid = msg['pid']
@@ -666,6 +666,9 @@ class _DispyNode(object):
         self._safe_setup = bool(safe_setup)
         self._force_cleanup = bool(force_cleanup)
 
+        if not psutil and os.name == 'nt':
+            print('\n    "psutil" module is not available - terminating jobs and processes '
+                  '    may not work as expected in Windows!')
         self.suid = None
         self.sgid = None
         if ((hasattr(os, 'setresuid') or hasattr(os, 'setreuid')) and os.getuid() != os.geteuid()):
@@ -2285,14 +2288,13 @@ class _DispyNode(object):
             sub_proc = subprocess.Popen(program, stdout=subprocess.PIPE,
                                         stderr=subprocess.PIPE, env=env, creationflags=flags)
 
-            def sighandler(signum, frame):
-                sub_proc.send_signal(signum)
-                # os.kill(sub_proc.pid, signum)
+            if os.name != 'nt':
+                def sighandler(signum, frame):
+                    sub_proc.send_signal(signum)
+                    # os.kill(sub_proc.pid, signum)
 
-            signal.signal(signal.SIGINT, sighandler)
-            signal.signal(signal.SIGTERM, sighandler)
-            if os.name == 'nt':
-                signal.signal(signal.SIGBREAK, sighandler)
+                signal.signal(signal.SIGINT, sighandler)
+                signal.signal(signal.SIGTERM, sighandler)
 
             out, err = sub_proc.communicate()
             pipe.send((out, err))
