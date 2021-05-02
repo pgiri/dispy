@@ -131,14 +131,14 @@ class _Scheduler(object, metaclass=Singleton):
         for i in range(len(hosts)):
             addrinfo = dispy.host_addrinfo(host=hosts[i], ipv4_multicast=self.ipv4_udp_multicast)
             if not addrinfo:
-                logger.warning('Ignoring invalid host %s', host)
+                logger.warning('Ignoring invalid host %s', hosts[i])
                 continue
             if i < len(ext_hosts):
                 ext_host = dispy._node_ipaddr(ext_hosts[i])
                 if ext_host:
                     addrinfo.ext_ip = ext_host
                 else:
-                    dispynode_logger.warning('Ignoring invalid ext_host %s', ext_hosts[i])
+                    logger.warning('Ignoring invalid ext_host %s', ext_hosts[i])
 
             self.addrinfos.append(addrinfo)
         if not self.addrinfos:
