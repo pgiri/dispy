@@ -6,8 +6,8 @@ if __name__ == '__main__':
     import dispy
     # list remote nodes (here Amazon EC2 instance with external IP 54.172.166.83)
     nodes = ['54.172.166.83']
-    # use ssh to forward port 61590 for each node; e.g.,
-    # 'ssh -R 61590:localhost:61590 54.172.166.83'
+    # use ssh to forward port 9700 for each node; e.g.,
+    # 'ssh -R 9700:localhost:9700 54.172.166.83'
 
     # start dispynode with 'dispynode.py --ext_host 54.172.166.83' (so dispynode
     # uses external IP address instead of default local IP address); do this for all nodes
