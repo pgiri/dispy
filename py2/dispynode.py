@@ -374,7 +374,14 @@ def _dispy_terminate_proc(proc_pid, task=None):
         dispynode_logger.warning('invalid job process to terminate: %s', type(proc_pid))
         raise StopIteration(-1)
 
-    if os.name != 'nt':
+    if os.name == 'nt':
+        if ((psutil and isinstance(proc_pid, psutil.Process)) or
+            isinstance(proc_pid, multiprocessing.Process)):
+            try:
+                proc_pid.terminate()
+            except Exception:
+                dispynode_logger.debug(traceback.format_exc())
+    else:
         try:
             os.kill(pid, signal.SIGINT)
         except Exception:
