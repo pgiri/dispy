@@ -406,7 +406,6 @@ def _dispy_setup_process(compute, pipe, client_globals):
     Internal use only.
     """
     import sys
-    import threading
     sys.modules.pop('pycos', None)
     globals().pop('pycos', None)
     import pycos
@@ -482,37 +481,35 @@ def _dispy_setup_process(compute, pipe, client_globals):
 
         signal.signal(signal.SIGINT, sighandler)
 
-    def terminate_job(msg):
+    def terminate_job(msg, task=None):
         proc_pid = msg['pid']
         job_reply = msg['job_reply']
-        # TODO: Currently job processes are not maintained. Perhaps it
-        # is better / safer approach, but requires main process to
-        # inform this process when a job is done so that process can
-        # be removed. This requires extra bandwith. Since cancelling
-        # jobs is relatively rare, it may be better to use psutil or
-        # os.kill to terminate processes.
+        # TODO: Currently job processes are not maintained. Perhaps it is better / safer approach,
+        # but requires main process to inform this process when a job is done so that process can
+        # be removed. This requires extra bandwith. Since cancelling jobs is relatively rare,
+        # psutil or os.kill is used to terminate processes.
 
         if psutil:
             try:
                 proc_pid = psutil.Process(proc_pid)
                 if proc_pid.ppid() != setup_pid:
-                    return
+                    raise StopIteration
             except psutil.NoSuchProcess:
                 # job is already done
-                return
+                raise StopIteration
             except Exception:
                 pass
 
-        if pycos.Task(_dispy_terminate_proc, proc_pid).value():
-            dispynode_logger.warning('Job %s (PID %s) could not be terminated',
-                                     job_reply.uid, msg['pid'])
-            return
-
-        dispynode_logger.debug('Job %s terminated', job_reply.uid)
-        job_reply.result = serialize(None)
-        job_reply.status = DispyJob.Terminated
-        job_reply.end_time = time.time()
-        reply_Q.put(job_reply)
+        status = yield _dispy_terminate_proc(proc_pid, task=task)
+        if status:
+            dispynode_logger.warning('Job %s could not be terminated', job_reply.uid)
+        else:
+            dispynode_logger.debug('Job %s terminated', job_reply.uid)
+            job_reply.result = serialize(None)
+            job_reply.status = DispyJob.Terminated
+            job_reply.end_time = time.time()
+            reply_Q.put(job_reply)
+        raise StopIteration
 
     while 1:
         try:
@@ -533,9 +530,7 @@ def _dispy_setup_process(compute, pipe, client_globals):
             msg = args = None
 
         elif msg['req'] == 'terminate_job':
-            thread = threading.Thread(target=terminate_job, args=(msg,))
-            thread.daemon = True
-            thread.start()
+            pycos.Task(terminate_job, msg)
 
         elif msg['req'] == 'wait_pid':
             pid = msg.get('pid', None)
