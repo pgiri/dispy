@@ -345,6 +345,8 @@ def _dispy_terminate_proc(proc_pid, task=None):
                     try:
                         if os.waitpid(pid, wait_nohang)[0] == pid:
                             return 0
+                    except ChildProcessError:
+                        return 0
                     except Exception:
                         # TODO: check errno for all platforms
                         return 1
@@ -545,7 +547,7 @@ def _dispy_setup_process(compute, pipe, client_globals):
             if pid and wait_nohang:
                 try:
                     assert os.waitpid(pid, wait_nohang)[0] == pid
-                except (OSError, Exception):
+                except (OSError, ChildProcessError, Exception):
                     # print(traceback.format_exc())
                     pass
                 else:
