@@ -776,6 +776,9 @@ class _DispyNode(object):
 
             shutil.rmtree(self.dest_path_prefix, ignore_errors=True)
 
+        if serve == 0:
+            exit(0)
+        self.serve = serve
         if not os.path.isdir(self.dest_path_prefix):
             os.makedirs(self.dest_path_prefix)
         os.chmod(self.dest_path_prefix, stat.S_IRUSR | stat.S_IWUSR |
@@ -853,7 +856,6 @@ class _DispyNode(object):
         self.reply_Q_thread.daemon = True
         self.reply_Q_thread.start()
 
-        self.serve = serve
         self.timer_task = Task(self.timer_proc)
         self.service_start = self.service_stop = self.service_end = None
         if isinstance(service_start, int):
