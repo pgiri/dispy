@@ -731,6 +731,8 @@ class _DispyNode(object):
                 print('\n    WARNING: Using "clean" without "psutil" module may be dangerous!\n')
 
             for name in glob.glob(os.path.join(self.dest_path_prefix, '*.pkl')):
+                if os.path.basename(name) == 'config.pkl':
+                    continue
                 if name.startswith('_dispy_job_reply_'):
                     # job results may be retrieved by clients with
                     # 'recover_jobs' function, so keep them
