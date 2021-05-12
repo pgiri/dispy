@@ -733,18 +733,7 @@ class _DispyNode(object):
             for name in glob.glob(os.path.join(self.dest_path_prefix, '*.pkl')):
                 if os.path.basename(name) == 'config.pkl':
                     continue
-                if name.startswith('_dispy_job_reply_'):
-                    # job results may be retrieved by clients with
-                    # 'recover_jobs' function, so keep them
-                    continue
-                if not config or not name.startswith('job_') or not os.path.isfile(name):
-                    try:
-                        if os.path.isdir(name):
-                            shutil.rmtree(name, ignore_errors=True)
-                        else:
-                            os.remove(name)
-                    except Exception:
-                        print('Could not remove "%s"' % name)
+                if not os.path.basename(name).startswith('job_'):
                     continue
                 with open(name, 'rb') as fd:
                     info = pickle.load(fd)
@@ -784,6 +773,20 @@ class _DispyNode(object):
                     dispynode_logger.warning('Could not terminate PID %s', config['pid'])
 
             shutil.rmtree(self.dest_path_prefix, ignore_errors=True)
+
+        else:
+            for name in glob.glob(self.dest_path_prefix):
+                if os.path.basename(name).startswith('_dispy_job_reply_'):
+                    # job results may be retrieved by clients with
+                    # 'recover_jobs' function, so keep them
+                    continue
+                try:
+                    if os.path.isdir(name):
+                        shutil.rmtree(name, ignore_errors=True)
+                    else:
+                        os.remove(name)
+                except Exception:
+                    print('Could not remove "%s"' % name)
 
         if serve == 0:
             exit(0)
