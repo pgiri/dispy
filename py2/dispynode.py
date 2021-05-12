@@ -292,6 +292,7 @@ def _dispy_terminate_proc(proc_pid, task=None):
 
                 elif how == 1:
                     proc.terminate()
+                    return 1
 
                 elif how == 2:
                     proc.kill()
@@ -397,7 +398,7 @@ def _dispy_terminate_proc(proc_pid, task=None):
         else:
             how = 0
         status = terminate_proc(how)
-        if how == 0 and status == 0:
+        if status == 0:
             raise StopIteration(0)
         yield task.sleep(0.2)
     raise StopIteration(-1)
