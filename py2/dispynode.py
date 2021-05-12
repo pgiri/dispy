@@ -3125,6 +3125,7 @@ if __name__ == '__main__':
             raise KeyboardInterrupt
 
     signal.signal(signal.SIGINT, sighandler)
+    signal.signal(signal.SIGTERM, sighandler)
     if os.name == 'nt':
         signal.signal(signal.SIGBREAK, sighandler)
     if not _dispy_config['daemon']:
