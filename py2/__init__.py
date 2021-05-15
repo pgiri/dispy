@@ -453,59 +453,49 @@ def host_addrinfo(host=None, socket_family=None, ipv4_multicast=False):
     else:
         if not host:
             host = socket.gethostname()
-        netmask = None
-        for sock_family in socket_families:
-            try:
-                addrs = socket.getaddrinfo(host, None, sock_family, socket.SOCK_STREAM)
-            except Exception:
-                continue
-            for addr in addrs:
-                ifn = addr[-1][-1]
-                if sock_family == socket.AF_INET:
-                    broadcast = '<broadcast>'
-                    addr = addr[-1][0]
-                else:  # sock_family == socket.AF_INET6
-                    addr = canonical_ipv6(addr[-1][0])
-                    broadcast = dispy.config.IPv6MulticastGroup
-                    logger.warning('IPv6 may not work without "netifaces" package!')
-                addrinfo = AddrInfo(sock_family, addr, ifn, broadcast, netmask)
-                if hosts:
-                    if addrinfo.ip in hosts:
-                        return addrinfo
-                    else:
-                        continue
-                addrinfos.append(addrinfo)
+        addrs = socket.getaddrinfo(host, None)
+        for addr in addrs:
+            ifn = addr[-1][-1]
+            sock_family = addr[0]
+            if sock_family == socket.AF_INET:
+                broadcast = '<broadcast>'
+                addr = addr[-1][0]
+            else:  # sock_family == socket.AF_INET6
+                addr = canonical_ipv6(addr[-1][0])
+                broadcast = dispy.config.IPv6MulticastGroup
+                logger.warning('IPv6 may not work without "netifaces" package!')
+            addrinfo = AddrInfo(sock_family, addr, ifn, broadcast, None)
+            if hosts:
+                if addrinfo.ip in hosts:
+                    return addrinfo
+                else:
+                    continue
+            addrinfos.append(addrinfo)
 
-    best = None
-    if not host:
-        host = socket.gethostname()
-    for sock_family in socket_families:
-        host_addr = None
-        if host:
-            try:
-                host_addr = socket.getaddrinfo(host, None, sock_family,
-                                               socket.SOCK_STREAM)[0][-1][0]
-                if sock_family == socket.AF_INET6:
-                    host_addr = canonical_ipv6(host_addr)
-            except Exception:
-                pass
-        for addrinfo in addrinfos:
-            if addrinfo.ip in hosts:
-                return addrinfo
-            if addrinfo.family != sock_family:
-                continue
-            if addrinfo.ip == host_addr:
-                if (not best) or not (host_addr.startswith('127.') or
-                                      host_addr.startswith('fe80:') or host_addr == '::1'):
-                    best = addrinfo
-            if ((addrinfo.family == socket.AF_INET6 and addrinfo.ip.startswith('fd')) or
-                (addrinfo.family == socket.AF_INET)):
-                if (not best or best.ip.startswith('fe80:') or best.ip == '::1' or
-                    best.ip.startswith('127.')) or (not best.ifn and addrinfo.ifn):
-                    best = addrinfo
-            elif not best:
-                best = addrinfo
-    return best
+    best = {}
+    for addrinfo in addrinfos:
+        if addrinfo.ip in hosts:
+            return addrinfo
+        cur = best.get(addrinfo.family, None)
+        if not cur:
+            best[addrinfo.family] = addrinfo
+            continue
+        if ((addrinfo.family == socket.AF_INET6 and addrinfo.ip.startswith('fd')) or
+            (addrinfo.family == socket.AF_INET)):
+            cur = best.get(addrinfo.family, None)
+            if (cur.ip.startswith('fe80:') or cur.ip == '::1' or
+                cur.ip.startswith('127.') or (not cur.ifn and addrinfo.ifn) or
+                len(addrinfo.ip) > len(cur.ip)):
+                best[addrinfo.family] = addrinfo
+    addrinfo = best.get(socket_families[0], None)
+    if addrinfo:
+        if ((addrinfo.family == socket.AF_INET and not addrinfo.ip.startswith('127.')) or
+            (addrinfo.family == socket.AF_INET6 and (not addrinfo.ip.startswith('::1') and
+                                                     not addrinfo.ip.startswith('fe80:')))):
+            return addrinfo
+    elif len(socket_families) >= 1:
+        return best.get(socket_families[1], None)
+    return None
 
 
 class _Compute(object):
