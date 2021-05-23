@@ -12,8 +12,6 @@
     <script type="text/javascript">
     //<![CDATA[
 
-      jQuery.ajaxSettings.traditional = true;
-
       var dispy_node = {ip_addr: null};
       var service_start = 0;
       var service_stop = 0;
@@ -21,6 +19,10 @@
       var timer = null;
       var poll_interval = 1000 * %(POLL_INTERVAL)s;
       var dispy_uid = '';
+
+      $.ajaxSetup({
+        traditional: true
+      });
 
       function get_uid() {
         let uid = dispy_uid;
@@ -31,9 +33,9 @@
           url: '/get_uid',
           method: 'POST',
           data: {uid: uid, poll_interval: poll_interval / 1000},
-          timeout: 2000
-        })
-          .done(function(uid) {
+          timeout: 2000,
+
+          success: function(uid) {
             setCookie('dispy_uid', uid, 3600);
             dispy_uid = uid;
             let host = getLocationParam('host');
@@ -44,17 +46,19 @@
               $('#host').attr('size', Math.max($('#host').attr('size'), host.length));
               node_info(host);
             }
-          })
-            .fail(function(jqXHR, textStatus, errorTHrown) {
-              $('#messages').append('<li style="color:red">' +
-              'Could not communicate with admin http server; ' +
-              'reload this page when server is ready / restarted.</li>');
-            })
+          },
+
+          error: function(jqXHR, textStatus, errorTHrown) {
+            $('#messages').append('<li style="color:red">' +
+                                  'Could not communicate with admin http server; ' +
+                                  'reload this page when server is ready / restarted.</li>');
+          }
+        });
       }
 
       function getLocationParam(param) {
         param = param.replace(/[\[]/, '\\[').replace(/[\]]/, '\\]');
-        var regex = new RegExp('[\\?&]' + param + '=([^&#]*)'),
+        let regex = new RegExp('[\\?&]' + param + '=([^&#]*)'),
             results = regex.exec(location.search);
         return results === null ? '' : decodeURIComponent(results[1].replace(/\+/g, ' '));
       }
@@ -131,27 +135,29 @@
           method: 'POST',
           dataType: 'json',
           data: {host: host, uid: dispy_uid},
-          timeout: Math.min(5000, poll_interval)
-        })
-          .done(function(node) {
+          timeout: Math.min(5000, poll_interval),
+
+          success: function(node) {
             show_node(node);
             let now = new Date();
             $('#messages').append('<li>Status updated at ' + now.toLocaleTimeString() + '</li>');
             if (poll_interval >= 1000) {
               timer = setTimeout(function() { node_info(node.ip_addr) }, poll_interval);
             }
-          })
-          .fail(function(jqXHR, textStatus, errorThrown) {
+          },
+
+          error: function(jqXHR, textStatus, errorThrown) {
             $('#messages').append('<li style="color:red">Node update failed.</li>');
-          });
+          }
+        });
       }
 
       function control_service_time(control, time) {
         if (!dispy_node.ip_addr) {
           return;
         }
-        var nodes = [dispy_node.ip_addr];
-        var button = $('#svc_' + control);
+        let nodes = [dispy_node.ip_addr];
+        let button = $('#svc_' + control);
         button.attr('disabled', true);
         setTimeout(function() {
           button.attr('disabled', false);
@@ -161,17 +167,19 @@
           method: 'POST',
           data: {hosts: JSON.stringify(nodes), control: control + '_time', time: time,
                  uid: dispy_uid},
-          timeout: 1000
-        })
-          .done(function(node) {
+          timeout: 1000,
+
+          success: function(node) {
             if (node.hasOwnProperty('ip_addr')) {
               show_node(node);
             }
-          })
-          .fail(function(jqXHR, textStatus, errorThrown) {
+          },
+
+          error: function(jqXHR, textStatus, errorThrown) {
             $('#messages').append('<li style="color:red">Service update failed: ' +
                                   textStatus + '</li>');
-          });
+          }
+        });
       }
 
       $(document).ready(function() {
@@ -179,7 +187,7 @@
         get_uid();
         
         $('#poll_interval').click(function() {
-          var interval;
+          let interval;
           if ($('#poll_now').prop('checked') == true) {
             interval = 0;
             $('#poll_now').prop('checked', false);
@@ -210,9 +218,9 @@
               method: 'POST',
               dataType: 'json',
               data: {uid: dispy_uid, interval: interval},
-              timeout: Math.min(2000, poll_interval)
-            })
-              .done(function(status) {
+              timeout: Math.min(2000, poll_interval),
+
+              success: function(status) {
                 if (interval) {
                   $('#poll_interval_value').val(interval);
                   poll_interval = 1000 * interval;
@@ -224,7 +232,8 @@
                   timer = setTimeout(function() { node_info(dispy_node.ip_addr) },
                                      Math.min(3000, poll_interval / 2.0));
                 }
-              })
+              }
+            });
           }
         });
 
@@ -249,7 +258,7 @@
               return false;
             }
           }
-          var nodes = [dispy_node.ip_addr];
+          let nodes = [dispy_node.ip_addr];
           $('#set_cpus').attr('disabled', true);
           setTimeout(function() {
             $('#set_cpus').attr('disabled', false);
@@ -259,15 +268,17 @@
             method: 'POST',
             dataType: 'json',
             data: {hosts: JSON.stringify(nodes), cpus: cpus, uid: dispy_uid},
-            timeout: Math.min(5000, poll_interval)
-          })
-            .done(function(status) {
+            timeout: Math.min(5000, poll_interval),
+
+            success: function(status) {
               $('#cpus').val('');
-            })
-            .fail(function(jqXHR, textStatus, errorThrown) {
+            },
+
+            error: function(jqXHR, textStatus, errorThrown) {
               $('#messages').append('<li style="color:red">Setting CPUs failed: ' +
                                     textStatus + '</li>');
-            });
+            }
+          });
         });
 
         $('#svc_start').click(function() {
@@ -323,12 +334,13 @@
             url: 'serve_clients',
             method: 'POST',
             data: {host: dispy_node.ip_addr, serve: serve_clients, uid: dispy_uid},
-            timeout: 1000
-          })
-            .fail(function(jqXHR, textStatus, errorThrown) {
+            timeout: 1000,
+
+            error: function(jqXHR, textStatus, errorThrown) {
               $('#messages').append('<li style="color:red">Setting clients to serve failed: ' +
                                     textStatus + '</li>');
-            });
+            }
+          });
 
         });
 

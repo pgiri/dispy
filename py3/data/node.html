@@ -12,17 +12,19 @@
     <script type="text/javascript">
     //<![CDATA[
 
-      jQuery.ajaxSettings.traditional = true;
-
       var cluster_jobs = {};
       var cur_cluster_name = '*';
       var node_ip_addr = null;
       var timer = null;
       var timeout = 1000 * %(TIMEOUT)s;
 
+      $.ajaxSetup({
+        traditional: true
+      });
+
       function getLocationParam(param) {
         param = param.replace(/[\[]/, '\\[').replace(/[\]]/, '\\]');
-        var regex = new RegExp('[\\?&]' + param + '=([^&#]*)'),
+        let regex = new RegExp('[\\?&]' + param + '=([^&#]*)'),
             results = regex.exec(location.search);
         return results === null ? '' : decodeURIComponent(results[1].replace(/\+/g, ' '));
       }
@@ -33,12 +35,11 @@
           method: 'POST',
           data: {'host': host},
           dataType: 'json',
-          timeout: Math.min(5000, timeout)
-        })
+          timeout: Math.min(5000, timeout),
 
-          .done(function(data) {
+          success: function(data) {
             $('#messages').html('');
-            var node = data.node;
+            let node = data.node;
             if (node.hasOwnProperty('ip_addr')) {
               node_ip_addr = node.ip_addr;
               $('#node_ip_addr').text(node.ip_addr);
@@ -58,11 +59,12 @@
               $('#node_tx').text(formatBytes(node.tx));
               $('#node_rx').text(formatBytes(node.rx));
               if ($('#node').is(':hidden')) {
+                $('#cluster-names-container').show();
                 $('#node').show();
                 $('#timeout-div').show();
               }
 
-              var cluster_names = '<strong>Cluster : </strong>';
+              let cluster_names = '<strong>Cluster : </strong>';
               cluster_names += '<select name="cluster-names" style="margin-left:5px;">';
               cluster_names += '<option ' +
                 (cur_cluster_name == '*' ? 'selected="selected" ' : '') +
@@ -74,9 +76,9 @@
                   (cur_cluster_name == name ? 'selected="selected" ' : '') +
                   ' value="' + name + '">' + name + '</option>';
 
-                var rows = '';
+                let rows = '';
                 $.each(jobs, function(i, job) {
-                  var args = job.args;
+                  let args = job.args;
                   if (job.kwargs.length > 0) {
                     if (args.length > 0) {
                       args += ', ';
@@ -109,7 +111,7 @@
                                       'No jobs running on this node.</span></li>');
               }
 
-              var now = new Date();
+              let now = new Date();
               $('#messages').append('<li>Status updated at ' + now.toLocaleTimeString() + '</li>');
               if (timeout >= 1000) {
                 timer = setTimeout(function() { show_node(node.ip_addr) }, timeout);
@@ -122,19 +124,21 @@
               $('#jobs').hide();
             }
 
-          })
+          },
 
-          .fail(function(jqXHR, textStatus, errorThrown) {
+          error: function(jqXHR, textStatus, errorThrown) {
             $('#messages').append('<li style="color:red">Node update failed.</li>');
             $('#jobs').hide();
-          });
+          }
+        });
       }
 
       $(document).ready(function() {
-        var host = getLocationParam('host');
+        let host = getLocationParam('host');
         $('#host').val(host);
 
         if (!host) {
+          $('#cluster-names-container').hide();
           $('#node').hide();
           $('#timeout-div').hide();
           $('#jobs').hide();
@@ -144,7 +148,7 @@
         }
 	
         $('#update').click(function() {
-          var update_sec = $('#timeout-value').val();
+          let update_sec = $('#timeout-value').val();
           if (!$.isNumeric(update_sec)) {
             $('#messages').append('<li style="color:red">Invalid timeout value ignored.</li>');
             $('#timeout-value').val(timeout / 1000);
@@ -188,10 +192,10 @@
             $('#messages').append('<li style="color:red">Terminate jobs not confirmed.</li>');
             return false;
           }
-          var cancel_jobs = [];
+          let cancel_jobs = [];
           $('input[type="checkbox"][name="job"]').each(function(i) {
             if ($(this).prop('checked')) {
-              var uid = $(this).val();
+              let uid = $(this).val();
               cancel_jobs.push(uid);
             }
           });
@@ -208,29 +212,29 @@
             method: 'POST',
             data: {uid: cancel_jobs},
             dataType: 'json',
-            timeout: 5000
-          })
+            timeout: 5000,
 
-            .done(function(data) {
+            success: function(data) {
               $.each(data, function(i, uid) {
-                var elem = $('input[type="checkbox"][name="job"][value^="' + uid + '"]');
+                let elem = $('input[type="checkbox"][name="job"][value^="' + uid + '"]');
                 if (elem) {
 		  elem = elem.parent().parent().children();
 		  elem.css('color', 'Gray');
 		  $(elem[3]).text('Terminated');
                 }
               });
-            })
+            },
 
-            .fail(function() {
+            error: function() {
               $('#messages').append('<li style="color:red">Terminate jobs failed.</li>');
-            });
+            }
+          });
 
           $('#cancel-jobs').prop('disabled', false);
         });
 
         $('#all-jobs').click(function() {
-	  var check = $(this).prop('checked') == true;
+	  let check = $(this).prop('checked') == true;
           $('input[type="checkbox"][name="job"]').each(function(i) {
             $(this).prop('checked', check);
           });
@@ -238,7 +242,7 @@
 
         $('#node-execute').click(function() {
           $('#messages').html('');
-          var node_action = $('select[name="node-action"]').val();
+          let node_action = $('select[name="node-action"]').val();
           if (node_action == '') {
             $('#messages').append('<li style="color:red">Node action not confirmed.</li>');
             return false;
@@ -249,17 +253,19 @@
             method: 'POST',
             data: {cluster: cur_cluster_name, nodes: JSON.stringify([node_ip_addr])},
             dataType: 'json',
-            timeout: 5000
-          })
-          .done(function(status) {
-            if (status == 0) {
-              $('#messages').html('Node action successful.');
-	    } else {
-              $('#messages').html('Node action failed : ' + status);
-	    }
-          })
-          .fail(function(jqXHR, textStatus, errorThrown) {
-            $('#messages').html('Node execute request failed.' + textStatus);
+            timeout: 5000,
+
+            success: function(status) {
+              if (status == 0) {
+                $('#messages').html('Node action successful.');
+              } else {
+                $('#messages').html('Node action failed : ' + status);
+              }
+            },
+
+            error: function(jqXHR, textStatus, errorThrown) {
+              $('#messages').html('Node execute request failed.' + textStatus);
+            }
           });
 
 	  $('select[name="node-action"]').val("");
@@ -268,7 +274,7 @@
         $('#cluster-names-container').on('change', 'select[name="cluster-names"]', function() {
 	  $('#messages').html('');
           cur_cluster_name = $(this).val();
-          var jobs = cluster_jobs[cur_cluster_name];
+          let jobs = cluster_jobs[cur_cluster_name];
           if (jobs && jobs.length > 0) {
             if ($('#jobs').is(':hidden')) {
               $('#jobs').show();
@@ -295,6 +301,7 @@
         <ul>
           <li><a href="monitor.html">Monitor</a></li>
           <li><a href="manage.html">Manage</a></li>
+          <li><a href="ec2.html">EC2</a></li>
           <li class="active"><a href="node.html">Node</a></li>
         </ul>
       </nav>

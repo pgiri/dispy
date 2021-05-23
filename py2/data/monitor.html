@@ -12,8 +12,6 @@
     <script type="text/javascript">
     //<![CDATA[
 
-     jQuery.ajaxSettings.traditional = true;
-
       var clusters = {};
       var cur_cluster_name = null;
       var timer = null;
@@ -25,14 +23,18 @@
         show_job_args = true;
       }
 
+      $.ajaxSetup({
+        traditional: true
+      });
+
       function show_cluster() {
-        var cluster = clusters[cur_cluster_name];
+        let cluster = clusters[cur_cluster_name];
         $('#jobs-submitted').text(cluster.jobs.submitted);
         $('#jobs-done').text(cluster.jobs.done);
         $('#jobs-pending').text(cluster.jobs.submitted - cluster.jobs.done);
 
         if (cluster.sorted_keys.length == 0) {
-          var key_ids = $.map(cluster.nodes, function(node) {
+          let key_ids = $.map(cluster.nodes, function(node) {
             return {key:node[sort_key], id:node.ip_addr};
           });
           cluster.sorted_keys =
@@ -41,9 +43,9 @@
                   function(key_id) { return key_id.id; }
                  );
         }
-        var rows = '';
+        let rows = '';
         $.each(cluster.sorted_keys, function(i, key) {
-          var node = cluster.nodes[key];
+          let node = cluster.nodes[key];
           rows += '<tr>' +
             '<td><input type="checkbox" name="node_select" value="' + node.ip_addr + '" /></td>' +
             '<td><a href="node.html?host=' + node.ip_addr + '" ' + 'title="View jobs on ' +
@@ -71,11 +73,11 @@
           url: request,
           method: 'GET',
           dataType: 'json',
-          timeout: Math.min(5000, timeout)
-        })
-          .done(function(status_data) {
-            var cluster;
-            var changed = false;
+          timeout: Math.min(5000, timeout),
+
+          success: function(status_data) {
+            let cluster;
+            let changed = false;
             $.each(status_data, function(i, status) {
               cluster = clusters[status.name];
               if (!cluster || status.nodes.length > 0 ||
@@ -87,7 +89,7 @@
               }
             });
             if (changed) {
-              var combined = false;
+              let combined = false;
               if (status_data.length > 1) {
                 clusters[''] = {name: '* (All)'};
                 combined = clusters[''];
@@ -118,7 +120,7 @@
                 });
 
                 if (sort_key == 'ip_addr') {
-                  var keys = $.map(cluster.nodes, function(node) {
+                  let keys = $.map(cluster.nodes, function(node) {
                     return node.ip_addr;
                   });
                   cluster.sorted_keys = merge_sorted_uniq(cluster.sorted_keys,
@@ -135,13 +137,13 @@
                   cur_cluster_name = status_data[0].name;
                 }
               }
-              var cluster_names = '<strong>Cluster : </strong>';
+              let cluster_names = '<strong>Cluster : </strong>';
               cluster_names += '<select name="cluster-names" style="margin-left:5px;">';
 
               $.each(clusters, function(name, cluster) {
                 if (combined && combined !== cluster) {
                   $.each(cluster.nodes, function(i, node) {
-                    var combined_node = combined.nodes[node.ip_addr];
+                    let combined_node = combined.nodes[node.ip_addr];
                     if (combined_node) {
                       combined_node.busy += node.busy;
                       combined_node.jobs_done += node.jobs_done;
@@ -170,9 +172,9 @@
             if (timeout >= 1000) {
               timer = setTimeout(function() { cluster_status('cluster_updates') }, timeout);
             }
-          })
+          },
 
-          .fail(function(jqXHR, textStatus, errorThrown) {
+          error: function(jqXHR, textStatus, errorThrown) {
             $('#messages').append('<li style="color:red">' +
               'Could not get status from dispy cluster; ' +
               'reload this page when cluster is ready.</li>');
@@ -180,7 +182,8 @@
               clearTimeout(timer);
               timer = null;
             }
-          })
+          }
+        });
       }
 
       $(document).ready(function() {
@@ -198,18 +201,20 @@
               url: '/update',
               method: 'POST',
               data: {timeout: update_sec, show_job_args: show_job_args},
-              timeout: 1000
-            })
-		.done(function() {
-		    $('#messages').html('<li>Configuration updated.</li>');
-		})
-		.fail(function() {
-		    $('#messages').html('<li style="color:red">' +
-                                        'Configuration update failed.</li>');
-		})
+              timeout: 1000,
+
+              success: function() {
+                $('#messages').html('<li>Configuration updated.</li>');
+              },
+
+              error: function() {
+                $('#messages').html('<li style="color:red">' +
+                                    'Configuration update failed.</li>');
+              }
+            });
 	  }
 
-          var update_sec = $('#timeout-value').val();
+          let update_sec = $('#timeout-value').val();
           if (!$.isNumeric(update_sec)) {
             $('#messages').append('<li>Invalid timeout value ignored.</li>');
             $('#timeout-value').val(timeout / 1000);
@@ -241,8 +246,8 @@
 
         $('#node-execute').click(function() {
           $('#messages').html('');
-          var node_action = $('select[name="node-action"]').val();
-          var nodes = [];
+          let node_action = $('select[name="node-action"]').val();
+          let nodes = [];
           $('input[type="checkbox"][name="node_select"]').each(function(i) {
             if ($(this).prop('checked')) {
               nodes.push($(this).val().trim());
@@ -257,18 +262,20 @@
             method: 'POST',
             data: {cluster: cur_cluster_name, nodes: JSON.stringify(nodes)},
             dataType: 'json',
-            timeout: 5000
+            timeout: 5000,
+
+            success: function(status) {
+              if (status == 0) {
+                $('#messages').html('Node execute success. : ' + status);
+              } else {
+                $('#messages').html('Node execute failed. : ' + status);
+              }
+            },
+
+            error: function(jqXHR, textStatus, errorThrown) {
+              $('#messages').html('Node execute request failed.' + textStatus);
+            }
           })
-          .done(function(status) {
-            if (status == 0) {
-              $('#messages').html('Node execute success. : ' + status);
-	    } else {
-              $('#messages').html('Node execute failed. : ' + status);
-	    }
-          })
-          .fail(function(jqXHR, textStatus, errorThrown) {
-            $('#messages').html('Node execute request failed.' + textStatus);
-          });
 
         });
 
@@ -278,7 +285,7 @@
         });
 
         $('#all-nodes').click(function() {
-	  var check = $(this).prop('checked') == true;
+	  let check = $(this).prop('checked') == true;
           $('input[type="checkbox"][name="node_select"]').each(function(i) {
             $(this).prop('checked', check);
           });
@@ -296,6 +303,7 @@
         <ul>
           <li class="active"><a href="monitor.html">Monitor</a></li>
           <li><a href="manage.html">Manage</a></li>
+          <li><a href="ec2.html">EC2</a></li>
           <li><a href="node.html">Node</a></li>
         </ul>
       </nav>

@@ -12,14 +12,16 @@
     <script type="text/javascript">
     //<![CDATA[
 
-      jQuery.ajaxSettings.traditional = true;
-
       var timer = null;
       var cluster_nodes = {};
       var poll_interval = 1000 * %(POLL_INTERVAL)s;
       var sort_key = '';
       var dispy_uid = '';
       var secret = '';
+
+      $.ajaxSetup({
+        traditional: true
+      });
 
       function get_uid() {
         let uid = dispy_uid;
@@ -31,22 +33,24 @@
           method: 'POST',
           dataType: 'json',
           data: {uid: uid, poll_interval: poll_interval / 1000},
-          timeout: 2000
-        })
-          .done(function(uid) {
+          timeout: 2000,
+
+          success: function(uid) {
             setCookie('dispy_uid', uid, 3600);
             dispy_uid = uid;
             cluster_status('status');
-          })
-          .fail(function(jqXHR, textStatus, errorTHrown) {
-            $('#messages').append('<li style="color:red">' +
-            'Could not communicate with admin http server (' + textStatus + '); ' +
-            'reload this page when server is ready / restarted.</li>');
-          })
+          },
+
+          error: function(jqXHR, textStatus, errorTHrown) {
+            $('#messages').append('<li style="color:red">Could not communicate with ' +
+                                  'admin http server (' + textStatus + '); ' +
+                                  'reload this page when server is ready / restarted.</li>');
+          }
+        });
       }
 
       function show_cluster() {
-        var sorted_nodes;
+        let sorted_nodes;
         if (sort_key) {
           sorted_nodes = $.map(cluster_nodes, function(node) {
             return {key:node[sort_key], node:node}; });
@@ -56,10 +60,10 @@
           sorted_nodes = cluster_nodes;
         }
 
-        var rows = '';
-        var jobs_done = 0;
-        var cpu_time = 0;
-        var num_nodes = 0;
+        let rows = '';
+        let jobs_done = 0;
+        let cpu_time = 0;
+        let num_nodes = 0;
 
         $.each(sorted_nodes, function(idx, node) {
           jobs_done += node.jobs_done;
@@ -94,9 +98,9 @@
          method: 'POST',
          dataType: 'json',
          data: {uid: dispy_uid},
-         timeout: Math.min(5000, poll_interval)
-       })
-         .done(function(status_data) {
+         timeout: Math.min(5000, poll_interval),
+
+         success: function(status_data) {
            $.each(status_data, function(idx, node) {
              cluster_nodes[node.ip_addr] = node;
            });
@@ -106,16 +110,17 @@
            if (poll_interval >= 1000) {
              timer = setTimeout(function() { cluster_status('update') }, poll_interval);
            }
-         })
+         },
 
-         .fail(function(jqXHR, textStatus, errorThrown) {
-           $('#messages').append('<li style="color:red">' +
-                                 'Could not get status from dispy cluster (' + textStatus + '); ' +
+         error: function(jqXHR, textStatus, errorThrown) {
+           $('#messages').append('<li style="color:red">Could not get status from dispy cluster ' +
+                                 '(' + textStatus + '); ' +
                                  'reload this page when cluster is ready.</li>');
            if (timer) {
              clearTimeout(timer);
            }
-         })
+         }
+       });
       }
 
       $(document).ready(function() {
@@ -127,7 +132,7 @@
         }
 
         $('#poll_interval').click(function() {
-          var interval;
+          let interval;
           if ($('#poll_now').prop('checked') == true) {
             interval = 0;
             $('#poll_now').prop('checked', false);
@@ -150,9 +155,9 @@
               url: 'poll_interval',
               method: 'POST',
               data: {uid: dispy_uid, interval: interval},
-              timeout: Math.min(2000, poll_interval)
-            })
-              .done(function(status) {
+              timeout: Math.min(2000, poll_interval),
+
+              success: function(status) {
                 if (interval) {
                   $('#poll_interval_value').val(interval);
                   poll_interval = 1000 * interval;
@@ -162,12 +167,13 @@
                 }
                 timer = setTimeout(function() { cluster_status('update') }, 
                                    Math.min(3000, poll_interval / 2.0));
-              })
+              }
+            });
           }
         });
 
         $('#sort_key').change(function() {
-          var selected = $('#sort_key').val();
+          let selected = $('#sort_key').val();
           if (sort_key != selected) {
             sort_key = selected;
             if (sort_key) {
@@ -177,8 +183,8 @@
         });
 
         $('#add_node').click(function() {
-          var host = $('#add_node_host').val();
-          var port = $('#add_node_port').val();
+          let host = $('#add_node_host').val();
+          let port = $('#add_node_port').val();
           if (host.length > 0 && port.length > 0) {
             $('#add_node').attr('disabled', true);
             setTimeout(function() {
@@ -188,15 +194,16 @@
               url: '/add_node',
               method: 'POST',
               data: {host: host, port: port, uid: dispy_uid},
-              timeout: 1000
-            })
-              .done(function(status) {
+              timeout: 1000,
+
+              success: function(status) {
                 if (timer) {
                   clearTimeout(timer);
                 }
                 timer = setTimeout(function() { cluster_status('update') },
                                    Math.min(3000, poll_interval / 2.0));
-              })
+              }
+            });
           }
         });
 
@@ -210,9 +217,9 @@
             url: '/set_secret',
             method: 'POST',
             data: {secret: secret, uid: dispy_uid},
-            timeout: 1000
-          })
-            .done(function(status) {
+            timeout: 1000,
+
+            success: function(status) {
               if (status == 0) {
                 setCookie('dispy_secret', secret, 24 * 3600)
                 dispy_secret = secret;
@@ -221,7 +228,8 @@
                 // cluster_status('status');
                 cluster_status('update');
               }
-            })
+            }
+          });
           
         });
 
@@ -235,8 +243,8 @@
 
         $('#node_execute').click(function() {
           $('#messages').html('');
-          var node_action = $('select[name="node-action"]').val();
-          var nodes = [];
+          let node_action = $('select[name="node-action"]').val();
+          let nodes = [];
           $('input[type="checkbox"][name="node_select"]').each(function(i) {
             if ($(this).prop('checked')) {
               nodes.push($(this).val().trim());
@@ -263,11 +271,12 @@
             url: 'service_time',
             method: 'POST',
             data: {hosts: JSON.stringify(nodes), control: node_action, time: time, uid: dispy_uid},
-            timeout: Math.min(3000, poll_interval / 2.)
-          })
-          .fail(function(jqXHR, textStatus, errorThrown) {
+            timeout: Math.min(3000, poll_interval / 2.),
+
+            success: function(jqXHR, textStatus, errorThrown) {
               $('#messages').append('<li style="color:red">Setting sertice time failed: ' +
                                     textStatus + '</li>');
+            }
           });
 
         });
@@ -284,7 +293,7 @@
               return false;
             }
           }
-          var nodes = [];
+          let nodes = [];
           $('input[type="checkbox"][name="node_select"]').each(function(i) {
             if ($(this).prop('checked')) {
               nodes.push($(this).val().trim());
@@ -304,19 +313,21 @@
             method: 'POST',
             dataType: 'json',
             data: {hosts: JSON.stringify(nodes), cpus: cpus, uid: dispy_uid},
-            timeout: Math.min(5000, poll_interval / 2.)
-          })
-            .done(function(status) {
+            timeout: Math.min(5000, poll_interval / 2.),
+
+            success: function(status) {
               $('#cpus').val('');
-            })
-            .fail(function(jqXHR, textStatus, errorThrown) {
+            },
+
+            error: function(jqXHR, textStatus, errorThrown) {
               $('#messages').append('<li style="color:red">Setting CPUs failed: ' +
                                     textStatus + '</li>');
-            });
+            }
+          });
         });
 
         $('#all-nodes').click(function() {
-	  var check = this.checked;
+	  let check = this.checked;
           $('input[type="checkbox"][name="node_select"]').each(function(i) {
             $(this).prop('checked', check);
           });

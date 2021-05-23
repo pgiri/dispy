@@ -12,24 +12,26 @@
     <script type="text/javascript">
     //<![CDATA[
 
-      jQuery.ajaxSettings.traditional = true;
-
       var cluster_nodes = {};
       var cur_cluster_name = null;
       var new_node_count = 5;
 
+      $.ajaxSetup({
+        traditional: true
+      });
+
       function show_nodes() {
-        var nodes = cluster_nodes[cur_cluster_name];
+        let nodes = cluster_nodes[cur_cluster_name];
         if (nodes.length > 0) {
-          var ip_size = Math.max($('input[type="text"][name="host_1"]').attr('size'),
-                            Math.max.apply(null, $.map(nodes, function(node, name) {
-                                                           return node.ip_addr.length;
-                                                         })));
+          let ip_size = Math.max($('input[type="text"][name="host_1"]').attr('size'),
+                                 Math.max.apply(null, $.map(nodes, function(node, name) {
+                                   return node.ip_addr.length;
+                                 })));
           $('input[type="text"][name^="host_"]').each(function() {
             $(this).attr('size', ip_size);
           });
 
-          var rows = '';
+          let rows = '';
           $.each(nodes, function(i, node) {
             rows += '<tr><td>' + (i + 1) + '</td><td><a href="node.html?host=' +
               node.ip_addr + '" title="View jobs on ' + node.ip_addr + '">' +
@@ -55,12 +57,11 @@
           url: '/nodes',
           method: 'GET',
           dataType: 'json',
-          timeout: 5000
-        })
+          timeout: 5000,
 
-          .done(function(clusters) {
+          success: function(clusters) {
             cluster_nodes = {'': []};
-            var cluster_names = '<strong>Cluster : </strong>';
+            let cluster_names = '<strong>Cluster : </strong>';
             cluster_names += '<select name="cluster-names" style="margin-left:5px;">';
             $.each(clusters, function(i, cluster) {
               cluster_nodes[cluster.name] = cluster.nodes.sort(desc_cmp_nodes);
@@ -83,22 +84,26 @@
             }
 
             show_nodes();
-          })
+          },
 
-          .fail(function() {
+          error: function() {
             $('#messages').append('<li style="color:red">Failed to get nodes in cluster.</li>');
-          });
+          }
+        })
       }
 
       $(document).ready(function() {
 
-        var rows = '';
+        let rows = '';
 
-        for (var i = 1; i <= new_node_count; i++) {
+        for (let i = 1; i <= new_node_count; i++) {
           rows += '<tr><td>' + i + '</td>' +
-            '<td><input style="min-width:8em;" size="8" type="text" name="host_' + i + '" /></td>' +
-            '<td><input style="width:3em;" maxlength="6" type="text" name="cpus_' + i + '" /></td>' +
-            '<td><input style="width:4em;" maxlength="6" type="text" name="port_' + i + '" /></td>' +
+            '<td><input style="min-width:8em;" size="8" type="text" name="host_' + i +
+            '" /></td>' +
+            '<td><input style="width:3em;" maxlength="6" type="text" name="cpus_' + i +
+            '" /></td>' +
+            '<td><input style="width:4em;" maxlength="6" type="text" name="port_' + i +
+            '" /></td>' +
             '</tr>';
         }
         $('#new-nodes > tbody').html(rows);
@@ -106,9 +111,9 @@
         get_nodes();
 
         $('#update-cpus').click(function() {
-          var cpus = {};
+          let cpus = {};
           $.each(cluster_nodes[cur_cluster_name], function(i, node) {
-            var n = parseInt($('input[type="text"][name="cpus_' + node.ip_addr + '"]').val());
+            let n = parseInt($('input[type="text"][name="cpus_' + node.ip_addr + '"]').val());
             if (n == node.cpus) {
               return true;
             }
@@ -130,13 +135,12 @@
             method: 'POST',
             data: cpus,
             dataType: 'json',
-            timeout: 5000
-          })
+            timeout: 5000,
 
-            .done(function(data) {
+            success: function(data) {
               $.each(data, function(ip_addr, n) {
                 $('input[type="text"][name="cpus_' + ip_addr + '"]').val(n);
-                var loc = bin_desc_search(cluster_nodes[cur_cluster_name], ip_addr,
+                let loc = bin_desc_search(cluster_nodes[cur_cluster_name], ip_addr,
                                           function(node1, node2) {
                                             return node1.ip_addr < node2.ip_addr ? 1 :
                                               (node1.ip_addr > node2.ip_addr ? -1 : 0);
@@ -144,19 +148,20 @@
                 cluster_nodes[cur_cluster_name][loc].cpus = n;
                 $('#messages').html('<li>CPUs for ' + ip_addr + ' changed to ' + n + '.</li>');
               });
-            })
+            },
 
-            .fail(function() {
+            error: function() {
               $('#messages').html('<li style="color:red">Changing CPUs failed.</li>');
-            });
+            }
+          });
         });
 
-        $('#add-node').click(function() {
+        $('#add-nodes').click(function() {
           $('#messages').html('');
-          for (var i = 1; i <= new_node_count; i++) {
-            var node = {};
+          for (let i = 1; i <= new_node_count; i++) {
+            let node = {};
             $('input[type="text"][name$="_' + i + '"]').each(function(i) {
-              var name = $(this).prop('name');
+              let name = $(this).prop('name');
               name = name.substring(0, name.lastIndexOf('_'));
               node[name] = $(this).val().trim();
             });
@@ -170,17 +175,17 @@
               method: 'POST',
               data: node,
               dataType: 'json',
-              timeout: 1000
-            })
+              timeout: 1000,
 
-              .done(function(node) {
+              success: function(node) {
                 $('#messages').append('<li>Node ' + node.id + ' "' + node.host + '"' +
                                       ' requested.</li>');
-              })
+              },
 
-              .fail(function(jqXHR, textStatus, errorThrown) {
+              error: function(jqXHR, textStatus, errorThrown) {
                 $('#messages').append('<li style="color:red">Node ' + i + ' is invalid.</li>');
-              })
+              }
+            });
           }
         });
 
@@ -202,6 +207,7 @@
         <ul>
           <li><a href="monitor.html">Monitor</a></li>
           <li class="active"><a href="manage.html">Manage</a></li>
+          <li><a href="ec2.html">EC2</a></li>
           <li><a href="node.html">Node</a></li>
         </ul>
       </nav>
@@ -234,7 +240,7 @@
 
       <table id="new-nodes" class="fancy shadow" style="text-align:right;margin:20px auto;">
         <caption>
-          <span class="border" style="display:inline-block;">Add Nodes to Cluster</span>
+          <span class="border" style="display:inline-block;">Add Nodes</span>
         </caption>
         <thead>
           <tr><th></th><th>Host Name or IP</th><th>CPUs</th><th>Port</th></tr>
@@ -244,7 +250,7 @@
       </table>
 
       <div style="margin:20px auto;">
-        <button type="button" id="add-node">Add Nodes</button>
+        <button type="button" id="add-nodes">Add Nodes</button>
       </div>
 
       <hr style="margin:10px;" />
@@ -252,7 +258,6 @@
       <div>
         <ul id="messages" style="margin:1em auto;display:inline-block;text-align:left;"></ul>
       </div>
-
     </div>
   </body>
 </html>
