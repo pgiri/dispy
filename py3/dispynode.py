@@ -456,8 +456,7 @@ def _dispy_setup_process(compute, pipe, client_globals):
                  compute.setup, globals(), localvars)
             _dispy_setup_status = localvars['_dispy_setup_status']
         except Exception:
-            dispynode_logger.debug(traceback.format_exc())
-            pipe.send({'setup_status': -1})
+            pipe.send({'setup_status': traceback.format_exc()})
             return -1
         localvars = None
         compute.setup = None
@@ -2753,7 +2752,7 @@ class _DispyNode(object):
             if how == 'exit':
                 if self.scheduler['auth']:
                     self.serve = 0
-                    print('dispynode will quit when current computation from %s closes.',
+                    print('dispynode will quit when current computation from %s closes.' %
                           self.scheduler['ip_addr'])
                     self.thread_lock.release()
                     raise StopIteration
