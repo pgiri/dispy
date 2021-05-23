@@ -246,7 +246,12 @@ def _dispy_job_func(__dispy_job_name, __dispy_job_code, __dispy_job_globals,
              __dispy_job_name, globals(), localvars)
         __dispy_job_reply.status = DispyJob.Finished
     except Exception:
-        __dispy_job_reply.exception = traceback.format_exc()
+        exc = sys.exc_info()
+        if len(exc) == 2 or not exc[2]:
+            exc = ''.join(traceback.format_exception_only(*exc[:2]))
+        else:
+            exc = ''.join(traceback.format_exception(exc[0], exc[1], exc[2].tb_next.tb_next))
+        __dispy_job_reply.exception = exc
         __dispy_job_reply.status = DispyJob.Terminated
         __dispy_job_reply.result = None
 
@@ -444,9 +449,13 @@ def _dispy_setup_process(compute, pipe, client_globals):
             if os.name != 'nt':
                 compute.code = None
         except Exception:
-            dispynode_logger.debug(traceback.format_exc())
-            pipe.send({'setup_status': -1})
-            return
+            exc = sys.exc_info()
+            if len(exc) == 2 or not exc[2]:
+                exc = ''.join(traceback.format_exception_only(*exc[:2]))
+            else:
+                exc = ''.join(traceback.format_exception(exc[0], exc[1], exc[2].tb_next.tb_next))
+            pipe.send({'setup_status': exc})
+            return -1
 
     init_vars = set(globals().keys())
     if compute.setup:
@@ -456,7 +465,12 @@ def _dispy_setup_process(compute, pipe, client_globals):
                  compute.setup, globals(), localvars)
             _dispy_setup_status = localvars['_dispy_setup_status']
         except Exception:
-            pipe.send({'setup_status': traceback.format_exc()})
+            exc = sys.exc_info()
+            if len(exc) == 2 or not exc[2]:
+                exc = ''.join(traceback.format_exception_only(*exc[:2]))
+            else:
+                exc = ''.join(traceback.format_exception(exc[0], exc[1], exc[2].tb_next.tb_next))
+            pipe.send({'setup_status': exc})
             return -1
         localvars = None
         compute.setup = None
