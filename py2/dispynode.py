@@ -338,18 +338,6 @@ def _dispy_terminate_proc(proc_pid, task=None):
 
         else:
             pid = proc_pid
-            if how == 0:
-                wait_nohang = getattr(os, 'WNOHANG', None)
-                if wait_nohang:
-                    try:
-                        if os.waitpid(pid, wait_nohang)[0] == pid:
-                            return 0
-                    except ChildProcessError:
-                        return 0
-                    except Exception:
-                        # TODO: check errno for all platforms
-                        return 1
-                # TODO: kill with 0 to check if process is running where possible
             if os.name == 'nt':
                 if how == 0:
                     return -1
