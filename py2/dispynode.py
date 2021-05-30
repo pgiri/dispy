@@ -2373,6 +2373,7 @@ class _DispyNode(object):
             os.chdir(compute.dest_path)
             env = {}
             env.update(os.environ)
+            env.update(self.init_globals)
             env['PATH'] = compute.dest_path + os.pathsep + env['PATH']
             for k, v in client.globals.iteritems():
                 if isinstance(v, str):
