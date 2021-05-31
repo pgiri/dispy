@@ -2593,6 +2593,18 @@ class _DispyNode(object):
             dispynode_logger.debug('Computation %s already closed?', compute.id)
             raise StopIteration(0)
 
+        terminate_tasks = []
+        for job_info in self.job_infos.values():
+            if job_info.compute_id != client.compute.id:
+                continue
+            if job_info.intr_event:
+                job_info.intr_event.set()
+            elif client.use_setup_proc:
+                client.parent_pipe.send({'req': 'terminate_job', 'pid': job_info.pid,
+                                         'job_reply': job_info.job_reply})
+            elif job_info.proc:
+                terminate_tasks.append(Task(_dispy_terminate_proc, job_info.proc))
+
         parent_pipe, client.parent_pipe = client.parent_pipe, None
         if parent_pipe:
             try:
@@ -2638,6 +2650,10 @@ class _DispyNode(object):
                 except Exception:
                     pass
                 client.child_pipe = None
+
+        for terminate_task in terminate_tasks:
+            if isinstance(terminate_task, Task):
+                yield terminate_task()
 
         if isinstance(compute.cleanup, str) and isinstance(client.cleanup_args, tuple):
             os.chdir(compute.dest_path)
@@ -2801,39 +2817,19 @@ class _DispyNode(object):
 
     def shutdown(self, how):
         def _shutdown(self, how, task=None):
-            self.thread_lock.acquire()
+            self.serve = 0
             if how == 'exit':
                 if self.scheduler['auth']:
-                    self.serve = 0
                     print('dispynode will quit when current computation from %s closes.' %
                           self.scheduler['ip_addr'])
-                    self.thread_lock.release()
                     raise StopIteration
-            job_infos, self.job_infos = self.job_infos, {}
-            self.avail_cpus += len(job_infos)
-            if self.avail_cpus != self.num_cpus:
-                dispynode_logger.warning('Invalid cpus: %s / %s', self.avail_cpus, self.num_cpus)
-            self.avail_cpus = 0
-            self.serve = 0
-            self.thread_lock.release()
-            for job_info in job_infos.values():
-                proc, job_info.proc = job_info.proc, None
-                if proc:
-                    dispynode_logger.debug('Killing process %s for job %s',
-                                           proc.pid, job_info.job_reply.uid)
-                    try:
-                        proc.terminate()
-                    except Exception:
-                        continue
-                    if isinstance(proc, multiprocessing.Process):
-                        proc.join(2)
-                    elif isinstance(proc, subprocess.Popen):
-                        proc.wait()
-            for cid, client in list(self.clients.items()):
-                client.pending_jobs = 0
-                client.jobs_done.set()
+            clean_tasks = []
+            for client in list(self.clients.values()):
                 client.zombie = True
-                Task(self.cleanup_computation, client, close=True)
+                clean_tasks.append(Task(self.cleanup_computation, client, close=True))
+            for clean_task in clean_tasks:
+                if isinstance(clean_task, Task):
+                    yield clean_task()
 
             yield self.send_terminate(task=task)
             self.sign = ''
