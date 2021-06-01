@@ -2574,7 +2574,7 @@ class _DispyNode(object):
         raise StopIteration(status)
 
     def cleanup_computation(self, client, close=True, task=None):
-        if not client.zombie or client.pending_jobs:
+        if (not client.zombie) and client.pending_jobs:
             raise StopIteration(-1)
 
         compute = client.compute
@@ -2815,12 +2815,13 @@ class _DispyNode(object):
 
     def shutdown(self, how):
         def _shutdown(self, how, task=None):
-            self.serve = 0
-            if how == 'exit':
+            if how == 'exit' and self.serve:
                 if self.scheduler['auth']:
+                    self.serve = 0
                     print('dispynode will quit when current computation from %s closes.' %
                           self.scheduler['ip_addr'])
                     raise StopIteration
+            self.serve = 0
             clean_tasks = []
             for client in self.clients.itervalues():
                 client.zombie = True
@@ -2830,10 +2831,9 @@ class _DispyNode(object):
                     yield clean_task()
 
             yield self.send_terminate(task=task)
+            if not self.sign:
+                raise StopIteration
             self.sign = ''
-            # delay a bit for client to close node, in case shutdown
-            # is called by 'dispynode_shutdown'
-            yield task.sleep(0.1)
 
             cfg_file = os.path.join(self.dest_path_prefix, 'config.pkl')
             try:
