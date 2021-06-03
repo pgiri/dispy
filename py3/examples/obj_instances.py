@@ -1,6 +1,7 @@
 # example program that sends object instances in local program
 # as arguments to distributed computation
-class C:
+import cmd
+class C(cmd.Cmd):
     def __init__(self, i, n):
         self.i = i
         self.n = n
@@ -17,7 +18,11 @@ def compute(obj):
 
 if __name__ == '__main__':
     import random, dispy
-    cluster = dispy.JobCluster(compute, depends=[C])
+    def nodeinit_setup():
+        global cmd
+        import cmd
+        return 0
+    cluster = dispy.JobCluster(compute, depends=[C], setup=nodeinit_setup)
     jobs = []
     for i in range(10):
         c = C(i, random.uniform(1, 3)) # create object of C
