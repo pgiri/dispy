@@ -1,6 +1,8 @@
 # example program that sends object instances in local program
 # as arguments to distributed computation
+# Also shows use of nodeinit_ feature to ensure that cmd module is immediately imported so that class C can extend cmd.Cmd on the node
 import cmd
+
 class C(cmd.Cmd):
     def __init__(self, i, n):
         self.i = i
