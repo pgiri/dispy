@@ -2660,7 +2660,7 @@ class JobCluster(object):
             if inspect.isfunction(setup):
                 if setup.__defaults__:
                     print('\n  dispy does not support calling "setup" with keyword arguments\n')
-                depends.append(setup)
+                depends.insert(0, setup)
                 compute.setup = setup.__name__
                 compute.setup_args_count = setup.__code__.co_argcount
             elif isinstance(setup, functools.partial):
@@ -2761,8 +2761,9 @@ class JobCluster(object):
 
             elif (inspect.isfunction(dep) or inspect.isclass(dep) or
                   (hasattr(dep, '__class__') and hasattr(dep, '__module__'))):
+                immediate=None
                 if inspect.isfunction(dep) or inspect.isclass(dep):
-                    pass
+                    immediate = dep.__name__ if dep.__name__.startswith('nodeinit_') else None
                 elif hasattr(dep, '__class__') and inspect.isclass(dep.__class__):
                     dep = dep.__class__
                 try:
@@ -2772,6 +2773,8 @@ class JobCluster(object):
                     raise
                 lines[0] = lines[0].lstrip()
                 compute.code += '\n' + ''.join(lines)
+                if immediate:
+                    compute.code += '\n' + immediate + '()\n'
             elif isinstance(dep, functools.partial):
                 try:
                     lines = inspect.getsourcelines(dep.func)[0]
