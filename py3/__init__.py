@@ -2741,18 +2741,20 @@ class JobCluster(object):
 
         for dep in depends:
             if isinstance(dep, str):
-                if not os.path.isfile(dep) and compute.type == _Compute.prog_type:
-                    for p in os.environ['PATH'].split(os.pathsep):
-                        f = os.path.join(p, dep)
-                        if os.path.isfile(f):
-                            logger.debug('Assuming "%s" is program "%s"', dep, f)
-                            dep = f
-                            break
-                try:
-                    compute.xfer_files.append(_XferFile(dep, compute.id))
-                except Exception:
-                    raise Exception('File "%s" is not valid' % dep)
-
+                if dep.startswith("import "):
+                    compute.code = f"{dep}\n{compute.code}"
+                else:
+                    if not os.path.isfile(dep) and compute.type == _Compute.prog_type:
+                        for p in os.environ['PATH'].split(os.pathsep):
+                            f = os.path.join(p, dep)
+                            if os.path.isfile(f):
+                                logger.debug('Assuming "%s" is program "%s"', dep, f)
+                                dep = f
+                                break
+                    try:
+                        compute.xfer_files.append(_XferFile(dep, compute.id))
+                    except Exception:
+                        raise Exception('File "%s" is not valid' % dep)
             elif inspect.ismodule(dep):
                 try:
                     compute.xfer_files.append(_XferFile(dep, compute.id))
