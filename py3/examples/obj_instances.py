@@ -17,12 +17,8 @@ def compute(obj):
     return obj.n
 
 if __name__ == '__main__':
-    import random, dispy
-    def nodeinit_setup():
-        global cmd
-        import cmd
-        return 0
-    cluster = dispy.JobCluster(compute, depends=[C], setup=nodeinit_setup)
+    import random, dispy    
+    cluster = dispy.JobCluster(compute, depends=["import cmd", C])
     jobs = []
     for i in range(10):
         c = C(i, random.uniform(1, 3)) # create object of C
