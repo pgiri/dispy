@@ -2771,7 +2771,10 @@ class JobCluster(object):
                     logger.warning('Depenendency "%s" is not valid', dep)
                     raise
                 lines[0] = lines[0].lstrip()
-                compute.code += '\n' + ''.join(lines)
+                if inspect.isfunction(dep) and dep.__name__ == 'init_depends':
+                    compute.code = ''.join(lines) + '\ninit_depends()\n' + compute.code
+                else:
+                    compute.code += '\n' + ''.join(lines)
             elif isinstance(dep, functools.partial):
                 try:
                     lines = inspect.getsourcelines(dep.func)[0]

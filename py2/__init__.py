@@ -2761,7 +2761,10 @@ class JobCluster(object):
                     logger.warning('Depenendency "%s" is not valid', dep)
                     raise
                 lines[0] = lines[0].lstrip()
-                compute.code += '\n' + ''.join(lines)
+                if inspect.isfunction(dep) and dep.__name__ == 'init_depends':
+                    compute.code = ''.join(lines) + '\ninit_depends()\n' + compute.code
+                else:
+                    compute.code += '\n' + ''.join(lines)
             elif isinstance(dep, functools.partial):
                 try:
                     lines = inspect.getsourcelines(dep.func)[0]
@@ -2775,7 +2778,6 @@ class JobCluster(object):
         if compute.code:
             # make sure code can be compiled
             compile(compute.code, '<string>', 'exec')
-            del code
         if dest_path:
             if not isinstance(dest_path, basestring):
                 raise Exception('Invalid dest_path: it must be a string')
