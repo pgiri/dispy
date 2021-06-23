@@ -2973,6 +2973,9 @@ class _DispyNode(object):
 if __name__ == '__main__':
     import argparse
 
+    if os.name != 'nt':
+        multiprocessing.set_start_method('fork')
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', dest='config', default='',
                         help='use configuration in given file')
