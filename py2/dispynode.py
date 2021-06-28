@@ -18,7 +18,6 @@ import marshal
 import tempfile
 import shutil
 import glob
-import functools
 import cPickle as pickle
 import cStringIO as io
 import signal
@@ -542,7 +541,7 @@ def _dispy_setup_process(compute, pipe, client_globals):
             if pid and wait_nohang:
                 try:
                     assert os.waitpid(pid, wait_nohang)[0] == pid
-                except (OSError, ChildProcessError, Exception):
+                except (OSError, Exception):
                     # print(traceback.format_exc())
                     pass
                 else:
@@ -606,7 +605,7 @@ class _DispyNode(object):
     """
 
     def __init__(self, cpus, hosts=[], ext_hosts=[], name='', scheduler_host=None,
-                 ipv4_udp_multicast=False, dest_path_prefix='', clean=False, node_init='',
+                 ipv4_udp_multicast=False, dest_path_prefix='', clean=False, node_globals={},
                  secret='', keyfile=None, certfile=None, admin_secret='', zombie_interval=60,
                  ping_interval=None, force_cleanup=False, serve=-1,
                  service_start=None, service_stop=None, service_end=None, safe_setup=True,
@@ -727,6 +726,8 @@ class _DispyNode(object):
 
             for name in glob.glob(os.path.join(self.dest_path_prefix, '*.pkl')):
                 if os.path.basename(name) == 'config.pkl':
+                    continue
+                if not os.path.basename(name).startswith('job_'):
                     continue
                 with open(name, 'rb') as fd:
                     info = pickle.load(fd)
@@ -849,61 +850,7 @@ class _DispyNode(object):
         # load modules from current working directory
         sys.path.insert(0, '.')
 
-        def init_node(node_init, pipe, attrs):
-            if not node_init:
-                return 0
-            try:
-                import inspect
-                import imp
-                with open(node_init, 'r') as fd:
-                    init_module = imp.load_module('node_intt', fd, node_init,
-                                                  ('', 'r', imp.PY_SOURCE))
-                init_func = getattr(init_module, 'init', None)
-                localvars = {'status': 0, 'init_func': init_func}
-                if inspect.isfunction(init_func):
-                    for k, v in attrs:
-                        setattr(init_module, k, v)
-                    init_vars = dir(init_module)
-                    exec('status = init_func()') in {}, localvars
-                    if localvars['status'] == 0:
-                        changes = {k: getattr(init_module, k) for k in dir(init_module)
-                                   if k not in init_vars}
-                        pipe.send(changes)
-                return localvars['status']
-            except Exception:
-                dispynode_logger.warning('"init" in %s failed: %s',
-                                         node_init, traceback.format_exc())
-                return 1
-            finally:
-                pipe.close()
-
-        self.node_init = node_init
-        self.init_globals = {}
-        pipes = multiprocessing.Pipe(duplex=False)
-        proc = multiprocessing.Process(target=init_node,
-                                       args=(node_init, pipes[1],
-                                             [('dispy_node_name', self.name),
-                                              ('dispy_node_ip_addr', self.addrinfos[0].ip)]))
-        proc.start()
-        proc.join()
-        if proc.exitcode != 0:
-            dispynode_logger.warning('"init" in %s failed with %s', node_init, proc.exitcode)
-            exit(proc.exitcode)
-        if node_init:
-            if pipes[0].poll(1):
-                self.init_globals = pipes[0].recv()
-                if not isinstance(self.init_globals, dict):
-                    dispynode_logger.warning('"init" in %s failed: %s',
-                                             node_init, type(self.init_globals))
-                    self.init_globals = {}
-            else:
-                dispynode_logger.warning('"init" in %s failed', node_init)
-                exit(1)
-        pipes[0].close()
-        del pipes, proc
-
         self.thread_lock = threading.Lock()
-
         self.reply_Q = multiprocessing.Queue()
         self.reply_Q_thread = threading.Thread(target=self.__reply_Q)
         self.reply_Q_thread.daemon = True
@@ -920,12 +867,14 @@ class _DispyNode(object):
 
         self.service_schedule_task = Task(self.service_schedule)
         self.client_shutdown = client_shutdown
-
+        self.__node_globals = node_globals
         self.__init_modules = dict(sys.modules)
         self.__init_environ = dict(os.environ)
         self.__init_globals = dict(globals())
         self.__init_globals.pop('_dispy_config',  None)
         self.__init_globals.pop('_dispy_cmd', None)
+        self.__init_globals.pop('_dispy_init_node', None)
+        self.__init_globals.pop('_dispy_close_node', None)
         self.__init_globals['_dispy_node'] = self
 
         udp_addrinfos = {}
@@ -1380,7 +1329,7 @@ class _DispyNode(object):
                 raise StopIteration
 
             client = _Client(compute)
-            client.globals.update(self.init_globals)
+            client.globals.update(self.__node_globals)
             client.sock_family = conn.family
             pkl_path = os.path.join(self.dest_path_prefix, '%s_%s.pkl' % (compute.id, compute.auth))
             with open(pkl_path, 'wb') as fd:
@@ -2373,7 +2322,7 @@ class _DispyNode(object):
             os.chdir(compute.dest_path)
             env = {}
             env.update(os.environ)
-            env.update(self.init_globals)
+            env.update(self.__node_globals)
             env['PATH'] = compute.dest_path + os.pathsep + env['PATH']
             for k, v in client.globals.iteritems():
                 if isinstance(v, str):
@@ -2604,6 +2553,8 @@ class _DispyNode(object):
 
         if isinstance(client.setup_proc, multiprocessing.Process):
             for i in range(20):
+                if not client.setup_proc.is_alive():
+                    break
                 if parent_pipe and parent_pipe.poll():
                     try:
                         msg = parent_pipe.recv()
@@ -2775,7 +2726,7 @@ class _DispyNode(object):
         raise StopIteration(0)
 
     def send_terminate(self, task=None):
-        if self.scheduler['ip_addr'] and self.scheduler['addrinfo']:
+        if self.scheduler['auth'] and self.scheduler['ip_addr'] and self.scheduler['addrinfo']:
             addrinfo = self.scheduler['addrinfo']
             sock = AsyncSocket(socket.socket(addrinfo.family, socket.SOCK_STREAM),
                                keyfile=self.keyfile, certfile=self.certfile)
@@ -2841,30 +2792,6 @@ class _DispyNode(object):
             except Exception:
                 # print(traceback.format_exc())
                 pass
-
-            def close_node(node_init, attrs):
-                try:
-                    import inspect
-                    import imp
-                    with open(node_init, 'r') as fd:
-                        init_module = imp.load_module('node_intt', fd, node_init,
-                                                      ('', 'r', imp.PY_SOURCE))
-                    close = getattr(init_module, 'close', None)
-                    if inspect.isfunction(close):
-                        for k, v in attrs:
-                            setattr(init_module, k, v)
-                        localvars = {'close': close}
-                        exec('close()') in {}, localvars
-                except Exception:
-                    dispynode_logger.warning('node close failed: %s', traceback.format_exc())
-
-            if self.node_init:
-                self.init_globals.update({'dispy_node_name': self.name,
-                                          'dispy_node_ip_addr': self.addrinfos[0].ip})
-                proc = multiprocessing.Process(target=close_node,
-                                               args=(self.node_init, self.init_globals.items()))
-                proc.start()
-                proc.join()
 
             if os.name == 'nt':
                 os.kill(self.pid, signal.CTRL_BREAK_EVENT)
@@ -2965,6 +2892,51 @@ class _DispyNode(object):
                           (i, compute.name, compute.scheduler_ip_addr, client.pending_jobs))
                 print('')
         self.shutdown(cmd)
+
+
+def _dispy_init_node(node_init, queue, attrs):
+    if not node_init:
+        return 0
+    try:
+        import inspect
+        import imp
+        with open(node_init, 'r') as fd:
+            init_module = imp.load_module('node_intt', fd, node_init,
+                                          ('', 'r', imp.PY_SOURCE))
+        init_func = getattr(init_module, 'init', None)
+        localvars = {'status': 0, 'init_func': init_func}
+        if inspect.isfunction(init_func):
+            for k, v in attrs:
+                setattr(init_module, k, v)
+            init_vars = dir(init_module)
+            exec('status = init_func()') in {}, localvars
+            if localvars['status'] == 0:
+                changes = {k: getattr(init_module, k) for k in dir(init_module)
+                           if k not in init_vars}
+                queue.put(changes)
+        return localvars['status']
+    except Exception:
+        dispynode_logger.warning('"init" function in %s failed: %s',
+                                 node_init, traceback.format_exc())
+        return 1
+
+
+def _dispy_close_node(node_init, attrs):
+    try:
+        import inspect
+        import imp
+        with open(node_init, 'r') as fd:
+            init_module = imp.load_module('node_intt', fd, node_init,
+                                          ('', 'r', imp.PY_SOURCE))
+        close_func = getattr(init_module, 'close', None)
+        if inspect.isfunction(close_func):
+            for k, v in attrs:
+                setattr(init_module, k, v)
+            localvars = {'close_func': close_func}
+            exec('close_func()') in {}, localvars
+    except Exception:
+        dispynode_logger.warning('"close" function in %s failed: %s',
+                                 node_init, traceback.format_exc())
 
 
 if __name__ == '__main__':
@@ -3099,12 +3071,6 @@ if __name__ == '__main__':
         _dispy_config['cpus'] = cpus
     del cpus
 
-    if _dispy_config['node_init']:
-        if os.path.isfile(_dispy_config['node_init']):
-            _dispy_config['node_init'] = os.path.abspath(_dispy_config['node_init'])
-        else:
-            raise Exception('"init" file "%s" is not valid' % _dispy_config['node_init'])
-
     if _dispy_config['zombie_interval']:
         if _dispy_config['zombie_interval'] < 1:
             raise Exception('zombie_interval must be at least 1')
@@ -3193,6 +3159,31 @@ if __name__ == '__main__':
               '    node status (CPU, memory, disk and swap space usage)\n'
               '    will not be sent to clients!\n')
 
+    if _dispy_config['node_init']:
+        _dispy_config['node_init'] = os.path.abspath(os.path.expanduser(_dispy_config['node_init']))
+        if not os.path.isfile(_dispy_config['node_init']):
+            raise Exception('"init" file "%s" is not valid' % _dispy_config['node_init'])
+
+    _dispy_config['node_globals'] = {}
+    _dispy_q = multiprocessing.Queue()
+    proc = multiprocessing.Process(target=_dispy_init_node,
+                                   args=(_dispy_config['node_init'], _dispy_q, []))
+    proc.start()
+    proc.join()
+    if proc.exitcode != 0:
+        dispynode_logger.warning('"init" in %s failed with %s',
+                                 _dispy_config['node_init'], proc.exitcode)
+        exit(proc.exitcode)
+    if _dispy_config['node_init']:
+        _dispy_config['node_globals'] = _dispy_q.get()
+        if not isinstance(_dispy_config['node_globals'], dict):
+            dispynode_logger.warning('"init" in %s failed: %s', _dispy_config['node_init'],
+                                     type(_dispy_config['node_globals']))
+            exit(1)
+    del _dispy_q, proc, _dispy_init_node
+    _dispy_node_globals = dict(_dispy_config['node_globals'])
+    _dispy_node_init = _dispy_config.pop('node_init')
+
     def sighandler(signum, frame):
         dispynode_logger.debug('dispynode received signal %s', signum)
         if not _dispy_node:
@@ -3253,5 +3244,11 @@ if __name__ == '__main__':
                     _dispy_node.shutdown('exit')
                 else:
                     break
+
+    if _dispy_node_globals:
+        proc = multiprocessing.Process(target=_dispy_close_node,
+                                       args=(_dispy_node_init, list(_dispy_node_globals.items())))
+        proc.start()
+        proc.join()
 
     _dispy_node.pycos.finish()
