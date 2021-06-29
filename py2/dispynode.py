@@ -1521,7 +1521,11 @@ class _DispyNode(object):
                 globalvars = dict(self.__init_globals)
                 globalvars.update(client.globals)
                 if compute.code:
-                    exec(marshal.loads(compute.code)) in globalvars
+                    try:
+                        exec(marshal.loads(compute.code)) in globalvars
+                    except Exception:
+                        raise StopIteration(client, ('loading "depends" failed with %s' %
+                                                     traceback.format_exc()))
                 if compute.setup and isinstance(client.setup_args, tuple):
                     init_vars = set(globalvars.keys())
                     localvars = {'_dispy_setup_status': 0, '_dispy_setup_args': client.setup_args}
