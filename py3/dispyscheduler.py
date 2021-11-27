@@ -69,7 +69,7 @@ class _Cluster(object):
             for dep in na.depends:
                 dep.compute_id = compute.id
         self.scheduler = scheduler
-        self.status_callback = None
+        self.cluster_status = None
         self.pending_jobs = 0
         self.pending_results = 0
         self._jobs = []
@@ -92,7 +92,7 @@ class _Cluster(object):
 
     def __getstate__(self):
         state = dict(self.__dict__)
-        for var in ('_node_allocs', 'scheduler', 'status_callback', '_jobs', '_dispy_nodes'):
+        for var in ('_node_allocs', 'scheduler', 'cluster_status', '_jobs', '_dispy_nodes'):
             state.pop(var, None)
         return state
 
@@ -408,8 +408,8 @@ class _Scheduler(object, metaclass=Singleton):
                             dispy_node.avail_info = info['avail_info']
                             dispy_node.update_time = node.last_pulse
                             Task(self.send_node_status, cluster, dispy_node, DispyNode.AvailInfo)
-                            if cluster.status_callback:
-                                cluster.status_callback(DispyNode.AvailInfo, dispy_node, None)
+                            if cluster.cluster_status:
+                                cluster.cluster_status(DispyNode.AvailInfo, dispy_node, None)
             conn.close()
 
         elif msg.startswith(b'PONG:'):
@@ -619,8 +619,8 @@ class _Scheduler(object, metaclass=Singleton):
             cluster.pending_jobs += 1
             cluster.last_pulse = job.submit_time
             self._sched_event.set()
-            if cluster.status_callback:
-                cluster.status_callback(DispyJob.Created, None, job)
+            if cluster.cluster_status:
+                cluster.cluster_status(DispyJob.Created, None, job)
 
         def _compute_req(self, msg):
             # function
@@ -1268,7 +1268,7 @@ class _Scheduler(object, metaclass=Singleton):
     def add_cluster(self, cluster):
         compute = cluster._compute
         compute.pulse_interval = self.pulse_interval
-        if self.httpd and cluster.status_callback is None:
+        if self.httpd and cluster.cluster_status is None:
             self.httpd.add_cluster(cluster)
         # TODO: should we allow clients to add new nodes, or use only
         # the nodes initially created with command-line?
@@ -1527,13 +1527,13 @@ class _Scheduler(object, metaclass=Singleton):
         self._nodes.pop(node.ip_addr, None)
 
     def send_job_status(self, cluster, _job, task=None):
-        if cluster.status_callback:
+        if cluster.cluster_status:
             dispy_node = cluster._dispy_nodes.get(_job.node.ip_addr, None)
             # assert _job.job.status == DispyJob.Running
             if dispy_node:
                 dispy_node.busy += 1
                 dispy_node.update_time = time.time()
-                cluster.status_callback(_job.job.status, dispy_node, _job.job)
+                cluster.cluster_status(_job.job.status, dispy_node, _job.job)
         sock = socket.socket(cluster.client_sock_family, socket.SOCK_STREAM)
         sock = AsyncSocket(sock, keyfile=self.cluster_keyfile, certfile=self.cluster_certfile)
         sock.settimeout(MsgTimeout)
@@ -1571,9 +1571,9 @@ class _Scheduler(object, metaclass=Singleton):
             logger.warning('Ignoring invalid node status %s to %s', status, dispy_node.ip_addr)
             raise StopIteration
 
-        if cluster.status_callback:
+        if cluster.cluster_status:
             dispy_node.update_time = time.time()
-            cluster.status_callback(status, dispy_node, None)
+            cluster.cluster_status(status, dispy_node, None)
 
         sock = socket.socket(cluster.client_sock_family, socket.SOCK_STREAM)
         sock = AsyncSocket(sock, keyfile=self.cluster_keyfile, certfile=self.cluster_certfile)
@@ -1628,13 +1628,13 @@ class _Scheduler(object, metaclass=Singleton):
             del self._sched_jobs[_job.uid]
             node.busy -= 1
             node.cpu_time += reply.end_time - reply.start_time
-            if cluster.status_callback:
+            if cluster.cluster_status:
                 if dispy_node:
                     dispy_node.busy -= 1
                     dispy_node.jobs_done += 1
                     dispy_node.cpu_time += reply.end_time - reply.start_time
                     dispy_node.update_time = time.time()
-                    cluster.status_callback(reply.status, dispy_node, job)
+                    cluster.cluster_status(reply.status, dispy_node, job)
 
             cluster.pending_jobs -= 1
             if cluster.pending_jobs == 0:
@@ -1802,10 +1802,10 @@ class _Scheduler(object, metaclass=Singleton):
             # TODO: delay executing again for some time?
             # this job might have been deleted already due to timeout
             if self._sched_jobs.pop(_job.uid, None) == _job:
-                if cluster.status_callback:
+                if cluster.cluster_status:
                     if dispy_node:
                         dispy_node.update_time = time.time()
-                        cluster.status_callback(DispyJob.Cancelled, dispy_node, _job.job)
+                        cluster.cluster_status(DispyJob.Cancelled, dispy_node, _job.job)
                 node.busy -= 1
             self._sched_event.set()
         else:
