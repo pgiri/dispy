@@ -1350,7 +1350,7 @@ class _DispyNode(object):
             self.scheduler['addrinfo'] = addrinfo
 
             try:
-                yield conn.send_msg(serialize(self.avail_cpus))
+                yield conn.send_msg(serialize(self.num_cpus))
             except Exception:
                 del self.clients[compute.id]
                 self.scheduler['auth'].discard(compute.auth)
