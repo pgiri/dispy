@@ -7,7 +7,7 @@ import random, dispy
 
 def compute(n): # executed on nodes
     import random, time, socket
-    name = socket.gethostname()
+    name = '%s/%s' % (dispy_node_name, os.getpid())
     cur_best = 1
     for i in range(0, n):
         r = random.uniform(0, 1)
