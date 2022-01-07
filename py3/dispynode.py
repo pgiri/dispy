@@ -1817,7 +1817,7 @@ class _DispyNode(object):
                         self.thread_lock.release()
                         for job_info in job_infos:
                             Task(terminate_job, client, job_info)
-                    Task(close_node, client, close)
+                    yield close_node(client, close, task=task)
             yield conn.send_msg(b'ACK')
             conn.close()
         elif msg.startswith(b'TERMINATE_JOB:'):
