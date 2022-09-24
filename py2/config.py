@@ -8,3 +8,5 @@ MaxFileSize = 0
 ClientPort = 'dispy.config.DispyPort'
 NodePort = 'dispy.config.DispyPort + 1'
 SharedSchedulerPort = 'dispy.config.DispyPort + 2'
+
+Java = '/usr/bin/java'

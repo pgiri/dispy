@@ -2325,6 +2325,8 @@ class _DispyNode(object):
         compute = client.compute
         if compute.name.endswith('.py'):
             program = [sys.executable, compute.name]
+        elif compute.name.lower().endswith('.java'):
+            program = [dispy.config.Java, compute.name]
         else:
             program = [compute.name]
         args = deserialize(_job._args)
