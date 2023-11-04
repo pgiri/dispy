@@ -2608,7 +2608,7 @@ class JobCluster(object):
             assert inspect.isfunction(job_status) or inspect.ismethod(job_status), \
                 '"job_status" must be a function or method'
             try:
-                args = inspect.getargspec(job_status)
+                args = inspect.getfullargspec(job_status)
                 if inspect.isfunction(job_status):
                     assert len(args.args) == 1
                 else:
@@ -2616,7 +2616,7 @@ class JobCluster(object):
                     if args.args[0] != 'self':
                         logger.warning('First argument to "job_status" method is not "self"')
                 assert args.varargs is None
-                assert args.keywords is None
+                assert args.varkw is None and not args.kwonlyargs
                 assert args.defaults is None
             except Exception:
                 raise Exception('Invalid "job_status" function; '
@@ -2627,7 +2627,7 @@ class JobCluster(object):
             assert inspect.isfunction(cluster_status) or inspect.ismethod(cluster_status), \
                 '"cluster_status" must be a function or method'
             try:
-                args = inspect.getargspec(cluster_status)
+                args = inspect.getfullargspec(cluster_status)
                 if inspect.isfunction(cluster_status):
                     assert len(args.args) == 3
                 else:
@@ -2635,7 +2635,7 @@ class JobCluster(object):
                     if args.args[0] != 'self':
                         logger.warning('First argument to "cluster_status" method is not "self"')
                 assert args.varargs is None
-                assert args.keywords is None
+                assert args.varkw is None and not args.kwonlyargs
                 assert args.defaults is None
             except Exception:
                 raise Exception('Invalid "cluster_status" function; '
